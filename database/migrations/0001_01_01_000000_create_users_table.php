@@ -16,7 +16,8 @@ return new class extends Migration
             $table->string('name');
             $table->string('username')->unique();
             $table->string('password');
-            $table->enum('role', ['vpaa', 'dean', 'secretary']);
+            $table->string('role')->default('secretary');
+            $table->foreignId('department_id')->nullable()->constrained('departments')->onDelete('cascade');
             $table->rememberToken();
             $table->timestamps();
         });
@@ -28,6 +29,10 @@ return new class extends Migration
             $table->text('user_agent')->nullable();
             $table->longText('payload');
             $table->integer('last_activity')->index();
+        });
+
+        Schema::table('users', function (Blueprint $table) {
+            $table->foreignId('department_id')->nullable()->constrained()->nullOnDelete();
         });
     }
 
