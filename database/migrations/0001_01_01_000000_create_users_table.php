@@ -17,7 +17,6 @@ return new class extends Migration
             $table->string('username')->unique();
             $table->string('password');
             $table->string('role')->default('secretary');
-            $table->foreignId('department_id')->nullable()->constrained('departments')->onDelete('cascade');
             $table->rememberToken();
             $table->timestamps();
         });
