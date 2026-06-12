@@ -15,4 +15,14 @@ class Departments extends Model
         'department_name',
         'department_code',
     ];
+
+    public function users()
+    {
+        return $this->hasMany(User::class);
+    }
+
+    public function rooms()
+    {
+        return $this->hasMany(Rooms::class);
+    }
 }
