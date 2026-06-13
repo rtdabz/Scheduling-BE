@@ -7,6 +7,8 @@ use App\Http\Controllers\DepartmentsController;
 use App\Http\Controllers\RoomsController;
 use App\Http\Controllers\Api\UserController;
 
+use App\Http\Controllers\FacultyController;
+
 Route::post('/login', [AuthController::class, 'login']);
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -24,5 +26,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/departments/{id}/force-delete', [DepartmentsController::class, 'forceDelete'])->name('departments.forceDelete');
         Route::apiResource('rooms', RoomsController::class);
         Route::patch('rooms/{room}/assign', [RoomsController::class, 'assign']);
+        Route::apiResource('faculties', FacultyController::class);
     });
 });
