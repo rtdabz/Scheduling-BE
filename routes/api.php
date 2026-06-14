@@ -9,6 +9,8 @@ use App\Http\Controllers\Api\UserController;
 
 use App\Http\Controllers\FacultyController;
 
+use App\Http\Controllers\SubjectsController;
+
 Route::post('/login', [AuthController::class, 'login']);
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -27,5 +29,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::apiResource('rooms', RoomsController::class);
         Route::patch('rooms/{room}/assign', [RoomsController::class, 'assign']);
         Route::apiResource('faculties', FacultyController::class);
+        Route::apiResource('subjects', SubjectsController::class);
     });
 });
