@@ -13,7 +13,7 @@ class TermsController extends Controller
                 'semester' => 'required|in:1st,2nd,summer',
             ]);
 
-            // auto-generate academic year
+// auto-generate academic year
             $currentYear = now()->month >= 6 ? now()->year : now()->year - 1;
             $nextYear = $currentYear + 1;
             $academicYear = $currentYear . '-' . $nextYear;
