@@ -15,11 +15,18 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        User::factory()->create([
-            'name' => 'Admin User',
-            'username' => 'admin',
-            'password' => 'password',
-            'role' => 'vpaa',
+        $this->call([
+            DepartmentSeeder::class,
+            VpaaSeeder::class,
         ]);
+
+        if (!User::where('username', 'admin')->exists()) {
+            User::factory()->create([
+                'name' => 'Admin User',
+                'username' => 'admin',
+                'password' => 'password',
+                'role' => 'vpaa',
+            ]);
+        }
     }
 }

@@ -13,11 +13,13 @@ class VpaaSeeder extends Seeder
      */
     public function run(): void
     {
-        User::create([
-            'name' => 'VPAA User',
-            'username' => 'vpaa',
-            'password' => 'password',
-            'role' => 'vpaa',
-        ]);
+        if (!\App\Models\User::where('username', 'vpaa')->exists()) {
+            \App\Models\User::create([
+                'name' => 'VPAA User',
+                'username' => 'vpaa',
+                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'role' => 'vpaa',
+            ]);
+        }
     }
 }
