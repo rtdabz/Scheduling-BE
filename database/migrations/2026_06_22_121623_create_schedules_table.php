@@ -13,6 +13,16 @@ return new class extends Migration
     {
         Schema::create('schedules', function (Blueprint $table) {
             $table->id();
+            $table->foreignId('term_id')->constrained('terms')->cascadeOnDelete();
+            $table->foreignId('section_id')->constrained('sections')->cascadeOnDelete();
+            $table->foreignId('subject_id')->constrained('subjects')->cascadeOnDelete();
+            $table->foreignId('faculty_id')->constrained('faculties')->cascadeOnDelete();
+            $table->foreignId('room_id')->constrained('rooms')->cascadeOnDelete();
+            $table->foreignId('department_id')->constrained('departments')->cascadeOnDelete();
+            $table->enum('day', ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']);
+            $table->time('start_time');
+            $table->time('end_time');
+            $table->enum('status', ['pending', 'approved', 'conflict'])->default('pending');
             $table->timestamps();
         });
     }

@@ -30,5 +30,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('rooms/{room}/assign', [RoomsController::class, 'assign']);
         Route::apiResource('faculties', FacultyController::class);
         Route::apiResource('subjects', SubjectsController::class);
+        Route::apiResource('schedules', ScheduleController::class);
+    Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
+    Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
     });
 });

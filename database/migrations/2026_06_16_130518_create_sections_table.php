@@ -13,6 +13,17 @@ return new class extends Migration
     {
         Schema::create('sections', function (Blueprint $table) {
             $table->id();
+                $table->string('section_name');
+                $table->enum('year_level', ['1', '2', '3', '4']);
+                $table->enum('semester', ['1st', '2nd', 'summer']);
+                $table->integer('number_of_students')->default(0);
+                $table->foreignId('department_id')
+                    ->constrained('departments')
+                    ->cascadeOnDelete();
+                $table->foreignId('term_id')
+                    ->constrained('terms')
+                    ->cascadeOnDelete();
+                $table->enum('status', ['active', 'inactive'])->default('active');
             $table->timestamps();
         });
     }

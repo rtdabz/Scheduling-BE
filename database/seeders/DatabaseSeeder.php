@@ -16,17 +16,14 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         $this->call([
-            DepartmentSeeder::class,
             VpaaSeeder::class,
+            DepartmentSeeder::class,
+            RoomSeeder::class,
+            FacultySeeder::class,
+            SubjectSeeder::class,
+            TermSeeder::class,
+            SectionSeeder::class,
+            SubjectSeeder::class,
         ]);
-
-        if (!User::where('username', 'admin')->exists()) {
-            User::factory()->create([
-                'name' => 'Admin User',
-                'username' => 'admin',
-                'password' => 'password',
-                'role' => 'vpaa',
-            ]);
-        }
     }
 }
