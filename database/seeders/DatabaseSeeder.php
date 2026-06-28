@@ -16,14 +16,13 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         $this->call([
-            VpaaSeeder::class,
             DepartmentSeeder::class,
+            VpaaSeeder::class,
             RoomSeeder::class,
             FacultySeeder::class,
             SubjectSeeder::class,
             TermSeeder::class,
             SectionSeeder::class,
-            SubjectSeeder::class,
         ]);
     }
 }
