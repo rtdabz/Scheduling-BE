@@ -2,10 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Section;
-use App\Models\Department;
-use App\Models\Term;
-use App\Models\Schedule;
+use App\Models\Sections;
 use Illuminate\Http\Request;
 
 class SectionsController extends Controller
@@ -13,7 +10,7 @@ class SectionsController extends Controller
     // Get all sections
     public function index()
     {
-        $sections = Section::with(['department', 'term'])
+        $sections = Sections::with(['department', 'term'])
             ->latest()
             ->get();
 
@@ -33,19 +30,19 @@ class SectionsController extends Controller
             'status'             => 'sometimes|in:active,inactive',
         ]);
 
-        $section = Section::create($validated);
+        $section = Sections::create($validated);
 
         return response()->json($section->load(['department', 'term']), 201);
     }
 
     // Get single section
-    public function show(Section $section)
+    public function show(Sections $section)
     {
         return response()->json($section->load(['department', 'term']));
     }
 
     // Update section
-    public function update(Request $request, Section $section)
+    public function update(Request $request, Sections $section)
     {
         $validated = $request->validate([
             'section_name'       => 'sometimes|string|max:255',
@@ -63,7 +60,7 @@ class SectionsController extends Controller
     }
 
     // Delete section
-    public function destroy(Section $section)
+    public function destroy(Sections $section)
     {
         $section->delete();
         return response()->json(['message' => 'Section deleted successfully']);
@@ -72,7 +69,7 @@ class SectionsController extends Controller
     // Get sections by term
     public function byTerm($termId)
     {
-        $sections = Section::with(['department'])
+        $sections = Sections::with(['department'])
             ->where('term_id', $termId)
             ->get();
 
@@ -82,7 +79,7 @@ class SectionsController extends Controller
     // Get sections by department
     public function byDepartment($departmentId)
     {
-        $sections = Section::with(['term'])
+        $sections = Sections::with(['term'])
             ->where('department_id', $departmentId)
             ->get();
 

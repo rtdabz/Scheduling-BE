@@ -19,16 +19,16 @@ class Sections extends Model
 
     public function department()
     {
-        return $this->belongsTo(Department::class);
+        return $this->belongsTo(Departments::class, 'department_id');
     }
 
     public function term()
     {
-        return $this->belongsTo(Term::class);
+        return $this->belongsTo(Terms::class, 'term_id');
     }
 
     public function schedules()
     {
-        return $this->hasMany(Schedule::class);
+        return $this->hasMany(Schedule::class, 'section_id');
     }
 }
