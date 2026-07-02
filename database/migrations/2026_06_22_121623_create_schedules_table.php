@@ -22,7 +22,32 @@ return new class extends Migration
             $table->enum('day', ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']);
             $table->time('start_time');
             $table->time('end_time');
-            $table->enum('status', ['pending', 'approved', 'conflict'])->default('pending');
+            
+            //Approval Workflow
+            $table->enum('status', [
+                'draft',
+                'submitted',
+                'approved_by_dean',
+                'rejected_by_dean',
+                'approved',
+                'rejected'
+            ])->default('draft');
+
+            $table->text('rejection_reason')->nullable();
+
+            // Dean review tracking
+            $table->foreignId('reviewed_by_dean')
+                ->nullable()
+                ->constrained('users')
+                ->nullOnDelete();
+            $table->timestamp('reviewed_at_dean')->nullable();
+
+            // VPAA approval tracking
+            $table->foreignId('approved_by_vpaa')
+                ->nullable()
+                ->constrained('users')
+                ->nullOnDelete();
+            $table->timestamp('approved_at_vpaa')->nullable();
             $table->timestamps();
         });
     }

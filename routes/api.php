@@ -14,6 +14,7 @@ use App\Http\Controllers\SubjectsController;
 use App\Http\Controllers\SectionsController;
 
 use App\Http\Controllers\ScheduleController;
+use App\Http\Controllers\TermsController;
 
 Route::post('/login', [AuthController::class, 'login']);
 
@@ -28,22 +29,30 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // VPAA-only administration
     Route::middleware('role:vpaa')->group(function () {
-        Route::resource('departments', DepartmentsController::class);
+        Route::resource('departments', DepartmentsController::class)->except(['index', 'show']);
         Route::get('/departments/trash', [DepartmentsController::class, 'trash'])->name('departments.trash');
         Route::post('/departments/{id}/restore', [DepartmentsController::class, 'restore'])->name('departments.restore');
         Route::delete('/departments/{id}/force-delete', [DepartmentsController::class, 'forceDelete'])->name('departments.forceDelete');
-        Route::apiResource('rooms', RoomsController::class);
-        Route::patch('rooms/{room}/assign', [RoomsController::class, 'assign']);
         Route::apiResource('faculties', FacultyController::class);
         Route::apiResource('schedules', ScheduleController::class);
         Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
+        Route::apiResource('terms', TermsController::class)->except(['index', 'show']);
+        Route::patch('terms/{id}/activate', [TermsController::class, 'activate']);
     });
 
-    // Subjects & Sections — readable by all scheduling roles.
-    // Specific routes are declared before the {param} routes so they aren't
-    // shadowed by wildcard model binding.
+    // Common readable & scheduling administration routes across all roles.
     Route::middleware('role:vpaa,dean,secretary,program_head')->group(function () {
+        Route::get('departments', [DepartmentsController::class, 'index']);
+        Route::get('departments/{department}', [DepartmentsController::class, 'show']);
+
+        Route::apiResource('rooms', RoomsController::class);
+        Route::patch('rooms/{room}/assign', [RoomsController::class, 'assign']);
+
+        Route::get('terms', [TermsController::class, 'index']);
+        Route::get('terms/active', [TermsController::class, 'active']);
+        Route::get('terms/{term}', [TermsController::class, 'show']);
+
         Route::get('subjects', [SubjectsController::class, 'index']);
         Route::get('subjects/{subject}', [SubjectsController::class, 'show']);
 

@@ -30,7 +30,7 @@ class VpaaSeeder extends Seeder
                 'username' => 'secretary',
                 'password' => \Illuminate\Support\Facades\Hash::make('password'),
                 'role' => 'secretary',
-                'department_id' => 2, // College of Information Technology
+                'department_id' => 6, // College of Information Technology
             ]);
         }
 
@@ -52,7 +52,7 @@ class VpaaSeeder extends Seeder
                 'username' => 'program_head',
                 'password' => \Illuminate\Support\Facades\Hash::make('password'),
                 'role' => 'program_head',
-                'department_id' => 2, // College of Information Technology
+                'department_id' => 6, // College of Information Technology
             ]);
         }
     }

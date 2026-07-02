@@ -24,8 +24,8 @@ class RoomsController extends Controller
     {
         $validated = $request->validate([
             'room_code' => 'required|string|max:255|unique:rooms,room_code',
-            'room_name' => 'required|string|max:255',
-            'room_type' => 'required|string|in:lecture,lab,online,field',
+            'room_name' => 'nullable|string|max:255',
+            'room_type' => 'required|string|in:lecture,laboratory,online,field',
             'status' => 'nullable|string|in:available,occupied,maintenance',
             'department_id' => 'nullable|exists:departments,id',
         ]);
@@ -56,8 +56,8 @@ class RoomsController extends Controller
 
         $validated = $request->validate([
             'room_code' => ['sometimes', 'required', 'string', 'max:255', Rule::unique('rooms')->ignore($room->id)],
-            'room_name' => 'sometimes|required|string|max:255',
-            'room_type' => 'sometimes|required|string|in:lecture,lab,online,field',
+            'room_name' => 'nullable|string|max:255',
+            'room_type' => 'sometimes|required|string|in:lecture,laboratory,online,field',
             'status' => 'sometimes|nullable|string|in:available,occupied,maintenance',
             'department_id' => 'nullable|exists:departments,id',
         ]);

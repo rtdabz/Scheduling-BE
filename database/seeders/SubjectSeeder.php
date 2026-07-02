@@ -12,6 +12,6 @@ class SubjectSeeder extends Seeder
      */
     public function run(): void
     {
-        //
+        
     }
 }

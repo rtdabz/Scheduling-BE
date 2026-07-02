@@ -16,6 +16,7 @@ return new class extends Migration
             $table->string('academic_year');
             $table->enum('semester', ['1st', '2nd', 'summer']);
             $table->boolean('is_active')->default(false);
+            $table->boolean('is_enabled')->default(true);
             $table->timestamps();
         });
     }
