@@ -30,6 +30,16 @@ class RoomSeeder extends Seeder
 
             // CRIM Rooms
 
+            // EDUC Rooms
+            ['room_code' => 'Educ 101', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 4],
+            ['room_code' => 'Educ 102', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 4],
+            ['room_code' => 'Educ 103', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 4],
+            ['room_code' => 'Educ 104', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 4],
+            ['room_code' => 'NEE 301', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 4],
+            ['room_code' => 'NEE 302', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 4],
+            ['room_code' => 'NEE 303', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 4],
+
+
             // HM Rooms
             ['room_code' => 'HM 201', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 5],
             ['room_code' => 'HM 202', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 5],
@@ -45,6 +55,18 @@ class RoomSeeder extends Seeder
             ['room_code' => 'CompLab3', 'room_name' => 'Laboratory 3', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => 6],
             ['room_code' => 'CompLab4', 'room_name' => 'Laboratory 4', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => 6],
 
+            // LIS Rooms
+            ['room_code' => 'Lib Bldg', 'room_name' => 'Library', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 7],
+            ['room_code' => 'Educ 105', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 7],
+            ['room_code' => 'NEE 304', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 7],
+            ['room_code' => 'GF', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 7],
+
+            // MID Rooms
+            ['room_code' => 'NEE 101', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 8],
+            ['room_code' => 'NEE 102', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 8],
+            ['room_code' => 'NEE 103', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 8],
+            ['room_code' => 'NEE 104', 'room_name' => '', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => 8],
+            
 
         ];
 
