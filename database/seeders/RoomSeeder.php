@@ -73,5 +73,14 @@ class RoomSeeder extends Seeder
         foreach ($rooms as $room) {
             Rooms::create($room);
         }
+
+        $shared = [
+            ['room_code' => 'ONLINE', 'room_name' => 'Online Class', 'room_type' => 'online', 'department_id' => null],
+            ['room_code' => 'FIELD', 'room_name' => 'Field/Outdoor Area', 'room_type' => 'field', 'department_id' => null],
+        ];
+
+        foreach ($shared as $room) {
+            Rooms::firstOrCreate(['room_code' => $room['room_code']], $room);
+        }
     }
 }

@@ -3,12 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Schedule;
-use App\Models\Department;
-use App\Models\Room;
+use App\Models\Departments;
+use App\Models\Rooms;
 use App\Models\Faculty;
-use App\Models\Subject;
-use App\Models\Term;
-use App\Models\Section;
+use App\Models\Subjects;
+use App\Models\Terms;
+use App\Models\Sections;
 use Illuminate\Http\Request;
 
 class ScheduleController extends Controller

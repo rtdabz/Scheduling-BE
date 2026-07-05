@@ -46,8 +46,16 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('departments', [DepartmentsController::class, 'index']);
         Route::get('departments/{department}', [DepartmentsController::class, 'show']);
 
-        Route::apiResource('rooms', RoomsController::class);
-        Route::patch('rooms/{room}/assign', [RoomsController::class, 'assign']);
+        Route::get('rooms', [RoomsController::class, 'index']);
+        Route::get('rooms/{room}', [RoomsController::class, 'show']);
+
+        // Rooms management — restricted to authorized administrators (VPAA and Dean)
+        Route::middleware('role:vpaa,dean')->group(function () {
+            Route::post('rooms', [RoomsController::class, 'store']);
+            Route::match(['put', 'patch'], 'rooms/{room}', [RoomsController::class, 'update']);
+            Route::delete('rooms/{room}', [RoomsController::class, 'destroy']);
+            Route::patch('rooms/{room}/assign', [RoomsController::class, 'assign']);
+        });
 
         Route::get('terms', [TermsController::class, 'index']);
         Route::get('terms/active', [TermsController::class, 'active']);

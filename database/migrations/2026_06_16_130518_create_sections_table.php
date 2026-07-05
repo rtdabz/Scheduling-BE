@@ -16,7 +16,7 @@ return new class extends Migration
                 $table->string('section_name');
                 $table->enum('year_level', ['1', '2', '3', '4']);
                 $table->enum('semester', ['1st', '2nd', 'summer']);
-                $table->integer('number_of_students')->default(0);
+
                 $table->foreignId('department_id')
                     ->constrained('departments')
                     ->cascadeOnDelete();
@@ -27,10 +27,9 @@ return new class extends Migration
             $table->timestamps();
         });
     }
-
     /**
      * Reverse the migrations.
-     */
+    */
     public function down(): void
     {
         Schema::dropIfExists('sections');

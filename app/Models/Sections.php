@@ -10,7 +10,6 @@ class Sections extends Model
         'section_name',
         'year_level',
         'semester',
-        'number_of_students',
         'department_id',
         'term_id',
         'status',
@@ -19,12 +18,12 @@ class Sections extends Model
 
     public function department()
     {
-        return $this->belongsTo(Department::class);
+        return $this->belongsTo(Departments::class);
     }
 
     public function term()
     {
-        return $this->belongsTo(Term::class);
+        return $this->belongsTo(Terms::class);
     }
 
     public function schedules()
