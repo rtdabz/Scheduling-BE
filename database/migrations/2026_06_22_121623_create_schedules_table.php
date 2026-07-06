@@ -16,12 +16,15 @@ return new class extends Migration
             $table->foreignId('term_id')->constrained('terms')->cascadeOnDelete();
             $table->foreignId('section_id')->constrained('sections')->cascadeOnDelete();
             $table->foreignId('subject_id')->constrained('subjects')->cascadeOnDelete();
-            $table->foreignId('faculty_id')->constrained('faculties')->cascadeOnDelete();
+            $table->foreignId('faculty_id')->nullable()->constrained('faculties')->nullOnDelete();
             $table->foreignId('room_id')->constrained('rooms')->cascadeOnDelete();
             $table->foreignId('department_id')->constrained('departments')->cascadeOnDelete();
             $table->enum('day', ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']);
             $table->time('start_time');
             $table->time('end_time');
+            $table->enum('mode', ['on-site', 'online', 'field'])->default('on-site');
+            $table->boolean('is_hybrid')->default(false);
+            $table->enum('preferred_pattern', ['MW', 'TTh'])->nullable();
             
             //Approval Workflow
             $table->enum('status', [
@@ -30,6 +33,8 @@ return new class extends Migration
                 'approved_by_dean',
                 'rejected_by_dean',
                 'approved',
+                'faculty_assignment',
+                'finalized',
                 'rejected'
             ])->default('draft');
 

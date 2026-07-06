@@ -108,6 +108,16 @@ class VpaaSeeder extends Seeder
             ]);
         }
 
+        if (!\App\Models\User::where('username', 'it_dean')->exists()) {
+            \App\Models\User::create([
+                'name' => 'IT Dean',
+                'username' => 'it_dean',
+                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'role' => 'dean',
+                'department_id' => 6, // College of Information Technology
+            ]);
+        }
+
         // Seed Program Head
         if (!\App\Models\User::where('username', 'program_head')->exists()) {
             \App\Models\User::create([

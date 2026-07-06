@@ -32,15 +32,19 @@ class ScheduleController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'term_id'       => 'required|exists:terms,id',
-            'section_id'    => 'required|exists:sections,id',
-            'subject_id'    => 'required|exists:subjects,id',
-            'faculty_id'    => 'required|exists:faculty,id',
-            'room_id'       => 'required|exists:rooms,id',
-            'department_id' => 'required|exists:departments,id',
-            'day'           => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday',
-            'start_time'    => 'required|date_format:H:i',
-            'end_time'      => 'required|date_format:H:i|after:start_time',
+            'term_id'           => 'required|exists:terms,id',
+            'section_id'        => 'required|exists:sections,id',
+            'subject_id'        => 'required|exists:subjects,id',
+            'faculty_id'        => 'nullable|exists:faculties,id',
+            'room_id'           => 'required|exists:rooms,id',
+            'department_id'     => 'required|exists:departments,id',
+            'day'               => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
+            'start_time'        => 'required|date_format:H:i',
+            'end_time'          => 'required|date_format:H:i|after:start_time',
+            'mode'              => 'sometimes|in:on-site,online,field',
+            'is_hybrid'         => 'sometimes|boolean',
+            'preferred_pattern' => 'nullable|in:MW,TTh',
+            'status'            => 'sometimes|in:draft,submitted,approved_by_dean,rejected_by_dean,approved,faculty_assignment,finalized,rejected',
         ]);
 
         $schedule = Schedule::create($validated);
@@ -62,16 +66,24 @@ class ScheduleController extends Controller
     public function update(Request $request, Schedule $schedule)
     {
         $validated = $request->validate([
-            'term_id'       => 'sometimes|exists:terms,id',
-            'section_id'    => 'sometimes|exists:sections,id',
-            'subject_id'    => 'sometimes|exists:subjects,id',
-            'faculty_id'    => 'sometimes|exists:faculty,id',
-            'room_id'       => 'sometimes|exists:rooms,id',
-            'department_id' => 'sometimes|exists:departments,id',
-            'day'           => 'sometimes|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday',
-            'start_time'    => 'sometimes|date_format:H:i',
-            'end_time'      => 'sometimes|date_format:H:i|after:start_time',
-            'status'        => 'sometimes|in:pending,approved,conflict',
+            'term_id'           => 'sometimes|exists:terms,id',
+            'section_id'        => 'sometimes|exists:sections,id',
+            'subject_id'        => 'sometimes|exists:subjects,id',
+            'faculty_id'        => 'nullable|exists:faculties,id',
+            'room_id'           => 'sometimes|exists:rooms,id',
+            'department_id'     => 'sometimes|exists:departments,id',
+            'day'               => 'sometimes|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
+            'start_time'        => 'sometimes|date_format:H:i',
+            'end_time'          => 'sometimes|date_format:H:i|after:start_time',
+            'mode'              => 'sometimes|in:on-site,online,field',
+            'is_hybrid'         => 'sometimes|boolean',
+            'preferred_pattern' => 'nullable|in:MW,TTh',
+            'status'            => 'sometimes|in:draft,submitted,approved_by_dean,rejected_by_dean,approved,faculty_assignment,finalized,rejected',
+            'rejection_reason'  => 'nullable|string',
+            'reviewed_by_dean'  => 'nullable|exists:users,id',
+            'reviewed_at_dean'  => 'nullable',
+            'approved_by_vpaa'  => 'nullable|exists:users,id',
+            'approved_at_vpaa'  => 'nullable',
         ]);
 
         $schedule->update($validated);

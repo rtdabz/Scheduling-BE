@@ -11,6 +11,7 @@ class Terms extends Model
         'academic_year',
         'semester',
         'is_active',
+        'is_enabled',
     ];
     public static function boot()
     {

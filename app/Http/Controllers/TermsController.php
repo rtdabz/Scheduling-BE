@@ -108,6 +108,11 @@ class TermsController extends Controller
     public function active()
     {
         $term = Terms::where('is_active', true)->first();
+
+        if (!$term) {
+            return response()->json(['message' => 'No active academic term found.'], 404);
+        }
+
         return response()->json($term);
     }
 }

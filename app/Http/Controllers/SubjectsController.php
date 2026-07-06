@@ -11,10 +11,20 @@ class SubjectsController extends Controller
     /**
      * Display a listing of the resource.
      */
-    public function index()
+    public function index(Request $request)
     {
-        $subjects = Subjects::with('department')->get();
-        return response()->json($subjects);
+        $query = Subjects::with('department')->where('status', 'active');
+
+        if ($request->has('department_id')) {
+            $deptId = $request->department_id;
+            $query->where(function ($q) use ($deptId) {
+                $q->where('department_id', $deptId)
+                ->orWhere('subject_category', 'gee')
+                ->orWhere('subject_category', 'gec');
+            });
+        }
+
+        return response()->json($query->get());
     }
 
     /**
@@ -23,17 +33,17 @@ class SubjectsController extends Controller
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'subject_code' => 'required|string|unique:subjects,subject_code|max:255',
-            'subject_name' => 'required|string|max:255',
-            'lecture_hours' => 'nullable|integer|min:0',
-            'lab_hours' => 'nullable|integer|min:0',
-            'units' => 'required|integer|min:0',
-            'subject_category' => 'required|in:major,gec,gee,pathfit,nstp',
-            'room_type_required' => 'nullable|in:lecture,lab,field,online',
-            'year_level' => 'required|in:1,2,3,4',
-            'semester' => 'required|in:1st,2nd,summer',
-            'department_id' => 'required|exists:departments,id',
-            'status' => 'nullable|in:active,inactive',
+            'subject_code'       => 'required|string|unique:subjects,subject_code|max:255',
+            'subject_name'       => 'required|string|max:255',
+            'lecture_hours'      => 'nullable|integer|min:0',
+            'lab_hours'          => 'nullable|integer|min:0',
+            'units'              => 'required|integer|min:0',
+            'subject_category'   => 'required|in:major,gec,gee,pathfit,nstp',
+            'room_type_required' => 'nullable|in:lecture,laboratory,field,online',
+            'year_level'         => 'required|in:1,2,3,4',
+            'semester'           => 'required|in:1st,2nd,summer',
+            'department_id'      => 'nullable|exists:departments,id',
+            'status'             => 'nullable|in:active,inactive',
         ]);
 
         if ($validator->fails()) {
@@ -59,17 +69,17 @@ class SubjectsController extends Controller
     public function update(Request $request, Subjects $subject)
     {
         $validator = Validator::make($request->all(), [
-            'subject_code' => 'sometimes|required|string|max:255|unique:subjects,subject_code,' . $subject->id,
-            'subject_name' => 'sometimes|required|string|max:255',
-            'lecture_hours' => 'nullable|integer|min:0',
-            'lab_hours' => 'nullable|integer|min:0',
-            'units' => 'sometimes|required|integer|min:0',
-            'subject_category' => 'sometimes|required|in:major,gec,gee,pathfit,nstp',
-            'room_type_required' => 'nullable|in:lecture,lab,field,online',
-            'year_level' => 'sometimes|required|in:1,2,3,4',
-            'semester' => 'sometimes|required|in:1st,2nd,summer',
-            'department_id' => 'sometimes|required|exists:departments,id',
-            'status' => 'nullable|in:active,inactive',
+            'subject_code'       => 'sometimes|required|string|max:255|unique:subjects,subject_code,' . $subject->id,
+            'subject_name'       => 'sometimes|required|string|max:255',
+            'lecture_hours'      => 'nullable|integer|min:0',
+            'lab_hours'          => 'nullable|integer|min:0',
+            'units'              => 'sometimes|required|integer|min:0',
+            'subject_category'   => 'sometimes|required|in:major,gec,gee,pathfit,nstp',
+            'room_type_required' => 'nullable|in:lecture,laboratory,field,online',
+            'year_level'         => 'sometimes|required|in:1,2,3,4',
+            'semester'           => 'sometimes|required|in:1st,2nd,summer',
+            'department_id'      => 'nullable|exists:departments,id',
+            'status'             => 'nullable|in:active,inactive',
         ]);
 
         if ($validator->fails()) {

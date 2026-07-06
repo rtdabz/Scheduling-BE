@@ -14,6 +14,7 @@ class Subjects extends Model
         'lab_hours',
         'units',
         'subject_category',
+        'room_type_required',
         'year_level',
         'semester',
         'department_id',

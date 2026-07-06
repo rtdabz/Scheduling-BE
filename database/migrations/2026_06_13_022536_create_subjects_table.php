@@ -19,10 +19,10 @@ return new class extends Migration
             $table->integer('lab_hours')->default(0);
             $table->integer('units')->default(0);
             $table->enum('subject_category', ['major', 'gec', 'gee', 'pathfit', 'nstp']);
-            $table->enum('room_type_required', ['lecture', 'lab', 'field', 'online'])->default('lecture');
+            $table->enum('room_type_required', ['lecture', 'laboratory', 'field', 'online'])->default('lecture');
             $table->enum('year_level', ['1', '2', '3', '4']);
             $table->enum('semester', ['1st', '2nd', 'summer']);
-            $table->foreignId('department_id')->constrained('departments')->cascadeOnDelete();
+            $table->foreignId('department_id')->nullable()->constrained('departments')->nullOnDelete();
             $table->enum('status', ['active', 'inactive'])->default('active');
             $table->timestamps();
         });

@@ -33,10 +33,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/departments/trash', [DepartmentsController::class, 'trash'])->name('departments.trash');
         Route::post('/departments/{id}/restore', [DepartmentsController::class, 'restore'])->name('departments.restore');
         Route::delete('/departments/{id}/force-delete', [DepartmentsController::class, 'forceDelete'])->name('departments.forceDelete');
-        Route::apiResource('faculties', FacultyController::class);
-        Route::apiResource('schedules', ScheduleController::class);
-        Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
-        Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
+        Route::apiResource('faculties', FacultyController::class)->except(['index', 'show']);
         Route::apiResource('terms', TermsController::class)->except(['index', 'show']);
         Route::patch('terms/{id}/activate', [TermsController::class, 'activate']);
     });
@@ -68,6 +65,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('sections/term/{termId}', [SectionsController::class, 'byTerm']);
         Route::get('sections/department/{departmentId}', [SectionsController::class, 'byDepartment']);
         Route::get('sections/{section}', [SectionsController::class, 'show']);
+
+        // Schedules Management
+        Route::apiResource('schedules', ScheduleController::class);
+        Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
+        Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
+
+        // Faculties Read-only
+        Route::get('faculties', [FacultyController::class, 'index']);
+        Route::get('faculties/{faculty}', [FacultyController::class, 'show']);
     });
 
     // Subjects & Sections — writable by VPAA, Secretary and Program Head.
