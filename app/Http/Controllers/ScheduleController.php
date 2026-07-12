@@ -3,26 +3,23 @@
 namespace App\Http\Controllers;
 
 use App\Models\Schedule;
-use App\Models\Departments;
-use App\Models\Rooms;
-use App\Models\Faculty;
-use App\Models\Subjects;
-use App\Models\Terms;
-use App\Models\Sections;
+use App\Services\Scheduling\RuleEngine;
 use Illuminate\Http\Request;
 
 class ScheduleController extends Controller
 {
+    protected RuleEngine $ruleEngine;
+
+    public function __construct(RuleEngine $ruleEngine)
+    {
+        $this->ruleEngine = $ruleEngine;
+    }
+
     // Get all schedules
     public function index()
     {
         $schedules = Schedule::with([
-            'term',
-            'section',
-            'subject',
-            'faculty',
-            'room',
-            'department'
+            'term', 'section', 'subject', 'faculty', 'room', 'department'
         ])->latest()->get();
 
         return response()->json($schedules);
@@ -46,6 +43,16 @@ class ScheduleController extends Controller
             'preferred_pattern' => 'nullable|in:MW,TTh',
             'status'            => 'sometimes|in:draft,submitted,approved_by_dean,rejected_by_dean,approved,faculty_assignment,finalized,rejected',
         ]);
+
+        // ── Rule Engine validation BEFORE saving ──
+        $violations = $this->ruleEngine->validate($validated);
+
+        if (!empty($violations)) {
+            return response()->json([
+                'message'    => 'Schedule conflicts with existing entries.',
+                'violations' => $violations,
+            ], 422);
+        }
 
         $schedule = Schedule::create($validated);
 
@@ -85,6 +92,21 @@ class ScheduleController extends Controller
             'approved_by_vpaa'  => 'nullable|exists:users,id',
             'approved_at_vpaa'  => 'nullable',
         ]);
+
+        // ── Rule Engine validation — merge existing + incoming so partial
+        //    updates (e.g. just changing room_id) still validate the FULL slot ──
+        $attempt = array_merge($schedule->toArray(), $validated);
+        $attempt['ignore_schedule_id'] = $schedule->id;
+
+        // Only run conflict checks if scheduling-relevant fields are present
+        $violations = $this->ruleEngine->validate($attempt);
+
+        if (!empty($violations)) {
+            return response()->json([
+                'message'    => 'Schedule conflicts with existing entries.',
+                'violations' => $violations,
+            ], 422);
+        }
 
         $schedule->update($validated);
 
