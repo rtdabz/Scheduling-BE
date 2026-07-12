@@ -131,6 +131,76 @@ class RuleEngine
     }
 
     /**
+     * Check that the schedule's day matches its declared preferred meeting
+     * pattern (MW = Monday/Wednesday only, TTh = Tuesday/Thursday only).
+     * Mirrors the same rule enforced client-side in useConflict.ts.
+     *
+     * @param  string      $day
+     * @param  string|null $preferredPattern  'MW', 'TTh', or null (no restriction)
+     * @return array|null
+     */
+    public function checkPreferredPattern(string $day, ?string $preferredPattern): ?array
+    {
+        if (empty($preferredPattern)) {
+            return null;
+        }
+
+        $allowedDays = match ($preferredPattern) {
+            'MW'  => ['Monday', 'Wednesday'],
+            'TTh' => ['Tuesday', 'Thursday'],
+            default => null,
+        };
+
+        if ($allowedDays === null) {
+            return null; // unrecognized pattern value, nothing to enforce
+        }
+
+        if (!in_array($day, $allowedDays, true)) {
+            return [
+                'rule'    => 'preferred_pattern',
+                'message' => "Preferred pattern conflict: '{$preferredPattern}' subjects can only be scheduled on "
+                           . implode(' or ', $allowedDays) . ", not {$day}.",
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Check that the schedule's start/end time falls within the institution's
+     * operating hours. Mirrors the frontend's grid cutoff (slot 28 = 9:00 PM),
+     * expressed here in actual clock time rather than slot indices.
+     *
+     * @param  string $startTime  'H:i' or 'H:i:s'
+     * @param  string $endTime    'H:i' or 'H:i:s'
+     * @return array|null
+     */
+    public function checkOperatingHours(string $startTime, string $endTime): ?array
+    {
+        $openingTime = '07:00:00';
+        $closingTime = '21:00:00'; // 9:00 PM — matches frontend's slot 28 cutoff
+
+        $start = strlen($startTime) === 5 ? $startTime . ':00' : $startTime;
+        $end   = strlen($endTime) === 5 ? $endTime . ':00' : $endTime;
+
+        if ($start < $openingTime) {
+            return [
+                'rule'    => 'operating_hours',
+                'message' => "Schedule starts at {$startTime}, which is before operating hours begin (7:00 AM).",
+            ];
+        }
+
+        if ($end > $closingTime) {
+            return [
+                'rule'    => 'operating_hours',
+                'message' => "Schedule ends at {$endTime}, which exceeds operating hours (9:00 PM cutoff).",
+            ];
+        }
+
+        return null;
+    }
+
+    /**
      * Check that the assigned room's type matches what the subject requires
      * (e.g. a laboratory subject must be placed in a laboratory room).
      *
@@ -224,6 +294,22 @@ class RuleEngine
         );
         if ($roomTypeMatch) {
             $violations[] = $roomTypeMatch;
+        }
+
+        $patternCheck = $this->checkPreferredPattern(
+            $attempt['day'],
+            $attempt['preferred_pattern'] ?? null
+        );
+        if ($patternCheck) {
+            $violations[] = $patternCheck;
+        }
+
+        $hoursCheck = $this->checkOperatingHours(
+            $attempt['start_time'],
+            $attempt['end_time']
+        );
+        if ($hoursCheck) {
+            $violations[] = $hoursCheck;
         }
 
         return $violations;
