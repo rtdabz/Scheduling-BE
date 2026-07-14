@@ -13,6 +13,9 @@ class Faculty extends Model
         'middle_name',
         'employment_type',
         'max_units',
+        'overload_units',
+        'deload_units',
+        'probono_units',
         'department_id',
         'status',
     ];

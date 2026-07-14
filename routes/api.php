@@ -35,7 +35,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/departments/trash', [DepartmentsController::class, 'trash'])->name('departments.trash');
         Route::post('/departments/{id}/restore', [DepartmentsController::class, 'restore'])->name('departments.restore');
         Route::delete('/departments/{id}/force-delete', [DepartmentsController::class, 'forceDelete'])->name('departments.forceDelete');
-        Route::apiResource('faculties', FacultyController::class)->except(['index', 'show']);
         Route::apiResource('terms', TermsController::class)->except(['index', 'show']);
         Route::patch('terms/{id}/activate', [TermsController::class, 'activate']);
     });
@@ -82,7 +81,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('faculties/{faculty}', [FacultyController::class, 'show']);
     });
 
-    // Subjects & Sections — writable by VPAA, Secretary and Program Head.
+    // Subjects, Sections & Faculties — writable by VPAA, Secretary and Program Head.
     Route::middleware('role:vpaa,secretary,program_head')->group(function () {
         Route::post('subjects', [SubjectsController::class, 'store']);
         Route::match(['put', 'patch'], 'subjects/{subject}', [SubjectsController::class, 'update']);
@@ -91,5 +90,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('sections', [SectionsController::class, 'store']);
         Route::match(['put', 'patch'], 'sections/{section}', [SectionsController::class, 'update']);
         Route::delete('sections/{section}', [SectionsController::class, 'destroy']);
+
+        Route::post('faculties', [FacultyController::class, 'store']);
+        Route::match(['put', 'patch'], 'faculties/{faculty}', [FacultyController::class, 'update']);
+        Route::delete('faculties/{faculty}', [FacultyController::class, 'destroy']);
     });
 });
