@@ -4,6 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DepartmentsController;
+use App\Http\Controllers\DepartmentScheduleController;
 use App\Http\Controllers\RoomsController;
 use App\Http\Controllers\Api\UserController;
 
@@ -43,6 +44,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('role:vpaa,dean,secretary,program_head')->group(function () {
         Route::get('departments', [DepartmentsController::class, 'index']);
         Route::get('departments/{department}', [DepartmentsController::class, 'show']);
+
+        // Department schedule-status (read: all 4 roles; write: owner dept only, enforced in controller)
+        Route::get('departments/{id}/schedule-status', [DepartmentScheduleController::class, 'scheduleStatus']);
+        Route::post('departments/{id}/submit-schedules', [DepartmentScheduleController::class, 'submitSchedules']);
 
         Route::get('rooms', [RoomsController::class, 'index']);
         Route::get('rooms/{room}', [RoomsController::class, 'show']);
