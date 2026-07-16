@@ -16,12 +16,15 @@ class TermSeeder extends Seeder
         ];
 
         foreach ($terms as $term) {
-            Terms::firstOrCreate(
+            Terms::updateOrCreate(
                 [
                     'academic_year' => $term['academic_year'],
                     'semester'      => $term['semester'],
                 ],
-                $term
+                [
+                    'is_active' => $term['is_active'],
+                    'is_enabled' => $term['is_enabled'],
+                ]
             );
         }
     }

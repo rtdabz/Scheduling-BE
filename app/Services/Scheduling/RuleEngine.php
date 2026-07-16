@@ -131,12 +131,11 @@ class RuleEngine
     }
 
     /**
-     * Check that the schedule's day matches its declared preferred meeting
-     * pattern (MW = Monday/Wednesday only, TTh = Tuesday/Thursday only).
+     * Check that the schedule's day matches its declared preferred meeting pattern.
      * Mirrors the same rule enforced client-side in useConflict.ts.
      *
      * @param  string      $day
-     * @param  string|null $preferredPattern  'MW', 'TTh', or null (no restriction)
+     * @param  string|null $preferredPattern  'MW', 'TTh', 'days:0-2', or null (no restriction)
      * @return array|null
      */
     public function checkPreferredPattern(string $day, ?string $preferredPattern): ?array
@@ -145,11 +144,20 @@ class RuleEngine
             return null;
         }
 
+        $allDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
         $allowedDays = match ($preferredPattern) {
-            'MW'  => ['Monday', 'Wednesday'],
+            'MW' => ['Monday', 'Wednesday'],
             'TTh' => ['Tuesday', 'Thursday'],
             default => null,
         };
+
+        if ($allowedDays === null && preg_match('/^days:([0-5])-([0-5])$/', $preferredPattern, $matches) === 1) {
+            $allowedDays = [
+                $allDays[(int) $matches[1]],
+                $allDays[(int) $matches[2]],
+            ];
+        }
 
         if ($allowedDays === null) {
             return null; // unrecognized pattern value, nothing to enforce

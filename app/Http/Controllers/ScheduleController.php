@@ -40,8 +40,8 @@ class ScheduleController extends Controller
             'end_time'          => 'required|date_format:H:i|after:start_time',
             'mode'              => 'sometimes|in:on-site,online,field',
             'is_hybrid'         => 'sometimes|boolean',
-            'preferred_pattern' => 'nullable|in:MW,TTh',
-            'status'            => 'sometimes|in:draft,submitted,approved_by_dean,rejected_by_dean,approved,faculty_assignment,finalized,rejected',
+            'preferred_pattern' => 'nullable|string|max:20',
+            'status'            => 'sometimes|in:draft,completed,submitted,approved_by_dean,rejected_by_dean,approved,faculty_assignment,finalized,rejected',
         ]);
 
         // ── Rule Engine validation BEFORE saving ──
@@ -84,8 +84,8 @@ class ScheduleController extends Controller
             'end_time'          => 'sometimes|date_format:H:i|after:start_time',
             'mode'              => 'sometimes|in:on-site,online,field',
             'is_hybrid'         => 'sometimes|boolean',
-            'preferred_pattern' => 'nullable|in:MW,TTh',
-            'status'            => 'sometimes|in:draft,submitted,approved_by_dean,rejected_by_dean,approved,faculty_assignment,finalized,rejected',
+            'preferred_pattern' => 'nullable|string|max:20',
+            'status'            => 'sometimes|in:draft,completed,submitted,approved_by_dean,rejected_by_dean,approved,faculty_assignment,finalized,rejected',
             'rejection_reason'  => 'nullable|string',
             'reviewed_by_dean'  => 'nullable|exists:users,id',
             'reviewed_at_dean'  => 'nullable',

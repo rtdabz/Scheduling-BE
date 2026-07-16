@@ -24,11 +24,12 @@ return new class extends Migration
             $table->time('end_time');
             $table->enum('mode', ['on-site', 'online', 'field'])->default('on-site');
             $table->boolean('is_hybrid')->default(false);
-            $table->enum('preferred_pattern', ['MW', 'TTh'])->nullable();
+            $table->string('preferred_pattern', 20)->nullable();
             
             //Approval Workflow
             $table->enum('status', [
                 'draft',
+                'completed',
                 'submitted',
                 'approved_by_dean',
                 'rejected_by_dean',

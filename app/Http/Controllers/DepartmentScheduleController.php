@@ -5,26 +5,73 @@ namespace App\Http\Controllers;
 use App\Models\Departments;
 use App\Models\Sections;
 use App\Models\Schedule;
+use App\Models\Terms;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class DepartmentScheduleController extends Controller
 {
+    private function activeTermId(): ?int
+    {
+        return Terms::where('is_active', true)->value('id');
+    }
+
+    private function departmentSectionIds(int $departmentId): array
+    {
+        $query = Sections::where('department_id', $departmentId)
+            ->where('status', 'active');
+
+        $activeTermId = $this->activeTermId();
+        if ($activeTermId) {
+            $query->where('term_id', $activeTermId);
+        }
+
+        return $query->pluck('id')->toArray();
+    }
+
+    private function departmentScheduleQuery(int $departmentId)
+    {
+        $query = Schedule::whereIn('section_id', $this->departmentSectionIds($departmentId));
+
+        $activeTermId = $this->activeTermId();
+        if ($activeTermId) {
+            $query->where('term_id', $activeTermId);
+        }
+
+        return $query;
+    }
+
+    private function ensureRoleCanActOnDepartment(Request $request, int $departmentId, array $roles): ?JsonResponse
+    {
+        $user = $request->user();
+        if (!in_array($user->role, $roles, true)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        if ($user->role !== 'vpaa' && (int) $user->department_id !== $departmentId) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        return null;
+    }
+
     /**
      * Derive a single "section-level status" from all schedule rows
      * belonging to that section. Uses the most conservative (lowest-ranked)
      * status present. If the section has no schedules at all it is 'draft'.
      *
      * Status rank (0 = earliest / most conservative):
-     *   draft < submitted < approved_by_dean < approved
+     *   draft < completed < submitted < approved_by_dean < approved
      */
     private function deriveStatus(array $scheduleStatuses): string
     {
         $rank = [
             'draft'            => 0,
-            'submitted'        => 1,
-            'approved_by_dean' => 2,
-            'approved'         => 3,
+            'completed'        => 1,
+            'submitted'        => 2,
+            'approved_by_dean' => 3,
+            'approved'         => 4,
         ];
 
         if (empty($scheduleStatuses)) {
@@ -40,6 +87,7 @@ class DepartmentScheduleController extends Controller
                 in_array($raw, ['faculty_assignment', 'finalized']) => 'approved',
                 $raw === 'approved_by_dean'                         => 'approved_by_dean',
                 $raw === 'submitted'                                => 'submitted',
+                $raw === 'completed'                                => 'completed',
                 default                                             => 'draft', // draft, rejected, rejected_by_dean
             };
 
@@ -88,6 +136,7 @@ class DepartmentScheduleController extends Controller
             'department_id'   => $department->id,
             'department_name' => $department->department_name,
             'sections'        => $result->values(),
+            'department_status' => $this->deriveStatus($result->pluck('status')->toArray()),
         ]);
     }
 
@@ -98,7 +147,7 @@ class DepartmentScheduleController extends Controller
      * All year levels the department offers must have ZERO sections
      * still in 'draft' status before a bulk submit is allowed.
      *
-     * If gating passes, all 'draft' and 'rejected'/'rejected_by_dean'
+     * If gating passes, all 'completed' and 'rejected'/'rejected_by_dean'
      * schedule rows for this department are set to 'submitted'.
      *
      * RBAC: only vpaa, or dean/secretary whose department_id matches.
@@ -157,7 +206,7 @@ class DepartmentScheduleController extends Controller
         $sectionIds = $sections->pluck('id')->toArray();
 
         $updated = Schedule::whereIn('section_id', $sectionIds)
-            ->whereIn('status', ['draft', 'rejected', 'rejected_by_dean'])
+            ->whereIn('status', ['completed', 'rejected', 'rejected_by_dean'])
             ->update([
                 'status'     => 'submitted',
                 'updated_at' => now(),
@@ -166,6 +215,130 @@ class DepartmentScheduleController extends Controller
         return response()->json([
             'message'          => 'Department schedules submitted for dean approval.',
             'department_name'  => $department->department_name,
+            'schedules_updated' => $updated,
+        ]);
+    }
+
+    public function approveByDean(int $id, Request $request): JsonResponse
+    {
+        if ($forbidden = $this->ensureRoleCanActOnDepartment($request, $id, ['dean', 'vpaa'])) {
+            return $forbidden;
+        }
+
+        $department = Departments::findOrFail($id);
+        $user = $request->user();
+        $now = now();
+
+        $updated = DB::transaction(function () use ($id, $user, $now) {
+            return $this->departmentScheduleQuery($id)
+                ->where('status', 'submitted')
+                ->update([
+                    'status' => 'approved_by_dean',
+                    'reviewed_by_dean' => $user->id,
+                    'reviewed_at_dean' => $now,
+                    'rejection_reason' => null,
+                    'updated_at' => $now,
+                ]);
+        });
+
+        return response()->json([
+            'message' => 'Department schedule approved by Dean and forwarded to VPAA.',
+            'department_name' => $department->department_name,
+            'schedules_updated' => $updated,
+        ]);
+    }
+
+    public function returnByDean(int $id, Request $request): JsonResponse
+    {
+        if ($forbidden = $this->ensureRoleCanActOnDepartment($request, $id, ['dean', 'vpaa'])) {
+            return $forbidden;
+        }
+
+        $validated = $request->validate([
+            'rejection_reason' => 'required|string|max:2000',
+        ]);
+
+        $department = Departments::findOrFail($id);
+        $user = $request->user();
+        $now = now();
+
+        $updated = DB::transaction(function () use ($id, $user, $now, $validated) {
+            return $this->departmentScheduleQuery($id)
+                ->where('status', 'submitted')
+                ->update([
+                    'status' => 'rejected_by_dean',
+                    'rejection_reason' => $validated['rejection_reason'],
+                    'reviewed_by_dean' => $user->id,
+                    'reviewed_at_dean' => $now,
+                    'updated_at' => $now,
+                ]);
+        });
+
+        return response()->json([
+            'message' => 'Department schedule returned by Dean for revision.',
+            'department_name' => $department->department_name,
+            'schedules_updated' => $updated,
+        ]);
+    }
+
+    public function approveByVpaa(int $id, Request $request): JsonResponse
+    {
+        if ($forbidden = $this->ensureRoleCanActOnDepartment($request, $id, ['vpaa'])) {
+            return $forbidden;
+        }
+
+        $department = Departments::findOrFail($id);
+        $user = $request->user();
+        $now = now();
+
+        $updated = DB::transaction(function () use ($id, $user, $now) {
+            return $this->departmentScheduleQuery($id)
+                ->where('status', 'approved_by_dean')
+                ->update([
+                    'status' => 'approved',
+                    'approved_by_vpaa' => $user->id,
+                    'approved_at_vpaa' => $now,
+                    'rejection_reason' => null,
+                    'updated_at' => $now,
+                ]);
+        });
+
+        return response()->json([
+            'message' => 'Department schedule approved by VPAA.',
+            'department_name' => $department->department_name,
+            'schedules_updated' => $updated,
+        ]);
+    }
+
+    public function returnByVpaa(int $id, Request $request): JsonResponse
+    {
+        if ($forbidden = $this->ensureRoleCanActOnDepartment($request, $id, ['vpaa'])) {
+            return $forbidden;
+        }
+
+        $validated = $request->validate([
+            'rejection_reason' => 'required|string|max:2000',
+        ]);
+
+        $department = Departments::findOrFail($id);
+        $user = $request->user();
+        $now = now();
+
+        $updated = DB::transaction(function () use ($id, $user, $now, $validated) {
+            return $this->departmentScheduleQuery($id)
+                ->where('status', 'approved_by_dean')
+                ->update([
+                    'status' => 'rejected',
+                    'rejection_reason' => $validated['rejection_reason'],
+                    'approved_by_vpaa' => $user->id,
+                    'approved_at_vpaa' => $now,
+                    'updated_at' => $now,
+                ]);
+        });
+
+        return response()->json([
+            'message' => 'Department schedule returned by VPAA for revision.',
+            'department_name' => $department->department_name,
             'schedules_updated' => $updated,
         ]);
     }

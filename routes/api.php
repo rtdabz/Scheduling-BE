@@ -47,6 +47,10 @@ Route::middleware('auth:sanctum')->group(function () {
         // Department schedule-status (read: all 4 roles; write: owner dept only, enforced in controller)
         Route::get('departments/{id}/schedule-status', [DepartmentScheduleController::class, 'scheduleStatus']);
         Route::post('departments/{id}/submit-schedules', [DepartmentScheduleController::class, 'submitSchedules']);
+        Route::post('departments/{id}/approve-by-dean', [DepartmentScheduleController::class, 'approveByDean']);
+        Route::post('departments/{id}/return-by-dean', [DepartmentScheduleController::class, 'returnByDean']);
+        Route::post('departments/{id}/approve-by-vpaa', [DepartmentScheduleController::class, 'approveByVpaa']);
+        Route::post('departments/{id}/return-by-vpaa', [DepartmentScheduleController::class, 'returnByVpaa']);
 
         Route::get('rooms', [RoomsController::class, 'index']);
         Route::get('rooms/{room}', [RoomsController::class, 'show']);

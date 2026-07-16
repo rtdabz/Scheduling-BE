@@ -2,36 +2,81 @@
 
 namespace Database\Seeders;
 
+use App\Models\Departments;
 use App\Models\Sections;
+use App\Models\Terms;
 use Illuminate\Database\Seeder;
 
 class SectionSeeder extends Seeder
 {
     public function run(): void
     {
+        $activeTerm = Terms::where('is_active', true)->first()
+            ?? Terms::where('is_enabled', true)->orderBy('id')->first();
+
+        if (!$activeTerm) {
+            throw new \RuntimeException(
+                'SectionSeeder requires at least one term to exist. Run TermSeeder first.'
+            );
+        }
+
+        $departments = Departments::query()
+            ->get(['id', 'department_code'])
+            ->keyBy('department_code');
+
+        $cit = $departments->get('CIT');
+
+        if (!$cit) {
+            throw new \RuntimeException(
+                'SectionSeeder requires the CIT department to exist. Run DepartmentSeeder first.'
+            );
+        }
+
         $sections = [
-            // BSIT — 1st Year
-            ['section_name' => 'BSIT 1-A', 'year_level' => '1', 'semester' => '1st', 'status' => 'active', 'department_id' => 6, 'term_id' => 1],
-            ['section_name' => 'BSIT 1-B', 'year_level' => '1', 'semester' => '1st', 'status' => 'active', 'department_id' => 6, 'term_id' => 1],
-
-            // BSIT — 2nd Year
-            ['section_name' => 'BSIT 2-A', 'year_level' => '2', 'semester' => '1st', 'status' => 'active', 'department_id' => 6, 'term_id' => 1],
-            ['section_name' => 'BSIT 2-B', 'year_level' => '2', 'semester' => '1st', 'status' => 'active', 'department_id' => 6, 'term_id' => 1],
-
-            // BSIT — 3rd Year
-            ['section_name' => 'BSIT 3-A', 'year_level' => '3', 'semester' => '1st', 'status' => 'active', 'department_id' => 6, 'term_id' => 1],
-
-            // BSIT — 4th Year
-            ['section_name' => 'BSIT 4-A', 'year_level' => '4', 'semester' => '1st', 'status' => 'active', 'department_id' => 6, 'term_id' => 1],
+            ['section_name' => 'BSIT 1-A', 'year_level' => '1', 'department_id' => $cit->id],
+            ['section_name' => 'BSIT 1-B', 'year_level' => '1', 'department_id' => $cit->id],
+            ['section_name' => 'BSIT 2-A', 'year_level' => '2', 'department_id' => $cit->id],
+            ['section_name' => 'BSIT 2-B', 'year_level' => '2', 'department_id' => $cit->id],
+            ['section_name' => 'BSIT 3-A', 'year_level' => '3', 'department_id' => $cit->id],
+            ['section_name' => 'BSIT 4-A', 'year_level' => '4', 'department_id' => $cit->id],
         ];
 
+        $starterSections = [
+            'CAS' => 'CAS',
+            'CBA' => 'CBA',
+            'CCJPS' => 'CCJPS',
+            'CED' => 'CED',
+            'CHM' => 'CHM',
+            'CLIS' => 'CLIS',
+            'CM' => 'CM',
+        ];
+
+        foreach ($starterSections as $departmentCode => $sectionPrefix) {
+            $department = $departments->get($departmentCode);
+            if (!$department) {
+                continue;
+            }
+
+            $sections[] = [
+                'section_name' => "{$sectionPrefix} 1-A",
+                'year_level' => '1',
+                'department_id' => $department->id,
+            ];
+        }
+
         foreach ($sections as $section) {
-            Sections::firstOrCreate(
+            Sections::updateOrCreate(
                 [
                     'section_name' => $section['section_name'],
-                    'term_id'      => $section['term_id'],
+                    'term_id' => $activeTerm->id,
                 ],
-                $section
+                [
+                    'year_level' => $section['year_level'],
+                    'semester' => $activeTerm->semester,
+                    'status' => 'active',
+                    'department_id' => $section['department_id'],
+                    'term_id' => $activeTerm->id,
+                ]
             );
         }
     }
