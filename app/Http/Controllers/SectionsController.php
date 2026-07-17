@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Sections;
+use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Http\Request;
 
 class SectionsController extends Controller
@@ -22,11 +23,11 @@ class SectionsController extends Controller
     {
         $validated = $request->validate([
             'section_name'       => 'required|string|max:255',
-            'year_level'         => 'required|in:1,2,3,4',
-            'semester'           => 'required|in:1st,2nd,summer',
+            'year_level'         => SchedulingPolicy::allowedYearLevelsRule('required'),
+            'semester'           => SchedulingPolicy::allowedSemestersRule('required'),
             'department_id'      => 'required|exists:departments,id',
             'term_id'            => 'required|exists:terms,id',
-            'status'             => 'sometimes|in:active,inactive',
+            'status'             => SchedulingPolicy::allowedActiveStatusesRule('sometimes'),
         ]);
 
         $section = Sections::create($validated);
@@ -45,11 +46,11 @@ class SectionsController extends Controller
     {
         $validated = $request->validate([
             'section_name'       => 'sometimes|string|max:255',
-            'year_level'         => 'sometimes|in:1,2,3,4',
-            'semester'           => 'sometimes|in:1st,2nd,summer',
+            'year_level'         => SchedulingPolicy::allowedYearLevelsRule('sometimes'),
+            'semester'           => SchedulingPolicy::allowedSemestersRule('sometimes'),
             'department_id'      => 'sometimes|exists:departments,id',
             'term_id'            => 'sometimes|exists:terms,id',
-            'status'             => 'sometimes|in:active,inactive',
+            'status'             => SchedulingPolicy::allowedActiveStatusesRule('sometimes'),
         ]);
 
         $section->update($validated);

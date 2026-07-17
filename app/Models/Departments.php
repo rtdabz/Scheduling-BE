@@ -18,11 +18,21 @@ class Departments extends Model
 
     public function users()
     {
-        return $this->hasMany(User::class);
+        return $this->hasMany(User::class, 'department_id');
     }
 
     public function rooms()
     {
-        return $this->hasMany(Rooms::class);
+        return $this->hasMany(Rooms::class, 'department_id');
+    }
+
+    public function sections()
+    {
+        return $this->hasMany(Sections::class, 'department_id');
+    }
+
+    public function faculties()
+    {
+        return $this->hasMany(Faculty::class, 'department_id');
     }
 }

@@ -15,6 +15,7 @@ use App\Http\Controllers\SubjectsController;
 use App\Http\Controllers\SectionsController;
 
 use App\Http\Controllers\ScheduleController;
+use App\Http\Controllers\ScheduleRecommendationController;
 use App\Http\Controllers\TermsController;
 
 Route::post('/login', [AuthController::class, 'login']);
@@ -76,6 +77,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('sections/{section}', [SectionsController::class, 'show']);
 
         // Schedules Management
+        Route::post('schedules/batch', [ScheduleController::class, 'batch']);
         Route::apiResource('schedules', ScheduleController::class);
         Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
@@ -86,6 +88,17 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Subjects, Sections & Faculties — writable by VPAA, Secretary and Program Head.
+    // Recommendation workflow is limited to schedule-building roles.
+    Route::middleware('role:secretary,program_head')->group(function () {
+        Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
+        Route::get('schedule-recommendations', [ScheduleRecommendationController::class, 'index']);
+        Route::post('schedule-recommendations', [ScheduleRecommendationController::class, 'store']);
+        Route::get('schedule-recommendations/{scheduleRecommendation}', [ScheduleRecommendationController::class, 'show']);
+        Route::post('schedule-recommendations/{scheduleRecommendation}/review', [ScheduleRecommendationController::class, 'review']);
+        Route::post('schedule-recommendations/{scheduleRecommendation}/accept', [ScheduleRecommendationController::class, 'accept']);
+        Route::post('schedule-recommendations/{scheduleRecommendation}/reject', [ScheduleRecommendationController::class, 'reject']);
+    });
+
     Route::middleware('role:vpaa,secretary,program_head')->group(function () {
         Route::post('subjects', [SubjectsController::class, 'store']);
         Route::match(['put', 'patch'], 'subjects/{subject}', [SubjectsController::class, 'update']);

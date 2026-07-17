@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Subjects;
+use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 
@@ -38,12 +39,12 @@ class SubjectsController extends Controller
             'lecture_hours'      => 'nullable|integer|min:0',
             'lab_hours'          => 'nullable|integer|min:0',
             'units'              => 'required|integer|min:0',
-            'subject_category'   => 'required|in:major,gec,gee,pathfit,nstp',
-            'room_type_required' => 'nullable|in:lecture,laboratory,field,online',
-            'year_level'         => 'required|in:1,2,3,4',
-            'semester'           => 'required|in:1st,2nd,summer',
+            'subject_category'   => SchedulingPolicy::allowedSubjectCategoriesRule('required'),
+            'room_type_required' => SchedulingPolicy::allowedRoomTypesRule('nullable'),
+            'year_level'         => SchedulingPolicy::allowedYearLevelsRule('required'),
+            'semester'           => SchedulingPolicy::allowedSemestersRule('required'),
             'department_id'      => 'nullable|exists:departments,id',
-            'status'             => 'nullable|in:active,inactive',
+            'status'             => SchedulingPolicy::allowedActiveStatusesRule('nullable'),
         ]);
 
         if ($validator->fails()) {
@@ -74,12 +75,12 @@ class SubjectsController extends Controller
             'lecture_hours'      => 'nullable|integer|min:0',
             'lab_hours'          => 'nullable|integer|min:0',
             'units'              => 'sometimes|required|integer|min:0',
-            'subject_category'   => 'sometimes|required|in:major,gec,gee,pathfit,nstp',
-            'room_type_required' => 'nullable|in:lecture,laboratory,field,online',
-            'year_level'         => 'sometimes|required|in:1,2,3,4',
-            'semester'           => 'sometimes|required|in:1st,2nd,summer',
+            'subject_category'   => SchedulingPolicy::allowedSubjectCategoriesRule('sometimes|required'),
+            'room_type_required' => SchedulingPolicy::allowedRoomTypesRule('nullable'),
+            'year_level'         => SchedulingPolicy::allowedYearLevelsRule('sometimes|required'),
+            'semester'           => SchedulingPolicy::allowedSemestersRule('sometimes|required'),
             'department_id'      => 'nullable|exists:departments,id',
-            'status'             => 'nullable|in:active,inactive',
+            'status'             => SchedulingPolicy::allowedActiveStatusesRule('nullable'),
         ]);
 
         if ($validator->fails()) {

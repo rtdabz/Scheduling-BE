@@ -13,6 +13,8 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
 
+        $credentials['username'] = strtolower(trim($credentials['username']));
+
         if (!Auth::attempt($credentials)) {
             return response()->json(['message' => 'Invalid credentials'], 401);
         }

@@ -12,7 +12,15 @@ class DepartmentsController extends Controller
      */
     public function index()
     {
-        $departments = Departments::latest()->get();
+        $departments = Departments::query()
+            ->withCount(['rooms', 'sections', 'faculties'])
+            ->with(['users' => fn ($query) => $query
+                ->where('role', 'dean')
+                ->select('id', 'name', 'department_id')
+            ])
+            ->latest()
+            ->get();
+
         return response()->json($departments);
     }
 
@@ -28,7 +36,11 @@ class DepartmentsController extends Controller
 
         $department = Departments::create($validated);
 
-        return response()->json($department, 201);
+        return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
+            'users' => fn ($query) => $query
+                ->where('role', 'dean')
+                ->select('id', 'name', 'department_id'),
+        ]), 201);
     }
 
     /**
@@ -36,7 +48,11 @@ class DepartmentsController extends Controller
      */
     public function show(Departments $department)
     {
-        return response()->json($department);
+        return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
+            'users' => fn ($query) => $query
+                ->where('role', 'dean')
+                ->select('id', 'name', 'department_id'),
+        ]));
     }
 
     /**
@@ -51,7 +67,11 @@ class DepartmentsController extends Controller
 
         $department->update($validated);
 
-        return response()->json($department);
+        return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
+            'users' => fn ($query) => $query
+                ->where('role', 'dean')
+                ->select('id', 'name', 'department_id'),
+        ]));
     }
 
     /**

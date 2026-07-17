@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\Terms;
+use App\Services\Scheduling\SchedulingPolicy;
 
 class TermsController extends Controller
 {
@@ -24,7 +25,7 @@ class TermsController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'semester' => 'required|in:1st,2nd,summer',
+            'semester' => SchedulingPolicy::allowedSemestersRule('required'),
             'academic_year' => 'nullable|string|max:50',
         ]);
 

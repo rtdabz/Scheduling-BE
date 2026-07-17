@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Rooms;
+use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -25,8 +26,8 @@ class RoomsController extends Controller
         $validated = $request->validate([
             'room_code' => 'required|string|max:255|unique:rooms,room_code',
             'room_name' => 'nullable|string|max:255',
-            'room_type' => 'required|string|in:lecture,laboratory,online,field',
-            'status' => 'nullable|string|in:available,occupied,maintenance',
+            'room_type' => SchedulingPolicy::allowedRoomTypesRule('required|string'),
+            'status' => SchedulingPolicy::allowedRoomStatusesRule('nullable|string'),
             'department_id' => 'nullable|exists:departments,id',
         ]);
 
@@ -57,8 +58,8 @@ class RoomsController extends Controller
         $validated = $request->validate([
             'room_code' => ['sometimes', 'required', 'string', 'max:255', Rule::unique('rooms')->ignore($room->id)],
             'room_name' => 'nullable|string|max:255',
-            'room_type' => 'sometimes|required|string|in:lecture,laboratory,online,field',
-            'status' => 'sometimes|nullable|string|in:available,occupied,maintenance',
+            'room_type' => SchedulingPolicy::allowedRoomTypesRule('sometimes|required|string'),
+            'status' => SchedulingPolicy::allowedRoomStatusesRule('sometimes|nullable|string'),
             'department_id' => 'nullable|exists:departments,id',
         ]);
 
