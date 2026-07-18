@@ -117,6 +117,70 @@ class SubjectSeeder extends Seeder
 
             // ===================== FOURTH YEAR - SECOND SEMESTER =====================
             ['subject_code' => 'Prac 101', 'subject_name' => 'Practicum (486 hours)', 'lecture_hours' => 6, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'field', 'year_level' => '4', 'semester' => '2nd', 'department_id' => $cit],
+
+
+            // ===================== CAS ========================
+            ['subject_code' => 'GEC 1', 'subject_name' => 'Understanding the Self', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gec', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'GEE 1', 'subject_name' => 'Environmental Science', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gee', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'GEE 4', 'subject_name' => 'Living in the IT Era', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gee', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'SCC 1', 'subject_name' => 'General Sociology', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'SCC 2', 'subject_name' => 'Philippine Contemporary Social Issue', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'LE 1', 'subject_name' => 'Developmental Reading', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'PATH-FIT 1', 'subject_name' => 'Movement Competency Training', 'lecture_hours' => 2, 'lab_hours' => 0, 'subject_category' => 'pathfit', 'room_type_required' => 'field', 'year_level' => '1', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'NSTP 1', 'subject_name' => 'CWTS/ROTC 1', 'lecture_hours' => 2, 'lab_hours' => 0, 'subject_category' => 'nstp', 'room_type_required' => 'field', 'year_level' => '1', 'semester' => '1st', 'department_id' => $cas],
+            // FIRST YEAR — 2nd Semester
+            ['subject_code' => 'GEC 2', 'subject_name' => 'Readings in Philippine History with Indigenous People\'s Studies', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gec', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'GEE 8', 'subject_name' => 'The Entrepreneurial Mind', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gee', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCC 3', 'subject_name' => 'Sociological Theories I', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCC 7', 'subject_name' => 'Social Statistics', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCE 1', 'subject_name' => 'Deviance and Community Ethnicity', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'LE 2', 'subject_name' => 'Interactive English, Listening, Speaking & Writing', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'PATH-FIT 2', 'subject_name' => 'Fitness Training', 'lecture_hours' => 2, 'lab_hours' => 0, 'subject_category' => 'pathfit', 'room_type_required' => 'field', 'year_level' => '1', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'NSTP 2', 'subject_name' => 'CWTS/ROTC 2', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'nstp', 'room_type_required' => 'field', 'year_level' => '1', 'semester' => '2nd', 'department_id' => $cas],
+
+            // SECOND YEAR — 1st Semester
+            ['subject_code' => 'GEC 3', 'subject_name' => 'The Contemporary World', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gec', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'GEC 4', 'subject_name' => 'Mathematics in the Modern World', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gec', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'GEC 5', 'subject_name' => 'Purposive Communication', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gec', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'SCC 5', 'subject_name' => 'Social Research Methods I', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'SCE 2', 'subject_name' => 'Rural Sociology', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'SCC 4', 'subject_name' => 'Sociological Theories II', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'FE 1', 'subject_name' => 'General Anthropology', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'ENTREP 1', 'subject_name' => 'Entrepreneurial Management', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'PATH-FIT 3', 'subject_name' => 'Dance Sports & Individual/Group Exercise/Outdoor', 'lecture_hours' => 2, 'lab_hours' => 0, 'subject_category' => 'pathfit', 'room_type_required' => 'field', 'year_level' => '2', 'semester' => '1st', 'department_id' => $cas],
+
+            // SECOND YEAR — 2nd Semester
+            ['subject_code' => 'GEC 6', 'subject_name' => 'Art Appreciation', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gec', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'GEC 8', 'subject_name' => 'Ethics', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gec', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCC 6', 'subject_name' => 'Social Research Methods II', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCE 3', 'subject_name' => 'Urban Sociology', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCE 4', 'subject_name' => 'Political Sociology', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCE 5', 'subject_name' => 'Industrial Sociology', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCE 6', 'subject_name' => 'Sociology of Religion', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '2', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'PATH-FIT 4', 'subject_name' => 'Team Sports', 'lecture_hours' => 2, 'lab_hours' => 0, 'subject_category' => 'pathfit', 'room_type_required' => 'field', 'year_level' => '2', 'semester' => '2nd', 'department_id' => $cas],
+
+            // THIRD YEAR — 1st Semester
+            ['subject_code' => 'GEC 7', 'subject_name' => 'Science, Technology & Society', 'lecture_hours' => 0, 'lab_hours' => 3, 'subject_category' => 'gec', 'room_type_required' => 'laboratory', 'year_level' => '3', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'GEC 9', 'subject_name' => 'Life and Works of Rizal', 'lecture_hours' => 0, 'lab_hours' => 3, 'subject_category' => 'gec', 'room_type_required' => 'laboratory', 'year_level' => '3', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'SCE 7', 'subject_name' => 'Sociology of Mass Communication', 'lecture_hours' => 0, 'lab_hours' => 3, 'subject_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '3', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'SCE 8', 'subject_name' => 'Race and Ethnic Relations', 'lecture_hours' => 0, 'lab_hours' => 3, 'subject_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '3', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'SCE 9', 'subject_name' => 'Medical Sociology', 'lecture_hours' => 0, 'lab_hours' => 3, 'subject_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '3', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'SOC 1', 'subject_name' => 'Directed Research I (Proposal Stage)', 'lecture_hours' => 0, 'lab_hours' => 3, 'subject_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '3', 'semester' => '1st', 'department_id' => $cas],
+
+            // THIRD YEAR — 2nd Semester
+            ['subject_code' => 'GEE 7', 'subject_name' => 'Gender & Society with Peace Studies', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'gee', 'room_type_required' => 'lecture', 'year_level' => '3', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCE 10', 'subject_name' => 'Sociology of Education', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '3', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SCE 11', 'subject_name' => 'Sociology of Development', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '3', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'FE 2', 'subject_name' => 'Personality Psychology', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '3', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'FE 3', 'subject_name' => 'Aesthetics', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '3', 'semester' => '2nd', 'department_id' => $cas],
+            ['subject_code' => 'SOC 2', 'subject_name' => 'Directed Research II (Data Gathering Stage)', 'lecture_hours' => 3, 'lab_hours' => 0, 'subject_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '3', 'semester' => '2nd', 'department_id' => $cas],
+
+            // FOURTH YEAR — 1st Semester
+            ['subject_code' => 'SOC 3', 'subject_name' => 'Directed Research III (Presentation of Results)', 'lecture_hours' => 0, 'lab_hours' => 3, 'subject_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '4', 'semester' => '1st', 'department_id' => $cas],
+            ['subject_code' => 'EC 1', 'subject_name' => 'Enhancement Class', 'lecture_hours' => 0, 'lab_hours' => 3, 'subject_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '4', 'semester' => '1st', 'department_id' => $cas],
+
+            // FOURTH YEAR — 2nd Semester
+            ['subject_code' => 'SOC 4', 'subject_name' => 'Practicum in Sociology (360 HRS)', 'lecture_hours' => 0, 'lab_hours' => 6, 'subject_category' => 'major', 'room_type_required' => 'field', 'year_level' => '4', 'semester' => '2nd', 'department_id' => $cas],
         ];
 
         foreach ($subjects as $subject) {

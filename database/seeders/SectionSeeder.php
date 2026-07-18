@@ -25,10 +25,11 @@ class SectionSeeder extends Seeder
             ->keyBy('department_code');
 
         $cit = $departments->get('CIT');
+        $cas = $departments->get('CAS');
 
-        if (!$cit) {
+        if (!$cit || !$cas) {
             throw new \RuntimeException(
-                'SectionSeeder requires the CIT department to exist. Run DepartmentSeeder first.'
+                'SectionSeeder requires the CIT and CAS departments to exist. Run DepartmentSeeder first.'
             );
         }
 
@@ -39,10 +40,14 @@ class SectionSeeder extends Seeder
             ['section_name' => 'BSIT 2-B', 'year_level' => '2', 'department_id' => $cit->id],
             ['section_name' => 'BSIT 3-A', 'year_level' => '3', 'department_id' => $cit->id],
             ['section_name' => 'BSIT 4-A', 'year_level' => '4', 'department_id' => $cit->id],
+
+            ['section_name' => 'CAS 1-A', 'year_level' => '1', 'department_id' => $cas->id],
+            ['section_name' => 'CAS 2-A', 'year_level' => '2', 'department_id' => $cas->id],
+            ['section_name' => 'CAS 3-A', 'year_level' => '3', 'department_id' => $cas->id],
+            ['section_name' => 'CAS 4-A', 'year_level' => '4', 'department_id' => $cas->id],
         ];
 
         $starterSections = [
-            'CAS' => 'CAS',
             'CBA' => 'CBA',
             'CCJPS' => 'CCJPS',
             'CED' => 'CED',
