@@ -153,7 +153,7 @@ class RuleEngine
         return null;
     }
 
-    public function checkRoomTypeMatch(int $subjectId, int $roomId): ?array
+    public function checkRoomTypeMatch(int $subjectId, int $roomId, string $deliveryMode = 'on-site'): ?array
     {
         $subject = Subjects::find($subjectId);
         $room = Rooms::find($roomId);
@@ -163,6 +163,15 @@ class RuleEngine
                 'rule' => 'room_type_match',
                 'message' => 'Subject or room not found for room-type validation.',
             ];
+        }
+
+        if ($deliveryMode === 'online') {
+            return $room->room_type === 'online'
+                ? null
+                : [
+                    'rule' => 'room_type_match',
+                    'message' => 'Online schedules must use an online room assignment.',
+                ];
         }
 
         if ($subject->room_type_required !== $room->room_type) {
@@ -457,7 +466,8 @@ class RuleEngine
 
         $roomTypeMatch = $this->checkRoomTypeMatch(
             $attempt['subject_id'],
-            $attempt['room_id']
+            $attempt['room_id'],
+            (string) ($attempt['mode'] ?? 'on-site')
         );
         if ($roomTypeMatch) {
             $violations[] = $roomTypeMatch;

@@ -2,8 +2,10 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Seeder;
+use App\Models\Departments;
 use App\Models\User;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
 
 class UserSeeder extends Seeder
 {
@@ -12,120 +14,134 @@ class UserSeeder extends Seeder
      */
     public function run(): void
     {
-        // Seed VPAA
-        if (!\App\Models\User::where('username', 'vpaa')->exists()) {
-            \App\Models\User::create([
-                'name' => 'VPAA User',
-                'username' => 'vpaa',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
-                'role' => 'vpaa',
-            ]);
+        $departments = Departments::query()
+            ->get(['id', 'department_code'])
+            ->keyBy('department_code');
+
+        $requiredDepartments = ['CAS', 'CBA', 'CCJPS', 'CED', 'CHM', 'CIT', 'CLIS', 'CM'];
+
+        foreach ($requiredDepartments as $departmentCode) {
+            if (!$departments->has($departmentCode)) {
+                throw new \RuntimeException(
+                    "UserSeeder requires the {$departmentCode} department to exist. Run DepartmentSeeder first."
+                );
+            }
         }
+
+        // Seed VPAA
+        User::updateOrCreate(
+            ['username' => 'vpaa'],
+            [
+                'name' => 'VPAA User',
+                'password' => Hash::make('password'),
+                'role' => 'vpaa',
+            ]
+        );
 
         // Seed Secretary
-        if (!\App\Models\User::where('username', 'arts_sec')->exists()) {
-            \App\Models\User::create([
-                'name' => 'Secretary User',
-                'username' => 'arts_sec',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+        User::updateOrCreate(
+            ['username' => 'arts_sec'],
+            [
+                'name' => 'Dessa Mae Krism Cardinez',
+                'password' => Hash::make('password'),
                 'role' => 'secretary',
-                'department_id' => 1, // College of Arts and Sciences
-            ]);
-        }
-        if (!\App\Models\User::where('username', 'ba_sec')->exists()) {
-            \App\Models\User::create([
-                'name' => 'Secretary User',
-                'username' => 'ba_sec',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'department_id' => $departments->get('CAS')->id,
+            ]
+        );
+        User::updateOrCreate(
+            ['username' => 'ba_sec'],
+            [
+                'name' => 'Rexyl Ann Bacarro',
+                'password' => Hash::make('password'),
                 'role' => 'secretary',
-                'department_id' => 2, // College of Business Administration
-            ]);
-        }
-        if (!\App\Models\User::where('username', 'crim_sec')->exists()) {
-            \App\Models\User::create([
-                'name' => 'Secretary User',
-                'username' => 'crim_sec',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'department_id' => $departments->get('CBA')->id,
+            ]
+        );
+        User::updateOrCreate(
+            ['username' => 'crim_sec'],
+            [
+                'name' => 'Lochinvar Kyle Vestal',
+                'password' => Hash::make('password'),
                 'role' => 'secretary',
-                'department_id' => 3, // College of Criminal Justice and Public Safety
-            ]);
-        }
-        if (!\App\Models\User::where('username', 'educ_sec')->exists()) {
-            \App\Models\User::create([
-                'name' => 'Secretary User',
-                'username' => 'educ_sec',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'department_id' => $departments->get('CCJPS')->id,
+            ]
+        );
+        User::updateOrCreate(
+            ['username' => 'educ_sec'],
+            [
+                'name' => 'John Carlo Villarosa',
+                'password' => Hash::make('password'),
                 'role' => 'secretary',
-                'department_id' => 4, // College of Education
-            ]);
-        }
-        if (!\App\Models\User::where('username', 'hm_sec')->exists()) {
-            \App\Models\User::create([
-                'name' => 'Secretary User',
-                'username' => 'hm_sec',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'department_id' => $departments->get('CED')->id,
+            ]
+        );
+        User::updateOrCreate(
+            ['username' => 'hm_sec'],
+            [
+                'name' => 'Carrex Salcedo',
+                'password' => Hash::make('password'),
                 'role' => 'secretary',
-                'department_id' => 5, // College of Hospitality Management
-            ]);
-        }
-        if (!\App\Models\User::where('username', 'it_sec')->exists()) {
-            \App\Models\User::create([
-                'name' => 'Secretary User',
-                'username' => 'it_sec',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'department_id' => $departments->get('CHM')->id,
+            ]
+        );
+        User::updateOrCreate(
+            ['username' => 'it_sec'],
+            [
+                'name' => 'Richie Dadubo',
+                'password' => Hash::make('password'),
                 'role' => 'secretary',
-                'department_id' => 6, // College of Information Technology
-            ]);
-        }
-        if (!\App\Models\User::where('username', 'lib_sec')->exists()) {
-            \App\Models\User::create([
+                'department_id' => $departments->get('CIT')->id,
+            ]
+        );
+        User::updateOrCreate(
+            ['username' => 'lib_sec'],
+            [
                 'name' => 'Secretary User',
-                'username' => 'lib_sec',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'password' => Hash::make('password'),
                 'role' => 'secretary',
-                'department_id' => 7, // College of Library and Information Science
-            ]);
-        }
-        if (!\App\Models\User::where('username', 'mid_sec')->exists()) {
-            \App\Models\User::create([
+                'department_id' => $departments->get('CLIS')->id,
+            ]
+        );
+        User::updateOrCreate(
+            ['username' => 'mid_sec'],
+            [
                 'name' => 'Secretary User',
-                'username' => 'mid_sec',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'password' => Hash::make('password'),
                 'role' => 'secretary',
-                'department_id' => 8, // College of Midwifery
-            ]);
-        }
+                'department_id' => $departments->get('CM')->id,
+            ]
+        );
 
         // Seed Dean
-        if (!\App\Models\User::where('username', 'dean')->exists()) {
-            \App\Models\User::create([
+        User::updateOrCreate(
+            ['username' => 'dean'],
+            [
                 'name' => 'Dean User',
-                'username' => 'dean',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'password' => Hash::make('password'),
                 'role' => 'dean',
-                'department_id' => 1, // College of Arts and Sciences
-            ]);
-        }
+                'department_id' => $departments->get('CAS')->id,
+            ]
+        );
 
-        if (!\App\Models\User::where('username', 'it_dean')->exists()) {
-            \App\Models\User::create([
+        User::updateOrCreate(
+            ['username' => 'it_dean'],
+            [
                 'name' => 'IT Dean',
-                'username' => 'it_dean',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'password' => Hash::make('password'),
                 'role' => 'dean',
-                'department_id' => 6, // College of Information Technology
-            ]);
-        }
+                'department_id' => $departments->get('CIT')->id,
+            ]
+        );
 
         // Seed Program Head
-        if (!\App\Models\User::where('username', 'program_head')->exists()) {
-            \App\Models\User::create([
+        User::updateOrCreate(
+            ['username' => 'program_head'],
+            [
                 'name' => 'Program Head User',
-                'username' => 'program_head',
-                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'password' => Hash::make('password'),
                 'role' => 'program_head',
-                'department_id' => 6, // College of Information Technology
-            ]);
-        }
+                'department_id' => $departments->get('CIT')->id,
+            ]
+        );
     }
 }

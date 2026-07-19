@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Terms;
 use App\Services\Scheduling\SchedulingPolicy;
+use App\Support\ApiCache;
+use Illuminate\Support\Facades\Cache;
 
 class TermsController extends Controller
 {
@@ -13,9 +15,9 @@ class TermsController extends Controller
      */
     public function index()
     {
-        $terms = Terms::orderBy('academic_year', 'desc')
+        $terms = Cache::remember(ApiCache::key('terms.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Terms::orderBy('academic_year', 'desc')
                       ->orderBy('semester', 'desc')
-                      ->get();
+                      ->get());
         return response()->json($terms);
     }
 
@@ -52,6 +54,12 @@ class TermsController extends Controller
             'semester'      => $request->semester,
             'is_active'     => false,
         ]);
+        ApiCache::forgetGroups([
+            'terms.index',
+            'terms.active',
+            'sections.index',
+            'sections.by_term',
+        ]);
 
         return response()->json([
             'message' => 'Term created successfully.',
@@ -82,6 +90,12 @@ class TermsController extends Controller
         }
 
         $term->delete();
+        ApiCache::forgetGroups([
+            'terms.index',
+            'terms.active',
+            'sections.index',
+            'sections.by_term',
+        ]);
 
         return response()->json([
             'message' => 'Term deleted successfully.'
@@ -96,6 +110,12 @@ class TermsController extends Controller
         $term = Terms::findOrFail($id);
         $term->is_active = true;
         $term->save();
+        ApiCache::forgetGroups([
+            'terms.index',
+            'terms.active',
+            'sections.index',
+            'sections.by_term',
+        ]);
 
         return response()->json([
             'message' => 'Term activated successfully.',
@@ -108,7 +128,7 @@ class TermsController extends Controller
      */
     public function active()
     {
-        $term = Terms::where('is_active', true)->first();
+        $term = Cache::remember(ApiCache::key('terms.active'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Terms::where('is_active', true)->first());
 
         if (!$term) {
             return response()->json(['message' => 'No active academic term found.'], 404);

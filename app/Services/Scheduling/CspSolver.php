@@ -186,12 +186,10 @@ class CSPSolver
             validSubjectIds: $subjectIds,
         );
 
-        $requiredRoomTypes = $subjects
-            ->pluck('room_type_required')
-            ->filter()
-            ->unique()
-            ->values()
-            ->all();
+        $requiredRoomTypes = $this->requiredRoomTypesForDeliveryMode(
+            subjects: $subjects,
+            deliveryMode: $deliveryMode,
+        );
 
         $this->validateRoomTypes($requiredRoomTypes);
 
@@ -209,6 +207,7 @@ class CSPSolver
         $this->ensureRoomDomainsExist(
             subjects: $subjects,
             rooms: $rooms,
+            deliveryMode: $deliveryMode,
         );
 
         $variables = $this->buildVariables(
@@ -392,9 +391,13 @@ class CSPSolver
                 $preferredPatternsBySubjectId[(int) $subject->id] ?? null,
             );
 
+            $targetRoomType = $this->targetRoomTypeForSubject(
+                subject: $subject,
+                deliveryMode: $deliveryMode,
+            );
             $matchingRooms = $rooms->filter(
                 static fn (Rooms $room): bool =>
-                    $room->room_type === $subject->room_type_required,
+                    $room->room_type === $targetRoomType,
             );
 
             $domain = $preferredPattern === null
@@ -1129,21 +1132,61 @@ class CSPSolver
     private function ensureRoomDomainsExist(
         Collection $subjects,
         Collection $rooms,
+        string $deliveryMode = 'on-site',
     ): void {
         foreach ($subjects as $subject) {
+            $targetRoomType = $this->targetRoomTypeForSubject(
+                subject: $subject,
+                deliveryMode: $deliveryMode,
+            );
             $hasMatchingRoom = $rooms->contains(
                 static fn (Rooms $room): bool =>
-                    $room->room_type === $subject->room_type_required,
+                    $room->room_type === $targetRoomType,
             );
 
             if (!$hasMatchingRoom) {
                 throw new RuntimeException(sprintf(
                     'No available %s room exists for subject %d.',
-                    $subject->room_type_required,
+                    $targetRoomType,
                     $subject->id,
                 ));
             }
         }
+    }
+
+    private function requiredRoomTypesForDeliveryMode(
+        Collection $subjects,
+        string $deliveryMode,
+    ): array {
+        if ($deliveryMode === 'online') {
+            return ['online'];
+        }
+
+        if ($deliveryMode === 'field') {
+            return ['field'];
+        }
+
+        return $subjects
+            ->pluck('room_type_required')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    private function targetRoomTypeForSubject(
+        Subjects $subject,
+        string $deliveryMode,
+    ): string {
+        if ($deliveryMode === 'online') {
+            return 'online';
+        }
+
+        if ($deliveryMode === 'field') {
+            return 'field';
+        }
+
+        return (string) $subject->room_type_required;
     }
 
     private function normalizePreferredPatternsBySubjectId(

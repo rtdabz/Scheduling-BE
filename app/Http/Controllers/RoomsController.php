@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Models\Rooms;
 use App\Services\Scheduling\SchedulingPolicy;
+use App\Support\ApiCache;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\Rule;
 
 class RoomsController extends Controller
@@ -14,7 +16,7 @@ class RoomsController extends Controller
      */
     public function index()
     {
-        $rooms = Rooms::with('department')->get();
+        $rooms = Cache::remember(ApiCache::key('rooms.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Rooms::with('department')->get());
         return response()->json($rooms);
     }
 
@@ -32,6 +34,10 @@ class RoomsController extends Controller
         ]);
 
         $room = Rooms::create($validated);
+        ApiCache::forgetGroups([
+            'rooms.index',
+            'departments.index',
+        ]);
 
         return response()->json([
             'message' => 'Room created successfully.',
@@ -64,6 +70,10 @@ class RoomsController extends Controller
         ]);
 
         $room->update($validated);
+        ApiCache::forgetGroups([
+            'rooms.index',
+            'departments.index',
+        ]);
 
         return response()->json([
             'message' => 'Room updated successfully.',
@@ -78,6 +88,10 @@ class RoomsController extends Controller
     {
         $room = Rooms::findOrFail($id);
         $room->delete();
+        ApiCache::forgetGroups([
+            'rooms.index',
+            'departments.index',
+        ]);
 
         return response()->json([
             'message' => 'Room deleted successfully.'
@@ -97,6 +111,10 @@ class RoomsController extends Controller
 
         $room->update([
             'department_id' => $validated['department_id']
+        ]);
+        ApiCache::forgetGroups([
+            'rooms.index',
+            'departments.index',
         ]);
 
         return response()->json([

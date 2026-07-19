@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\Departments;
+use App\Support\ApiCache;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class DepartmentsController extends Controller
 {
@@ -12,14 +14,14 @@ class DepartmentsController extends Controller
      */
     public function index()
     {
-        $departments = Departments::query()
+        $departments = Cache::remember(ApiCache::key('departments.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Departments::query()
             ->withCount(['rooms', 'sections', 'faculties'])
             ->with(['users' => fn ($query) => $query
                 ->where('role', 'dean')
                 ->select('id', 'name', 'department_id')
             ])
             ->latest()
-            ->get();
+            ->get());
 
         return response()->json($departments);
     }
@@ -35,6 +37,7 @@ class DepartmentsController extends Controller
         ]);
 
         $department = Departments::create($validated);
+        ApiCache::forgetGroup('departments.index');
 
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'users' => fn ($query) => $query
@@ -66,6 +69,7 @@ class DepartmentsController extends Controller
         ]);
 
         $department->update($validated);
+        ApiCache::forgetGroup('departments.index');
 
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'users' => fn ($query) => $query
@@ -80,6 +84,7 @@ class DepartmentsController extends Controller
     public function destroy(Departments $department)
     {
         $department->delete();
+        ApiCache::forgetGroup('departments.index');
         return response()->json(['message' => 'Department deleted successfully']);
     }
 

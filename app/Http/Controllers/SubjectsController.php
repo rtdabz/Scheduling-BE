@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Models\Subjects;
 use App\Services\Scheduling\SchedulingPolicy;
+use App\Support\ApiCache;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Validator;
 
 class SubjectsController extends Controller
@@ -14,18 +16,26 @@ class SubjectsController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Subjects::with('department')->where('status', 'active');
+        $cacheKey = ApiCache::key('subjects.index', [
+            'department_id' => $request->query('department_id'),
+        ]);
 
-        if ($request->has('department_id')) {
-            $deptId = $request->department_id;
-            $query->where(function ($q) use ($deptId) {
-                $q->where('department_id', $deptId)
-                ->orWhere('subject_category', 'gee')
-                ->orWhere('subject_category', 'gec');
-            });
-        }
+        $subjects = Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($request) {
+            $query = Subjects::with('department')->where('status', 'active');
 
-        return response()->json($query->get());
+            if ($request->has('department_id')) {
+                $deptId = $request->department_id;
+                $query->where(function ($q) use ($deptId) {
+                    $q->where('department_id', $deptId)
+                    ->orWhere('subject_category', 'gee')
+                    ->orWhere('subject_category', 'gec');
+                });
+            }
+
+            return $query->get();
+        });
+
+        return response()->json($subjects);
     }
 
     /**
@@ -52,6 +62,7 @@ class SubjectsController extends Controller
         }
 
         $subject = Subjects::create($request->all());
+        ApiCache::forgetGroup('subjects.index');
 
         return response()->json($subject->load('department'), 201);
     }
@@ -88,6 +99,7 @@ class SubjectsController extends Controller
         }
 
         $subject->update($request->all());
+        ApiCache::forgetGroup('subjects.index');
 
         return response()->json($subject->load('department'));
     }
@@ -98,6 +110,7 @@ class SubjectsController extends Controller
     public function destroy(Subjects $subject)
     {
         $subject->delete();
+        ApiCache::forgetGroup('subjects.index');
         return response()->json(['message' => 'Subject deleted successfully']);
     }
 }
