@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Schedule;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\SystemNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -13,7 +14,10 @@ class ScheduleController extends Controller
 {
     protected RuleEngine $ruleEngine;
 
-    public function __construct(RuleEngine $ruleEngine)
+    public function __construct(
+        RuleEngine $ruleEngine,
+        private readonly SystemNotificationService $notifications,
+    )
     {
         $this->ruleEngine = $ruleEngine;
     }
@@ -58,10 +62,10 @@ class ScheduleController extends Controller
         }
 
         $schedule = Schedule::create($validated);
+        $schedule->load(['term', 'section', 'subject', 'faculty', 'room', 'department']);
+        $this->notifyScheduleSaved($request, $schedule, 'created');
 
-        return response()->json($schedule->load([
-            'term', 'section', 'subject', 'faculty', 'room', 'department'
-        ]), 201);
+        return response()->json($schedule, 201);
     }
 
     public function batch(Request $request): JsonResponse
@@ -184,6 +188,8 @@ class ScheduleController extends Controller
             ], 422);
         }
 
+        $this->notifyBatchSaved($request, $result['schedules']);
+
         return response()->json([
             'message' => 'Schedule blocks saved successfully.',
             'schedules' => $result['schedules'],
@@ -238,11 +244,17 @@ class ScheduleController extends Controller
             ], 422);
         }
 
+        $previousStatus = $schedule->status;
         $schedule->update($validated);
+        $schedule->load(['term', 'section', 'subject', 'faculty', 'room', 'department']);
 
-        return response()->json($schedule->load([
-            'term', 'section', 'subject', 'faculty', 'room', 'department'
-        ]));
+        $action = isset($validated['status']) && $validated['status'] !== $previousStatus
+            ? "updated status to {$validated['status']}"
+            : 'updated';
+
+        $this->notifyScheduleSaved($request, $schedule, $action);
+
+        return response()->json($schedule);
     }
 
     // Delete schedule
@@ -324,6 +336,86 @@ class ScheduleController extends Controller
             'message' => "Schedule blocks {$leftIndex} and {$rightIndex} overlap in the same atomic operation.",
             'operation_rows' => [$leftIndex, $rightIndex],
         ];
+    }
+
+    /**
+     * @param array<int, Schedule> $schedules
+     */
+    private function notifyBatchSaved(Request $request, array $schedules): void
+    {
+        $user = $request->user();
+        if (!$user || $schedules === []) {
+            return;
+        }
+
+        collect($schedules)
+            ->groupBy(fn (Schedule $schedule): string => "{$schedule->department_id}:{$schedule->term_id}")
+            ->each(function ($group) use ($user): void {
+                /** @var Schedule $schedule */
+                $schedule = $group->first();
+                $schedule->loadMissing(['department', 'term']);
+
+                if (!$schedule->department) {
+                    return;
+                }
+
+                $this->notifications->notifyRoles(
+                    ['secretary', 'program_head', 'dean'],
+                    'schedule_updated',
+                    'Department schedule updated',
+                    $this->notifications->departmentWorkflowMessage(
+                        'updated',
+                        $schedule->department,
+                        $schedule->term,
+                        $user,
+                        $group->count(),
+                    ),
+                    $user,
+                    $schedule->department_id,
+                    $schedule->term_id,
+                    null,
+                    [
+                        'schedules_updated' => $group->count(),
+                        'source' => 'batch',
+                    ],
+                );
+            });
+    }
+
+    private function notifyScheduleSaved(Request $request, Schedule $schedule, string $action): void
+    {
+        $user = $request->user();
+        if (!$user) {
+            return;
+        }
+
+        $schedule->loadMissing(['department', 'term']);
+        if (!$schedule->department) {
+            return;
+        }
+
+        $this->notifications->notifyRoles(
+            ['secretary', 'program_head', 'dean'],
+            'schedule_updated',
+            'Schedule updated',
+            $this->notifications->departmentWorkflowMessage(
+                $action,
+                $schedule->department,
+                $schedule->term,
+                $user,
+                1,
+            ),
+            $user,
+            $schedule->department_id,
+            $schedule->term_id,
+            null,
+            [
+                'schedule_id' => $schedule->id,
+                'section_id' => $schedule->section_id,
+                'subject_id' => $schedule->subject_id,
+                'status' => $schedule->status,
+            ],
+        );
     }
 }
 

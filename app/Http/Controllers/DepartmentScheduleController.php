@@ -6,12 +6,17 @@ use App\Models\Departments;
 use App\Models\Sections;
 use App\Models\Schedule;
 use App\Models\Terms;
+use App\Services\SystemNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class DepartmentScheduleController extends Controller
 {
+    public function __construct(private readonly SystemNotificationService $notifications)
+    {
+    }
+
     private function activeTermId(): ?int
     {
         return Terms::where('is_active', true)->value('id');
@@ -160,7 +165,7 @@ class DepartmentScheduleController extends Controller
         // dean/secretary can only submit their own department.
         $allowed =
             $user->role === 'vpaa' ||
-            (in_array($user->role, ['dean', 'secretary']) &&
+            (in_array($user->role, ['dean', 'secretary', 'program_head']) &&
              (int) $user->department_id === $id);
 
         if (! $allowed) {
@@ -212,6 +217,27 @@ class DepartmentScheduleController extends Controller
                 'updated_at' => now(),
             ]);
 
+        if ($updated > 0) {
+            $term = Terms::query()->find($this->activeTermId());
+            $this->notifications->notifyRoles(
+                ['dean', 'secretary', 'program_head'],
+                'schedule_submitted',
+                'Schedule submitted for Dean review',
+                $this->notifications->departmentWorkflowMessage(
+                    'submitted',
+                    $department,
+                    $term,
+                    $user,
+                    $updated,
+                ),
+                $user,
+                $department->id,
+                $term?->id,
+                null,
+                ['schedules_updated' => $updated],
+            );
+        }
+
         return response()->json([
             'message'          => 'Department schedules submitted for dean approval.',
             'department_name'  => $department->department_name,
@@ -240,6 +266,27 @@ class DepartmentScheduleController extends Controller
                     'updated_at' => $now,
                 ]);
         });
+
+        if ($updated > 0) {
+            $term = Terms::query()->find($this->activeTermId());
+            $this->notifications->notifyRoles(
+                ['vpaa', 'dean', 'secretary', 'program_head'],
+                'schedule_approved_by_dean',
+                'Dean approved department schedule',
+                $this->notifications->departmentWorkflowMessage(
+                    'approved and forwarded',
+                    $department,
+                    $term,
+                    $user,
+                    $updated,
+                ),
+                $user,
+                $department->id,
+                $term?->id,
+                null,
+                ['schedules_updated' => $updated],
+            );
+        }
 
         return response()->json([
             'message' => 'Department schedule approved by Dean and forwarded to VPAA.',
@@ -274,6 +321,28 @@ class DepartmentScheduleController extends Controller
                 ]);
         });
 
+        if ($updated > 0) {
+            $term = Terms::query()->find($this->activeTermId());
+            $this->notifications->notifyRoles(
+                ['dean', 'secretary', 'program_head'],
+                'schedule_returned_by_dean',
+                'Dean returned department schedule',
+                $this->notifications->departmentWorkflowMessage(
+                    'returned',
+                    $department,
+                    $term,
+                    $user,
+                    $updated,
+                    $validated['rejection_reason'],
+                ),
+                $user,
+                $department->id,
+                $term?->id,
+                $validated['rejection_reason'],
+                ['schedules_updated' => $updated],
+            );
+        }
+
         return response()->json([
             'message' => 'Department schedule returned by Dean for revision.',
             'department_name' => $department->department_name,
@@ -302,6 +371,27 @@ class DepartmentScheduleController extends Controller
                     'updated_at' => $now,
                 ]);
         });
+
+        if ($updated > 0) {
+            $term = Terms::query()->find($this->activeTermId());
+            $this->notifications->notifyRoles(
+                ['vpaa', 'dean', 'secretary', 'program_head'],
+                'schedule_approved_by_vpaa',
+                'VPAA approved department schedule',
+                $this->notifications->departmentWorkflowMessage(
+                    'approved',
+                    $department,
+                    $term,
+                    $user,
+                    $updated,
+                ),
+                $user,
+                $department->id,
+                $term?->id,
+                null,
+                ['schedules_updated' => $updated],
+            );
+        }
 
         return response()->json([
             'message' => 'Department schedule approved by VPAA.',
@@ -335,6 +425,28 @@ class DepartmentScheduleController extends Controller
                     'updated_at' => $now,
                 ]);
         });
+
+        if ($updated > 0) {
+            $term = Terms::query()->find($this->activeTermId());
+            $this->notifications->notifyRoles(
+                ['vpaa', 'dean', 'secretary', 'program_head'],
+                'schedule_returned_by_vpaa',
+                'VPAA returned department schedule',
+                $this->notifications->departmentWorkflowMessage(
+                    'returned',
+                    $department,
+                    $term,
+                    $user,
+                    $updated,
+                    $validated['rejection_reason'],
+                ),
+                $user,
+                $department->id,
+                $term?->id,
+                $validated['rejection_reason'],
+                ['schedules_updated' => $updated],
+            );
+        }
 
         return response()->json([
             'message' => 'Department schedule returned by VPAA for revision.',

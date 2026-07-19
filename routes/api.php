@@ -17,6 +17,7 @@ use App\Http\Controllers\SectionsController;
 use App\Http\Controllers\ScheduleController;
 use App\Http\Controllers\ScheduleRecommendationController;
 use App\Http\Controllers\InstructorAssignmentController;
+use App\Http\Controllers\SystemNotificationController;
 use App\Http\Controllers\TermsController;
 
 Route::post('/login', [AuthController::class, 'login']);
@@ -26,6 +27,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // Logout and user info routes
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
+    Route::get('/notifications', [SystemNotificationController::class, 'index']);
+    Route::patch('/notifications/read-all', [SystemNotificationController::class, 'markAllAsRead']);
+    Route::patch('/notifications/{notification}/read', [SystemNotificationController::class, 'markAsRead']);
     Route::get('/user', [UserController::class, 'index']);
     Route::post('/user', [UserController::class, 'store']);
     Route::put('/user/{user}', [UserController::class, 'update']);

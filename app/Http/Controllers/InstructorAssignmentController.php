@@ -7,6 +7,7 @@ use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
 use App\Models\Terms;
 use App\Services\Scheduling\RuleEngine;
+use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,8 +20,10 @@ class InstructorAssignmentController extends Controller
 
     private const VISIBLE_STATUSES = ['approved', 'faculty_assignment', 'finalized'];
 
-    public function __construct(private readonly RuleEngine $ruleEngine)
-    {
+    public function __construct(
+        private readonly RuleEngine $ruleEngine,
+        private readonly SystemNotificationService $notifications,
+    ) {
     }
 
     public function index(Request $request): JsonResponse
@@ -162,6 +165,10 @@ class InstructorAssignmentController extends Controller
         });
 
         ApiCache::forgetGroup('instructor_assignments.index');
+
+        if ($request->user()) {
+            $this->notifications->notifyInstructorAssignmentProgress($updatedSchedule, $request->user());
+        }
 
         return response()->json($updatedSchedule);
     }

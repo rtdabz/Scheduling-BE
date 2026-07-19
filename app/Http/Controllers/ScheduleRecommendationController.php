@@ -9,6 +9,7 @@ use App\Models\Sections;
 use App\Services\Scheduling\CSPSolver;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\SystemNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -20,6 +21,7 @@ class ScheduleRecommendationController extends Controller
     public function __construct(
         private readonly CSPSolver $cspSolver,
         private readonly RuleEngine $ruleEngine,
+        private readonly SystemNotificationService $notifications,
     ) {
     }
 
@@ -98,6 +100,32 @@ class ScheduleRecommendationController extends Controller
 
             return $created;
         });
+
+        if ($recommendations !== []) {
+            $section->loadMissing(['department', 'term']);
+            $this->notifications->notifyRoles(
+                ['secretary', 'program_head', 'dean'],
+                'schedule_generation_completed',
+                'Schedule generation completed',
+                $this->notifications->departmentWorkflowMessage(
+                    'generated schedule recommendations for',
+                    $section->department,
+                    $section->term,
+                    $user,
+                    count($recommendations),
+                ),
+                $user,
+                (int) $section->department_id,
+                (int) $section->term_id,
+                null,
+                [
+                    'section_id' => $section->id,
+                    'recommendations_generated' => count($recommendations),
+                    'search_limit_reached' => $this->cspSolver->searchLimitReached(),
+                    'iterations_used' => $this->cspSolver->iterationsUsed(),
+                ],
+            );
+        }
 
         return response()->json([
             'message' => $recommendations === []
