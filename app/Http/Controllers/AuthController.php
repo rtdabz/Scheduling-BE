@@ -1,8 +1,9 @@
 <?php
 namespace App\Http\Controllers;
 
+use App\Models\User;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
@@ -13,13 +14,13 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
 
-        $credentials['username'] = strtolower(trim($credentials['username']));
+        $username = strtolower(trim($credentials['username']));
+        $user = User::query()->where('username', $username)->first();
 
-        if (!Auth::attempt($credentials)) {
+        if (!$user || !Hash::check($credentials['password'], $user->password)) {
             return response()->json(['message' => 'Invalid credentials'], 401);
         }
 
-        $user  = Auth::user();
         $token = $user->createToken('wicars-token')->plainTextToken;
 
         return response()->json([

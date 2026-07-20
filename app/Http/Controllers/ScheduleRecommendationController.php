@@ -170,6 +170,79 @@ class ScheduleRecommendationController extends Controller
         ]);
     }
 
+    public function select(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'section_id' => 'required|integer|exists:sections,id',
+            'subject_ids' => 'required|array|min:1',
+            'subject_ids.*' => 'integer|exists:subjects,id',
+            'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'is_hybrid' => 'sometimes|boolean',
+            'preferred_patterns' => 'sometimes|array',
+            'preferred_patterns.*' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
+            'max_solutions' => 'sometimes|integer|min:1|max:5',
+            'max_iterations' => 'sometimes|integer|min:1',
+            'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
+            'selected_rank' => 'required|integer|min:1|max:5',
+        ]);
+
+        $solverInput = $validated;
+        $selectedRank = (int) $solverInput['selected_rank'];
+        unset($solverInput['selected_rank']);
+
+        try {
+            $solutions = $this->cspSolver->solveRankedFromSchema($solverInput);
+        } catch (InvalidArgumentException | RuntimeException $exception) {
+            return response()->json(['message' => $exception->getMessage()], 422);
+        }
+
+        $selectedSolution = collect($solutions)->first(
+            static fn (array $solution): bool => (int) $solution['rank'] === $selectedRank,
+        );
+
+        if ($selectedSolution === null) {
+            return response()->json([
+                'message' => 'The selected recommendation is no longer available. Please refresh the recommendations.',
+            ], 422);
+        }
+
+        /** @var Sections $section */
+        $section = Sections::query()->findOrFail($solverInput['section_id']);
+        $user = $request->user();
+
+        $recommendation = DB::transaction(function () use ($selectedSolution, $section, $solverInput, $user) {
+            $recommendation = ScheduleRecommendation::create([
+                'term_id' => (int) $section->term_id,
+                'section_id' => (int) $section->id,
+                'department_id' => (int) $section->department_id,
+                'requested_by' => $user?->id,
+                'rank' => (int) $selectedSolution['rank'],
+                'score' => (int) $selectedSolution['score'],
+                'status' => 'pending',
+                'input_payload' => $solverInput,
+                'recommended_schedules' => $selectedSolution['schedules'],
+            ]);
+
+            $this->recordAudit(
+                action: 'recommendation_selected',
+                userId: $user?->id,
+                recommendation: $recommendation,
+                metadata: [
+                    'rank' => $selectedSolution['rank'],
+                    'score' => $selectedSolution['score'],
+                    'schedule_count' => count($selectedSolution['schedules']),
+                ],
+            );
+
+            return $recommendation->load(['section', 'term', 'department', 'requester']);
+        });
+
+        return response()->json([
+            'message' => 'Schedule recommendation selected successfully.',
+            'recommendation' => $recommendation,
+        ], 201);
+    }
+
     public function show(ScheduleRecommendation $scheduleRecommendation): JsonResponse
     {
         return response()->json($scheduleRecommendation->load([

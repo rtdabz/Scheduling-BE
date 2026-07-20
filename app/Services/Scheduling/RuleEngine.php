@@ -357,6 +357,34 @@ class RuleEngine
                     'message' => 'Selected faculty member is inactive and cannot be assigned.',
                 ];
             }
+
+            if (
+                $faculty->employment_type === 'part-time'
+                && (string) ($attempt['day'] ?? '') !== 'Saturday'
+                && SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00')) < '17:00'
+            ) {
+                $violations[] = [
+                    'rule' => 'part_time_faculty_availability',
+                    'message' => 'Part-time instructors can only be assigned from 5:00 PM onward on weekdays or any time on Saturdays.',
+                ];
+            }
+
+            if (
+                $subject->department_id !== null
+                && in_array($subject->subject_category, ['gec', 'pathfit', 'nstp'], true)
+            ) {
+                if ((int) $faculty->department_id !== (int) $subject->department_id) {
+                    $violations[] = [
+                        'rule' => 'service_subject_faculty_department_alignment',
+                        'message' => 'This subject must be assigned to an instructor from its owning department.',
+                    ];
+                }
+            } elseif ((int) $faculty->department_id !== (int) $section->department_id) {
+                $violations[] = [
+                    'rule' => 'faculty_department_alignment',
+                    'message' => 'Selected faculty member does not belong to the selected section department.',
+                ];
+            }
         }
 
         $mode = (string) ($attempt['mode'] ?? 'on-site');

@@ -13,7 +13,7 @@ class SystemNotificationController extends Controller
         $limit = min(max((int) $request->query('limit', 10), 1), 50);
 
         $notifications = SystemNotification::query()
-            ->with(['actor:id,name,role', 'department:id,department_name,department_code', 'term:id,term_name,semester,academic_year'])
+            ->with(['actor:id,name,role', 'department:id,department_name,department_code', 'term:id,semester,academic_year'])
             ->where('user_id', $request->user()->id)
             ->latest()
             ->limit($limit)

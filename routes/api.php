@@ -19,6 +19,7 @@ use App\Http\Controllers\ScheduleRecommendationController;
 use App\Http\Controllers\InstructorAssignmentController;
 use App\Http\Controllers\SystemNotificationController;
 use App\Http\Controllers\TermsController;
+use App\Http\Controllers\InitialDataController;
 
 Route::post('/login', [AuthController::class, 'login']);
 
@@ -27,6 +28,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Logout and user info routes
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
+    Route::get('/initial-data', InitialDataController::class);
     Route::get('/notifications', [SystemNotificationController::class, 'index']);
     Route::patch('/notifications/read-all', [SystemNotificationController::class, 'markAllAsRead']);
     Route::patch('/notifications/{notification}/read', [SystemNotificationController::class, 'markAsRead']);
@@ -83,6 +85,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Schedules Management
         Route::post('schedules/batch', [ScheduleController::class, 'batch']);
+        Route::get('schedules/pending-department-count', [ScheduleController::class, 'pendingDepartmentCount']);
         Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
         Route::apiResource('schedules', ScheduleController::class);
@@ -99,6 +102,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('instructor-assignments/{schedule}', [InstructorAssignmentController::class, 'update']);
 
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
+        Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
         Route::get('schedule-recommendations', [ScheduleRecommendationController::class, 'index']);
         Route::post('schedule-recommendations', [ScheduleRecommendationController::class, 'store']);
         Route::get('schedule-recommendations/{scheduleRecommendation}', [ScheduleRecommendationController::class, 'show']);

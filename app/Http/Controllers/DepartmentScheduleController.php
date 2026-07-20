@@ -364,7 +364,7 @@ class DepartmentScheduleController extends Controller
             return $this->departmentScheduleQuery($id)
                 ->where('status', 'approved_by_dean')
                 ->update([
-                    'status' => 'approved',
+                    'status' => 'faculty_assignment',
                     'approved_by_vpaa' => $user->id,
                     'approved_at_vpaa' => $now,
                     'rejection_reason' => null,

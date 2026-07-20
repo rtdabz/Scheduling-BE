@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Schedule;
+use App\Models\Subjects;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
@@ -23,13 +24,30 @@ class ScheduleController extends Controller
     }
 
     // Get all schedules
-    public function index()
+    public function index(Request $request)
     {
         $schedules = Schedule::with([
             'term', 'section', 'subject', 'faculty', 'room', 'department'
-        ])->latest()->get();
+        ])
+            ->when($this->departmentScope($request) !== null, fn ($query) => $query->where('department_id', $this->departmentScope($request)))
+            ->latest()
+            ->get();
 
         return response()->json($schedules);
+    }
+
+    public function pendingDepartmentCount(Request $request): JsonResponse
+    {
+        $targetStatus = $request->user()?->role === 'vpaa'
+            ? 'approved_by_dean'
+            : 'submitted';
+
+        $count = Schedule::query()
+            ->where('status', $targetStatus)
+            ->distinct()
+            ->count('department_id');
+
+        return response()->json(['count' => $count]);
     }
 
     // Create schedule
@@ -52,6 +70,10 @@ class ScheduleController extends Controller
         ]);
 
         // ── Rule Engine validation BEFORE saving ──
+        if (!$this->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
+            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+
         $violations = $this->ruleEngine->validate($validated);
 
         if (!empty($violations)) {
@@ -90,8 +112,35 @@ class ScheduleController extends Controller
             'delete_ids.*' => 'integer|exists:schedules,id',
         ]);
 
+        $departmentId = $this->departmentScope($request);
+        if ($departmentId !== null) {
+            foreach ($validated['operations'] as $operation) {
+                if (isset($operation['department_id']) && (int) $operation['department_id'] !== $departmentId) {
+                    return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+                }
+            }
+
+            $requestedScheduleIds = collect($validated['operations'])
+                ->pluck('id')
+                ->merge($validated['delete_ids'] ?? [])
+                ->filter()
+                ->map(static fn (mixed $id): int => (int) $id)
+                ->unique()
+                ->values();
+
+            if (
+                $requestedScheduleIds->isNotEmpty()
+                && Schedule::query()
+                    ->whereIn('id', $requestedScheduleIds)
+                    ->where('department_id', '!=', $departmentId)
+                    ->exists()
+            ) {
+                return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+            }
+        }
+
         try {
-            $result = DB::transaction(function () use ($validated): array {
+            $result = DB::transaction(function () use ($validated, $request): array {
                 $deleteIds = array_values(array_unique(array_map(
                     static fn (mixed $id): int => (int) $id,
                     $validated['delete_ids'] ?? [],
@@ -138,6 +187,17 @@ class ScheduleController extends Controller
                     $row['preferred_pattern'] = $row['preferred_pattern'] ?? null;
                     $row['status'] = $row['status'] ?? 'draft';
                     $row['ignore_schedule_id'] = $affectedIds;
+
+                    if (
+                        array_key_exists('faculty_id', $operation)
+                        && !$this->canManageFacultyForRow($request, $row)
+                    ) {
+                        throw new AtomicScheduleValidationException([[
+                            'rule' => 'gec_faculty_assignment_permission',
+                            'message' => 'Only the CAS Department can assign or remove instructors for GEC subjects.',
+                            'operation_row' => $index,
+                        ]]);
+                    }
 
                     $rows[] = $row;
                 }
@@ -198,8 +258,12 @@ class ScheduleController extends Controller
     }
 
     // Get single schedule
-    public function show(Schedule $schedule)
+    public function show(Request $request, Schedule $schedule)
     {
+        if (!$this->canAccessSchedule($request, $schedule)) {
+            return response()->json(['message' => 'Schedule not found in your department.'], 404);
+        }
+
         return response()->json($schedule->load([
             'term', 'section', 'subject', 'faculty', 'room', 'department'
         ]));
@@ -208,6 +272,10 @@ class ScheduleController extends Controller
     // Update schedule
     public function update(Request $request, Schedule $schedule)
     {
+        if (!$this->canAccessSchedule($request, $schedule)) {
+            return response()->json(['message' => 'Schedule not found in your department.'], 404);
+        }
+
         $validated = $request->validate([
             'term_id'           => 'sometimes|exists:terms,id',
             'section_id'        => 'sometimes|exists:sections,id',
@@ -231,11 +299,35 @@ class ScheduleController extends Controller
 
         // ── Rule Engine validation — merge existing + incoming so partial
         //    updates (e.g. just changing room_id) still validate the FULL slot ──
-        $attempt = array_merge($schedule->toArray(), $validated);
-        $attempt['ignore_schedule_id'] = $schedule->id;
+        if (
+            isset($validated['department_id'])
+            && !$this->payloadBelongsToDepartment($request, (int) $validated['department_id'])
+        ) {
+            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
 
-        // Only run conflict checks if scheduling-relevant fields are present
-        $violations = $this->ruleEngine->validate($attempt);
+        $isFacultyOnlyUpdate = array_key_exists('faculty_id', $validated)
+            && count(array_diff(array_keys($validated), ['faculty_id'])) === 0;
+        if ($isFacultyOnlyUpdate && !$this->canManageScheduleFaculty($request, $schedule)) {
+            return response()->json([
+                'message' => 'Only the CAS Department can assign or remove instructors for GEC subjects.',
+            ], 403);
+        }
+
+        $linkedSchedules = $isFacultyOnlyUpdate
+            ? $this->linkedMeetingBlocks($schedule)
+            : collect([$schedule]);
+        if ($linkedSchedules->isEmpty()) {
+            $linkedSchedules = collect([$schedule]);
+        }
+        $linkedScheduleIds = $linkedSchedules->pluck('id')->all();
+        $violations = [];
+
+        foreach ($linkedSchedules as $linkedSchedule) {
+            $attempt = array_merge($linkedSchedule->toArray(), $validated);
+            $attempt['ignore_schedule_id'] = $linkedScheduleIds;
+            $violations = array_merge($violations, $this->ruleEngine->validate($attempt));
+        }
 
         if (!empty($violations)) {
             return response()->json([
@@ -245,8 +337,22 @@ class ScheduleController extends Controller
         }
 
         $previousStatus = $schedule->status;
-        $schedule->update($validated);
-        $schedule->load(['term', 'section', 'subject', 'faculty', 'room', 'department']);
+        if ($isFacultyOnlyUpdate) {
+            Schedule::query()
+                ->whereIn('id', $linkedScheduleIds)
+                ->update($validated);
+            $updatedSchedules = Schedule::query()
+                ->with(['term', 'section', 'subject', 'faculty', 'room', 'department'])
+                ->whereIn('id', $linkedScheduleIds)
+                ->orderBy('day')
+                ->orderBy('start_time')
+                ->get();
+            $schedule = $updatedSchedules->firstWhere('id', $schedule->id) ?? $updatedSchedules->first();
+        } else {
+            $schedule->update($validated);
+            $schedule->load(['term', 'section', 'subject', 'faculty', 'room', 'department']);
+            $updatedSchedules = collect([$schedule]);
+        }
 
         $action = isset($validated['status']) && $validated['status'] !== $previousStatus
             ? "updated status to {$validated['status']}"
@@ -254,34 +360,118 @@ class ScheduleController extends Controller
 
         $this->notifyScheduleSaved($request, $schedule, $action);
 
+        if ($isFacultyOnlyUpdate) {
+            return response()->json([
+                'schedule' => $schedule,
+                'schedules' => $updatedSchedules,
+            ]);
+        }
+
         return response()->json($schedule);
     }
 
     // Delete schedule
-    public function destroy(Schedule $schedule)
+    public function destroy(Request $request, Schedule $schedule)
     {
+        if (!$this->canAccessSchedule($request, $schedule)) {
+            return response()->json(['message' => 'Schedule not found in your department.'], 404);
+        }
+
         $schedule->delete();
         return response()->json(['message' => 'Schedule deleted successfully']);
     }
 
+    private function linkedMeetingBlocks(Schedule $schedule)
+    {
+        return Schedule::query()
+            ->where('term_id', $schedule->term_id)
+            ->where('section_id', $schedule->section_id)
+            ->where('subject_id', $schedule->subject_id)
+            ->where('department_id', $schedule->department_id)
+            ->where('preferred_pattern', $schedule->preferred_pattern)
+            ->whereIn('status', ['approved', 'faculty_assignment'])
+            ->get();
+    }
+
     // Get schedules by term
-    public function byTerm($termId)
+    public function byTerm(Request $request, $termId)
     {
         $schedules = Schedule::with([
             'section', 'subject', 'faculty', 'room', 'department'
-        ])->where('term_id', $termId)->get();
+        ])
+            ->where('term_id', $termId)
+            ->when($this->departmentScope($request) !== null, fn ($query) => $query->where('department_id', $this->departmentScope($request)))
+            ->get();
 
         return response()->json($schedules);
     }
 
     // Get schedules by section
-    public function bySection($sectionId)
+    public function bySection(Request $request, $sectionId)
     {
         $schedules = Schedule::with([
             'subject', 'faculty', 'room'
-        ])->where('section_id', $sectionId)->get();
+        ])
+            ->where('section_id', $sectionId)
+            ->when($this->departmentScope($request) !== null, fn ($query) => $query->where('department_id', $this->departmentScope($request)))
+            ->get();
 
         return response()->json($schedules);
+    }
+
+    private function departmentScope(Request $request): ?int
+    {
+        $user = $request->user();
+        if (!$user || $user->isVpaa()) {
+            return null;
+        }
+
+        return $user->department_id !== null ? (int) $user->department_id : null;
+    }
+
+    private function canAccessSchedule(Request $request, Schedule $schedule): bool
+    {
+        $departmentId = $this->departmentScope($request);
+        return $departmentId === null || (int) $schedule->department_id === $departmentId;
+    }
+
+    private function payloadBelongsToDepartment(Request $request, int $departmentId): bool
+    {
+        $scopeDepartmentId = $this->departmentScope($request);
+        return $scopeDepartmentId === null || $departmentId === $scopeDepartmentId;
+    }
+
+    private function canManageScheduleFaculty(Request $request, Schedule $schedule): bool
+    {
+        $schedule->loadMissing('subject');
+        if ($schedule->subject?->subject_category !== 'gec') {
+            return true;
+        }
+
+        $userDepartmentId = $request->user()?->department_id;
+        $subjectDepartmentId = $schedule->subject?->department_id;
+
+        return $userDepartmentId !== null
+            && $subjectDepartmentId !== null
+            && (int) $userDepartmentId === (int) $subjectDepartmentId;
+    }
+
+    private function canManageFacultyForRow(Request $request, array $row): bool
+    {
+        $subjectId = $row['subject_id'] ?? null;
+        if (!$subjectId) {
+            return true;
+        }
+
+        $subject = Subjects::query()->find($subjectId);
+        if ($subject?->subject_category !== 'gec') {
+            return true;
+        }
+
+        $userDepartmentId = $request->user()?->department_id;
+        return $userDepartmentId !== null
+            && $subject->department_id !== null
+            && (int) $userDepartmentId === (int) $subject->department_id;
     }
 
     private function validateAtomicRows(array $rows): array

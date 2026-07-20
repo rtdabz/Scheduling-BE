@@ -118,11 +118,18 @@ class InstructorAssignmentController extends Controller
             ], 422);
         }
 
-        $attempt = array_merge($schedule->toArray(), [
-            'faculty_id' => $faculty->id,
-            'ignore_schedule_id' => $schedule->id,
-        ]);
-        $violations = $this->ruleEngine->validate($attempt);
+        $linkedSchedules = $this->linkedMeetingBlocks($schedule);
+        $linkedScheduleIds = $linkedSchedules->pluck('id')->all();
+        $violations = [];
+
+        foreach ($linkedSchedules as $linkedSchedule) {
+            $attempt = array_merge($linkedSchedule->toArray(), [
+                'faculty_id' => $faculty->id,
+                'ignore_schedule_id' => $linkedScheduleIds,
+            ]);
+            $violations = array_merge($violations, $this->ruleEngine->validate($attempt));
+        }
+
         if ($violations !== []) {
             return response()->json([
                 'message' => 'The instructor assignment conflicts with an existing schedule.',
@@ -131,45 +138,67 @@ class InstructorAssignmentController extends Controller
         }
 
         $previousFacultyId = $schedule->faculty_id;
-        $updatedSchedule = DB::transaction(function () use (
+        $updatedSchedules = DB::transaction(function () use (
             $request,
-            $schedule,
+            $linkedSchedules,
+            $linkedScheduleIds,
             $faculty,
             $previousFacultyId,
             $departmentId,
-        ): Schedule {
-            $schedule->update([
-                'faculty_id' => $faculty->id,
-                'status' => 'faculty_assignment',
-            ]);
+        ) {
+            Schedule::query()
+                ->whereIn('id', $linkedScheduleIds)
+                ->update([
+                    'faculty_id' => $faculty->id,
+                    'status' => 'faculty_assignment',
+                ]);
 
             SchedulingAuditLog::create([
                 'user_id' => $request->user()?->id,
-                'term_id' => $schedule->term_id,
-                'section_id' => $schedule->section_id,
+                'term_id' => $linkedSchedules->first()->term_id,
+                'section_id' => $linkedSchedules->first()->section_id,
                 'department_id' => $departmentId,
                 'action' => 'instructor_assigned',
                 'metadata' => [
-                    'schedule_id' => $schedule->id,
-                    'subject_id' => $schedule->subject_id,
+                    'schedule_id' => $linkedSchedules->first()->id,
+                    'schedule_ids' => $linkedScheduleIds,
+                    'subject_id' => $linkedSchedules->first()->subject_id,
                     'previous_faculty_id' => $previousFacultyId,
                     'faculty_id' => $faculty->id,
-                    'offering_department_id' => $schedule->department_id,
+                    'offering_department_id' => $linkedSchedules->first()->department_id,
                 ],
                 'created_at' => now(),
             ]);
 
-            return $schedule->fresh([
-                'section', 'subject.department', 'faculty', 'room', 'department',
-            ]);
+            return Schedule::query()
+                ->with(['section', 'subject.department', 'faculty', 'room', 'department'])
+                ->whereIn('id', $linkedScheduleIds)
+                ->orderBy('day')
+                ->orderBy('start_time')
+                ->get();
         });
 
         ApiCache::forgetGroup('instructor_assignments.index');
 
         if ($request->user()) {
-            $this->notifications->notifyInstructorAssignmentProgress($updatedSchedule, $request->user());
+            $this->notifications->notifyInstructorAssignmentProgress($updatedSchedules->first(), $request->user());
         }
 
-        return response()->json($updatedSchedule);
+        return response()->json([
+            'schedule' => $updatedSchedules->first(),
+            'schedules' => $updatedSchedules,
+        ]);
+    }
+
+    private function linkedMeetingBlocks(Schedule $schedule)
+    {
+        return Schedule::query()
+            ->where('term_id', $schedule->term_id)
+            ->where('section_id', $schedule->section_id)
+            ->where('subject_id', $schedule->subject_id)
+            ->where('department_id', $schedule->department_id)
+            ->where('preferred_pattern', $schedule->preferred_pattern)
+            ->whereIn('status', self::ASSIGNABLE_STATUSES)
+            ->get();
     }
 }
