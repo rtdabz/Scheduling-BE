@@ -444,7 +444,7 @@ class ScheduleController extends Controller
     private function canManageScheduleFaculty(Request $request, Schedule $schedule): bool
     {
         $schedule->loadMissing('subject');
-        if ($schedule->subject?->subject_category !== 'gec') {
+        if ($schedule->subject?->subject_category !== 'minor') {
             return true;
         }
 
@@ -464,7 +464,7 @@ class ScheduleController extends Controller
         }
 
         $subject = Subjects::query()->find($subjectId);
-        if ($subject?->subject_category !== 'gec') {
+        if ($subject?->subject_category !== 'minor') {
             return true;
         }
 

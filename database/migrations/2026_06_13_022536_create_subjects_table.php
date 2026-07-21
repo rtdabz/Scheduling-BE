@@ -18,7 +18,7 @@ return new class extends Migration
             $table->integer('lecture_hours')->default(0);
             $table->integer('lab_hours')->default(0);
             $table->integer('units')->default(0);
-            $table->enum('subject_category', ['major', 'gec', 'gee', 'pathfit', 'nstp']);
+            $table->enum('subject_category', ['major', 'minor']);
             $table->enum('room_type_required', ['lecture', 'laboratory', 'field', 'online'])->default('lecture');
             $table->enum('year_level', ['1', '2', '3', '4']);
             $table->enum('semester', ['1st', '2nd', 'summer']);

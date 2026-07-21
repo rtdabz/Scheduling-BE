@@ -27,8 +27,7 @@ class SubjectsController extends Controller
                 $deptId = $request->department_id;
                 $query->where(function ($q) use ($deptId) {
                     $q->where('department_id', $deptId)
-                    ->orWhere('subject_category', 'gee')
-                    ->orWhere('subject_category', 'gec');
+                    ->orWhere('subject_category', 'minor');
                 });
             }
 

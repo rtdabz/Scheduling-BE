@@ -44,7 +44,7 @@ class InitialDataController extends Controller
             ->when($departmentId !== null, fn (Builder $query) => $query->where(
                 fn (Builder $scope) => $scope
                     ->where('department_id', $departmentId)
-                    ->orWhereIn('subject_category', ['gee', 'gec']),
+                    ->orWhere('subject_category', 'minor'),
             ))
             ->get();
 

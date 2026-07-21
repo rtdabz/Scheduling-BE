@@ -371,7 +371,7 @@ class RuleEngine
 
             if (
                 $subject->department_id !== null
-                && in_array($subject->subject_category, ['gec', 'pathfit', 'nstp'], true)
+                && $subject->subject_category === 'minor'
             ) {
                 if ((int) $faculty->department_id !== (int) $subject->department_id) {
                     $violations[] = [

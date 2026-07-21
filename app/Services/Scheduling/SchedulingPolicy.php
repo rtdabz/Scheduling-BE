@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling;
 
+use Illuminate\Validation\Rule;
 use InvalidArgumentException;
 
 final class SchedulingPolicy
@@ -33,8 +34,8 @@ final class SchedulingPolicy
 
     public const DELIVERY_MODES = ['on-site', 'online', 'field'];
     public const ROOM_TYPES = ['lecture', 'laboratory', 'field', 'online'];
-    public const ROOM_STATUSES = ['available', 'occupied', 'maintenance'];
-    public const SUBJECT_CATEGORIES = ['major', 'gec', 'gee', 'pathfit', 'nstp'];
+    public const ROOM_STATUSES = ['available', 'not available'];
+    public const SUBJECT_CATEGORIES = ['major', 'minor'];
     public const YEAR_LEVELS = ['1', '2', '3', '4'];
     public const SEMESTERS = ['1st', '2nd', 'summer'];
     public const ACTIVE_STATUSES = ['active', 'inactive'];
@@ -301,9 +302,12 @@ final class SchedulingPolicy
         return $prefix.'|in:'.implode(',', self::ROOM_TYPES);
     }
 
-    public static function allowedRoomStatusesRule(string $prefix): string
+    public static function allowedRoomStatusesRule(string|array $prefix = []): array
     {
-        return $prefix.'|in:'.implode(',', self::ROOM_STATUSES);
+        $rules = is_array($prefix) ? $prefix : array_filter(explode('|', $prefix));
+        $rules[] = Rule::in(self::ROOM_STATUSES);
+
+        return $rules;
     }
 
     public static function allowedSubjectCategoriesRule(string $prefix): string
