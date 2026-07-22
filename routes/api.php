@@ -64,7 +64,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('rooms', [RoomsController::class, 'index']);
         Route::get('rooms/{room}', [RoomsController::class, 'show']);
 
-        Route::get('/curricula/{curriculum}/full', [CurriculumController::class, 'showWithSubjects']);
+        Route::get('/curricula/{curriculum}/full', [CurriculumController::class, 'showWithCourses']);
 
         // Rooms management — restricted to authorized administrators (VPAA and Dean)
         Route::middleware('role:vpaa,dean')->group(function () {
@@ -115,8 +115,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedule-recommendations/{scheduleRecommendation}/review', [ScheduleRecommendationController::class, 'review']);
         Route::post('schedule-recommendations/{scheduleRecommendation}/accept', [ScheduleRecommendationController::class, 'accept']);
         Route::post('schedule-recommendations/{scheduleRecommendation}/reject', [ScheduleRecommendationController::class, 'reject']);
-        Route::post('curricula/{curriculum}/subjects', [CurriculumController::class, 'attachSubject']);
-        Route::delete('curricula/{curriculum}/subjects/{course}', [CurriculumController::class, 'detachSubject']);
+        Route::post('curricula/{curriculum}/courses', [CurriculumController::class, 'attachCourse']);
+        Route::delete('curricula/{curriculum}/courses/{course}', [CurriculumController::class, 'detachCourse']);
     });
 
     Route::middleware('role:vpaa,secretary,program_head')->group(function () {

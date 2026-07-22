@@ -32,7 +32,7 @@ class Course extends Model
         return $this->hasMany(Schedule::class, 'course_id');
     }
     public function curricula() {
-    return $this->belongsToMany(Curriculum::class, 'curriculum_subject')
+    return $this->belongsToMany(Curriculum::class, 'curriculum_course')
         ->withPivot(['year_level', 'semester']);
     }
 }

@@ -9,8 +9,8 @@ use App\Models\Course;
 
 class CurriculumController extends Controller
 {
-    // Attach a subject to a curriculum
-    public function attachSubject(Request $request, Curriculum $curriculum)
+    // Attach a course to a curriculum
+    public function attachCourse(Request $request, Curriculum $curriculum)
     {
         $validated = $request->validate([
             'course_id'  => 'required|exists:courses,id',
@@ -25,36 +25,36 @@ class CurriculumController extends Controller
             ]
         ]);
 
-        return response()->json(['message' => 'Subject attached successfully']);
+        return response()->json(['message' => 'Course attached successfully']);
     }
 
-    // Remove a subject from a curriculum
-    public function detachSubject(Curriculum $curriculum, Course $course)
+    // Remove a course from a curriculum
+    public function detachCourse(Curriculum $curriculum, Course $course)
     {
         $curriculum->courses()->detach($course->id);
-        return response()->json(['message' => 'Subject removed']);
+        return response()->json(['message' => 'Course removed successfully']);
     }
 
     // Get the full curriculum, grouped and totaled like the official form
-    public function showWithSubjects(Curriculum $curriculum)
+    public function showWithCourses(Curriculum $curriculum)
     {
-        $subjects = $curriculum->courses()
+        $courses = $curriculum->courses()
             ->orderBy('pivot_year_level')
             ->orderBy('pivot_semester')
             ->get();
 
-        $grouped = $subjects->groupBy(fn($s) => $s->pivot->year_level . '-' . $s->pivot->semester)
+        $grouped = $courses->groupBy(fn($c) => $c->pivot->year_level . '-' . $c->pivot->semester)
             ->map(function ($group) {
                 $first = $group->first();
                 return [
                     'year_level' => $first->pivot->year_level,
                     'semester'   => $first->pivot->semester,
-                    'subjects'   => $group->map(fn($s) => [
-                        'code'       => $s->course_code,
-                        'title'      => $s->course_name,
-                        'lec_units'  => $s->lecture_hours,
-                        'lab_units'  => $s->lab_hours,
-                        'total_units'=> $s->units,
+                    'courses'    => $group->map(fn($c) => [
+                        'code'       => $c->course_code,
+                        'title'      => $c->course_name,
+                        'lec_units'  => $c->lecture_hours,
+                        'lab_units'  => $c->lab_hours,
+                        'total_units'=> $c->units,
                     ])->values(),
                     'totals' => [
                         'lec' => $group->sum('lecture_hours'),

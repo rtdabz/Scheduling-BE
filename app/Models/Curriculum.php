@@ -15,8 +15,13 @@ class Curriculum extends Model
     }
 
     public function courses() {
-        return $this->belongsToMany(Course::class, 'curriculum_subject')
+        return $this->belongsToMany(Course::class, 'curriculum_course')
             ->withPivot(['year_level', 'semester'])
             ->withTimestamps();
+    }
+
+    // Alias for subjects to support legacy calls/tests
+    public function subjects() {
+        return $this->courses();
     }
 }
