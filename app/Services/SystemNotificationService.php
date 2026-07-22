@@ -114,10 +114,10 @@ class SystemNotificationService
 
     public function notifyInstructorAssignmentProgress(Schedule $schedule, User $actor): void
     {
-        $schedule->loadMissing(['subject.department', 'term']);
+        $schedule->loadMissing(['course.department', 'term']);
 
-        $subjectDepartmentId = (int) ($schedule->subject?->department_id ?? 0);
-        if ($subjectDepartmentId === 0) {
+        $courseDepartmentId = (int) ($schedule->course?->department_id ?? 0);
+        if ($courseDepartmentId === 0) {
             return;
         }
 
@@ -127,14 +127,14 @@ class SystemNotificationService
         $query = Schedule::query()
             ->where('term_id', $termId)
             ->whereIn('status', ['approved', 'faculty_assignment', 'finalized'])
-            ->whereHas('subject', function ($subjectQuery) use ($subjectDepartmentId) {
-                $subjectQuery->where('department_id', $subjectDepartmentId);
+            ->whereHas('course', function ($courseQuery) use ($courseDepartmentId) {
+                $courseQuery->where('department_id', $courseDepartmentId);
             });
 
         $total = (clone $query)->count();
         $unassigned = (clone $query)->whereNull('faculty_id')->count();
 
-        $department = $schedule->subject?->department;
+        $department = $schedule->course?->department;
         if (!$department) {
             return;
         }
@@ -153,12 +153,12 @@ class SystemNotificationService
                 1,
             ),
             $actor,
-            $subjectDepartmentId,
+            $courseDepartmentId,
             $termId,
             null,
             [
                 'schedule_id' => $schedule->id,
-                'subject_id' => $schedule->subject_id,
+                'course_id' => $schedule->course_id,
                 'faculty_id' => $schedule->faculty_id,
                 'assigned_count' => max(0, $total - $unassigned),
                 'total_count' => $total,

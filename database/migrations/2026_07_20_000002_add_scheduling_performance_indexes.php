@@ -12,9 +12,9 @@ return new class extends Migration
             $table->index('is_active', 'terms_is_active_index');
         });
 
-        Schema::table('subjects', function (Blueprint $table) {
-            $table->index(['department_id', 'status'], 'subjects_department_status_index');
-            $table->index(['subject_category', 'status'], 'subjects_category_status_index');
+        Schema::table('courses', function (Blueprint $table) {
+            $table->index(['department_id', 'status'], 'courses_department_status_index');
+            $table->index(['course_category', 'status'], 'courses_category_status_index');
         });
 
         Schema::table('sections', function (Blueprint $table) {
@@ -30,7 +30,7 @@ return new class extends Migration
             $table->index(['term_id', 'room_id', 'day', 'start_time', 'end_time'], 'schedules_room_conflict_index');
             $table->index(['term_id', 'faculty_id', 'day', 'start_time', 'end_time'], 'schedules_faculty_conflict_index');
             $table->index(['term_id', 'section_id', 'day', 'start_time', 'end_time'], 'schedules_section_conflict_index');
-            $table->index(['term_id', 'section_id', 'subject_id'], 'schedules_section_subject_index');
+            $table->index(['term_id', 'section_id', 'course_id'], 'schedules_section_course_index');
         });
 
         Schema::table('schedule_recommendations', function (Blueprint $table) {
@@ -51,7 +51,7 @@ return new class extends Migration
             $table->dropIndex('schedules_room_conflict_index');
             $table->dropIndex('schedules_faculty_conflict_index');
             $table->dropIndex('schedules_section_conflict_index');
-            $table->dropIndex('schedules_section_subject_index');
+            $table->dropIndex('schedules_section_course_index');
         });
 
         Schema::table('faculties', function (Blueprint $table) {
@@ -62,9 +62,9 @@ return new class extends Migration
             $table->dropIndex('sections_department_term_status_index');
         });
 
-        Schema::table('subjects', function (Blueprint $table) {
-            $table->dropIndex('subjects_department_status_index');
-            $table->dropIndex('subjects_category_status_index');
+        Schema::table('courses', function (Blueprint $table) {
+            $table->dropIndex('courses_department_status_index');
+            $table->dropIndex('courses_category_status_index');
         });
 
         Schema::table('terms', function (Blueprint $table) {

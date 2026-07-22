@@ -17,7 +17,7 @@ class DatabaseSeeder extends Seeder
             UserSeeder::class,
             RoomSeeder::class,
             FacultySeeder::class,
-            SubjectSeeder::class,
+            CourseSeeder::class,
             TermSeeder::class,
             SectionSeeder::class,
         ]);

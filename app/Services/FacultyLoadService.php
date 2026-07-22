@@ -20,23 +20,24 @@ class FacultyLoadService
         if ($termId === null || $faculties->isEmpty()) {
             return $faculties->each(function (Faculty $faculty): void {
                 $faculty->setAttribute('assigned_units', 0);
+                $faculty->setAttribute('assigned_courses', []);
                 $faculty->setAttribute('assigned_subjects', []);
                 $faculty->setAttribute('assigned_classes', []);
             });
         }
 
         $assignments = DB::table('schedules')
-            ->join('subjects', 'schedules.subject_id', '=', 'subjects.id')
+            ->join('courses', 'schedules.course_id', '=', 'courses.id')
             ->join('sections', 'schedules.section_id', '=', 'sections.id')
             ->where('schedules.term_id', $termId)
             ->whereIn('schedules.faculty_id', $faculties->pluck('id'))
             ->select([
                 'schedules.faculty_id',
                 'schedules.section_id',
-                'schedules.subject_id',
-                'subjects.units',
-                'subjects.subject_code',
-                'subjects.subject_name',
+                'schedules.course_id',
+                'courses.units',
+                'courses.course_code',
+                'courses.course_name',
                 'sections.section_name',
             ])
             ->distinct()
@@ -46,18 +47,23 @@ class FacultyLoadService
         return $faculties->each(function (Faculty $faculty) use ($assignments): void {
             $rows = $assignments->get($faculty->id, collect());
             $assignedUnits = $rows
-                ->unique(fn ($row) => "{$row->section_id}:{$row->subject_id}")
+                ->unique(fn ($row) => "{$row->section_id}:{$row->course_id}")
                 ->sum('units');
 
-            $faculty->setAttribute('assigned_units', (int) $assignedUnits);
-            $faculty->setAttribute('assigned_subjects', $rows
-                ->unique('subject_id')
+            $assignedCourses = $rows
+                ->unique('course_id')
                 ->map(fn ($row) => [
-                    'id' => $row->subject_id,
-                    'subject_code' => $row->subject_code,
-                    'subject_name' => $row->subject_name,
+                    'id' => $row->course_id,
+                    'course_code' => $row->course_code,
+                    'course_name' => $row->course_name,
+                    'subject_code' => $row->course_code,
+                    'subject_name' => $row->course_name,
                 ])
-                ->values());
+                ->values();
+
+            $faculty->setAttribute('assigned_units', (int) $assignedUnits);
+            $faculty->setAttribute('assigned_courses', $assignedCourses);
+            $faculty->setAttribute('assigned_subjects', $assignedCourses);
             $faculty->setAttribute('assigned_classes', $rows
                 ->unique('section_id')
                 ->map(fn ($row) => [

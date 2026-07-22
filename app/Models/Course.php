@@ -4,16 +4,17 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class Subjects extends Model
+class Course extends Model
 {
-    protected $table = 'subjects';
+    protected $table = 'courses';
+
     protected $fillable = [
-        'subject_code',
-        'subject_name',
+        'course_code',
+        'course_name',
         'lecture_hours',
         'lab_hours',
         'units',
-        'subject_category',
+        'course_category',
         'room_type_required',
         'year_level',
         'semester',
@@ -24,5 +25,14 @@ class Subjects extends Model
     public function department()
     {
         return $this->belongsTo(Departments::class, 'department_id');
+    }
+
+    public function schedules()
+    {
+        return $this->hasMany(Schedule::class, 'course_id');
+    }
+    public function curricula() {
+    return $this->belongsToMany(Curriculum::class, 'curriculum_subject')
+        ->withPivot(['year_level', 'semester']);
     }
 }

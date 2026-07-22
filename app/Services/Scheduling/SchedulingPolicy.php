@@ -35,6 +35,7 @@ final class SchedulingPolicy
     public const DELIVERY_MODES = ['on-site', 'online', 'field'];
     public const ROOM_TYPES = ['lecture', 'laboratory', 'field', 'online'];
     public const ROOM_STATUSES = ['available', 'not available'];
+    public const COURSE_CATEGORIES = ['major', 'minor'];
     public const SUBJECT_CATEGORIES = ['major', 'minor'];
     public const YEAR_LEVELS = ['1', '2', '3', '4'];
     public const SEMESTERS = ['1st', '2nd', 'summer'];

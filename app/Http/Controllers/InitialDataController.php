@@ -2,11 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Subjects;
 use App\Models\Terms;
 use App\Models\User;
 use App\Services\FacultyLoadService;
@@ -38,13 +38,13 @@ class InitialDataController extends Controller
             ))
             ->get();
 
-        $subjects = Subjects::query()
+        $courses = Course::query()
             ->with('department')
             ->where('status', 'active')
             ->when($departmentId !== null, fn (Builder $query) => $query->where(
                 fn (Builder $scope) => $scope
                     ->where('department_id', $departmentId)
-                    ->orWhere('subject_category', 'minor'),
+                    ->orWhere('course_category', 'minor'),
             ))
             ->get();
 
@@ -55,7 +55,7 @@ class InitialDataController extends Controller
             ->get();
 
         $schedules = Schedule::query()
-            ->with(['term', 'section', 'subject', 'faculty', 'room', 'department'])
+            ->with(['term', 'section', 'course', 'faculty', 'room', 'department'])
             ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
             ->when($activeTermId !== null, fn (Builder $query) => $query->where('term_id', $activeTermId))
             ->latest()
@@ -72,7 +72,8 @@ class InitialDataController extends Controller
         return response()->json([
             'active_term' => $activeTerm,
             'rooms' => $rooms,
-            'subjects' => $subjects,
+            'courses' => $courses,
+            'subjects' => $courses, // Backwards compatible alias
             'faculties' => $this->facultyLoad->get($departmentId, $activeTermId),
             'sections' => $sections,
             'schedules' => $schedules,

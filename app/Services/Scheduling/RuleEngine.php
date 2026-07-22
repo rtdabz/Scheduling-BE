@@ -6,7 +6,7 @@ use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Subjects;
+use App\Models\Course;
 use App\Models\Terms;
 use InvalidArgumentException;
 
@@ -28,7 +28,7 @@ class RuleEngine
             ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
             ->where('start_time', '<', $endTime)
             ->where('end_time', '>', $startTime)
-            ->with(['subject', 'section'])
+            ->with(['course', 'section'])
             ->first();
 
         if (!$conflict) {
@@ -38,7 +38,7 @@ class RuleEngine
         return [
             'rule' => 'room_conflict',
             'message' => "Room is already booked on {$day} from {$conflict->start_time} to {$conflict->end_time} "
-                ."for {$conflict->subject?->subject_code} ({$conflict->section?->section_name}).",
+                ."for {$conflict->course?->course_code} ({$conflict->section?->section_name}).",
             'conflicting_schedule_id' => $conflict->id,
         ];
     }
@@ -59,7 +59,7 @@ class RuleEngine
             ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
             ->where('start_time', '<', $endTime)
             ->where('end_time', '>', $startTime)
-            ->with(['subject', 'section'])
+            ->with(['course', 'section'])
             ->first();
 
         if (!$conflict) {
@@ -69,7 +69,7 @@ class RuleEngine
         return [
             'rule' => 'faculty_conflict',
             'message' => "Faculty is already teaching on {$day} from {$conflict->start_time} to {$conflict->end_time} "
-                ."for {$conflict->subject?->subject_code} ({$conflict->section?->section_name}).",
+                ."for {$conflict->course?->course_code} ({$conflict->section?->section_name}).",
             'conflicting_schedule_id' => $conflict->id,
         ];
     }
@@ -90,7 +90,7 @@ class RuleEngine
             ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
             ->where('start_time', '<', $endTime)
             ->where('end_time', '>', $startTime)
-            ->with('subject')
+            ->with('course')
             ->first();
 
         if (!$conflict) {
@@ -100,7 +100,7 @@ class RuleEngine
         return [
             'rule' => 'section_conflict',
             'message' => "Section already has a class on {$day} from {$conflict->start_time} to {$conflict->end_time} "
-                ."({$conflict->subject?->subject_code}).",
+                ."({$conflict->course?->course_code}).",
             'conflicting_schedule_id' => $conflict->id,
         ];
     }
@@ -123,7 +123,7 @@ class RuleEngine
         if ($allowedDays !== null && !in_array($day, $allowedDays, true)) {
             return [
                 'rule' => 'preferred_pattern',
-                'message' => "Preferred pattern conflict: '{$preferredPattern}' subjects can only be scheduled on "
+                'message' => "Preferred pattern conflict: '{$preferredPattern}' courses can only be scheduled on "
                     .implode(' or ', $allowedDays).", not {$day}.",
             ];
         }
@@ -153,15 +153,15 @@ class RuleEngine
         return null;
     }
 
-    public function checkRoomTypeMatch(int $subjectId, int $roomId, string $deliveryMode = 'on-site'): ?array
+    public function checkRoomTypeMatch(int $courseId, int $roomId, string $deliveryMode = 'on-site'): ?array
     {
-        $subject = Subjects::find($subjectId);
+        $course = Course::find($courseId);
         $room = Rooms::find($roomId);
 
-        if (!$subject || !$room) {
+        if (!$course || !$room) {
             return [
                 'rule' => 'room_type_match',
-                'message' => 'Subject or room not found for room-type validation.',
+                'message' => 'Course or room not found for room-type validation.',
             ];
         }
 
@@ -174,10 +174,10 @@ class RuleEngine
                 ];
         }
 
-        if ($subject->room_type_required !== $room->room_type) {
+        if ($course->room_type_required !== $room->room_type) {
             return [
                 'rule' => 'room_type_match',
-                'message' => "Subject {$subject->subject_code} requires a '{$subject->room_type_required}' room, "
+                'message' => "Course {$course->course_code} requires a '{$course->room_type_required}' room, "
                     ."but '{$room->room_code}' is a '{$room->room_type}' room.",
             ];
         }
@@ -223,7 +223,8 @@ class RuleEngine
 
         $term = Terms::find($attempt['term_id']);
         $section = Sections::find($attempt['section_id']);
-        $subject = Subjects::find($attempt['subject_id']);
+        $courseId = $attempt['course_id'] ?? $attempt['subject_id'] ?? null;
+        $course = $courseId ? Course::find($courseId) : null;
         $room = Rooms::find($attempt['room_id']);
         $faculty = !empty($attempt['faculty_id'])
             ? Faculty::find($attempt['faculty_id'])
@@ -243,10 +244,10 @@ class RuleEngine
             ];
         }
 
-        if (!$subject) {
+        if (!$course) {
             $violations[] = [
                 'rule' => 'subject_exists',
-                'message' => 'Selected subject does not exist.',
+                'message' => 'Selected course does not exist.',
             ];
         }
 
@@ -264,7 +265,7 @@ class RuleEngine
             ];
         }
 
-        if (!$term || !$section || !$subject || !$room || (!empty($attempt['faculty_id']) && !$faculty)) {
+        if (!$term || !$section || !$course || !$room || (!empty($attempt['faculty_id']) && !$faculty)) {
             return $violations;
         }
 
@@ -289,17 +290,17 @@ class RuleEngine
             ];
         }
 
-        if ((string) $subject->semester !== (string) $section->semester) {
+        if ((string) $course->semester !== (string) $section->semester) {
             $violations[] = [
                 'rule' => 'subject_section_semester_alignment',
-                'message' => 'Subject semester does not match the selected section semester.',
+                'message' => 'Course semester does not match the selected section semester.',
             ];
         }
 
-        if ((string) $subject->year_level !== (string) $section->year_level) {
+        if ((string) $course->year_level !== (string) $section->year_level) {
             $violations[] = [
                 'rule' => 'subject_section_year_alignment',
-                'message' => 'Subject year level does not match the selected section year level.',
+                'message' => 'Course year level does not match the selected section year level.',
             ];
         }
 
@@ -318,10 +319,10 @@ class RuleEngine
             ];
         }
 
-        if (($subject->status ?? 'active') !== 'active') {
+        if (($course->status ?? 'active') !== 'active') {
             $violations[] = [
                 'rule' => 'subject_active',
-                'message' => 'Selected subject is inactive and cannot be scheduled.',
+                'message' => 'Selected course is inactive and cannot be scheduled.',
             ];
         }
 
@@ -339,14 +340,15 @@ class RuleEngine
             ];
         }
 
+        $courseCategory = $course->course_category ?? $course->subject_category ?? 'major';
         if (
-            $subject->subject_category === 'major'
-            && $subject->department_id !== null
-            && (int) $subject->department_id !== (int) $section->department_id
+            $courseCategory === 'major'
+            && $course->department_id !== null
+            && (int) $course->department_id !== (int) $section->department_id
         ) {
             $violations[] = [
                 'rule' => 'major_department_alignment',
-                'message' => 'Major subject department does not match the selected section department.',
+                'message' => 'Major course department does not match the selected section department.',
             ];
         }
 
@@ -370,13 +372,13 @@ class RuleEngine
             }
 
             if (
-                $subject->department_id !== null
-                && $subject->subject_category === 'minor'
+                $course->department_id !== null
+                && $courseCategory === 'minor'
             ) {
-                if ((int) $faculty->department_id !== (int) $subject->department_id) {
+                if ((int) $faculty->department_id !== (int) $course->department_id) {
                     $violations[] = [
                         'rule' => 'service_subject_faculty_department_alignment',
-                        'message' => 'This subject must be assigned to an instructor from its owning department.',
+                        'message' => 'This course must be assigned to an instructor from its owning department.',
                     ];
                 }
             } elseif ((int) $faculty->department_id !== (int) $section->department_id) {
@@ -492,8 +494,9 @@ class RuleEngine
             $violations[] = $sectionConflict;
         }
 
+        $courseId = $attempt['course_id'] ?? $attempt['subject_id'] ?? 0;
         $roomTypeMatch = $this->checkRoomTypeMatch(
-            $attempt['subject_id'],
+            $courseId,
             $attempt['room_id'],
             (string) ($attempt['mode'] ?? 'on-site')
         );

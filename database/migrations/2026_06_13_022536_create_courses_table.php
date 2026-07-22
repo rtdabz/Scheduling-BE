@@ -11,14 +11,14 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('subjects', function (Blueprint $table) {
+        Schema::create('courses', function (Blueprint $table) {
             $table->id();
-            $table->string('subject_code')->unique();
-            $table->string('subject_name');
+            $table->string('course_code')->unique();
+            $table->string('course_name');
             $table->integer('lecture_hours')->default(0);
             $table->integer('lab_hours')->default(0);
             $table->integer('units')->default(0);
-            $table->enum('subject_category', ['major', 'minor']);
+            $table->enum('course_category', ['major', 'minor']);
             $table->enum('room_type_required', ['lecture', 'laboratory', 'field', 'online'])->default('lecture');
             $table->enum('year_level', ['1', '2', '3', '4']);
             $table->enum('semester', ['1st', '2nd', 'summer']);
@@ -33,6 +33,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('subjects');
+        Schema::dropIfExists('courses');
     }
 };

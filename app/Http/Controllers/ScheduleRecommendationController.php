@@ -45,8 +45,10 @@ class ScheduleRecommendationController extends Controller
     {
         $validated = $request->validate([
             'section_id' => 'required|integer|exists:sections,id',
-            'subject_ids' => 'required|array|min:1',
-            'subject_ids.*' => 'integer|exists:subjects,id',
+            'course_ids' => 'sometimes|array|min:1',
+            'course_ids.*' => 'integer|exists:courses,id',
+            'subject_ids' => 'sometimes|array|min:1',
+            'subject_ids.*' => 'integer|exists:courses,id',
             'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'is_hybrid' => 'sometimes|boolean',
             'preferred_patterns' => 'sometimes|array',

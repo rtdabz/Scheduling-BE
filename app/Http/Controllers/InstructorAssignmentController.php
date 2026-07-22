@@ -52,10 +52,10 @@ class InstructorAssignmentController extends Controller
             }
 
             $schedules = Schedule::query()
-                ->with(['section', 'subject.department', 'faculty', 'room', 'department'])
+                ->with(['section', 'course.department', 'faculty', 'room', 'department'])
                 ->where('term_id', $activeTerm->id)
                 ->whereIn('status', self::VISIBLE_STATUSES)
-                ->whereHas('subject', function ($query) use ($departmentId) {
+                ->whereHas('course', function ($query) use ($departmentId) {
                     $query->where('department_id', $departmentId)
                         ->where('status', 'active');
                 })
@@ -72,11 +72,14 @@ class InstructorAssignmentController extends Controller
                 ->orderBy('first_name')
                 ->get();
 
+            $courses = $schedules->pluck('course')->filter()->unique('id')->values();
+
             return [
                 'active_term' => $activeTerm,
                 'current_department_id' => $departmentId,
                 'departments' => $schedules->pluck('department')->filter()->unique('id')->values(),
-                'subjects' => $schedules->pluck('subject')->filter()->unique('id')->values(),
+                'courses' => $courses,
+                'subjects' => $courses,
                 'faculties' => $faculties,
                 'schedules' => $schedules,
             ];
@@ -91,12 +94,12 @@ class InstructorAssignmentController extends Controller
             'faculty_id' => 'required|integer|exists:faculties,id',
         ]);
 
-        $schedule->loadMissing('subject');
+        $schedule->loadMissing('course');
         $departmentId = (int) ($request->user()?->department_id ?? 0);
 
         if (
-            !$schedule->subject
-            || (int) $schedule->subject->department_id !== $departmentId
+            !$schedule->course
+            || (int) $schedule->course->department_id !== $departmentId
         ) {
             return response()->json([
                 'message' => 'Only the department that owns this subject can assign its instructor.',

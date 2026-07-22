@@ -6,7 +6,7 @@ namespace App\Services\Scheduling;
 
 use App\Models\Rooms;
 use App\Models\Sections;
-use App\Models\Subjects;
+use App\Models\Course;
 use Illuminate\Database\Eloquent\Collection;
 use InvalidArgumentException;
 use RuntimeException;

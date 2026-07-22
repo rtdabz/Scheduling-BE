@@ -10,7 +10,7 @@ use App\Http\Controllers\Api\UserController;
 
 use App\Http\Controllers\FacultyController;
 
-use App\Http\Controllers\SubjectsController;
+use App\Http\Controllers\CoursesController;
 
 use App\Http\Controllers\SectionsController;
 
@@ -20,6 +20,7 @@ use App\Http\Controllers\InstructorAssignmentController;
 use App\Http\Controllers\SystemNotificationController;
 use App\Http\Controllers\TermsController;
 use App\Http\Controllers\InitialDataController;
+use App\Http\Controllers\CurriculumController;
 
 Route::post('/login', [AuthController::class, 'login']);
 
@@ -63,6 +64,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('rooms', [RoomsController::class, 'index']);
         Route::get('rooms/{room}', [RoomsController::class, 'show']);
 
+        Route::get('/curricula/{curriculum}/full', [CurriculumController::class, 'showWithSubjects']);
+
         // Rooms management — restricted to authorized administrators (VPAA and Dean)
         Route::middleware('role:vpaa,dean')->group(function () {
             Route::post('rooms', [RoomsController::class, 'store']);
@@ -75,8 +78,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('terms/active', [TermsController::class, 'active']);
         Route::get('terms/{term}', [TermsController::class, 'show']);
 
-        Route::get('subjects', [SubjectsController::class, 'index']);
-        Route::get('subjects/{subject}', [SubjectsController::class, 'show']);
+        Route::get('courses', [CoursesController::class, 'index']);
+        Route::get('courses/{course}', [CoursesController::class, 'show']);
+        // Backwards compatibility alias
+        Route::get('subjects', [CoursesController::class, 'index']);
+        Route::get('subjects/{course}', [CoursesController::class, 'show']);
 
         Route::get('sections', [SectionsController::class, 'index']);
         Route::get('sections/term/{termId}', [SectionsController::class, 'byTerm']);
@@ -95,7 +101,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('faculties/{faculty}', [FacultyController::class, 'show']);
     });
 
-    // Subjects, Sections & Faculties — writable by VPAA, Secretary and Program Head.
+    // Courses, Sections & Faculties — writable by VPAA, Secretary and Program Head.
     // Recommendation workflow is limited to schedule-building roles.
     Route::middleware('role:secretary,program_head')->group(function () {
         Route::get('instructor-assignments', [InstructorAssignmentController::class, 'index']);
@@ -109,12 +115,18 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedule-recommendations/{scheduleRecommendation}/review', [ScheduleRecommendationController::class, 'review']);
         Route::post('schedule-recommendations/{scheduleRecommendation}/accept', [ScheduleRecommendationController::class, 'accept']);
         Route::post('schedule-recommendations/{scheduleRecommendation}/reject', [ScheduleRecommendationController::class, 'reject']);
+        Route::post('curricula/{curriculum}/subjects', [CurriculumController::class, 'attachSubject']);
+        Route::delete('curricula/{curriculum}/subjects/{course}', [CurriculumController::class, 'detachSubject']);
     });
 
     Route::middleware('role:vpaa,secretary,program_head')->group(function () {
-        Route::post('subjects', [SubjectsController::class, 'store']);
-        Route::match(['put', 'patch'], 'subjects/{subject}', [SubjectsController::class, 'update']);
-        Route::delete('subjects/{subject}', [SubjectsController::class, 'destroy']);
+        Route::post('courses', [CoursesController::class, 'store']);
+        Route::match(['put', 'patch'], 'courses/{course}', [CoursesController::class, 'update']);
+        Route::delete('courses/{course}', [CoursesController::class, 'destroy']);
+        // Backwards compatibility alias
+        Route::post('subjects', [CoursesController::class, 'store']);
+        Route::match(['put', 'patch'], 'subjects/{course}', [CoursesController::class, 'update']);
+        Route::delete('subjects/{course}', [CoursesController::class, 'destroy']);
 
         Route::post('sections', [SectionsController::class, 'store']);
         Route::match(['put', 'patch'], 'sections/{section}', [SectionsController::class, 'update']);
