@@ -14,7 +14,7 @@ return new class extends Migration
         Schema::create('rooms', function (Blueprint $table) {
             $table->id();
             $table->string('room_code')->unique();
-            $table->string('room_name')->nullable();
+            $table->string('building')->nullable();
             $table->enum('room_type', ['lecture', 'laboratory', 'online', 'field']);
             $table->enum('status', ['available', 'not available'])->default('available');
             $table->foreignId('department_id')->nullable()->constrained()->nullOnDelete();

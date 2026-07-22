@@ -27,7 +27,7 @@ class RoomsController extends Controller
     {
         $validated = $request->validate([
             'room_code' => 'required|string|max:255|unique:rooms,room_code',
-            'room_name' => 'nullable|string|max:255',
+            'building' => 'nullable|string|in:NEE Building,Building 1,Building 2,Building 3,Building 4,Building 5,Building 6',
             'room_type' => SchedulingPolicy::allowedRoomTypesRule('required|string'),
             'status' => SchedulingPolicy::allowedRoomStatusesRule('nullable|string'),
             'department_id' => 'nullable|exists:departments,id',
@@ -63,7 +63,7 @@ class RoomsController extends Controller
 
         $validated = $request->validate([
             'room_code' => ['sometimes', 'required', 'string', 'max:255', Rule::unique('rooms')->ignore($room->id)],
-            'room_name' => 'nullable|string|max:255',
+            'building' => 'nullable|string|in:NEE Building,Building 1,Building 2,Building 3,Building 4,Building 5,Building 6',
             'room_type' => SchedulingPolicy::allowedRoomTypesRule('sometimes|required|string'),
             'status' => SchedulingPolicy::allowedRoomStatusesRule('sometimes|nullable|string'),
             'department_id' => 'nullable|exists:departments,id',
