@@ -13,12 +13,13 @@ return new class extends Migration
     {
         Schema::create('curriculum_course', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('curriculum_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('course_id')->constrained()->cascadeOnDelete();
-            $table->tinyInteger('year_level');   // 1-4
-            $table->tinyInteger('semester');     // 1, 2, 3=summer
+            $table->foreignId('curriculum_id')->constrained('curricula')->cascadeOnDelete();
+            $table->foreignId('course_id')->constrained('courses')->cascadeOnDelete();
+            $table->tinyInteger('year_level')->unsigned();
+            $table->tinyInteger('semester')->unsigned();
             $table->timestamps();
-            $table->unique(['curriculum_id', 'course_id']);
+
+            $table->unique(['curriculum_id', 'course_id']); // prevent duplicate course in same curriculum
         });
     }
 
@@ -28,5 +29,6 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('curriculum_course');
+        Schema::dropIfExists('curriculum_subject');
     }
 };

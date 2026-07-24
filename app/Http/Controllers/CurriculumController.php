@@ -178,20 +178,21 @@ class CurriculumController extends Controller
         $curriculum->load('department');
 
         $courses = $curriculum->courses()
-            ->orderBy('pivot_year_level')
-            ->orderBy('pivot_semester')
+            ->orderBy('curriculum_course.year_level')
+            ->orderBy('curriculum_course.semester')
             ->get();
 
         $grouped = $courses->groupBy(fn($c) => $c->pivot->year_level . '-' . $c->pivot->semester)
             ->map(function ($group) {
                 $first = $group->first();
                 return [
-                    'year_level' => $first->pivot->year_level,
-                    'semester'   => $first->pivot->semester,
+                    'year_level' => (int)$first->pivot->year_level,
+                    'semester'   => (int)$first->pivot->semester,
                     'courses'    => $group->map(fn($c) => [
                         'id'          => $c->id,
                         'code'       => $c->course_code,
                         'title'      => $c->course_name,
+                        'category'   => $c->course_category,
                         'lec_units'  => $c->lecture_hours,
                         'lab_units'  => $c->lab_hours,
                         'total_units'=> $c->units,

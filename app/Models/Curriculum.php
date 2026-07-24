@@ -15,7 +15,7 @@ class Curriculum extends Model
     }
 
     public function courses() {
-        return $this->belongsToMany(Course::class, 'curriculum_course')
+        return $this->belongsToMany(Course::class, 'curriculum_course', 'curriculum_id', 'course_id')
             ->withPivot(['year_level', 'semester'])
             ->withTimestamps();
     }

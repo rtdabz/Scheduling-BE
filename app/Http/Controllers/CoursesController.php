@@ -9,13 +9,73 @@ class CoursesController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Course::with('department');
+        $deptId = $request->query('department_id');
+        $bypassActiveCurriculum = $request->query('all') === 'true' || $request->query('catalog') === 'true';
 
-        if ($request->has('department_id')) {
-            $query->where('department_id', $request->query('department_id'));
+        if (!$bypassActiveCurriculum) {
+            // 1. Query for active curricula scoped to the department if requested
+            $curriculaQuery = \App\Models\Curriculum::where('status', 'active');
+
+            if ($deptId) {
+                $curriculaQuery->where(function ($q) use ($deptId) {
+                    $q->where('department_id', $deptId)
+                      ->orWhereNull('department_id');
+                });
+            }
+
+            $activeCurriculaIds = $curriculaQuery->pluck('id');
+
+            if ($activeCurriculaIds->isNotEmpty()) {
+                // 2. Fetch all courses belonging to these active curricula
+                $courses = Course::with('department')
+                    ->whereHas('curricula', function ($q) use ($activeCurriculaIds) {
+                        $q->whereIn('curricula.id', $activeCurriculaIds);
+                    })
+                    ->when($request->has('status') && $request->query('status'), function ($q) use ($request) {
+                        $q->where('status', $request->query('status'));
+                    })
+                    ->get();
+
+                // 3. Load pivot data for year_level and semester mapping
+                $pivotData = \DB::table('curriculum_course')
+                    ->whereIn('curriculum_id', $activeCurriculaIds)
+                    ->get();
+
+                $pivotMap = [];
+                foreach ($pivotData as $p) {
+                    if (!isset($pivotMap[$p->course_id])) {
+                        $pivotMap[$p->course_id] = $p;
+                    }
+                }
+
+                $courses->transform(function ($course) use ($pivotMap) {
+                    if (isset($pivotMap[$course->id])) {
+                        $p = $pivotMap[$course->id];
+                        $course->year_level = (string)$p->year_level;
+                        $course->semester = $p->semester == 1 ? '1st' : ($p->semester == 2 ? '2nd' : 'summer');
+                    }
+                    return $course;
+                });
+
+                // Sort logically: Year Level ASC, Semester ASC, Course Code ASC
+                $courses = $courses->sortBy([
+                    ['year_level', 'asc'],
+                    ['semester', 'asc'],
+                    ['course_code', 'asc'],
+                ])->values();
+
+                return response()->json($courses);
+            }
         }
 
-        if ($request->has('status')) {
+        // Fallback: If no active curriculum exists, return courses table records
+        $query = Course::with('department');
+
+        if ($deptId) {
+            $query->where('department_id', $deptId);
+        }
+
+        if ($request->has('status') && $request->query('status')) {
             $query->where('status', $request->query('status'));
         }
 
