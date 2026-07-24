@@ -64,6 +64,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('rooms', [RoomsController::class, 'index']);
         Route::get('rooms/{room}', [RoomsController::class, 'show']);
 
+        // Curricula read
+        Route::get('/curricula', [CurriculumController::class, 'index']);
+        Route::get('/curricula/{curriculum}', [CurriculumController::class, 'show']);
         Route::get('/curricula/{curriculum}/full', [CurriculumController::class, 'showWithCourses']);
 
         // Rooms management — restricted to authorized administrators (VPAA and Dean)
@@ -135,5 +138,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('faculties', [FacultyController::class, 'store']);
         Route::match(['put', 'patch'], 'faculties/{faculty}', [FacultyController::class, 'update']);
         Route::delete('faculties/{faculty}', [FacultyController::class, 'destroy']);
+
+        // Curricula write
+        Route::post('/curricula', [CurriculumController::class, 'store']);
+        Route::match(['put', 'patch'], '/curricula/{curriculum}', [CurriculumController::class, 'update']);
+        Route::delete('/curricula/{curriculum}', [CurriculumController::class, 'destroy']);
+        Route::post('/curricula/{curriculum}/duplicate', [CurriculumController::class, 'duplicate']);
+        Route::patch('/curricula/{curriculum}/status', [CurriculumController::class, 'updateStatus']);
     });
 });

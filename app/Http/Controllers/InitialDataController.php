@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Course;
+use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
@@ -38,15 +39,32 @@ class InitialDataController extends Controller
             ))
             ->get();
 
-        $courses = Course::query()
-            ->with('department')
+        $activeCurriculum = Curriculum::query()
             ->where('status', 'active')
-            ->when($departmentId !== null, fn (Builder $query) => $query->where(
-                fn (Builder $scope) => $scope
-                    ->where('department_id', $departmentId)
-                    ->orWhere('course_category', 'minor'),
-            ))
-            ->get();
+            ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
+            ->first();
+
+        if ($activeCurriculum) {
+            $courses = $activeCurriculum->courses()->with('department')->get()->map(function ($c) {
+                if (isset($c->pivot->year_level)) {
+                    $c->year_level = (string) $c->pivot->year_level;
+                }
+                if (isset($c->pivot->semester)) {
+                    $c->semester = (string) $c->pivot->semester === '1' ? '1st' : ((string) $c->pivot->semester === '2' ? '2nd' : 'summer');
+                }
+                return $c;
+            });
+        } else {
+            $courses = Course::query()
+                ->with('department')
+                ->where('status', 'active')
+                ->when($departmentId !== null, fn (Builder $query) => $query->where(
+                    fn (Builder $scope) => $scope
+                        ->where('department_id', $departmentId)
+                        ->orWhere('course_category', 'minor'),
+                ))
+                ->get();
+        }
 
         $sections = Sections::query()
             ->with(['department', 'term'])

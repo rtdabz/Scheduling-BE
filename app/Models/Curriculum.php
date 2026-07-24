@@ -8,7 +8,7 @@ class Curriculum extends Model
 {
     protected $table = 'curricula';
 
-    protected $fillable = ['department_id', 'program_id', 'code', 'effective_school_year', 'status'];
+    protected $fillable = ['name', 'department_id', 'program_id', 'code', 'curriculum_version', 'academic_year', 'effective_school_year', 'status', 'description'];
 
     public function department() {
         return $this->belongsTo(Departments::class, 'department_id');

@@ -32,8 +32,8 @@ class CoursesController extends Controller
             'units' => 'required|integer|min:0',
             'course_category' => 'required|in:major,minor',
             'room_type_required' => 'required|in:lecture,laboratory,field,online',
-            'year_level' => 'required|in:1,2,3,4',
-            'semester' => 'required|in:1st,2nd,summer',
+            'year_level' => 'nullable|in:1,2,3,4',
+            'semester' => 'nullable|in:1st,2nd,summer',
             'department_id' => 'nullable|exists:departments,id',
             'status' => 'nullable|in:active,inactive',
         ]);
