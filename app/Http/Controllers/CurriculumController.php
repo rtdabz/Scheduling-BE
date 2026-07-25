@@ -144,7 +144,6 @@ class CurriculumController extends Controller
             'name' => $curriculum->name . ' (Copy)',
             'code' => $curriculum->code . '-COPY-' . time(),
             'department_id' => $curriculum->department_id,
-            'program_id' => $curriculum->program_id,
             'curriculum_version' => $curriculum->curriculum_version,
             'academic_year' => $curriculum->academic_year,
             'effective_school_year' => $curriculum->effective_school_year,
@@ -176,6 +175,12 @@ class CurriculumController extends Controller
         $validated = $request->validate([
             'status' => 'required|string|in:draft,active,archived',
         ]);
+
+        if ($validated['status'] === 'archived' && $curriculum->status === 'active') {
+            return response()->json([
+                'message' => 'Cannot archive an active curriculum. Please deactivate it first.'
+            ], 422);
+        }
 
         \DB::transaction(function () use ($validated, $curriculum) {
             if ($validated['status'] === 'active' && $curriculum->department_id) {
