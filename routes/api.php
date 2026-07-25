@@ -119,6 +119,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedule-recommendations/{scheduleRecommendation}/accept', [ScheduleRecommendationController::class, 'accept']);
         Route::post('schedule-recommendations/{scheduleRecommendation}/reject', [ScheduleRecommendationController::class, 'reject']);
         Route::post('curricula/{curriculum}/courses', [CurriculumController::class, 'attachCourse']);
+        Route::post('curricula/{curriculum}/courses/batch', [CurriculumController::class, 'attachCoursesBatch']);
+        Route::post('curricula/{curriculum}/courses/batch-create', [CurriculumController::class, 'batchCreateAndAttachCourses']);
         Route::delete('curricula/{curriculum}/courses/{course}', [CurriculumController::class, 'detachCourse']);
     });
 

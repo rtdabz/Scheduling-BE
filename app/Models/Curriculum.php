@@ -10,6 +10,22 @@ class Curriculum extends Model
 
     protected $fillable = ['name', 'department_id', 'program_id', 'code', 'curriculum_version', 'academic_year', 'effective_school_year', 'status', 'description'];
 
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::saving(function ($curriculum) {
+            if ($curriculum->status === 'active' && $curriculum->department_id) {
+                \DB::transaction(function () use ($curriculum) {
+                    self::where('department_id', $curriculum->department_id)
+                        ->where('id', '!=', $curriculum->id)
+                        ->where('status', 'active')
+                        ->update(['status' => 'draft']);
+                });
+            }
+        });
+    }
+
     public function department() {
         return $this->belongsTo(Departments::class, 'department_id');
     }

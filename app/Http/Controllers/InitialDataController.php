@@ -55,15 +55,7 @@ class InitialDataController extends Controller
                 return $c;
             });
         } else {
-            $courses = Course::query()
-                ->with('department')
-                ->where('status', 'active')
-                ->when($departmentId !== null, fn (Builder $query) => $query->where(
-                    fn (Builder $scope) => $scope
-                        ->where('department_id', $departmentId)
-                        ->orWhere('course_category', 'minor'),
-                ))
-                ->get();
+            $courses = collect();
         }
 
         $sections = Sections::query()

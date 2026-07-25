@@ -65,6 +65,8 @@ class CoursesController extends Controller
                 ])->values();
 
                 return response()->json($courses);
+            } else {
+                return response()->json([]);
             }
         }
 

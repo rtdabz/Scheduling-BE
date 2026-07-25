@@ -23,15 +23,23 @@ class ScheduleController extends Controller
         $this->ruleEngine = $ruleEngine;
     }
 
-    // Get all schedules
     public function index(Request $request)
     {
-        $schedules = Schedule::with([
+        $query = Schedule::with([
             'term', 'section', 'course', 'faculty', 'room', 'department'
-        ])
-            ->when($this->departmentScope($request) !== null, fn ($query) => $query->where('department_id', $this->departmentScope($request)))
-            ->latest()
-            ->get();
+        ]);
+
+        if ($request->has('term_id') && $request->term_id) {
+            $query->where('term_id', $request->term_id);
+        }
+
+        if ($request->has('department_id') && $request->department_id) {
+            $query->where('department_id', $request->department_id);
+        } elseif ($this->departmentScope($request) !== null) {
+            $query->where('department_id', $this->departmentScope($request));
+        }
+
+        $schedules = $query->latest()->get();
 
         return response()->json($schedules);
     }
