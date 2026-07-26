@@ -20,6 +20,7 @@ final class SchedulingPolicy
         'Thursday',
         'Friday',
         'Saturday',
+        'Sunday',
     ];
 
     public const PERSISTABLE_DAYS = [
@@ -58,7 +59,7 @@ final class SchedulingPolicy
         'TTh' => ['Tuesday', 'Thursday'],
     ];
 
-    public const CUSTOM_PATTERN_REGEX = '/^days:([0-5])-([0-5])$/';
+    public const CUSTOM_PATTERN_REGEX = '/^days:([0-6])-([0-6])$/';
 
     public const SOFT_SATURDAY_PENALTY = 8;
     public const SOFT_LATE_START_AFTER_SLOT = 22;
@@ -83,7 +84,7 @@ final class SchedulingPolicy
         'csp_generation_day' => [
             'severity' => 'hard',
             'category' => 'calendar',
-            'description' => 'CSP-generated schedules use the Monday-Saturday grid used by the scheduler UI.',
+            'description' => 'CSP-generated schedules use the Monday-Sunday grid used by the scheduler UI.',
             'enforced_by' => ['csp'],
         ],
         'operating_hours' => [
@@ -239,7 +240,7 @@ final class SchedulingPolicy
         'saturday_penalty' => [
             'severity' => 'soft',
             'category' => 'preference',
-            'description' => 'Prefer weekday schedules over Saturday schedules.',
+            'description' => 'Prefer weekday schedules over Saturday or Sunday schedules.',
             'enforced_by' => ['csp'],
         ],
         'late_slot_penalty' => [

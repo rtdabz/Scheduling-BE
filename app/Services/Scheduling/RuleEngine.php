@@ -362,12 +362,12 @@ class RuleEngine
 
             if (
                 $faculty->employment_type === 'part-time'
-                && (string) ($attempt['day'] ?? '') !== 'Saturday'
+                && !in_array((string) ($attempt['day'] ?? ''), ['Saturday', 'Sunday'], true)
                 && SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00')) < '17:00'
             ) {
                 $violations[] = [
                     'rule' => 'part_time_faculty_availability',
-                    'message' => 'Part-time instructors can only be assigned from 5:00 PM onward on weekdays or any time on Saturdays.',
+                    'message' => 'Part-time instructors can only be assigned from 5:00 PM onward on weekdays or any time on Saturdays or Sundays.',
                 ];
             }
 

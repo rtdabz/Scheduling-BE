@@ -121,11 +121,50 @@ class ScheduleController extends Controller
             'operations.*.is_hybrid' => 'sometimes|boolean',
             'operations.*.preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
             'operations.*.status' => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
+            'delete_ids' => 'sometimes|array',
+            'delete_ids.*' => 'integer|exists:schedules,id',
         ]);
 
-        $savedSchedules = [];
+        $deleteIds = $validated['delete_ids'] ?? [];
+        $allViolations = [];
 
-        DB::transaction(function () use ($validated, $request, &$savedSchedules) {
+        foreach ($validated['operations'] as $index => $op) {
+            $attemptData = $op;
+            if (isset($attemptData['subject_id']) && !isset($attemptData['course_id'])) {
+                $attemptData['course_id'] = $attemptData['subject_id'];
+            }
+            if (isset($op['id'])) {
+                $attemptData['ignore_schedule_id'] = $op['id'];
+            }
+            if (!empty($deleteIds)) {
+                $attemptData['ignore_schedule_ids'] = array_merge(
+                    (array) ($attemptData['ignore_schedule_id'] ?? []),
+                    $deleteIds
+                );
+            }
+
+            $violations = $this->ruleEngine->validate($attemptData);
+            if (!empty($violations)) {
+                $allViolations = array_merge($allViolations, $violations);
+            }
+        }
+
+        if (!empty($allViolations)) {
+            return response()->json([
+                'message' => 'Schedule operation conflicts with existing entries.',
+                'violations' => $allViolations,
+            ], 422);
+        }
+
+        $savedSchedules = [];
+        $deletedScheduleIds = [];
+
+        DB::transaction(function () use ($validated, $deleteIds, &$savedSchedules, &$deletedScheduleIds) {
+            if (!empty($deleteIds)) {
+                Schedule::whereIn('id', $deleteIds)->delete();
+                $deletedScheduleIds = array_map('intval', $deleteIds);
+            }
+
             foreach ($validated['operations'] as $op) {
                 if (isset($op['subject_id']) && !isset($op['course_id'])) {
                     $op['course_id'] = $op['subject_id'];
@@ -137,13 +176,14 @@ class ScheduleController extends Controller
                 } else {
                     $schedule = Schedule::create($op);
                 }
-                $savedSchedules[] = $schedule;
+                $savedSchedules[] = $schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department']);
             }
         });
 
         return response()->json([
             'message' => 'Batch schedule operation completed successfully.',
             'schedules' => $savedSchedules,
+            'deleted_schedule_ids' => $deletedScheduleIds,
         ]);
     }
 
@@ -249,8 +289,12 @@ class ScheduleController extends Controller
 
         $this->notifications->notifyRoles(
             ['vpaa', 'dean'],
-            "Schedule {$action}",
-            "{$actor->name} {$action} schedule for {$courseCode} ({$sectionName})."
+            'schedule_activity',
+            "Schedule " . ucfirst($action),
+            "{$actor->name} {$action} schedule for {$courseCode} ({$sectionName}).",
+            $actor,
+            $schedule->department_id,
+            $schedule->term_id
         );
     }
 }

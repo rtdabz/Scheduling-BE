@@ -717,7 +717,7 @@ class CSPSolver
 
                 $blockDurations[] = $block['end_slot'] - $block['start_slot'];
 
-                if ($block['day'] === 'Saturday') {
+                if ($block['day'] === 'Saturday' || $block['day'] === 'Sunday') {
                     $score += SchedulingPolicy::SOFT_SATURDAY_PENALTY;
                 }
 
