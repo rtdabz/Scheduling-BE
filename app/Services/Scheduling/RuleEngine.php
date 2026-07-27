@@ -174,6 +174,15 @@ class RuleEngine
                 ];
         }
 
+        if ($deliveryMode === 'field') {
+            return $room->room_type === 'field'
+                ? null
+                : [
+                    'rule' => 'room_type_match',
+                    'message' => 'Field schedules must use a field room assignment.',
+                ];
+        }
+
         if ($course->room_type_required !== $room->room_type) {
             return [
                 'rule' => 'room_type_match',
@@ -363,7 +372,7 @@ class RuleEngine
             if (
                 $faculty->employment_type === 'part-time'
                 && !in_array((string) ($attempt['day'] ?? ''), ['Saturday', 'Sunday'], true)
-                && SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00')) < '17:00'
+                && SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00')) < '17:00:00'
             ) {
                 $violations[] = [
                     'rule' => 'part_time_faculty_availability',

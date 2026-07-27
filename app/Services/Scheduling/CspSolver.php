@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services\Scheduling;
 
 use App\Models\Rooms;
+use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Course;
 use Illuminate\Database\Eloquent\Collection;
@@ -16,15 +17,22 @@ class CSPSolver
     /** @var array<string, bool> */
     private array $databaseValidityCache = [];
 
+    /**
+     * Existing persisted schedules indexed for O(1) conflict lookup.
+     * Keyed as "r:{roomId}:{day}" and "s:{sectionId}:{day}".
+     *
+     * @var array<string, list<array{start_time: string, end_time: string}>>
+     */
+    private array $existingScheduleIndex = [];
+
     private int $iterations = 0;
     private int $maxIterations = 250_000;
     private float $startedAt = 0.0;
     private float $timeoutSeconds = 8.0;
     private bool $searchLimitReached = false;
 
-    public function __construct(
-        private readonly RuleEngine $ruleEngine,
-    ) {
+    public function __construct()
+    {
     }
 
     /**
@@ -166,7 +174,7 @@ class CSPSolver
 
         $this->validateSectionForScheduling($section);
 
-        $subjects = Subjects::query()
+        $subjects = Course::query()
             ->whereIn('id', $subjectIds)
             ->get()
             ->keyBy('id');
@@ -246,6 +254,11 @@ class CSPSolver
 
         $rawSolutions = [];
         $solutionSignatures = [];
+
+        $this->preloadExistingSchedules(
+            termId: (int) $section->term_id,
+            sectionId: (int) $section->id,
+        );
 
         $this->backtrack(
             variableIndex: 0,
@@ -451,7 +464,7 @@ class CSPSolver
     }
 
     private function buildSingleDayDomain(
-        Subjects $subject,
+        Course $subject,
         Collection $matchingRooms,
         int $durationSlots,
         string $deliveryMode,
@@ -492,7 +505,7 @@ class CSPSolver
     }
 
     private function buildPatternDomain(
-        Subjects $subject,
+        Course $subject,
         Collection $matchingRooms,
         int $durationSlots,
         string $preferredPattern,
@@ -614,22 +627,19 @@ class CSPSolver
                 continue;
             }
 
-            $violations = $this->ruleEngine->validate([
-                'term_id' => (int) $section->term_id,
-                'section_id' => (int) $section->id,
-                'subject_id' => $candidate['subject_id'],
-                'faculty_id' => null,
-                'room_id' => $candidate['room_id'],
-                'department_id' => (int) $section->department_id,
-                'day' => $block['day'],
-                'start_time' => $block['start_time'],
-                'end_time' => $block['end_time'],
-                'preferred_pattern' => $candidate['preferred_pattern'],
-                'mode' => $candidate['mode'],
-                'is_hybrid' => $candidate['is_hybrid'],
-            ]);
+            // All static integrity checks (term enabled, section/subject/room active,
+            // room type, room department, delivery alignment, slot grid, operating hours)
+            // are guaranteed by the pre-filtering and validation done in solveRanked().
+            // The only runtime check needed here is whether a persisted schedule
+            // already occupies this room or section slot.
+            $isValid = !$this->hasExistingScheduleConflict(
+                roomId: (int) $candidate['room_id'],
+                sectionId: (int) $section->id,
+                day: $block['day'],
+                startTime: $block['start_time'],
+                endTime: $block['end_time'],
+            );
 
-            $isValid = $violations === [];
             $this->databaseValidityCache[$cacheKey] = $isValid;
 
             if (!$isValid) {
@@ -806,7 +816,7 @@ class CSPSolver
         return $rows;
     }
 
-    private function getDurationSlots(Subjects $subject): int
+    private function getDurationSlots(Course $subject): int
     {
         $rawSlots = (float) $subject->units * 2;
 
@@ -886,6 +896,7 @@ class CSPSolver
         $this->timeoutSeconds = $timeoutSeconds;
         $this->searchLimitReached = false;
         $this->databaseValidityCache = [];
+        $this->existingScheduleIndex = [];
     }
 
     private function normalizeInputSchema(array $input): array
@@ -1102,7 +1113,7 @@ class CSPSolver
             }
 
             if (
-                $subject->subject_category === 'major'
+                $subject->course_category === 'major'
                 && $subject->department_id !== null
                 && (int) $subject->department_id !== (int) $section->department_id
             ) {
@@ -1175,7 +1186,7 @@ class CSPSolver
     }
 
     private function targetRoomTypeForSubject(
-        Subjects $subject,
+        Course $subject,
         string $deliveryMode,
     ): string {
         if ($deliveryMode === 'online') {
@@ -1210,5 +1221,59 @@ class CSPSolver
         }
 
         return $normalized;
+    }
+
+    /**
+     * Pre-fetches all persisted schedules for the given term into memory and
+     * builds two lookup indexes:
+     *   "r:{roomId}:{day}"    → time ranges already booked for that room on that day
+     *   "s:{sectionId}:{day}" → time ranges already booked for that section on that day
+     *
+     * This single query replaces the repeated per-candidate DB queries that were
+     * previously issued inside the backtracking loop.
+     */
+    private function preloadExistingSchedules(int $termId, int $sectionId): void
+    {
+        $this->existingScheduleIndex = [];
+
+        $schedules = Schedule::query()
+            ->where('term_id', $termId)
+            ->get(['room_id', 'section_id', 'day', 'start_time', 'end_time']);
+
+        foreach ($schedules as $schedule) {
+            $timeRange = [
+                'start_time' => (string) $schedule->start_time,
+                'end_time'   => (string) $schedule->end_time,
+            ];
+
+            $this->existingScheduleIndex["r:{$schedule->room_id}:{$schedule->day}"][] = $timeRange;
+            $this->existingScheduleIndex["s:{$schedule->section_id}:{$schedule->day}"][] = $timeRange;
+        }
+    }
+
+    /**
+     * Returns true if any persisted schedule conflicts with the given time window
+     * for either the candidate room or the target section on the specified day.
+     */
+    private function hasExistingScheduleConflict(
+        int $roomId,
+        int $sectionId,
+        string $day,
+        string $startTime,
+        string $endTime,
+    ): bool {
+        foreach ($this->existingScheduleIndex["r:{$roomId}:{$day}"] ?? [] as $existing) {
+            if ($startTime < $existing['end_time'] && $existing['start_time'] < $endTime) {
+                return true;
+            }
+        }
+
+        foreach ($this->existingScheduleIndex["s:{$sectionId}:{$day}"] ?? [] as $existing) {
+            if ($startTime < $existing['end_time'] && $existing['start_time'] < $endTime) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

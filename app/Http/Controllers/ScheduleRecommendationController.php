@@ -144,7 +144,7 @@ class ScheduleRecommendationController extends Controller
         $validated = $request->validate([
             'section_id' => 'required|integer|exists:sections,id',
             'subject_ids' => 'required|array|min:1',
-            'subject_ids.*' => 'integer|exists:subjects,id',
+            'subject_ids.*' => 'integer|exists:courses,id',
             'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'is_hybrid' => 'sometimes|boolean',
             'preferred_patterns' => 'sometimes|array',
@@ -177,7 +177,7 @@ class ScheduleRecommendationController extends Controller
         $validated = $request->validate([
             'section_id' => 'required|integer|exists:sections,id',
             'subject_ids' => 'required|array|min:1',
-            'subject_ids.*' => 'integer|exists:subjects,id',
+            'subject_ids.*' => 'integer|exists:courses,id',
             'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'is_hybrid' => 'sometimes|boolean',
             'preferred_patterns' => 'sometimes|array',
@@ -330,7 +330,7 @@ class ScheduleRecommendationController extends Controller
                     $createdSchedules[] = Schedule::create($row)->load([
                         'term',
                         'section',
-                        'subject',
+                        'course',
                         'faculty',
                         'room',
                         'department',
@@ -449,22 +449,26 @@ class ScheduleRecommendationController extends Controller
         }
 
         return array_map(function (array $row) use ($recommendation): array {
+            $subjectId = (int) $row['subject_id'];
+
             return [
-                'term_id' => (int) ($row['term_id'] ?? $recommendation->term_id),
-                'section_id' => (int) ($row['section_id'] ?? $recommendation->section_id),
-                'subject_id' => (int) $row['subject_id'],
-                'faculty_id' => isset($row['faculty_id']) ? (int) $row['faculty_id'] : null,
-                'room_id' => (int) $row['room_id'],
-                'department_id' => (int) ($row['department_id'] ?? $recommendation->department_id),
-                'day' => (string) $row['day'],
-                'start_time' => SchedulingPolicy::normalizeTime((string) $row['start_time']),
-                'end_time' => SchedulingPolicy::normalizeTime((string) $row['end_time']),
-                'mode' => (string) ($row['mode'] ?? 'on-site'),
-                'is_hybrid' => (bool) ($row['is_hybrid'] ?? false),
+                'term_id'           => (int) ($row['term_id'] ?? $recommendation->term_id),
+                'section_id'        => (int) ($row['section_id'] ?? $recommendation->section_id),
+                'course_id'         => $subjectId,
+                'subject_id'        => $subjectId,
+                'faculty_id'        => isset($row['faculty_id']) ? (int) $row['faculty_id'] : null,
+                'room_id'           => (int) $row['room_id'],
+                'department_id'     => (int) ($row['department_id'] ?? $recommendation->department_id),
+                'day'               => (string) $row['day'],
+                'start_time'        => SchedulingPolicy::normalizeTime((string) $row['start_time']),
+                'end_time'          => SchedulingPolicy::normalizeTime((string) $row['end_time']),
+                'mode'              => (string) ($row['mode'] ?? 'on-site'),
+                'is_hybrid'         => (bool) ($row['is_hybrid'] ?? false),
                 'preferred_pattern' => $row['preferred_pattern'] ?? null,
-                'status' => (string) ($row['status'] ?? 'draft'),
+                'status'            => (string) ($row['status'] ?? 'draft'),
             ];
         }, $rows);
+
     }
 
     private function validateBatchConflicts(array $rows): void
@@ -507,7 +511,7 @@ class ScheduleRecommendationController extends Controller
             $duplicateExists = Schedule::query()
                 ->where('term_id', $row['term_id'])
                 ->where('section_id', $row['section_id'])
-                ->where('subject_id', $row['subject_id'])
+                ->where('course_id', $row['course_id'])
                 ->exists();
 
             if ($duplicateExists) {

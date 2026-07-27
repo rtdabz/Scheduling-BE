@@ -195,6 +195,24 @@ final class SchedulingPolicy
             'description' => 'Inactive faculty members cannot be assigned to schedules.',
             'enforced_by' => ['rule_engine'],
         ],
+        'faculty_department_alignment' => [
+            'severity'    => 'hard',
+            'category'    => 'faculty',
+            'description' => 'The assigned faculty member must belong to the same department as the scheduled section (applies to major subjects).',
+            'enforced_by' => ['rule_engine'],
+        ],
+        'service_subject_faculty_department_alignment' => [
+            'severity'    => 'hard',
+            'category'    => 'faculty',
+            'description' => 'Minor (service) subjects that belong to a specific department must be assigned to a faculty member from that owning department.',
+            'enforced_by' => ['rule_engine'],
+        ],
+        'part_time_faculty_availability' => [
+            'severity'    => 'hard',
+            'category'    => 'faculty',
+            'description' => 'Part-time instructors can only be assigned from 5:00 PM onward on weekdays, or at any time on Saturdays or Sundays.',
+            'enforced_by' => ['rule_engine'],
+        ],
         'section_active' => [
             'severity' => 'hard',
             'category' => 'section',
