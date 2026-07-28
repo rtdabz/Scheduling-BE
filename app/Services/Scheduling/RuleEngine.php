@@ -401,23 +401,33 @@ class RuleEngine
         $mode = (string) ($attempt['mode'] ?? 'on-site');
         if ($mode === 'online' && $room->room_type !== 'online') {
             $violations[] = [
-                'rule' => 'delivery_room_alignment',
+                'rule'    => 'delivery_room_alignment',
                 'message' => 'Online schedules must use an online room assignment.',
             ];
         }
 
         if ($mode === 'field' && $room->room_type !== 'field') {
             $violations[] = [
-                'rule' => 'delivery_room_alignment',
+                'rule'    => 'delivery_room_alignment',
                 'message' => 'Field schedules must use a field room assignment.',
             ];
         }
 
         if ($mode === 'on-site' && in_array($room->room_type, ['online', 'field'], true)) {
             $violations[] = [
-                'rule' => 'delivery_room_alignment',
+                'rule'    => 'delivery_room_alignment',
                 'message' => 'On-site schedules must use a lecture or laboratory room assignment.',
             ];
+        }
+
+        // Day-category constraint: enforce which days each course type may use.
+        $dayCategoryViolation = $this->checkDayCategoryConstraint(
+            course: $course,
+            day: (string) ($attempt['day'] ?? ''),
+            mode: $mode,
+        );
+        if ($dayCategoryViolation !== null) {
+            $violations[] = $dayCategoryViolation;
         }
 
         return $violations;
@@ -465,16 +475,24 @@ class RuleEngine
             $this->checkRelationalIntegrity($attempt)
         );
 
-        $roomConflict = $this->checkRoomConflict(
-            $attempt['room_id'],
-            $attempt['term_id'],
-            $attempt['day'],
-            $attempt['start_time'],
-            $attempt['end_time'],
-            $ignoreId
-        );
-        if ($roomConflict) {
-            $violations[] = $roomConflict;
+        $mode = (string) ($attempt['mode'] ?? 'on-site');
+
+        // Online and field classes share a single virtual room (no physical capacity).
+        // Room occupancy is irrelevant for these delivery modes — multiple sections
+        // may run an online or field class at the same day and time without conflict.
+        // On-site schedules continue to enforce room exclusivity.
+        if ($mode !== 'online' && $mode !== 'field') {
+            $roomConflict = $this->checkRoomConflict(
+                $attempt['room_id'],
+                $attempt['term_id'],
+                $attempt['day'],
+                $attempt['start_time'],
+                $attempt['end_time'],
+                $ignoreId
+            );
+            if ($roomConflict) {
+                $violations[] = $roomConflict;
+            }
         }
 
         if (!empty($attempt['faculty_id'])) {
@@ -566,5 +584,79 @@ class RuleEngine
             array_map(static fn (mixed $id): int => (int) $id, $ids),
             static fn (int $id): bool => $id > 0,
         ));
+    }
+
+    /**
+     * Enforces which days each course type may be scheduled on:
+     *
+     *  - NSTP (ROTC/CWTS)           : Sunday only.
+     *  - PATHFIT / other field (non-NSTP): Monday–Friday only.
+     *  - Minor non-field (GEC, GEE): Monday–Friday only.
+     *  - Major on Sunday            : online mode only (no room assignment).
+     */
+    private function checkDayCategoryConstraint(
+        Course $course,
+        string $day,
+        string $mode,
+    ): ?array {
+        if ($this->isNstpCourse($course)) {
+            if ($day !== 'Saturday') {
+                return [
+                    'rule'    => 'nstp_day_constraint',
+                    'message' => 'NSTP/ROTC/CWTS courses must be scheduled on Saturday.',
+                ];
+            }
+            return null;
+        }
+
+        if ($this->isFieldCourse($course)) {
+            // Non-NSTP field courses (PATHFIT, etc.): Mon–Fri only.
+            if (!in_array($day, SchedulingPolicy::WEEKDAYS, true)) {
+                return [
+                    'rule'    => 'field_day_constraint',
+                    'message' => 'PATHFIT and other field courses must be scheduled Monday through Friday.',
+                ];
+            }
+            return null;
+        }
+
+        $category = strtolower((string) ($course->course_category ?? 'major'));
+
+        if ($category === 'minor') {
+            // Minor courses (GEC, GEE, …): Mon–Fri only.
+            if (!in_array($day, SchedulingPolicy::WEEKDAYS, true)) {
+                return [
+                    'rule'    => 'minor_day_constraint',
+                    'message' => 'Minor courses (GEC, GEE, and similar) must be scheduled Monday through Friday.',
+                ];
+            }
+            return null;
+        }
+
+        // Major courses: any day Mon–Sat; Sunday requires online mode.
+        if ($day === 'Sunday' && $mode !== 'online') {
+            return [
+                'rule'    => 'major_sunday_mode_constraint',
+                'message' => 'Major courses scheduled on Sunday must use online delivery mode.',
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Returns true when the course is an NSTP-type course (ROTC or CWTS).
+     */
+    private function isNstpCourse(Course $course): bool
+    {
+        return SchedulingPolicy::isNstpCourse($course);
+    }
+
+    /**
+     * Returns true when the course requires a field room (PATHFIT, NSTP, etc.).
+     */
+    private function isFieldCourse(Course $course): bool
+    {
+        return SchedulingPolicy::isFieldCourse($course);
     }
 }

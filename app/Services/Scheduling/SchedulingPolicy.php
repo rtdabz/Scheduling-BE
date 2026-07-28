@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling;
 
+use App\Models\Course;
 use Illuminate\Validation\Rule;
 use InvalidArgumentException;
 
@@ -21,6 +22,25 @@ final class SchedulingPolicy
         'Friday',
         'Saturday',
         'Sunday',
+    ];
+
+    /** Mon–Fri only. Used for minor and PATHFIT course day constraints. */
+    public const WEEKDAYS = [
+        'Monday',
+        'Tuesday',
+        'Wednesday',
+        'Thursday',
+        'Friday',
+    ];
+
+    /** Mon–Sat. Used for major course day constraints (Sunday is online-only). */
+    public const WEEKDAYS_AND_SATURDAY = [
+        'Monday',
+        'Tuesday',
+        'Wednesday',
+        'Thursday',
+        'Friday',
+        'Saturday',
     ];
 
     public const PERSISTABLE_DAYS = [
@@ -60,6 +80,8 @@ final class SchedulingPolicy
     ];
 
     public const CUSTOM_PATTERN_REGEX = '/^days:([0-6])-([0-6])$/';
+
+    public const MAX_CLASSES_PER_DAY = 3;
 
     public const SOFT_SATURDAY_PENALTY = 8;
     public const SOFT_LATE_START_AFTER_SLOT = 22;
@@ -498,5 +520,53 @@ final class SchedulingPolicy
             static fn (array $constraint): bool =>
                 $constraint['severity'] === $severity,
         ));
+    }
+
+    /**
+     * Returns true when the course is an NSTP-type course (ROTC or CWTS).
+     */
+    public static function isNstpCourse(Course $course): bool
+    {
+        $code     = strtoupper((string) ($course->course_code ?? $course->subject_code ?? ''));
+        $name     = strtoupper((string) ($course->course_name ?? $course->subject_name ?? ''));
+        $category = strtolower((string) ($course->course_category ?? $course->subject_category ?? ''));
+
+        if (in_array($category, ['nstp', 'rotc', 'cwts'], true)) {
+            return true;
+        }
+
+        foreach (['NSTP', 'ROTC', 'CWTS'] as $keyword) {
+            if (str_contains($code, $keyword) || str_contains($name, $keyword)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Returns true when the course requires a field room (PATHFIT, NSTP, etc.).
+     */
+    public static function isFieldCourse(Course $course): bool
+    {
+        if ($course->room_type_required === 'field') {
+            return true;
+        }
+
+        $code     = strtoupper((string) ($course->course_code ?? $course->subject_code ?? ''));
+        $name     = strtoupper((string) ($course->course_name ?? $course->subject_name ?? ''));
+        $category = strtolower((string) ($course->course_category ?? $course->subject_category ?? ''));
+
+        if (in_array($category, ['pathfit', 'nstp', 'rotc', 'cwts'], true)) {
+            return true;
+        }
+
+        foreach (['PATHFIT', 'NSTP', 'ROTC', 'CWTS'] as $keyword) {
+            if (str_contains($code, $keyword) || str_contains($name, $keyword)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

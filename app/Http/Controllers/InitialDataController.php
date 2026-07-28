@@ -61,7 +61,13 @@ class InitialDataController extends Controller
         $sections = Sections::query()
             ->with(['department', 'term'])
             ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
-            ->when($activeTermId !== null, fn (Builder $query) => $query->where('term_id', $activeTermId))
+            ->when($activeTermId !== null, fn (Builder $query) => $query->where(function (Builder $q) use ($activeTermId, $activeTerm) {
+                $q->where('term_id', $activeTermId)
+                  ->orWhereNull('term_id');
+                if ($activeTerm && !empty($activeTerm->semester)) {
+                    $q->orWhere('semester', $activeTerm->semester);
+                }
+            }))
             ->get();
 
         $schedules = Schedule::query()
