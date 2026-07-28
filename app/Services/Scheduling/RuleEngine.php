@@ -547,6 +547,17 @@ class RuleEngine
             $violations[] = $hoursCheck;
         }
 
+        if (($attempt['mode'] ?? 'on-site') === 'online') {
+            $onlineLimitViolation = $this->checkSectionOnlineLimit(
+                (int) $attempt['section_id'],
+                (int) $attempt['term_id'],
+                $ignoreId
+            );
+            if ($onlineLimitViolation) {
+                $violations[] = $onlineLimitViolation;
+            }
+        }
+
         return $violations;
     }
 
@@ -650,6 +661,45 @@ class RuleEngine
     private function isNstpCourse(Course $course): bool
     {
         return SchedulingPolicy::isNstpCourse($course);
+    }
+
+    /**
+     * Enforces that a single section does not exceed 5 online classes.
+     */
+    private function checkSectionOnlineLimit(
+        int $sectionId,
+        int $termId,
+        int|array|null $ignoreId
+    ): ?array {
+        $ignoreIds = $this->normalizeIgnoreScheduleIds($ignoreId);
+
+        // If updating an existing schedule that is ALREADY online in the database,
+        // it is not adding a new online class to the section.
+        if (!empty($ignoreIds)) {
+            $alreadyOnline = Schedule::whereIn('id', $ignoreIds)
+                ->where('mode', 'online')
+                ->exists();
+            if ($alreadyOnline) {
+                return null;
+            }
+        }
+
+        $query = Schedule::where('section_id', $sectionId)
+            ->where('term_id', $termId)
+            ->where('mode', 'online');
+
+        if (!empty($ignoreIds)) {
+            $query->whereNotIn('id', $ignoreIds);
+        }
+
+        if ($query->count() >= 5) {
+            return [
+                'rule'    => 'section_online_limit',
+                'message' => 'A section cannot have more than 5 online classes.',
+            ];
+        }
+
+        return null;
     }
 
     /**

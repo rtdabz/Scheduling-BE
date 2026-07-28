@@ -287,7 +287,23 @@ class CSPSolver
             solutions: $rawSolutions,
             solutionSignatures: $solutionSignatures,
             solutionLimit: $candidatePoolLimit,
+            strictOnlineTarget: true,
         );
+
+        // Fallback pass: if strict 2-5 online target yields 0 solutions due to
+        // tight room or instructor constraints, retry without strict online target.
+        if (empty($rawSolutions)) {
+            $this->backtrack(
+                variableIndex: 0,
+                variables: $variables,
+                section: $section,
+                assignments: [],
+                solutions: $rawSolutions,
+                solutionSignatures: $solutionSignatures,
+                solutionLimit: $candidatePoolLimit,
+                strictOnlineTarget: false,
+            );
+        }
 
         // Score every raw solution.
         $scored = array_map(
@@ -334,6 +350,7 @@ class CSPSolver
         array &$solutions,
         array &$solutionSignatures,
         int $solutionLimit,
+        bool $strictOnlineTarget = true,
     ): void {
         if (count($solutions) >= $solutionLimit) {
             return;
@@ -344,7 +361,23 @@ class CSPSolver
             return;
         }
 
+        $nonFieldCount = count(array_filter(
+            $variables,
+            static fn (array $v): bool => !($v['is_field'] ?? false),
+        ));
+        $minOnline = min(2, $nonFieldCount);
+        $maxOnline = 5;
+
         if ($variableIndex >= count($variables)) {
+            $onlineCount = count(array_filter(
+                $assignments,
+                static fn (array $a): bool => ($a['mode'] ?? '') === 'online',
+            ));
+
+            if ($strictOnlineTarget && ($onlineCount < $minOnline || $onlineCount > $maxOnline)) {
+                return;
+            }
+
             $signature = $this->createSolutionSignature($assignments);
 
             if (!isset($solutionSignatures[$signature])) {
@@ -355,7 +388,20 @@ class CSPSolver
             return;
         }
 
-        $variable = $variables[$variableIndex];
+        $variable         = $variables[$variableIndex];
+        $isCurrentNonField = !($variable['is_field'] ?? false);
+
+        $currentOnlineCount = count(array_filter(
+            $assignments,
+            static fn (array $a): bool => ($a['mode'] ?? '') === 'online',
+        ));
+
+        $remainingNonFieldCount = 0;
+        for ($i = $variableIndex + 1; $i < count($variables); $i++) {
+            if (!($variables[$i]['is_field'] ?? false)) {
+                $remainingNonFieldCount++;
+            }
+        }
 
         foreach ($variable['domain'] as $candidate) {
             $this->iterations++;
@@ -363,6 +409,20 @@ class CSPSolver
             if ($this->hasExceededSearchLimits()) {
                 $this->searchLimitReached = true;
                 return;
+            }
+
+            $candIsOnline = ($candidate['mode'] ?? '') === 'online';
+
+            if ($strictOnlineTarget && $isCurrentNonField) {
+                $nextOnlineCount = $currentOnlineCount + ($candIsOnline ? 1 : 0);
+
+                if ($nextOnlineCount > $maxOnline) {
+                    continue;
+                }
+
+                if (($nextOnlineCount + $remainingNonFieldCount) < $minOnline) {
+                    continue;
+                }
             }
 
             if ($this->conflictsWithTentativeAssignments(
@@ -380,7 +440,7 @@ class CSPSolver
                 continue;
             }
 
-            $nextAssignments = $assignments;
+            $nextAssignments   = $assignments;
             $nextAssignments[] = $this->withScheduleContext(
                 assignment: $candidate,
                 section: $section,
@@ -394,6 +454,7 @@ class CSPSolver
                 solutions: $solutions,
                 solutionSignatures: $solutionSignatures,
                 solutionLimit: $solutionLimit,
+                strictOnlineTarget: $strictOnlineTarget,
             );
 
             if (count($solutions) >= $solutionLimit) {
@@ -481,12 +542,13 @@ class CSPSolver
             $domain = $this->seededShuffle($domain, $seed);
 
             $variables[] = [
-                'course_id'      => (int) $course->id,
-                'duration_slots' => $durationSlots,
+                'course_id'         => (int) $course->id,
+                'is_field'          => $this->isFieldCourse($course),
+                'duration_slots'    => $durationSlots,
                 'preferred_pattern' => $preferredPattern,
-                'delivery_mode'  => $deliveryMode,
-                'is_hybrid'      => $isHybrid,
-                'domain'         => $domain,
+                'delivery_mode'     => $deliveryMode,
+                'is_hybrid'         => $isHybrid,
+                'domain'            => $domain,
             ];
         }
 
@@ -1178,6 +1240,17 @@ class CSPSolver
 
                 $previous = $assignment;
             }
+        }
+
+        // Penalty for unbalanced online class distribution (target 2 to 5 online classes per section)
+        $onlineCount = count(array_filter(
+            $assignments,
+            static fn (array $a): bool => ($a['mode'] ?? '') === 'online',
+        ));
+        if ($onlineCount < 2) {
+            $score += (2 - $onlineCount) * 20;
+        } elseif ($onlineCount > 5) {
+            $score += ($onlineCount - 5) * 20;
         }
 
         return $score;
