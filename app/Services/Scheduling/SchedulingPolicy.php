@@ -93,6 +93,10 @@ final class SchedulingPolicy
      * to a lecture room because no laboratory was available for the department.
      */
     public const SOFT_LAB_FALLBACK_PENALTY = 15;
+    /**
+     * Applied when an on-site course is scheduled online as a fallback.
+     */
+    public const SOFT_ONLINE_FALLBACK_PENALTY = 25;
 
     /**
      * Canonical constraint catalog shared by RuleEngine, CSP, and request validation.
@@ -316,6 +320,12 @@ final class SchedulingPolicy
             'severity' => 'soft',
             'category' => 'preference',
             'description' => 'Major courses that require a laboratory room prefer a lab; a lecture room is accepted as a fallback when no lab is available for the department.',
+            'enforced_by' => ['csp'],
+        ],
+        'online_preference' => [
+            'severity' => 'soft',
+            'category' => 'preference',
+            'description' => 'Prefer on-site physical room assignments over online delivery when physical rooms are available.',
             'enforced_by' => ['csp'],
         ],
     ];

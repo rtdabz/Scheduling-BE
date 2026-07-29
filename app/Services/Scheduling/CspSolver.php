@@ -386,7 +386,7 @@ class CSPSolver
             $variables,
             static fn (array $v): bool => !($v['is_field'] ?? false),
         ));
-        $minOnline = min(2, $nonFieldCount);
+        $minOnline = ($nonFieldCount >= 4) ? min(2, $nonFieldCount) : 0;
         $maxOnline = 5;
 
         if ($variableIndex >= count($variables)) {
@@ -562,17 +562,15 @@ class CSPSolver
             $seed = abs($sectionId * 2053 + (int) $course->id * 97);
             $domain = $this->seededShuffle($domain, $seed);
 
-            // For major lab courses, restore the preference order after the shuffle:
-            // laboratory-room candidates appear before lecture-room fallbacks.
-            // PHP's usort is stable since 8.0, so the shuffled diversity within
-            // each partition is preserved — only the partition boundary moves.
-            if ($this->isMajorLabCourse($course)) {
-                usort(
-                    $domain,
-                    static fn (array $a, array $b): int =>
-                        ($a['_lab_fallback'] ?? false) <=> ($b['_lab_fallback'] ?? false),
-                );
-            }
+            // Enforce domain candidate priority order after shuffle:
+            //   0 → preferred physical room, on-site  (laboratory for lab courses, lecture for lecture courses)
+            //   1 → fallback physical room, on-site   (lecture room fallback for lab courses)
+            //   2 → online delivery mode              (tried last when physical rooms unavailable)
+            usort(
+                $domain,
+                static fn (array $a, array $b): int => self::candidatePriority($a)
+                    <=> self::candidatePriority($b),
+            );
 
             $variables[] = [
                 'course_id'         => (int) $course->id,
@@ -1291,15 +1289,25 @@ class CSPSolver
             }
         }
 
-        // Penalty for unbalanced online class distribution (target 2 to 5 online classes per section)
-        $onlineCount = count(array_filter(
-            $assignments,
-            static fn (array $a): bool => ($a['mode'] ?? '') === 'online',
-        ));
-        if ($onlineCount < 2) {
-            $score += (2 - $onlineCount) * 20;
-        } elseif ($onlineCount > 5) {
-            $score += ($onlineCount - 5) * 20;
+        // Penalty for unbalanced online class distribution (target 2 to 5 online classes per section).
+        // Only apply section-level online target penalty when scheduling a full section (4+ courses).
+        if ($courses !== null && count($courses) >= 4) {
+            $onlineCount = count(array_filter(
+                $assignments,
+                static fn (array $a): bool => ($a['mode'] ?? '') === 'online',
+            ));
+            if ($onlineCount < 2) {
+                $score += (2 - $onlineCount) * 20;
+            } elseif ($onlineCount > 5) {
+                $score += ($onlineCount - 5) * 20;
+            }
+        }
+
+        // Soft penalty for online delivery mode when physical rooms are preferred.
+        foreach ($assignments as $assignment) {
+            if (($assignment['mode'] ?? '') === 'online') {
+                $score += SchedulingPolicy::SOFT_ONLINE_FALLBACK_PENALTY;
+            }
         }
 
         // Soft penalty: a major lab course assigned to a lecture room because no
@@ -1804,6 +1812,27 @@ class CSPSolver
         }
 
         return (string) $course->room_type_required === 'laboratory';
+    }
+
+    /**
+     * Returns the priority tier for a domain candidate. Lower numbers are tried
+     * first by the backtracker:
+     *
+     *   0 → preferred physical room, on-site  (laboratory for lab courses, lecture for lecture courses)
+     *   1 → fallback physical room, on-site   (lecture room fallback for lab courses)
+     *   2 → online delivery mode              (tried last when physical rooms are unavailable)
+     */
+    private static function candidatePriority(array $candidate): int
+    {
+        if (($candidate['mode'] ?? '') === 'online') {
+            return 2;
+        }
+
+        if ($candidate['_lab_fallback'] ?? false) {
+            return 1;
+        }
+
+        return 0;
     }
 
     private function normalizePreferredPatternsByCourseId(
