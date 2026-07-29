@@ -183,6 +183,22 @@ class RuleEngine
                 ];
         }
 
+        // On-site: reject virtual (online/field) rooms for physical delivery.
+        if (in_array($room->room_type, ['online', 'field'], true)) {
+            return [
+                'rule' => 'room_type_match',
+                'message' => "Course {$course->course_code} requires a physical room, "
+                    ."but '{$room->room_code}' is a '{$room->room_type}' room.",
+            ];
+        }
+
+        // Laboratory courses may fall back to a lecture room when no lab is
+        // available for the department. This is a soft preference enforced by
+        // the CSP scorer (SOFT_LAB_FALLBACK_PENALTY), not a hard constraint.
+        if ($course->room_type_required === 'laboratory' && $room->room_type === 'lecture') {
+            return null;
+        }
+
         if ($course->room_type_required !== $room->room_type) {
             return [
                 'rule' => 'room_type_match',
@@ -276,6 +292,23 @@ class RuleEngine
 
         if (!$term || !$section || !$course || !$room || (!empty($attempt['faculty_id']) && !$faculty)) {
             return $violations;
+        }
+
+        $activeCurriculum = \App\Models\Curriculum::query()
+            ->where('department_id', $section->department_id)
+            ->where('status', 'active')
+            ->first();
+
+        if ($activeCurriculum) {
+            $pivot = \DB::table('curriculum_course')
+                ->where('curriculum_id', $activeCurriculum->id)
+                ->where('course_id', $course->id)
+                ->first();
+
+            if ($pivot) {
+                $course->year_level = (string) $pivot->year_level;
+                $course->semester = (string) $pivot->semester === '1' ? '1st' : ((string) $pivot->semester === '2' ? '2nd' : 'summer');
+            }
         }
 
         if (!(bool) ($term->is_enabled ?? true)) {

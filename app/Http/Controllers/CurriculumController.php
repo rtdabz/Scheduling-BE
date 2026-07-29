@@ -215,6 +215,15 @@ class CurriculumController extends Controller
             ]
         ]);
 
+        $course = Course::find($validated['course_id']);
+        if ($course) {
+            $semStr = $validated['semester'] == 1 ? '1st' : ($validated['semester'] == 2 ? '2nd' : 'summer');
+            $course->update([
+                'year_level' => (string) $validated['year_level'],
+                'semester'   => $semStr,
+            ]);
+        }
+
         return response()->json(['message' => 'Course attached successfully']);
     }
 
@@ -233,6 +242,14 @@ class CurriculumController extends Controller
                 'year_level' => $item['year_level'],
                 'semester'   => $item['semester'],
             ];
+            $course = Course::find($item['course_id']);
+            if ($course) {
+                $semStr = $item['semester'] == 1 ? '1st' : ($item['semester'] == 2 ? '2nd' : 'summer');
+                $course->update([
+                    'year_level' => (string) $item['year_level'],
+                    'semester'   => $semStr,
+                ]);
+            }
         }
 
         $curriculum->courses()->syncWithoutDetaching($syncData);
@@ -274,6 +291,8 @@ class CurriculumController extends Controller
                 // 1. Check if course already exists by course_code
                 $course = \App\Models\Course::where('course_code', $code)->first();
 
+                $semStr = $semester == 1 ? '1st' : ($semester == 2 ? '2nd' : 'summer');
+
                 if (!$course) {
                     // Create course
                     $course = \App\Models\Course::create([
@@ -284,8 +303,15 @@ class CurriculumController extends Controller
                         'units' => $units,
                         'course_category' => $category,
                         'room_type_required' => $lab > 0 ? 'laboratory' : 'lecture',
+                        'year_level' => (string) $yearLevel,
+                        'semester' => $semStr,
                         'department_id' => $curriculum->department_id,
                         'status' => 'active',
+                    ]);
+                } else {
+                    $course->update([
+                        'year_level' => (string) $yearLevel,
+                        'semester' => $semStr,
                     ]);
                 }
 
@@ -363,7 +389,12 @@ class CurriculumController extends Controller
                 return [
                     'year_level' => (int)$first->pivot->year_level,
                     'semester'   => (int)$first->pivot->semester,
-                    'courses'    => $group->map(fn($c) => [
+                    'courses'    => $group->sort(function ($a, $b) {
+                        $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
+                        $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
+                        if ($catA !== $catB) return $catA <=> $catB;
+                        return strcmp($a->course_code ?? '', $b->course_code ?? '');
+                    })->map(fn($c) => [
                         'id'          => $c->id,
                         'code'       => $c->course_code,
                         'title'      => $c->course_name,

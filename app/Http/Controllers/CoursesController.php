@@ -17,10 +17,7 @@ class CoursesController extends Controller
             $curriculaQuery = \App\Models\Curriculum::where('status', 'active');
 
             if ($deptId) {
-                $curriculaQuery->where(function ($q) use ($deptId) {
-                    $q->where('department_id', $deptId)
-                      ->orWhereNull('department_id');
-                });
+                $curriculaQuery->where('department_id', $deptId);
             }
 
             $activeCurriculaIds = $curriculaQuery->pluck('id');
@@ -57,12 +54,23 @@ class CoursesController extends Controller
                     return $course;
                 });
 
-                // Sort logically: Year Level ASC, Semester ASC, Course Code ASC
-                $courses = $courses->sortBy([
-                    ['year_level', 'asc'],
-                    ['semester', 'asc'],
-                    ['course_code', 'asc'],
-                ])->values();
+                // Sort logically: Year Level ASC, Semester ASC, Category (Major first), Course Code ASC
+                $courses = $courses->sort(function ($a, $b) {
+                    $yA = (int) ($a->year_level ?? 0);
+                    $yB = (int) ($b->year_level ?? 0);
+                    if ($yA !== $yB) return $yA <=> $yB;
+
+                    $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
+                    $sA = $semOrder[$a->semester ?? ''] ?? 99;
+                    $sB = $semOrder[$b->semester ?? ''] ?? 99;
+                    if ($sA !== $sB) return $sA <=> $sB;
+
+                    $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
+                    $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
+                    if ($catA !== $catB) return $catA <=> $catB;
+
+                    return strcmp($a->course_code ?? '', $b->course_code ?? '');
+                })->values();
 
                 return response()->json($courses);
             } else {
@@ -81,7 +89,24 @@ class CoursesController extends Controller
             $query->where('status', $request->query('status'));
         }
 
-        return response()->json($query->orderBy('course_code')->get());
+        $courses = $query->get()->sort(function ($a, $b) {
+            $yA = (int) ($a->year_level ?? 0);
+            $yB = (int) ($b->year_level ?? 0);
+            if ($yA !== $yB) return $yA <=> $yB;
+
+            $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
+            $sA = $semOrder[$a->semester ?? ''] ?? 99;
+            $sB = $semOrder[$b->semester ?? ''] ?? 99;
+            if ($sA !== $sB) return $sA <=> $sB;
+
+            $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
+            $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
+            if ($catA !== $catB) return $catA <=> $catB;
+
+            return strcmp($a->course_code ?? '', $b->course_code ?? '');
+        })->values();
+
+        return response()->json($courses);
     }
 
     public function store(Request $request)
@@ -126,6 +151,21 @@ class CoursesController extends Controller
         ]);
 
         $course->update($validated);
+
+        if (isset($validated['year_level']) || isset($validated['semester'])) {
+            $pivotUpdate = [];
+            if (isset($validated['year_level'])) {
+                $pivotUpdate['year_level'] = (int) $validated['year_level'];
+            }
+            if (isset($validated['semester'])) {
+                $semInt = $validated['semester'] === '1st' ? 1 : ($validated['semester'] === '2nd' ? 2 : 3);
+                $pivotUpdate['semester'] = $semInt;
+            }
+            \DB::table('curriculum_course')
+                ->where('course_id', $course->id)
+                ->update($pivotUpdate);
+        }
+
         return response()->json($course->load('department'));
     }
 

@@ -39,23 +39,55 @@ class InitialDataController extends Controller
             ))
             ->get();
 
-        $activeCurriculum = Curriculum::query()
-            ->where('status', 'active')
-            ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
-            ->first();
+        $activeCurriculaQuery = Curriculum::query()->where('status', 'active');
+        if ($departmentId !== null) {
+            $activeCurriculaQuery->where('department_id', $departmentId);
+        }
+        $activeCurricula = $activeCurriculaQuery->get();
 
-        if ($activeCurriculum) {
-            $courses = $activeCurriculum->courses()->with('department')->get()->map(function ($c) {
-                if (isset($c->pivot->year_level)) {
-                    $c->year_level = (string) $c->pivot->year_level;
+        if ($activeCurricula->isNotEmpty()) {
+            $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
+            $courses = Course::with('department')
+                ->whereHas('curricula', function ($q) use ($activeCurricula) {
+                    $q->whereIn('curricula.id', $activeCurricula->pluck('id'));
+                })
+                ->get();
+
+            $pivotData = \DB::table('curriculum_course')
+                ->whereIn('curriculum_id', $activeCurricula->pluck('id'))
+                ->get();
+
+            $pivotMap = [];
+            foreach ($pivotData as $p) {
+                if (!isset($pivotMap[$p->course_id])) {
+                    $pivotMap[$p->course_id] = $p;
                 }
-                if (isset($c->pivot->semester)) {
-                    $c->semester = (string) $c->pivot->semester === '1' ? '1st' : ((string) $c->pivot->semester === '2' ? '2nd' : 'summer');
+            }
+
+            $courses = $courses->map(function ($c) use ($pivotMap) {
+                if (isset($pivotMap[$c->id])) {
+                    $p = $pivotMap[$c->id];
+                    $c->year_level = (string) $p->year_level;
+                    $c->semester = (string) $p->semester === '1' ? '1st' : ((string) $p->semester === '2' ? '2nd' : 'summer');
                 }
                 return $c;
-            });
+            })->sort(function ($a, $b) use ($semOrder) {
+                $yA = (int) ($a->year_level ?? 0);
+                $yB = (int) ($b->year_level ?? 0);
+                if ($yA !== $yB) return $yA <=> $yB;
+
+                $sA = $semOrder[$a->semester ?? ''] ?? 99;
+                $sB = $semOrder[$b->semester ?? ''] ?? 99;
+                if ($sA !== $sB) return $sA <=> $sB;
+
+                $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
+                $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
+                if ($catA !== $catB) return $catA <=> $catB;
+
+                return strcmp($a->course_code ?? '', $b->course_code ?? '');
+            })->values();
         } else {
-            $courses = collect();
+            $courses = Course::with('department')->get();
         }
 
         $sections = Sections::query()

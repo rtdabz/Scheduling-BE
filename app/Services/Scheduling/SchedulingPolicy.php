@@ -88,6 +88,11 @@ final class SchedulingPolicy
     public const SOFT_LATE_SLOT_PENALTY = 2;
     public const SOFT_GAP_SLOT_PENALTY = 3;
     public const SOFT_ROOM_CHANGE_PENALTY = 1;
+    /**
+     * Applied when a major course that prefers a laboratory room is assigned
+     * to a lecture room because no laboratory was available for the department.
+     */
+    public const SOFT_LAB_FALLBACK_PENALTY = 15;
 
     /**
      * Canonical constraint catalog shared by RuleEngine, CSP, and request validation.
@@ -305,6 +310,12 @@ final class SchedulingPolicy
             'severity' => 'soft',
             'category' => 'preference',
             'description' => 'Prefer keeping adjacent section classes in the same room when possible.',
+            'enforced_by' => ['csp'],
+        ],
+        'lab_preference' => [
+            'severity' => 'soft',
+            'category' => 'preference',
+            'description' => 'Major courses that require a laboratory room prefer a lab; a lecture room is accepted as a fallback when no lab is available for the department.',
             'enforced_by' => ['csp'],
         ],
     ];

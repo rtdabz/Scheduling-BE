@@ -489,12 +489,67 @@ class ScheduleRecommendationController extends Controller
     private function resolveCourseIds(Sections $section, ?array $providedCourseIds): array
     {
         if (!empty($providedCourseIds)) {
-            return $providedCourseIds;
+            $curriculum = Curriculum::where('department_id', $section->department_id)
+                ->where('status', 'active')
+                ->first();
+
+            if ($curriculum) {
+                $validPivotIds = $curriculum->courses()
+                    ->whereIn('courses.id', $providedCourseIds)
+                    ->wherePivot('year_level', (int) $section->year_level)
+                    ->wherePivot('semester', $this->mapSemesterToInt($section->semester))
+                    ->pluck('courses.id')
+                    ->toArray();
+
+                if (!empty($validPivotIds)) {
+                    return $validPivotIds;
+                }
+            }
+
+            $validProvidedIds = \App\Models\Course::query()
+                ->whereIn('id', $providedCourseIds)
+                ->where('status', 'active')
+                ->where('year_level', (string) $section->year_level)
+                ->where('semester', (string) $section->semester)
+                ->pluck('id')
+                ->toArray();
+
+            if (!empty($validProvidedIds)) {
+                return $validProvidedIds;
+            }
         }
 
         $curriculum = Curriculum::where('department_id', $section->department_id)
             ->where('status', 'active')
             ->first();
+
+        if ($curriculum) {
+            $courseIds = $curriculum->courses()
+                ->wherePivot('year_level', (int) $section->year_level)
+                ->wherePivot('semester', $this->mapSemesterToInt($section->semester))
+                ->pluck('courses.id')
+                ->toArray();
+
+            if (!empty($courseIds)) {
+                return $courseIds;
+            }
+        }
+
+        // Fallback: search courses table directly for courses matching section department/year_level/semester
+        $fallbackCourseIds = \App\Models\Course::query()
+            ->where('status', 'active')
+            ->where(function ($q) use ($section) {
+                $q->whereNull('department_id')
+                  ->orWhere('department_id', $section->department_id);
+            })
+            ->where('year_level', (string) $section->year_level)
+            ->where('semester', (string) $section->semester)
+            ->pluck('id')
+            ->toArray();
+
+        if (!empty($fallbackCourseIds)) {
+            return $fallbackCourseIds;
+        }
 
         if (!$curriculum) {
             throw new InvalidArgumentException(
@@ -502,19 +557,9 @@ class ScheduleRecommendationController extends Controller
             );
         }
 
-        $courseIds = $curriculum->courses()
-            ->wherePivot('year_level', (int) $section->year_level)
-            ->wherePivot('semester', $this->mapSemesterToInt($section->semester))
-            ->pluck('courses.id')
-            ->toArray();
-
-        if (empty($courseIds)) {
-            throw new InvalidArgumentException(
-                "The active curriculum ({$curriculum->name}) has no courses defined for Year {$section->year_level}, {$section->semester} semester."
-            );
-        }
-
-        return $courseIds;
+        throw new InvalidArgumentException(
+            "The active curriculum ({$curriculum->name}) has no courses defined for Year {$section->year_level}, {$section->semester} semester."
+        );
     }
 
     private function mapSemesterToInt(string $semester): int
@@ -597,6 +642,121 @@ class ScheduleRecommendationController extends Controller
             'message' => "Recommended rows {$leftIndex} and {$rightIndex} overlap before they can be accepted.",
             'recommendation_rows' => [$leftIndex, $rightIndex],
         ];
+    }
+
+    public function autoGenerateAndApply(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'section_id' => 'required|integer|exists:sections,id',
+            'course_ids' => 'sometimes|array|min:1',
+            'course_ids.*' => 'integer|exists:courses,id',
+            'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'is_hybrid' => 'sometimes|boolean',
+            'preferred_patterns' => 'sometimes|array',
+            'preferred_patterns.*' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
+            'max_iterations' => 'sometimes|integer|min:1',
+            'timeout_seconds' => 'sometimes|numeric|min:0.1',
+        ]);
+
+        /** @var Sections $section */
+        $section = Sections::query()->findOrFail($validated['section_id']);
+
+        try {
+            $resolvedCourseIds = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
+            $validated['course_ids'] = $resolvedCourseIds;
+            $validated['max_solutions'] = 1;
+
+            $solutions = $this->cspSolver->solveRankedFromSchema($validated);
+        } catch (InvalidArgumentException | RuntimeException $exception) {
+            return response()->json([
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+
+        if (empty($solutions)) {
+            return response()->json([
+                'message' => 'No valid schedule could be generated that satisfies all constraints for this section.',
+            ], 422);
+        }
+
+        $bestSolution = $solutions[0];
+        $user = $request->user();
+
+        try {
+            $createdSchedules = DB::transaction(function () use ($bestSolution, $section, $validated, $user) {
+                $recommendation = ScheduleRecommendation::create([
+                    'term_id' => (int) $section->term_id,
+                    'section_id' => (int) $section->id,
+                    'department_id' => (int) $section->department_id,
+                    'requested_by' => $user?->id,
+                    'accepted_by' => $user?->id,
+                    'accepted_at' => now(),
+                    'rank' => (int) $bestSolution['rank'],
+                    'score' => (int) $bestSolution['score'],
+                    'status' => 'accepted',
+                    'input_payload' => $validated,
+                    'recommended_schedules' => $bestSolution['schedules'],
+                ]);
+
+                $rows = $this->normalizeRecommendedSchedules($recommendation);
+                $this->validateBatchConflicts($rows);
+
+                $courseIdsToCreate = array_values(array_unique(array_map(
+                    static fn (array $r): int => (int) $r['course_id'],
+                    $rows,
+                )));
+
+                Schedule::query()
+                    ->where('term_id', $rows[0]['term_id'])
+                    ->where('section_id', $rows[0]['section_id'])
+                    ->whereIn('course_id', $courseIdsToCreate)
+                    ->whereIn('status', ['draft', 'completed'])
+                    ->delete();
+
+                $createdIds = [];
+                foreach ($rows as $row) {
+                    $s = Schedule::create($row);
+                    $createdIds[] = $s->id;
+                }
+
+                $schedules = Schedule::query()
+                    ->whereIn('id', $createdIds)
+                    ->with([
+                        'term',
+                        'section',
+                        'course',
+                        'faculty',
+                        'room',
+                        'department',
+                    ])
+                    ->get();
+
+                $this->recordAudit(
+                    action: 'recommendation_auto_applied',
+                    userId: $user?->id,
+                    recommendation: $recommendation,
+                    metadata: [
+                        'created_schedule_ids' => $schedules->pluck('id')->map(static fn ($id): int => (int) $id)->all(),
+                    ],
+                );
+
+                return $schedules;
+            });
+        } catch (RecommendationConflictException $exception) {
+            return response()->json([
+                'message' => 'Generated schedule conflicts with existing schedules.',
+                'violations' => $exception->violations,
+            ], 422);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => 'Schedule generated and placed into Timetable Grid successfully.',
+            'schedules' => $createdSchedules,
+        ]);
     }
 
     private function recordAudit(

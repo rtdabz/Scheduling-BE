@@ -110,6 +110,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('instructor-assignments', [InstructorAssignmentController::class, 'index']);
         Route::patch('instructor-assignments/{schedule}', [InstructorAssignmentController::class, 'update']);
 
+        Route::post('schedule-recommendations/auto-generate', [ScheduleRecommendationController::class, 'autoGenerateAndApply']);
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
         Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
         Route::get('schedule-recommendations', [ScheduleRecommendationController::class, 'index']);

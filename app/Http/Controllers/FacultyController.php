@@ -63,34 +63,48 @@ class FacultyController extends Controller
         $activeTermId = $activeTerm ? $activeTerm->id : null;
 
         if ($activeTermId) {
-            $assignedUnits = \DB::table('schedules')
-                ->join('subjects', 'schedules.subject_id', '=', 'subjects.id')
+            $scheduleRows = \DB::table('schedules')
+                ->leftJoin('courses', 'schedules.course_id', '=', 'courses.id')
+                ->leftJoin('sections', 'schedules.section_id', '=', 'sections.id')
                 ->where('schedules.faculty_id', $faculty->id)
                 ->where('schedules.term_id', $activeTermId)
-                ->select('schedules.section_id', 'schedules.subject_id', 'subjects.units')
+                ->select([
+                    'schedules.section_id',
+                    'schedules.course_id',
+                    'courses.units',
+                    'courses.course_code',
+                    'courses.course_name',
+                    'sections.section_name',
+                ])
                 ->distinct()
-                ->get()
+                ->get();
+
+            $assignedUnits = $scheduleRows
+                ->unique(fn ($row) => "{$row->section_id}:{$row->course_id}")
                 ->sum('units');
 
-            $assignedSubjects = \DB::table('schedules')
-                ->join('subjects', 'schedules.subject_id', '=', 'subjects.id')
-                ->where('schedules.faculty_id', $faculty->id)
-                ->where('schedules.term_id', $activeTermId)
-                ->select('subjects.id', 'subjects.subject_code', 'subjects.subject_name')
-                ->distinct()
-                ->get();
+            $assignedSubjects = $scheduleRows
+                ->unique('course_id')
+                ->map(fn ($row) => [
+                    'id' => $row->course_id,
+                    'course_code' => $row->course_code,
+                    'course_name' => $row->course_name,
+                    'subject_code' => $row->course_code,
+                    'subject_name' => $row->course_name,
+                ])
+                ->values();
 
-            $assignedSections = \DB::table('schedules')
-                ->join('sections', 'schedules.section_id', '=', 'sections.id')
-                ->where('schedules.faculty_id', $faculty->id)
-                ->where('schedules.term_id', $activeTermId)
-                ->select('sections.id', 'sections.section_name')
-                ->distinct()
-                ->get();
+            $assignedSections = $scheduleRows
+                ->unique('section_id')
+                ->map(fn ($row) => [
+                    'id' => $row->section_id,
+                    'section_name' => $row->section_name,
+                ])
+                ->values();
         } else {
             $assignedUnits = 0;
-            $assignedSubjects = [];
-            $assignedSections = [];
+            $assignedSubjects = collect();
+            $assignedSections = collect();
         }
 
         $faculty->assigned_units = (int) $assignedUnits;

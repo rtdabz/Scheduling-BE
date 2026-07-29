@@ -179,6 +179,27 @@ class CSPSolver
             ->get()
             ->keyBy('id');
 
+        $activeCurriculum = \App\Models\Curriculum::query()
+            ->where('department_id', $section->department_id)
+            ->where('status', 'active')
+            ->first();
+
+        if ($activeCurriculum) {
+            $pivotMap = \DB::table('curriculum_course')
+                ->where('curriculum_id', $activeCurriculum->id)
+                ->whereIn('course_id', $courseIds)
+                ->get()
+                ->keyBy('course_id');
+
+            foreach ($courses as $course) {
+                if (isset($pivotMap[$course->id])) {
+                    $p = $pivotMap[$course->id];
+                    $course->year_level = (string) $p->year_level;
+                    $course->semester = (string) $p->semester === '1' ? '1st' : ((string) $p->semester === '2' ? '2nd' : 'summer');
+                }
+            }
+        }
+
         $this->ensureAllCoursesExist(
             courseIds: $courseIds,
             courses: $courses,
@@ -541,6 +562,18 @@ class CSPSolver
             $seed = abs($sectionId * 2053 + (int) $course->id * 97);
             $domain = $this->seededShuffle($domain, $seed);
 
+            // For major lab courses, restore the preference order after the shuffle:
+            // laboratory-room candidates appear before lecture-room fallbacks.
+            // PHP's usort is stable since 8.0, so the shuffled diversity within
+            // each partition is preserved — only the partition boundary moves.
+            if ($this->isMajorLabCourse($course)) {
+                usort(
+                    $domain,
+                    static fn (array $a, array $b): int =>
+                        ($a['_lab_fallback'] ?? false) <=> ($b['_lab_fallback'] ?? false),
+                );
+            }
+
             $variables[] = [
                 'course_id'         => (int) $course->id,
                 'is_field'          => $this->isFieldCourse($course),
@@ -649,6 +682,7 @@ class CSPSolver
         }
 
         $domain = [];
+        $isLabCourse = $this->isMajorLabCourse($course);
 
         foreach ($this->allowedDayModePairsForCourse($course) as [$day, $mode]) {
             $isField        = $this->isFieldCourse($course);
@@ -657,28 +691,39 @@ class CSPSolver
                 $isField           => 'field',
                 default            => (string) $course->room_type_required,
             };
-            $roomsForMode = $matchingRooms->filter(
-                static fn (Rooms $room): bool => $room->room_type === $targetRoomType,
-            );
+
+            // For on-site lab courses, collect preferred (lab) rooms first, then
+            // lecture rooms as fallback. Each entry is tagged with _lab_fallback
+            // so that the post-shuffle stable sort restores the preference order.
+            $roomTypes = ($isLabCourse && $mode === 'on-site')
+                ? ['laboratory', 'lecture']
+                : [$targetRoomType];
 
             for ($startSlot = 0; $startSlot <= $latestStartSlot; $startSlot++) {
                 $endSlot = $startSlot + $durationSlots;
 
-                foreach ($roomsForMode as $room) {
-                    $domain[] = [
-                        'course_id'         => (int) $course->id,
-                        'room_id'           => (int) $room->id,
-                        'preferred_pattern' => null,
-                        'mode'              => $mode,
-                        'is_hybrid'         => $mode === 'field' ? false : $isHybrid,
-                        'blocks'            => [
-                            $this->makeBlock(
-                                day: $day,
-                                startSlot: $startSlot,
-                                endSlot: $endSlot,
-                            ),
-                        ],
-                    ];
+                foreach ($roomTypes as $roomType) {
+                    $roomsForType = $matchingRooms->filter(
+                        static fn (Rooms $room): bool => $room->room_type === $roomType,
+                    );
+
+                    foreach ($roomsForType as $room) {
+                        $domain[] = [
+                            'course_id'         => (int) $course->id,
+                            'room_id'           => (int) $room->id,
+                            'preferred_pattern' => null,
+                            'mode'              => $mode,
+                            'is_hybrid'         => $mode === 'field' ? false : $isHybrid,
+                            '_lab_fallback'     => $isLabCourse && $roomType === 'lecture',
+                            'blocks'            => [
+                                $this->makeBlock(
+                                    day: $day,
+                                    startSlot: $startSlot,
+                                    endSlot: $endSlot,
+                                ),
+                            ],
+                        ];
+                    }
                 }
             }
         }
@@ -700,35 +745,32 @@ class CSPSolver
 
         [$day1, $day2] = $this->patternDays($preferredPattern);
 
-        // Determine which days this course may occupy.
-        // Extract the unique day set from the allowed (day, mode) pairs.
         $allowedDays = array_unique(
             array_column($this->allowedDayModePairsForCourse($course), 0),
         );
 
-        // If either pattern day falls outside the course's allowed day set,
-        // the pattern produces no valid candidates for this course.
         if (!in_array($day1, $allowedDays, true) || !in_array($day2, $allowedDays, true)) {
             return [];
         }
 
-        $domain  = [];
-        $isField = $this->isFieldCourse($course);
-        // Mirror buildSingleDayDomain: non-field pattern courses also support online.
-        $modes   = $isField ? ['field'] : ['on-site', 'online'];
+        $domain      = [];
+        $isField     = $this->isFieldCourse($course);
+        $isLabCourse = $this->isMajorLabCourse($course);
+        $modes = $isField ? ['field'] : ['on-site', 'online'];
 
-        // For major courses on Saturday (which is in WEEKDAYS_AND_SATURDAY but
-        // Sunday is online-only), pattern days are already guaranteed to be in
-        // WEEKDAYS_AND_SATURDAY at this point, so all modes apply.
         foreach ($modes as $mode) {
             $targetRoomType = match (true) {
                 $mode === 'online' => 'online',
                 $isField           => 'field',
                 default            => (string) $course->room_type_required,
             };
-            $roomsForMode = $matchingRooms->filter(
-                static fn (Rooms $room): bool => $room->room_type === $targetRoomType,
-            );
+
+            // For on-site lab courses, include lab rooms first (preferred) then
+            // lecture rooms as a fallback. Tagged with _lab_fallback for the
+            // post-shuffle stable partition sort.
+            $roomTypes = ($isLabCourse && $mode === 'on-site')
+                ? ['laboratory', 'lecture']
+                : [$targetRoomType];
 
             for ($day1Duration = 1; $day1Duration < $durationSlots; $day1Duration++) {
                 $day2Duration    = $durationSlots - $day1Duration;
@@ -745,26 +787,33 @@ class CSPSolver
                     for ($day2Start = 0; $day2Start <= $day2LatestStart; $day2Start++) {
                         $day2End = $day2Start + $day2Duration;
 
-                        foreach ($roomsForMode as $room) {
-                            $domain[] = [
-                                'course_id'         => (int) $course->id,
-                                'room_id'           => (int) $room->id,
-                                'preferred_pattern' => $preferredPattern,
-                                'mode'              => $mode,
-                                'is_hybrid'         => $mode === 'field' ? false : $isHybrid,
-                                'blocks'            => [
-                                    $this->makeBlock(
-                                        day: $day1,
-                                        startSlot: $day1Start,
-                                        endSlot: $day1End,
-                                    ),
-                                    $this->makeBlock(
-                                        day: $day2,
-                                        startSlot: $day2Start,
-                                        endSlot: $day2End,
-                                    ),
-                                ],
-                            ];
+                        foreach ($roomTypes as $roomType) {
+                            $roomsForType = $matchingRooms->filter(
+                                static fn (Rooms $room): bool => $room->room_type === $roomType,
+                            );
+
+                            foreach ($roomsForType as $room) {
+                                $domain[] = [
+                                    'course_id'         => (int) $course->id,
+                                    'room_id'           => (int) $room->id,
+                                    'preferred_pattern' => $preferredPattern,
+                                    'mode'              => $mode,
+                                    'is_hybrid'         => $mode === 'field' ? false : $isHybrid,
+                                    '_lab_fallback'     => $isLabCourse && $roomType === 'lecture',
+                                    'blocks'            => [
+                                        $this->makeBlock(
+                                            day: $day1,
+                                            startSlot: $day1Start,
+                                            endSlot: $day1End,
+                                        ),
+                                        $this->makeBlock(
+                                            day: $day2,
+                                            startSlot: $day2Start,
+                                            endSlot: $day2End,
+                                        ),
+                                    ],
+                                ];
+                            }
                         }
                     }
                 }
@@ -1253,6 +1302,24 @@ class CSPSolver
             $score += ($onlineCount - 5) * 20;
         }
 
+        // Soft penalty: a major lab course assigned to a lecture room because no
+        // lab was available. Solutions with actual lab-room assignments score lower
+        // (better) and are ranked above lecture-room fallbacks.
+        if ($courses !== null) {
+            foreach ($assignments as $assignment) {
+                $courseObj = $courses[(int) $assignment['course_id']] ?? null;
+                if ($courseObj === null || !$this->isMajorLabCourse($courseObj)) {
+                    continue;
+                }
+
+                // The _lab_fallback flag is set during domain building and carried
+                // through to the assignment — no extra DB query needed.
+                if ($assignment['_lab_fallback'] ?? false) {
+                    $score += SchedulingPolicy::SOFT_LAB_FALLBACK_PENALTY;
+                }
+            }
+        }
+
         return $score;
     }
 
@@ -1634,7 +1701,16 @@ class CSPSolver
                 course: $course,
                 deliveryMode: $deliveryMode,
             );
-            $hasMatchingRoom = $rooms->contains(
+
+            // For major lab courses, a lecture room is a valid fallback — no
+            // phantom virtual room is needed. Skip virtual room creation when
+            // real lecture rooms are already present in the domain.
+            $hasLectureFallback = $this->isMajorLabCourse($course)
+                && $rooms->contains(
+                    static fn (Rooms $room): bool => $room->room_type === 'lecture',
+                );
+
+            $hasMatchingRoom = $hasLectureFallback || $rooms->contains(
                 static fn (Rooms $room): bool =>
                     $room->room_type === $targetRoomType,
             );
@@ -1668,6 +1744,16 @@ class CSPSolver
             ->unique()
             ->values()
             ->all();
+
+        // When any course in the batch has a laboratory preference, also fetch
+        // lecture rooms so they are available as a fallback for departments
+        // that have no lab rooms or whose labs are fully booked.
+        $hasLabCourse = $courses->contains(
+            fn (Course $course): bool => $this->isMajorLabCourse($course),
+        );
+        if ($hasLabCourse && !in_array('lecture', $types, true)) {
+            $types[] = 'lecture';
+        }
 
         if (!in_array('online', $types, true)) {
             $types[] = 'online';
@@ -1703,6 +1789,21 @@ class CSPSolver
     private function isNstpCourse(Course $course): bool
     {
         return SchedulingPolicy::isNstpCourse($course);
+    }
+
+    /**
+     * Returns true when the course is a major course that prefers a laboratory
+     * room (room_type_required === 'laboratory') and is not a field/NSTP course.
+     * Used to decide whether lecture rooms should be included as a fallback in
+     * the CSP domain and whether a lab-fallback penalty should be applied.
+     */
+    private function isMajorLabCourse(Course $course): bool
+    {
+        if ($this->isFieldCourse($course) || $this->isNstpCourse($course)) {
+            return false;
+        }
+
+        return (string) $course->room_type_required === 'laboratory';
     }
 
     private function normalizePreferredPatternsByCourseId(
