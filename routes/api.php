@@ -93,6 +93,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('sections/{section}', [SectionsController::class, 'show']);
 
         // Schedules Management
+        Route::post('schedules/batch/validate-splits', [ScheduleController::class, 'validateSplits']);
         Route::post('schedules/batch', [ScheduleController::class, 'batch']);
         Route::get('schedules/pending-department-count', [ScheduleController::class, 'pendingDepartmentCount']);
         Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
