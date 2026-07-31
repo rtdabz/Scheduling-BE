@@ -4,6 +4,7 @@ namespace App\Services\Scheduling;
 
 use App\Models\Course;
 use App\Models\Curriculum;
+use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleRecommendation;
 use App\Models\Sections;
@@ -183,6 +184,38 @@ class GenerateScheduleService
             ];
         }
 
+        // Fix #4: Prevent duplicate schedule rows for the same course in the same term.
+        $existingCourseIds = Schedule::where('section_id', $recommendation->section_id)
+            ->where('term_id', $recommendation->term_id)
+            ->pluck('course_id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+
+        $duplicates = [];
+        foreach ($meetings as $meeting) {
+            if (in_array((int) $meeting['course_id'], $existingCourseIds, true)) {
+                $course = Course::find($meeting['course_id']);
+                $duplicates[] = [
+                    'rule'      => 'duplicate_section_subject',
+                    'message'   => sprintf(
+                        'Section already has a schedule for %s (%s) in this term. '
+                        . 'Cannot accept this recommendation.',
+                        $course?->course_name ?? 'course ' . $meeting['course_id'],
+                        $course?->course_code ?? '',
+                    ),
+                    'course_id' => (int) $meeting['course_id'],
+                ];
+            }
+        }
+
+        if (!empty($duplicates)) {
+            return [
+                'message'    => 'One or more courses in this recommendation are already scheduled for this section.',
+                'violations' => $duplicates,
+                'schedules'  => [],
+            ];
+        }
+
         return DB::transaction(function () use ($recommendation, $userId, $meetings) {
             $created = [];
             foreach ($meetings as $meeting) {
@@ -295,14 +328,32 @@ class GenerateScheduleService
      * Derive each meeting's 'mode' from its course's category —
      * pathfit/nstp courses always meet in the field, everything else
      * defaults to on-site.
+     *
+     * Fix #10: When the mode is corrected to 'field', also update the room_id
+     * to the real field-type room from the database, so the RuleEngine does
+     * not reject the schedule at accept-time for a room-type mismatch.
      */
     private function applyMode(array $meetings, $courseCategoryMap): array
     {
+        // Lazy-load the canonical field room ID once so we don't query per-meeting.
+        $fieldRoomId = null;
+
         foreach ($meetings as &$meeting) {
             $category = $courseCategoryMap[$meeting['course_id']] ?? null;
-            $meeting['mode'] = in_array($category, self::FIELD_CATEGORIES, true)
-                ? 'field'
-                : ($meeting['mode'] ?? 'on-site');
+            $isField  = in_array($category, self::FIELD_CATEGORIES, true);
+
+            if ($isField) {
+                $meeting['mode'] = 'field';
+
+                // Fix #10: Ensure the room_id points to an actual field-type room.
+                if ($fieldRoomId === null) {
+                    $fieldRoomId = Rooms::where('room_type', 'field')
+                        ->value('id') ?? $meeting['room_id'];
+                }
+                $meeting['room_id'] = $fieldRoomId;
+            } else {
+                $meeting['mode'] = $meeting['mode'] ?? 'on-site';
+            }
         }
 
         return $meetings;

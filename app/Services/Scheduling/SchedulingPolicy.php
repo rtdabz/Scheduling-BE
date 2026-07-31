@@ -582,7 +582,7 @@ final class SchedulingPolicy
             return true;
         }
 
-        foreach (['PATHFIT', 'NSTP', 'ROTC', 'CWTS'] as $keyword) {
+        foreach (['PATHFIT', 'PATH FIT', 'PATH-FIT', 'NSTP', 'ROTC', 'CWTS', 'PE 1', 'PE 2', 'PE 3', 'PE 4', 'PHYSICAL EDUCATION'] as $keyword) {
             if (str_contains($code, $keyword) || str_contains($name, $keyword)) {
                 return true;
             }

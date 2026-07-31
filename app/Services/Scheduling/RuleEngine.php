@@ -153,8 +153,12 @@ class RuleEngine
         return null;
     }
 
-    public function checkRoomTypeMatch(int $courseId, int $roomId, string $deliveryMode = 'on-site'): ?array
-    {
+    public function checkRoomTypeMatch(
+        int $courseId,
+        int $roomId,
+        string $deliveryMode = 'on-site',
+        ?string $meetingType = null
+    ): ?array {
         $course = Course::find($courseId);
         $room = Rooms::find($roomId);
 
@@ -192,17 +196,18 @@ class RuleEngine
             ];
         }
 
-        // Laboratory courses may fall back to a lecture room when no lab is
-        // available for the department. This is a soft preference enforced by
-        // the CSP scorer (SOFT_LAB_FALLBACK_PENALTY), not a hard constraint.
-        if ($course->room_type_required === 'laboratory' && $room->room_type === 'lecture') {
+        $requiredRoomType = $meetingType ?? $course->room_type_required;
+
+        // Laboratory courses or meetings may fall back to a lecture room when no lab is
+        // available for the department. This is a soft preference.
+        if ($requiredRoomType === 'laboratory' && $room->room_type === 'lecture') {
             return null;
         }
 
-        if ($course->room_type_required !== $room->room_type) {
+        if ($requiredRoomType !== $room->room_type) {
             return [
                 'rule' => 'room_type_match',
-                'message' => "Course {$course->course_code} requires a '{$course->room_type_required}' room, "
+                'message' => "Course {$course->course_code} requires a '{$requiredRoomType}' room, "
                     ."but '{$room->room_code}' is a '{$room->room_type}' room.",
             ];
         }
@@ -558,7 +563,8 @@ class RuleEngine
         $roomTypeMatch = $this->checkRoomTypeMatch(
             $courseId,
             $attempt['room_id'],
-            (string) ($attempt['mode'] ?? 'on-site')
+            (string) ($attempt['mode'] ?? 'on-site'),
+            $attempt['meeting_type'] ?? null
         );
         if ($roomTypeMatch) {
             $violations[] = $roomTypeMatch;
@@ -725,7 +731,7 @@ class RuleEngine
             $query->whereNotIn('id', $ignoreIds);
         }
 
-        if ($query->count() >= 5) {
+        if ($query->distinct('course_id')->count('course_id') >= 5) {
             return [
                 'rule'    => 'section_online_limit',
                 'message' => 'A section cannot have more than 5 online classes.',

@@ -395,7 +395,13 @@ class CSPSolver
                 static fn (array $a): bool => ($a['mode'] ?? '') === 'online',
             ));
 
-            if ($strictOnlineTarget && ($onlineCount < $minOnline || $onlineCount > $maxOnline)) {
+            // Always enforce the hard max of 5 online classes regardless of strict mode.
+            // In non-strict mode only the minimum requirement is relaxed.
+            if ($onlineCount > $maxOnline) {
+                return;
+            }
+
+            if ($strictOnlineTarget && $onlineCount < $minOnline) {
                 return;
             }
 
@@ -434,14 +440,15 @@ class CSPSolver
 
             $candIsOnline = ($candidate['mode'] ?? '') === 'online';
 
-            if ($strictOnlineTarget && $isCurrentNonField) {
+            // Hard cap: never allow more than $maxOnline online classes in any pass.
+            if ($isCurrentNonField) {
                 $nextOnlineCount = $currentOnlineCount + ($candIsOnline ? 1 : 0);
 
                 if ($nextOnlineCount > $maxOnline) {
                     continue;
                 }
 
-                if (($nextOnlineCount + $remainingNonFieldCount) < $minOnline) {
+                if ($strictOnlineTarget && ($nextOnlineCount + $remainingNonFieldCount) < $minOnline) {
                     continue;
                 }
             }
@@ -709,6 +716,7 @@ class CSPSolver
                         $domain[] = [
                             'course_id'         => (int) $course->id,
                             'room_id'           => (int) $room->id,
+                            'room_type'         => $roomType,
                             'preferred_pattern' => null,
                             'mode'              => $mode,
                             'is_hybrid'         => $mode === 'field' ? false : $isHybrid,
@@ -794,6 +802,7 @@ class CSPSolver
                                 $domain[] = [
                                     'course_id'         => (int) $course->id,
                                     'room_id'           => (int) $room->id,
+                                    'room_type'         => $roomType,
                                     'preferred_pattern' => $preferredPattern,
                                     'mode'              => $mode,
                                     'is_hybrid'         => $mode === 'field' ? false : $isHybrid,
@@ -840,25 +849,42 @@ class CSPSolver
         array $assignments,
         ?int $sectionId = null,
     ): bool {
-        $dayCounts = [];
+        // Build a count of blocks already assigned per day (for the per-day cap check).
+        // We count unique courses, not blocks, to avoid over-penalizing split patterns.
+        $dayCourseCounts = [];
         foreach ($assignments as $assigned) {
+            $assignedCourseId = $assigned['course_id'];
+            $seenDays = [];
             foreach ($assigned['blocks'] as $assignedBlock) {
-                $dayCounts[$assignedBlock['day']] = ($dayCounts[$assignedBlock['day']] ?? 0) + 1;
+                $d = $assignedBlock['day'];
+                if (!isset($seenDays[$d])) {
+                    $seenDays[$d] = true;
+                    $dayCourseCounts[$d] = ($dayCourseCounts[$d] ?? 0) + 1;
+                }
             }
         }
 
+        $candidateMode    = $candidate['mode'] ?? 'on-site';
+        $candidateRoomId  = (int) $candidate['room_id'];
+        $isPhysicalRoom   = !in_array($candidateMode, ['online', 'field'], true);
+
         foreach ($candidate['blocks'] as $candidateBlock) {
             $day = $candidateBlock['day'];
-            $tentativeCount = ($dayCounts[$day] ?? 0) + 1;
-            $existingCount = $sectionId !== null
+
+            // Per-day course cap: count unique courses (not blocks) already on this day.
+            $existingPersistedCount = $sectionId !== null
                 ? count($this->existingScheduleIndex["s:{$sectionId}:{$day}"] ?? [])
                 : 0;
+            $tentativeCount = ($dayCourseCounts[$day] ?? 0) + 1;
 
-            if (($tentativeCount + $existingCount) > SchedulingPolicy::MAX_CLASSES_PER_DAY) {
+            if (($tentativeCount + $existingPersistedCount) > SchedulingPolicy::MAX_CLASSES_PER_DAY) {
                 return true;
             }
 
             foreach ($assignments as $assigned) {
+                $assignedMode   = $assigned['mode'] ?? 'on-site';
+                $assignedRoomId = (int) $assigned['room_id'];
+
                 foreach ($assigned['blocks'] as $assignedBlock) {
                     if ($day !== $assignedBlock['day']) {
                         continue;
@@ -868,13 +894,40 @@ class CSPSolver
                         $candidateBlock['start_slot'] < $assignedBlock['end_slot']
                         && $assignedBlock['start_slot'] < $candidateBlock['end_slot'];
 
-                    if ($overlaps) {
-                        return true;
+                    if (!$overlaps) {
+                        continue;
+                    }
+
+                    // Section time overlap — always a conflict.
+                    return true;
+                }
+
+                // Fix #1: room conflict within the same solution.
+                // If two on-site courses in this solution share the same physical room
+                // and their time blocks overlap on the same day, reject this candidate.
+                if (
+                    $isPhysicalRoom
+                    && !in_array($assignedMode, ['online', 'field'], true)
+                    && $candidateRoomId === $assignedRoomId
+                ) {
+                    foreach ($assigned['blocks'] as $assignedBlock) {
+                        if ($day !== $assignedBlock['day']) {
+                            continue;
+                        }
+
+                        $roomOverlaps =
+                            $candidateBlock['start_slot'] < $assignedBlock['end_slot']
+                            && $assignedBlock['start_slot'] < $candidateBlock['end_slot'];
+
+                        if ($roomOverlaps) {
+                            return true;
+                        }
                     }
                 }
             }
 
-            $dayCounts[$day] = ($dayCounts[$day] ?? 0) + 1;
+            // Update the course count for subsequent candidate blocks.
+            $dayCourseCounts[$day] = ($dayCourseCounts[$day] ?? 0) + 1;
         }
 
         return false;
@@ -884,18 +937,29 @@ class CSPSolver
         array $candidate,
         Sections $section,
     ): bool {
-        // Online and field classes share a single virtual room (no physical capacity).
-        // Skip room conflict checks for both modes so that multiple sections
-        // can schedule these classes at the same wall-clock time without
-        // falsely blocking each other. Section-level time conflicts are
-        // still enforced by the section index check below.
         $skipRoomCheck = $candidate['mode'] === 'online' || $candidate['mode'] === 'field';
-        // Faculty ID may be pre-set on a candidate (rare, but handled for future
-        // compatibility). When present, check it against the faculty index built
-        // from already-persisted schedules.
         $facultyId = isset($candidate['faculty_id']) && $candidate['faculty_id'] !== null
             ? (int) $candidate['faculty_id']
             : null;
+
+        // Lightweight mode/room-type alignment guard using the room_type embedded
+        // in the candidate by the domain builder. This is a zero-query safety net
+        // that catches any mode/room mismatch (e.g. online room for an on-site course)
+        // without hitting the database on every backtracking iteration.
+        $candidateMode     = $candidate['mode'] ?? 'on-site';
+        $candidateRoomType = $candidate['room_type'] ?? null;
+
+        if ($candidateRoomType !== null) {
+            $modeRoomMismatch = match ($candidateMode) {
+                'online' => $candidateRoomType !== 'online',
+                'field'  => $candidateRoomType !== 'field',
+                default  => in_array($candidateRoomType, ['online', 'field'], true),
+            };
+
+            if ($modeRoomMismatch) {
+                return false;
+            }
+        }
 
         foreach ($candidate['blocks'] as $block) {
             $cacheKey = implode('|', [
@@ -919,11 +983,6 @@ class CSPSolver
                 continue;
             }
 
-            // All static integrity checks (term enabled, section/course/room active,
-            // room type, room department, delivery alignment, slot grid, operating hours)
-            // are guaranteed by the pre-filtering and validation done in solveRanked().
-            // The only runtime check needed here is whether a persisted schedule
-            // already occupies this room, section slot, or instructor time window.
             $isValid = !$this->hasExistingScheduleConflict(
                 roomId: (int) $candidate['room_id'],
                 sectionId: (int) $section->id,
@@ -1377,7 +1436,17 @@ class CSPSolver
 
     private function getDurationSlots(Course $course): int
     {
-        $rawSlots = (float) $course->units * 2;
+        $lecHours = (int) ($course->lecture_hours ?? 0);
+        $labHours = (int) ($course->lab_hours ?? 0);
+
+        if ($lecHours > 0 || $labHours > 0) {
+            // Per CHED academic policy:
+            // 1 Lecture unit = 1 clock hour = 2 x 30-min slots
+            // 1 Laboratory unit = 3 clock hours = 6 x 30-min slots
+            $rawSlots = ($lecHours * 2) + ($labHours * 6);
+        } else {
+            $rawSlots = (float) $course->units * 2;
+        }
 
         if (abs($rawSlots - round($rawSlots)) > 0.00001) {
             throw new RuntimeException(sprintf(
@@ -1704,15 +1773,19 @@ class CSPSolver
         Collection &$rooms,
         string $deliveryMode = 'on-site',
     ): void {
+        // Fix #2 (revised): If no physical room of the required type exists,
+        // silently skip — do NOT fabricate a phantom room with a random ID.
+        // The course's variable domain will be empty, which triggers the
+        // early-exit in solveRanked() and returns a clean "no solution" result.
+        // Only field/online virtual rooms may be created, and those are already
+        // injected by solveRanked() from real DB rows before this method runs.
         foreach ($courses as $course) {
             $targetRoomType = $this->targetRoomTypeForCourse(
                 course: $course,
                 deliveryMode: $deliveryMode,
             );
 
-            // For major lab courses, a lecture room is a valid fallback — no
-            // phantom virtual room is needed. Skip virtual room creation when
-            // real lecture rooms are already present in the domain.
+            // For major lab courses, a lecture room is a valid fallback.
             $hasLectureFallback = $this->isMajorLabCourse($course)
                 && $rooms->contains(
                     static fn (Rooms $room): bool => $room->room_type === 'lecture',
@@ -1723,13 +1796,11 @@ class CSPSolver
                     $room->room_type === $targetRoomType,
             );
 
+            // If no room of the required physical type exists, leave the collection
+            // unchanged. The domain builder will produce an empty domain for this
+            // course, and the solver will return [] cleanly.
             if (!$hasMatchingRoom) {
-                $virtualRoom = new Rooms();
-                $virtualRoom->id = 999000 + rand(100, 999);
-                $virtualRoom->room_code = strtoupper($targetRoomType) . ' ROOM';
-                $virtualRoom->room_type = $targetRoomType;
-                $virtualRoom->status = 'available';
-                $rooms->push($virtualRoom);
+                continue;
             }
         }
     }

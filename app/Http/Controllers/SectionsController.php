@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Sections;
+use App\Models\Terms;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
@@ -20,17 +21,26 @@ class SectionsController extends Controller
         return response()->json($sections);
     }
 
+    private function getActiveSystemTerm(): Terms
+    {
+        return Terms::where('is_active', true)->first()
+            ?? Terms::where('is_enabled', true)->orderBy('id')->first()
+            ?? Terms::firstOrFail();
+    }
+
     // Create section
     public function store(Request $request)
     {
+        $activeTerm = $this->getActiveSystemTerm();
         $validated = $request->validate([
             'section_name'       => 'required|string|max:255',
             'year_level'         => SchedulingPolicy::allowedYearLevelsRule('required'),
-            'semester'           => SchedulingPolicy::allowedSemestersRule('required'),
             'department_id'      => 'required|exists:departments,id',
-            'term_id'            => 'required|exists:terms,id',
-            'status'             => SchedulingPolicy::allowedActiveStatusesRule('sometimes'),
         ]);
+
+        $validated['term_id'] = $activeTerm->id;
+        $validated['semester'] = $activeTerm->semester;
+        $validated['status'] = 'active';
 
         $section = Sections::create($validated);
         ApiCache::forgetGroups([
@@ -41,6 +51,42 @@ class SectionsController extends Controller
         ]);
 
         return response()->json($section->load(['department', 'term']), 201);
+    }
+
+    // Create batch sections
+    public function batchStore(Request $request)
+    {
+        $activeTerm = $this->getActiveSystemTerm();
+        $validated = $request->validate([
+            'sections'                      => 'required|array|min:1|max:50',
+            'sections.*.section_name'       => 'required|string|max:255',
+            'sections.*.year_level'         => SchedulingPolicy::allowedYearLevelsRule('required'),
+            'sections.*.department_id'      => 'required|exists:departments,id',
+        ]);
+
+        $created = \Illuminate\Support\Facades\DB::transaction(function () use ($validated, $activeTerm) {
+            $list = [];
+            foreach ($validated['sections'] as $data) {
+                $data['term_id'] = $activeTerm->id;
+                $data['semester'] = $activeTerm->semester;
+                $data['status'] = 'active';
+                $section = Sections::create($data);
+                $list[] = $section->load(['department', 'term']);
+            }
+            return $list;
+        });
+
+        ApiCache::forgetGroups([
+            'sections.index',
+            'sections.by_term',
+            'sections.by_department',
+            'departments.index',
+        ]);
+
+        return response()->json([
+            'message'  => count($created) . ' sections created successfully.',
+            'sections' => $created,
+        ], 201);
     }
 
     // Get single section

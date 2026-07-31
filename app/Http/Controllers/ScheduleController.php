@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Schedule;
 use App\Models\Course;
+use App\Models\Rooms;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
@@ -79,6 +80,9 @@ class ScheduleController extends Controller
             'mode'              => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'is_hybrid'         => 'sometimes|boolean',
             'preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
+            'split_group_id'    => 'nullable|string|max:36',
+            'meeting_type'      => 'nullable|in:lecture,laboratory',
+            'meeting_index'     => 'nullable|integer|min:1',
             'status'            => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
         ]);
 
@@ -120,13 +124,16 @@ class ScheduleController extends Controller
             'operations.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'operations.*.is_hybrid' => 'sometimes|boolean',
             'operations.*.preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
+            'operations.*.split_group_id' => 'nullable|string|max:36',
+            'operations.*.meeting_type' => 'nullable|in:lecture,laboratory',
+            'operations.*.meeting_index' => 'nullable|integer|min:1',
             'operations.*.status' => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
             'delete_ids' => 'sometimes|array',
             'delete_ids.*' => 'integer|exists:schedules,id',
         ]);
 
         $deleteIds = $validated['delete_ids'] ?? [];
-        $allViolations = [];
+        $allViolations = $this->checkIntraBatchConflicts($validated['operations']);
 
         foreach ($validated['operations'] as $index => $op) {
             $attemptData = $op;
@@ -148,7 +155,7 @@ class ScheduleController extends Controller
 
         if (!empty($allViolations)) {
             return response()->json([
-                'message' => 'Schedule operation conflicts with existing entries.',
+                'message' => 'Schedule operation conflicts with existing entries or intra-batch schedules.',
                 'violations' => $allViolations,
             ], 422);
         }
@@ -209,6 +216,9 @@ class ScheduleController extends Controller
             'operations.*.mode'                   => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'operations.*.is_hybrid'              => 'sometimes|boolean',
             'operations.*.preferred_pattern'      => ['nullable', 'string', 'max:20'],
+            'operations.*.split_group_id'         => 'nullable|string|max:36',
+            'operations.*.meeting_type'           => 'nullable|in:lecture,laboratory',
+            'operations.*.meeting_index'          => 'nullable|integer|min:1',
             'operations.*.status'                 => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
             'delete_ids'                          => 'sometimes|array',
             'delete_ids.*'                        => 'integer|exists:schedules,id',
@@ -229,10 +239,10 @@ class ScheduleController extends Controller
             }
 
             // Build ignore list: all baseline records being replaced in this batch.
-            $mergedIgnoreIds            = array_values(array_unique(array_map('intval', $deleteIds)));
-            $op['ignore_schedule_id']   = $mergedIgnoreIds;
+            $mergedIgnoreIds          = array_values(array_unique(array_map('intval', $deleteIds)));
+            $op['ignore_schedule_id'] = $mergedIgnoreIds;
 
-            $violations = $this->ruleEngine->validate($op);
+            $violations = $this->validateCandidate($op, $resolvedOps);
 
             if (empty($violations)) {
                 // No conflict — keep the original timing.
@@ -249,9 +259,23 @@ class ScheduleController extends Controller
             );
 
             if (!$hasTimeConflict) {
-                // Non-time violations (e.g. delivery mode, room type) cannot be
-                // resolved automatically — surface them directly.
-                $courseCode = \App\Models\Course::find($op['course_id'] ?? 0)?->course_code ?? 'Course';
+                // Non-time violations — check if it's a room type mismatch that
+                // can be fixed by swapping to a compatible room automatically.
+                $hasRoomTypeMismatch = collect($violations)->contains(
+                    fn ($v) => ($v['rule'] ?? '') === 'room_type_match'
+                );
+
+                if ($hasRoomTypeMismatch) {
+                    $swappedOp = $this->attemptRoomSwapResolution($op, $resolvedOps);
+                    if ($swappedOp !== null) {
+                        unset($swappedOp['ignore_schedule_id']);
+                        $resolvedOps[] = $swappedOp;
+                        continue;
+                    }
+                }
+
+                // Truly unresolvable — surface the violation.
+                $courseCode = Course::find($op['course_id'] ?? 0)?->course_code ?? 'Course';
                 foreach ($violations as $v) {
                     $allViolations[] = array_merge($v, [
                         'operation_index' => $index,
@@ -261,48 +285,24 @@ class ScheduleController extends Controller
                         'end_time'        => $op['end_time'],
                     ]);
                 }
-                $resolvedOps[] = $op; // keep original so index stays aligned
                 continue;
             }
 
-            // --- Slot-shift search ---
-            // Compute the original duration in minutes so we can keep it constant.
-            $origStartMins = $this->timeToMinutesLocal($op['start_time']);
-            $origEndMins   = $this->timeToMinutesLocal($op['end_time']);
-            $durationMins  = $origEndMins - $origStartMins;
+            // --- Resilient Slot-shift & Pattern-day Resolution ---
+            $resolvedOp = $this->attemptSlotShiftResolution(
+                $op,
+                $operatingStartMinutes,
+                $operatingEndMinutes,
+                $slotMinutes,
+                $resolvedOps
+            );
 
-            $resolved       = false;
-            $resolvedOp     = null;
-            $maxShiftSlots  = 8; // Up to 4 hours of slot shifts (+30 min each)
-
-            for ($shift = 1; $shift <= $maxShiftSlots; $shift++) {
-                $newStartMins = $origStartMins + ($shift * $slotMinutes);
-                $newEndMins   = $newStartMins + $durationMins;
-
-                // Stop if we would exceed operating hours.
-                if ($newEndMins > $operatingEndMinutes) {
-                    break;
-                }
-
-                $candidate               = $op;
-                $candidate['start_time'] = $this->minutesToTimeString($newStartMins);
-                $candidate['end_time']   = $this->minutesToTimeString($newEndMins);
-
-                $candidateViolations = $this->ruleEngine->validate($candidate);
-
-                if (empty($candidateViolations)) {
-                    $resolved       = true;
-                    $resolvedOp     = $candidate;
-                    break;
-                }
-            }
-
-            if ($resolved && $resolvedOp !== null) {
+            if ($resolvedOp !== null) {
                 unset($resolvedOp['ignore_schedule_id']);
                 $resolvedOps[] = $resolvedOp;
             } else {
                 // Could not find a valid slot within operating hours.
-                $courseCode = \App\Models\Course::find($op['course_id'] ?? 0)?->course_code ?? 'Course';
+                $courseCode = Course::find($op['course_id'] ?? 0)?->course_code ?? 'Course';
                 $allViolations[] = [
                     'rule'            => 'split_unresolvable',
                     'operation_index' => $index,
@@ -314,7 +314,6 @@ class ScheduleController extends Controller
                         . "starting at {$op['start_time']}. All slots within operating hours are occupied. "
                         . "Please resolve the conflict manually or change the split day.",
                 ];
-                $resolvedOps[] = $op; // keep original index alignment
             }
         }
 
@@ -333,6 +332,178 @@ class ScheduleController extends Controller
         ]);
     }
 
+    private function validateCandidate(array $op, array $resolvedOps): array
+    {
+        $dbViolations = $this->ruleEngine->validate($op);
+        $intraViolations = $this->checkIntraBatchConflicts(array_merge($resolvedOps, [$op]));
+        return array_merge($dbViolations, $intraViolations);
+    }
+
+    private function testAndResolveCandidate(array $candidate, array $resolvedOps): ?array
+    {
+        $violations = $this->validateCandidate($candidate, $resolvedOps);
+        if (empty($violations)) {
+            return $candidate;
+        }
+
+        $hasRoomTypeMismatch = collect($violations)->contains(
+            fn ($v) => ($v['rule'] ?? '') === 'room_type_match'
+        );
+
+        if ($hasRoomTypeMismatch) {
+            $swapped = $this->attemptRoomSwapResolution($candidate, $resolvedOps);
+            if ($swapped !== null) {
+                return $swapped;
+            }
+        }
+
+        return null;
+    }
+
+    private function attemptSlotShiftResolution(
+        array $op,
+        int $operatingStartMinutes,
+        int $operatingEndMinutes,
+        int $slotMinutes,
+        array $resolvedOps
+    ): ?array {
+        $origStartMins = $this->timeToMinutesLocal($op['start_time']);
+        $origEndMins   = $this->timeToMinutesLocal($op['end_time']);
+        $durationMins  = $origEndMins - $origStartMins;
+
+        // Bidirectional search: +1, -1, +2, -2, ... up to 28 slots (full 14-hr operating window)
+        $shiftOffsets = [];
+        for ($i = 1; $i <= 28; $i++) {
+            $shiftOffsets[] = $i;
+            $shiftOffsets[] = -$i;
+        }
+
+        foreach ($shiftOffsets as $shift) {
+            $newStartMins = $origStartMins + ($shift * $slotMinutes);
+            $newEndMins   = $newStartMins + $durationMins;
+
+            if ($newStartMins < $operatingStartMinutes || $newEndMins > $operatingEndMinutes) {
+                continue;
+            }
+
+            $candidate               = $op;
+            $candidate['start_time'] = $this->minutesToTimeString($newStartMins);
+            $candidate['end_time']   = $this->minutesToTimeString($newEndMins);
+
+            $res = $this->testAndResolveCandidate($candidate, $resolvedOps);
+            if ($res !== null) {
+                return $res;
+            }
+        }
+
+        // Pattern-day swap search: try alternate days (MW: Mon <-> Wed, TTh: Tue <-> Thu, etc.)
+        $daySwaps = [
+            'Monday'    => ['Wednesday', 'Friday', 'Tuesday', 'Thursday', 'Saturday'],
+            'Tuesday'   => ['Thursday', 'Wednesday', 'Monday', 'Friday', 'Saturday'],
+            'Wednesday' => ['Monday', 'Friday', 'Thursday', 'Tuesday', 'Saturday'],
+            'Thursday'  => ['Tuesday', 'Friday', 'Wednesday', 'Monday', 'Saturday'],
+            'Friday'    => ['Wednesday', 'Monday', 'Thursday', 'Tuesday', 'Saturday'],
+            'Saturday'  => ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+            'Sunday'    => ['Saturday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+        ];
+
+        $alternateDays = $daySwaps[$op['day']] ?? [];
+        foreach ($alternateDays as $altDay) {
+            // Try original start time on alternate day
+            $candidate        = $op;
+            $candidate['day'] = $altDay;
+            $res = $this->testAndResolveCandidate($candidate, $resolvedOps);
+            if ($res !== null) {
+                return $res;
+            }
+
+            // Try bidirectional shifts on alternate day
+            foreach ($shiftOffsets as $shift) {
+                $newStartMins = $origStartMins + ($shift * $slotMinutes);
+                $newEndMins   = $newStartMins + $durationMins;
+
+                if ($newStartMins < $operatingStartMinutes || $newEndMins > $operatingEndMinutes) {
+                    continue;
+                }
+
+                $candidate['start_time'] = $this->minutesToTimeString($newStartMins);
+                $candidate['end_time']   = $this->minutesToTimeString($newEndMins);
+
+                $res = $this->testAndResolveCandidate($candidate, $resolvedOps);
+                if ($res !== null) {
+                    return $res;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * When a split operation has a room-type mismatch (e.g. a lecture course
+     * landed in a laboratory room), try to find the nearest compatible room
+     * for the same department and time slot. Returns the corrected operation
+     * array if a conflict-free compatible room exists, or null if none found.
+     */
+    private function attemptRoomSwapResolution(array $op, array $resolvedOps = []): ?array
+    {
+        $courseId    = (int) ($op['course_id'] ?? 0);
+        $meetingType = $op['meeting_type'] ?? null;
+        $mode        = $op['mode'] ?? 'on-site';
+        $deptId      = (int) ($op['department_id'] ?? 0);
+
+        // Determine the required room type for this operation.
+        $requiredRoomType = match (true) {
+            $mode === 'online' => 'online',
+            $mode === 'field'  => 'field',
+            $meetingType === 'lecture'    => 'lecture',
+            $meetingType === 'laboratory' => 'laboratory',
+            $courseId > 0 => Course::find($courseId)?->room_type_required ?? 'lecture',
+            default       => 'lecture',
+        };
+
+        // Fetch all available rooms of the required type visible to the department.
+        $candidateRooms = Rooms::query()
+            ->where('status', 'available')
+            ->where('room_type', $requiredRoomType)
+            ->where(static function ($q) use ($deptId): void {
+                $q->whereNull('department_id')
+                  ->orWhere('department_id', $deptId);
+            })
+            ->orderBy('room_code')
+            ->get();
+
+        // Laboratory courses may also fall back to a lecture room (soft rule).
+        if ($requiredRoomType === 'laboratory') {
+            $lectureRooms = Rooms::query()
+                ->where('status', 'available')
+                ->where('room_type', 'lecture')
+                ->where(static function ($q) use ($deptId): void {
+                    $q->whereNull('department_id')
+                      ->orWhere('department_id', $deptId);
+                })
+                ->orderBy('room_code')
+                ->get();
+            $candidateRooms = $candidateRooms->merge($lectureRooms);
+        }
+
+        foreach ($candidateRooms as $room) {
+            // Skip the original room — we already know it fails.
+            if ((int) $room->id === (int) ($op['room_id'] ?? 0)) {
+                continue;
+            }
+
+            $candidate            = $op;
+            $candidate['room_id'] = (int) $room->id;
+
+            if (empty($this->validateCandidate($candidate, $resolvedOps))) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
     private function timeToMinutesLocal(string $time): int
     {
         [$h, $m] = array_map('intval', explode(':', $time));
@@ -344,6 +515,91 @@ class ScheduleController extends Controller
         $h = intdiv($minutes, 60);
         $m = $minutes % 60;
         return sprintf('%02d:%02d', $h, $m);
+    }
+
+    private function checkIntraBatchConflicts(array $operations): array
+    {
+        $violations = [];
+        $count = count($operations);
+        if ($count < 2) {
+            return $violations;
+        }
+
+        $courseIds = array_values(array_unique(array_filter(array_map(
+            fn ($op) => (int) ($op['course_id'] ?? $op['subject_id'] ?? 0),
+            $operations
+        ))));
+
+        $coursesMap = !empty($courseIds)
+            ? Course::whereIn('id', $courseIds)->get()->keyBy('id')
+            : collect();
+
+        for ($i = 0; $i < $count; $i++) {
+            $op1 = $operations[$i];
+            $termId1 = (int) ($op1['term_id'] ?? 0);
+            $sectionId1 = (int) ($op1['section_id'] ?? 0);
+            $roomId1 = (int) ($op1['room_id'] ?? 0);
+            $facultyId1 = !empty($op1['faculty_id']) ? (int) $op1['faculty_id'] : null;
+            $day1 = (string) ($op1['day'] ?? '');
+            $startMins1 = $this->timeToMinutesLocal((string) ($op1['start_time'] ?? '00:00'));
+            $endMins1 = $this->timeToMinutesLocal((string) ($op1['end_time'] ?? '00:00'));
+            $mode1 = (string) ($op1['mode'] ?? 'on-site');
+            $courseId1 = (int) ($op1['course_id'] ?? $op1['subject_id'] ?? 0);
+            $courseCode1 = $coursesMap->get($courseId1)?->course_code ?? 'Course';
+
+            for ($j = $i + 1; $j < $count; $j++) {
+                $op2 = $operations[$j];
+                $termId2 = (int) ($op2['term_id'] ?? 0);
+                $sectionId2 = (int) ($op2['section_id'] ?? 0);
+                $roomId2 = (int) ($op2['room_id'] ?? 0);
+                $facultyId2 = !empty($op2['faculty_id']) ? (int) $op2['faculty_id'] : null;
+                $day2 = (string) ($op2['day'] ?? '');
+                $startMins2 = $this->timeToMinutesLocal((string) ($op2['start_time'] ?? '00:00'));
+                $endMins2 = $this->timeToMinutesLocal((string) ($op2['end_time'] ?? '00:00'));
+                $mode2 = (string) ($op2['mode'] ?? 'on-site');
+                $courseId2 = (int) ($op2['course_id'] ?? $op2['subject_id'] ?? 0);
+                $courseCode2 = $coursesMap->get($courseId2)?->course_code ?? 'Course';
+
+                if ($termId1 === $termId2 && $day1 === $day2) {
+                    if ($startMins1 < $endMins2 && $startMins2 < $endMins1) {
+                        $overlapStart = $this->minutesToTimeString(max($startMins1, $startMins2));
+                        $overlapEnd = $this->minutesToTimeString(min($endMins1, $endMins2));
+
+                        if ($sectionId1 === $sectionId2) {
+                            $violations[] = [
+                                'rule' => 'section_conflict',
+                                'operation_index' => $j,
+                                'course_code' => $courseCode2,
+                                'day' => $day2,
+                                'message' => "Intra-batch Section Conflict: {$courseCode1} and {$courseCode2} overlap for section on {$day1} from {$overlapStart} to {$overlapEnd}.",
+                            ];
+                        }
+
+                        if ($roomId1 === $roomId2 && $mode1 !== 'online' && $mode1 !== 'field' && $mode2 !== 'online' && $mode2 !== 'field') {
+                            $violations[] = [
+                                'rule' => 'room_conflict',
+                                'operation_index' => $j,
+                                'course_code' => $courseCode2,
+                                'day' => $day2,
+                                'message' => "Intra-batch Room Conflict: Room is assigned to both {$courseCode1} and {$courseCode2} at overlapping time {$overlapStart}-{$overlapEnd} on {$day1}.",
+                            ];
+                        }
+
+                        if ($facultyId1 !== null && $facultyId1 === $facultyId2) {
+                            $violations[] = [
+                                'rule' => 'faculty_conflict',
+                                'operation_index' => $j,
+                                'course_code' => $courseCode2,
+                                'day' => $day2,
+                                'message' => "Intra-batch Faculty Conflict: Instructor is assigned to teach both {$courseCode1} and {$courseCode2} at overlapping time {$overlapStart}-{$overlapEnd} on {$day1}.",
+                            ];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $violations;
     }
 
     public function show(Schedule $schedule)
@@ -390,6 +646,9 @@ class ScheduleController extends Controller
             'mode'              => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'is_hybrid'         => 'sometimes|boolean',
             'preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
+            'split_group_id'    => 'nullable|string|max:36',
+            'meeting_type'      => 'nullable|in:lecture,laboratory',
+            'meeting_index'     => 'nullable|integer|min:1',
             'status'            => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
         ]);
 

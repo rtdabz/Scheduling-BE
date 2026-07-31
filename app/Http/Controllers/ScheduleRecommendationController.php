@@ -10,6 +10,7 @@ use App\Models\Curriculum;
 use App\Services\Scheduling\CSPSolver;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\SplitScheduleService;
 use App\Services\SystemNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,6 +23,7 @@ class ScheduleRecommendationController extends Controller
     public function __construct(
         private readonly CSPSolver $cspSolver,
         private readonly RuleEngine $ruleEngine,
+        private readonly SplitScheduleService $splitScheduleService,
         private readonly SystemNotificationService $notifications,
     ) {
     }
@@ -40,6 +42,67 @@ class ScheduleRecommendationController extends Controller
             ->get();
 
         return response()->json($recommendations);
+    }
+
+    /**
+     * Find conflict-free placements for a single split-session block.
+     *
+     * POST /api/schedule-recommendations/recommend-split
+     *
+     * The Rule Engine validates every candidate; only conflict-free options
+     * are returned. If no valid placement exists anywhere within operating
+     * hours, status='no_solution' is returned instead of an error.
+     */
+    public function recommendSplit(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'term_id'                => 'required|integer|exists:terms,id',
+            'section_id'             => 'required|integer|exists:sections,id',
+            'course_id'              => 'required|integer|exists:courses,id',
+            'department_id'          => 'required|integer|exists:departments,id',
+            'duration_slots'         => 'required|integer|min:1|max:28',
+            'room_id'                => 'nullable|integer|exists:rooms,id',
+            'mode'                   => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'faculty_id'             => 'nullable|integer|exists:faculties,id',
+            'delete_ids'             => 'sometimes|array',
+            'delete_ids.*'           => 'integer|exists:schedules,id',
+            'max_solutions'          => 'sometimes|integer|min:1|max:10',
+            'timeout_seconds'        => 'sometimes|numeric|min:0.5|max:15',
+        ]);
+
+        try {
+            $result = $this->splitScheduleService->recommend(
+                termId:         (int) $validated['term_id'],
+                sectionId:      (int) $validated['section_id'],
+                courseId:       (int) $validated['course_id'],
+                departmentId:   (int) $validated['department_id'],
+                durationSlots:  (int) $validated['duration_slots'],
+                roomId:         isset($validated['room_id']) ? (int) $validated['room_id'] : null,
+                mode:           $validated['mode'] ?? 'on-site',
+                facultyId:      isset($validated['faculty_id']) ? (int) $validated['faculty_id'] : null,
+                deleteIds:      array_map('intval', $validated['delete_ids'] ?? []),
+                maxResults:     (int) ($validated['max_solutions'] ?? 5),
+                timeoutSeconds: (float) ($validated['timeout_seconds'] ?? 5.0),
+            );
+        } catch (InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
+        if ($result['status'] === 'no_solution') {
+            return response()->json([
+                'status'  => 'no_solution',
+                'message' => 'No conflict-free time slot found for this split session. '
+                    . 'All available times on all days are occupied. '
+                    . 'Try a different room, delivery mode, or reduce other scheduled sessions.',
+                'recommendations' => [],
+            ]);
+        }
+
+        return response()->json([
+            'status'          => 'ok',
+            'message'         => 'Conflict-free placements found for this split session.',
+            'recommendations' => $result['recommendations'],
+        ]);
     }
 
     public function store(Request $request): JsonResponse

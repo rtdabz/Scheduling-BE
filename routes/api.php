@@ -114,6 +114,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedule-recommendations/auto-generate', [ScheduleRecommendationController::class, 'autoGenerateAndApply']);
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
         Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
+        Route::post('schedule-recommendations/recommend-split', [ScheduleRecommendationController::class, 'recommendSplit']);
         Route::get('schedule-recommendations', [ScheduleRecommendationController::class, 'index']);
         Route::post('schedule-recommendations', [ScheduleRecommendationController::class, 'store']);
         Route::get('schedule-recommendations/{scheduleRecommendation}', [ScheduleRecommendationController::class, 'show']);
@@ -136,6 +137,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('subjects/{course}', [CoursesController::class, 'destroy']);
 
         Route::post('sections', [SectionsController::class, 'store']);
+        Route::post('sections/batch', [SectionsController::class, 'batchStore']);
         Route::match(['put', 'patch'], 'sections/{section}', [SectionsController::class, 'update']);
         Route::delete('sections/{section}', [SectionsController::class, 'destroy']);
 

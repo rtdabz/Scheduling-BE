@@ -18,7 +18,6 @@ class DatabaseSeeder extends Seeder
             RoomSeeder::class,
             FacultySeeder::class,
             TermSeeder::class,
-            SectionSeeder::class,
         ]);
     }
 }
