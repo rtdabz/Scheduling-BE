@@ -146,7 +146,7 @@ class RuleEngine
         if ($end > SchedulingPolicy::closingTime()) {
             return [
                 'rule' => 'operating_hours',
-                'message' => "Schedule ends at {$endTime}, which exceeds operating hours (9:00 PM cutoff).",
+                'message' => "Schedule ends at {$endTime}, which exceeds operating hours (7:00 PM cutoff).",
             ];
         }
 

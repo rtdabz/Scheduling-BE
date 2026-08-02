@@ -68,6 +68,7 @@ class ScheduleRecommendationController extends Controller
             'delete_ids.*'           => 'integer|exists:schedules,id',
             'max_solutions'          => 'sometimes|integer|min:1|max:10',
             'timeout_seconds'        => 'sometimes|numeric|min:0.5|max:15',
+            'meeting_type'           => 'nullable|in:lecture,laboratory',
         ]);
 
         try {
@@ -83,6 +84,7 @@ class ScheduleRecommendationController extends Controller
                 deleteIds:      array_map('intval', $validated['delete_ids'] ?? []),
                 maxResults:     (int) ($validated['max_solutions'] ?? 5),
                 timeoutSeconds: (float) ($validated['timeout_seconds'] ?? 5.0),
+                meetingType:    $validated['meeting_type'] ?? null,
             );
         } catch (InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
@@ -118,10 +120,21 @@ class ScheduleRecommendationController extends Controller
             'max_solutions' => 'sometimes|integer|min:1|max:25',
             'max_iterations' => 'sometimes|integer|min:1',
             'timeout_seconds' => 'sometimes|numeric|min:0.1',
+            'seed' => 'sometimes|integer',
         ]);
 
         /** @var Sections $section */
         $section = Sections::query()->findOrFail($validated['section_id']);
+
+        // Clear previous generated schedules and cached solutions
+        Schedule::where('section_id', $section->id)
+            ->where('term_id', $section->term_id)
+            ->whereIn('status', ['draft', 'completed'])
+            ->delete();
+
+        ScheduleRecommendation::where('section_id', $section->id)
+            ->where('term_id', $section->term_id)
+            ->delete();
 
         try {
             $validated['course_ids'] = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
@@ -216,10 +229,21 @@ class ScheduleRecommendationController extends Controller
             'max_solutions' => 'sometimes|integer|min:1|max:5',
             'max_iterations' => 'sometimes|integer|min:1',
             'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
+            'seed' => 'sometimes|integer',
         ]);
 
         /** @var Sections $section */
         $section = Sections::query()->findOrFail($validated['section_id']);
+
+        // Clear previous generated schedules and cached solutions
+        Schedule::where('section_id', $section->id)
+            ->where('term_id', $section->term_id)
+            ->whereIn('status', ['draft', 'completed'])
+            ->delete();
+
+        ScheduleRecommendation::where('section_id', $section->id)
+            ->where('term_id', $section->term_id)
+            ->delete();
 
         try {
             $validated['course_ids'] = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
@@ -254,6 +278,7 @@ class ScheduleRecommendationController extends Controller
             'max_iterations' => 'sometimes|integer|min:1',
             'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
             'selected_rank' => 'required|integer|min:1|max:5',
+            'seed' => 'sometimes|integer',
         ]);
 
         /** @var Sections $section */
@@ -537,6 +562,9 @@ class ScheduleRecommendationController extends Controller
                 'is_hybrid'         => (bool) ($row['is_hybrid'] ?? false),
                 'preferred_pattern' => $row['preferred_pattern'] ?? null,
                 'status'            => (string) ($row['status'] ?? 'draft'),
+                'split_group_id'    => $row['split_group_id'] ?? null,
+                'meeting_type'      => $row['meeting_type'] ?? null,
+                'meeting_index'     => isset($row['meeting_index']) ? (int) $row['meeting_index'] : null,
             ];
         }, $rows);
 
@@ -719,10 +747,21 @@ class ScheduleRecommendationController extends Controller
             'preferred_patterns.*' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
             'max_iterations' => 'sometimes|integer|min:1',
             'timeout_seconds' => 'sometimes|numeric|min:0.1',
+            'seed' => 'sometimes|integer',
         ]);
 
         /** @var Sections $section */
         $section = Sections::query()->findOrFail($validated['section_id']);
+
+        // Clear previous generated schedules and cached solutions
+        Schedule::where('section_id', $section->id)
+            ->where('term_id', $section->term_id)
+            ->whereIn('status', ['draft', 'completed'])
+            ->delete();
+
+        ScheduleRecommendation::where('section_id', $section->id)
+            ->where('term_id', $section->term_id)
+            ->delete();
 
         try {
             $resolvedCourseIds = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);

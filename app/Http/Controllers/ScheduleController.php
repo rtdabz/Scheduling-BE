@@ -672,10 +672,23 @@ class ScheduleController extends Controller
 
     public function destroy(Request $request, Schedule $schedule)
     {
-        $schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department']);
+        $schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department', 'split']);
         $deletedSchedule = clone $schedule;
 
-        $schedule->delete();
+        $splitGroupId = $schedule->split_group_id;
+
+        if ($request->query('delete_group') === 'true' && $splitGroupId) {
+            $schedules = Schedule::whereHas('split', function ($q) use ($splitGroupId) {
+                $q->where('split_group_id', $splitGroupId);
+            })->get();
+
+            foreach ($schedules as $s) {
+                $s->delete();
+            }
+        } else {
+            $schedule->delete();
+        }
+
         $this->notifyScheduleSaved($request, $deletedSchedule, 'deleted');
 
         return response()->json(['message' => 'Schedule deleted successfully']);

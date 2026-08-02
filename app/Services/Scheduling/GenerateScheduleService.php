@@ -184,37 +184,11 @@ class GenerateScheduleService
             ];
         }
 
-        // Fix #4: Prevent duplicate schedule rows for the same course in the same term.
-        $existingCourseIds = Schedule::where('section_id', $recommendation->section_id)
+        // Clear previous schedules for this section and term to prevent duplicate/merge issues
+        Schedule::where('section_id', $recommendation->section_id)
             ->where('term_id', $recommendation->term_id)
-            ->pluck('course_id')
-            ->map(fn ($id): int => (int) $id)
-            ->all();
-
-        $duplicates = [];
-        foreach ($meetings as $meeting) {
-            if (in_array((int) $meeting['course_id'], $existingCourseIds, true)) {
-                $course = Course::find($meeting['course_id']);
-                $duplicates[] = [
-                    'rule'      => 'duplicate_section_subject',
-                    'message'   => sprintf(
-                        'Section already has a schedule for %s (%s) in this term. '
-                        . 'Cannot accept this recommendation.',
-                        $course?->course_name ?? 'course ' . $meeting['course_id'],
-                        $course?->course_code ?? '',
-                    ),
-                    'course_id' => (int) $meeting['course_id'],
-                ];
-            }
-        }
-
-        if (!empty($duplicates)) {
-            return [
-                'message'    => 'One or more courses in this recommendation are already scheduled for this section.',
-                'violations' => $duplicates,
-                'schedules'  => [],
-            ];
-        }
+            ->whereIn('status', ['draft', 'completed'])
+            ->delete();
 
         return DB::transaction(function () use ($recommendation, $userId, $meetings) {
             $created = [];
@@ -231,6 +205,9 @@ class GenerateScheduleService
                     'end_time'      => $meeting['end_time'],
                     'mode'          => $meeting['mode'],
                     'status'        => 'draft',
+                    'split_group_id'=> $meeting['split_group_id'] ?? null,
+                    'meeting_type'  => $meeting['meeting_type'] ?? null,
+                    'meeting_index' => isset($meeting['meeting_index']) ? (int) $meeting['meeting_index'] : null,
                 ]);
             }
 
@@ -296,6 +273,9 @@ class GenerateScheduleService
                 'mode'              => $meeting['mode'],
                 'is_hybrid'         => $meeting['is_hybrid'] ?? false,
                 'preferred_pattern' => $meeting['preferred_pattern'] ?? null,
+                'split_group_id'    => $meeting['split_group_id'] ?? null,
+                'meeting_type'      => $meeting['meeting_type'] ?? null,
+                'meeting_index'     => isset($meeting['meeting_index']) ? (int) $meeting['meeting_index'] : null,
             ]);
 
             foreach ($result as $violation) {

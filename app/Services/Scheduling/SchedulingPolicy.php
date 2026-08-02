@@ -12,7 +12,7 @@ final class SchedulingPolicy
 {
     public const OPERATING_START_MINUTES = 7 * 60;
     public const SLOT_MINUTES = 30;
-    public const TOTAL_SLOTS = 28;
+    public const TOTAL_SLOTS = 24;
 
     public const DAYS = [
         'Monday',
@@ -96,7 +96,7 @@ final class SchedulingPolicy
     /**
      * Applied when an on-site course is scheduled online as a fallback.
      */
-    public const SOFT_ONLINE_FALLBACK_PENALTY = 25;
+    public const SOFT_ONLINE_FALLBACK_PENALTY = 1000;
 
     /**
      * Canonical constraint catalog shared by RuleEngine, CSP, and request validation.
@@ -121,7 +121,7 @@ final class SchedulingPolicy
         'operating_hours' => [
             'severity' => 'hard',
             'category' => 'time',
-            'description' => 'Schedules must be within 7:00 AM and 9:00 PM.',
+            'description' => 'Schedules must be within 7:00 AM and 7:00 PM.',
             'enforced_by' => ['request_validation', 'rule_engine', 'csp'],
         ],
         'slot_grid' => [

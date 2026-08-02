@@ -15,6 +15,7 @@ use App\Http\Controllers\CoursesController;
 use App\Http\Controllers\SectionsController;
 
 use App\Http\Controllers\ScheduleController;
+use App\Http\Controllers\ScheduleSplitController;
 use App\Http\Controllers\ScheduleRecommendationController;
 use App\Http\Controllers\InstructorAssignmentController;
 use App\Http\Controllers\SystemNotificationController;
@@ -99,6 +100,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
         Route::apiResource('schedules', ScheduleController::class);
+        Route::apiResource('schedule-splits', ScheduleSplitController::class);
 
         // Faculties Read-only
         Route::get('faculties', [FacultyController::class, 'index']);

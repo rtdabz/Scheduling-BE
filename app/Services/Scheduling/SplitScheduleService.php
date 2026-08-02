@@ -66,6 +66,7 @@ final class SplitScheduleService
         array  $deleteIds,
         int    $maxResults = 5,
         float  $timeoutSeconds = 5.0,
+        ?string $meetingType = null,
     ): array {
         if ($durationSlots < 1 || $durationSlots > self::TOTAL_SLOTS) {
             throw new InvalidArgumentException(
@@ -77,7 +78,7 @@ final class SplitScheduleService
         $section = Sections::with('term')->findOrFail($sectionId);
 
         // Build the list of rooms to search over.
-        $rooms = $this->resolveRooms($course, $mode, $roomId, $departmentId);
+        $rooms = $this->resolveRooms($course, $mode, $roomId, $departmentId, $meetingType);
 
         if ($rooms->isEmpty()) {
             return ['status' => 'no_solution', 'recommendations' => []];
@@ -118,6 +119,7 @@ final class SplitScheduleService
                 'is_hybrid'           => false,
                 'faculty_id'          => $facultyId,
                 'ignore_schedule_id'  => $ignoreIds,
+                'meeting_type'        => $meetingType,
             ];
 
             $violations = $this->ruleEngine->validate($data);
@@ -163,10 +165,13 @@ final class SplitScheduleService
         string $mode,
         ?int   $preferredRoomId,
         int    $departmentId,
+        ?string $meetingType = null,
     ): \Illuminate\Database\Eloquent\Collection {
         $targetRoomType = match (true) {
             $mode === 'online' => 'online',
             $mode === 'field'  => 'field',
+            $meetingType === 'lecture' => 'lecture',
+            $meetingType === 'laboratory' => 'laboratory',
             default            => (string) ($course->room_type_required ?: 'lecture'),
         };
 
