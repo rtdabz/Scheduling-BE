@@ -198,9 +198,10 @@ class RuleEngine
 
         $requiredRoomType = $meetingType ?? $course->room_type_required;
 
-        // Laboratory courses or meetings may fall back to a lecture room when no lab is
-        // available for the department. This is a soft preference.
-        if ($requiredRoomType === 'laboratory' && $room->room_type === 'lecture') {
+        // If both the required type and the actual room type are physical (lecture or laboratory), they match.
+        $isPhysicalRequired = in_array($requiredRoomType, ['lecture', 'laboratory'], true);
+        $isPhysicalRoom = in_array($room->room_type, ['lecture', 'laboratory'], true);
+        if ($isPhysicalRequired && $isPhysicalRoom) {
             return null;
         }
 
@@ -407,15 +408,44 @@ class RuleEngine
                 ];
             }
 
-            if (
-                $faculty->employment_type === 'part-time'
-                && !in_array((string) ($attempt['day'] ?? ''), ['Saturday', 'Sunday'], true)
-                && SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00')) < '17:00:00'
-            ) {
-                $violations[] = [
-                    'rule' => 'part_time_faculty_availability',
-                    'message' => 'Part-time instructors can only be assigned from 5:00 PM onward on weekdays or any time on Saturdays or Sundays.',
-                ];
+            $dayIndexMap = [
+                'Monday' => 0,
+                'Tuesday' => 1,
+                'Wednesday' => 2,
+                'Thursday' => 3,
+                'Friday' => 4,
+                'Saturday' => 5,
+                'Sunday' => 6,
+            ];
+            $attemptDay = (string) ($attempt['day'] ?? '');
+            $attemptDayIndex = $dayIndexMap[$attemptDay] ?? null;
+
+            if ($faculty->employment_type === 'part-time' && $attemptDayIndex !== null) {
+                // Fetch the availability windows for this day
+                $dayAvailabilities = $faculty->availabilities()
+                    ->where('day_index', $attemptDayIndex)
+                    ->get();
+                
+                $attemptStart = SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00'));
+                $attemptEnd = SchedulingPolicy::normalizeTime((string) ($attempt['end_time'] ?? '00:00'));
+
+                // Verify if the attempt fits completely inside at least one availability window
+                $fits = false;
+                foreach ($dayAvailabilities as $window) {
+                    $windowStart = SchedulingPolicy::normalizeTime($window->start_time);
+                    $windowEnd = SchedulingPolicy::normalizeTime($window->end_time);
+                    if ($attemptStart >= $windowStart && $attemptEnd <= $windowEnd) {
+                        $fits = true;
+                        break;
+                    }
+                }
+
+                if (!$fits) {
+                    $violations[] = [
+                        'rule' => 'part_time_faculty_availability',
+                        'message' => 'The selected assignment falls outside the instructor\'s availability window for ' . $attemptDay . '.',
+                    ];
+                }
             }
 
             if (
@@ -596,6 +626,10 @@ class RuleEngine
                 $violations[] = $onlineLimitViolation;
             }
         }
+
+
+
+
 
         return $violations;
     }

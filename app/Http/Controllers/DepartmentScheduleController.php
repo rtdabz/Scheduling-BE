@@ -73,6 +73,7 @@ class DepartmentScheduleController extends Controller
     {
         $rank = [
             'draft'            => 0,
+            'revision'         => 0,
             'completed'        => 1,
             'submitted'        => 2,
             'approved_by_dean' => 3,
@@ -93,6 +94,7 @@ class DepartmentScheduleController extends Controller
                 $raw === 'approved_by_dean'                         => 'approved_by_dean',
                 $raw === 'submitted'                                => 'submitted',
                 $raw === 'completed'                                => 'completed',
+                $raw === 'revision'                                 => 'revision',
                 default                                             => 'draft', // draft, rejected, rejected_by_dean
             };
 
@@ -116,11 +118,15 @@ class DepartmentScheduleController extends Controller
     public function scheduleStatus(int $id): JsonResponse
     {
         $department = Departments::findOrFail($id);
+        $activeTermId = $this->activeTermId();
 
-        // Load all active sections for this department, eager-load their schedules
-        $sections = Sections::with('schedules:id,section_id,status')
+        $sections = Sections::with(['schedules' => function ($query) use ($activeTermId) {
+                $query->select('id', 'section_id', 'status')
+                    ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId));
+            }])
             ->where('department_id', $id)
             ->where('status', 'active')
+            ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId))
             ->orderBy('year_level')
             ->orderBy('section_name')
             ->get();
@@ -173,11 +179,15 @@ class DepartmentScheduleController extends Controller
         }
 
         $department = Departments::findOrFail($id);
+        $activeTermId = $this->activeTermId();
 
-        // ── Gating rule: re-derive section statuses server-side ──
-        $sections = Sections::with('schedules:id,section_id,status')
+        $sections = Sections::with(['schedules' => function ($query) use ($activeTermId) {
+                $query->select('id', 'section_id', 'status')
+                    ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId));
+            }])
             ->where('department_id', $id)
             ->where('status', 'active')
+            ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId))
             ->get();
 
         // Group by year_level and check if any year level has draft sections

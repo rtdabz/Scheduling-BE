@@ -36,8 +36,8 @@ class ScheduleController extends Controller
 
         if ($request->has('department_id') && $request->department_id) {
             $query->where('department_id', $request->department_id);
-        } elseif ($this->departmentScope($request) !== null) {
-            $query->where('department_id', $this->departmentScope($request));
+        } elseif (($scope = $this->departmentScope($request)) !== null) {
+            $query->where('department_id', $scope);
         }
 
         $schedules = $query->latest()->get();
@@ -135,16 +135,19 @@ class ScheduleController extends Controller
         $deleteIds = $validated['delete_ids'] ?? [];
         $allViolations = $this->checkIntraBatchConflicts($validated['operations']);
 
+        $operationIds = collect($validated['operations'])
+            ->pluck('id')
+            ->filter()
+            ->map('intval')
+            ->all();
+        $mergedIgnoreIds = array_values(array_unique(array_merge($operationIds, array_map('intval', $deleteIds))));
+
         foreach ($validated['operations'] as $index => $op) {
             $attemptData = $op;
             if (isset($attemptData['subject_id']) && !isset($attemptData['course_id'])) {
                 $attemptData['course_id'] = $attemptData['subject_id'];
             }
 
-            // Build the ignore list: own ID (for updates) + all delete_ids so the
-            // rule engine skips baseline records that will be removed in this batch.
-            $ownIgnoreId = isset($op['id']) ? [(int) $op['id']] : [];
-            $mergedIgnoreIds = array_values(array_unique(array_merge($ownIgnoreId, array_map('intval', $deleteIds))));
             $attemptData['ignore_schedule_id'] = $mergedIgnoreIds;
 
             $violations = $this->ruleEngine->validate($attemptData);
@@ -228,9 +231,16 @@ class ScheduleController extends Controller
         $resolvedOps   = [];
         $allViolations = [];
 
-        // Operating hours: 07:00 – 21:00 (OPERATING_START_MINUTES = 420)
+        $operationIds = collect($validated['operations'])
+            ->pluck('id')
+            ->filter()
+            ->map('intval')
+            ->all();
+        $mergedIgnoreIds = array_values(array_unique(array_merge($operationIds, array_map('intval', $deleteIds))));
+
+        // Operating hours: 07:00 – 19:00 (OPERATING_START_MINUTES = 420)
         $operatingStartMinutes = SchedulingPolicy::OPERATING_START_MINUTES; // 420
-        $operatingEndMinutes   = $operatingStartMinutes + (SchedulingPolicy::TOTAL_SLOTS * SchedulingPolicy::SLOT_MINUTES); // 420 + 840 = 1260 = 21:00
+        $operatingEndMinutes   = $operatingStartMinutes + (SchedulingPolicy::TOTAL_SLOTS * SchedulingPolicy::SLOT_MINUTES); // 420 + 720 = 1140 = 19:00
         $slotMinutes           = SchedulingPolicy::SLOT_MINUTES; // 30
 
         foreach ($validated['operations'] as $index => $op) {
@@ -238,8 +248,6 @@ class ScheduleController extends Controller
                 $op['course_id'] = $op['subject_id'];
             }
 
-            // Build ignore list: all baseline records being replaced in this batch.
-            $mergedIgnoreIds          = array_values(array_unique(array_map('intval', $deleteIds)));
             $op['ignore_schedule_id'] = $mergedIgnoreIds;
 
             $violations = $this->validateCandidate($op, $resolvedOps);
@@ -727,5 +735,30 @@ class ScheduleController extends Controller
             $schedule->department_id,
             $schedule->term_id
         );
+    }
+
+    public function batchStatus(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => 'required|array',
+            'ids.*' => 'integer|exists:schedules,id',
+            'status' => SchedulingPolicy::allowedScheduleStatusesRule('required'),
+        ]);
+
+        $updated = Schedule::whereIn('id', $validated['ids'])
+            ->update([
+                'status' => $validated['status'],
+                'updated_at' => now(),
+            ]);
+
+        $schedules = Schedule::whereIn('id', $validated['ids'])
+            ->with(['term', 'section', 'course', 'faculty', 'room', 'department'])
+            ->get();
+
+        return response()->json([
+            'message' => 'Batch status update completed successfully.',
+            'schedules' => $schedules,
+            'schedules_updated' => $updated,
+        ]);
     }
 }

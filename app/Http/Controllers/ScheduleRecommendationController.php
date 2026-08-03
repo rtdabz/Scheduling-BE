@@ -60,7 +60,7 @@ class ScheduleRecommendationController extends Controller
             'section_id'             => 'required|integer|exists:sections,id',
             'course_id'              => 'required|integer|exists:courses,id',
             'department_id'          => 'required|integer|exists:departments,id',
-            'duration_slots'         => 'required|integer|min:1|max:28',
+            'duration_slots'         => 'required|integer|min:1|max:24',
             'room_id'                => 'nullable|integer|exists:rooms,id',
             'mode'                   => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'faculty_id'             => 'nullable|integer|exists:faculties,id',

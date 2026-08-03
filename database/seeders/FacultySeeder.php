@@ -42,15 +42,37 @@ class FacultySeeder extends Seeder
             ['first_name' => 'Socrates', 'last_name' => 'Reyes', 'employment_type' => 'part-time', 'max_units' => 12, 'department_id' => $cas->id, 'status' => 'active'],
         ];
 
-        foreach ($faculties as $faculty) {
-            Faculty::updateOrCreate(
+        foreach ($faculties as $facultyData) {
+            $fac = Faculty::updateOrCreate(
                 [
-                    'first_name' => $faculty['first_name'],
-                    'last_name' => $faculty['last_name'],
-                    'department_id' => $faculty['department_id'],
+                    'first_name' => $facultyData['first_name'],
+                    'last_name' => $facultyData['last_name'],
+                    'department_id' => $facultyData['department_id'],
                 ],
-                $faculty
+                $facultyData
             );
+
+            if ($fac->employment_type === 'part-time') {
+                $fac->availabilities()->delete();
+                
+                // Weekdays: 5:00 PM to 7:00 PM (17:00:00 to 19:00:00)
+                for ($d = 0; $d < 5; $d++) {
+                    $fac->availabilities()->create([
+                        'day_index' => $d,
+                        'start_time' => '17:00:00',
+                        'end_time' => '19:00:00',
+                    ]);
+                }
+                
+                // Saturday & Sunday: 7:00 AM to 7:00 PM (07:00:00 to 19:00:00)
+                for ($d = 5; $d <= 6; $d++) {
+                    $fac->availabilities()->create([
+                        'day_index' => $d,
+                        'start_time' => '07:00:00',
+                        'end_time' => '19:00:00',
+                    ]);
+                }
+            }
         }
     }
 }

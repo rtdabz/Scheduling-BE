@@ -24,4 +24,9 @@ class Faculty extends Model
     {
         return $this->belongsTo(Departments::class, 'department_id');
     }
+
+    public function availabilities()
+    {
+        return $this->hasMany(FacultyAvailability::class, 'faculty_id');
+    }
 }

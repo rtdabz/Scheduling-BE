@@ -23,16 +23,16 @@ use InvalidArgumentException;
 final class SplitScheduleService
 {
     /** Slot duration in minutes. */
-    private const SLOT_MINUTES = 30;
+    private const SLOT_MINUTES = SchedulingPolicy::SLOT_MINUTES;
 
     /** Grid start: 07:00 AM in minutes from midnight. */
-    private const GRID_START_MINUTES = 7 * 60;
+    private const GRID_START_MINUTES = SchedulingPolicy::OPERATING_START_MINUTES;
 
-    /** Grid end: 09:00 PM = 21:00 in minutes from midnight. */
-    private const GRID_END_MINUTES = 21 * 60;
+    /** Grid end: 07:00 PM = 19:00 in minutes from midnight. */
+    private const GRID_END_MINUTES = 19 * 60;
 
-    /** Total 30-min slots in the operating window: (21-7)*2 = 28. */
-    private const TOTAL_SLOTS = 28;
+    /** Total 30-min slots in the operating window: 24. */
+    private const TOTAL_SLOTS = SchedulingPolicy::TOTAL_SLOTS;
 
     public function __construct(
         private readonly RuleEngine $ruleEngine,

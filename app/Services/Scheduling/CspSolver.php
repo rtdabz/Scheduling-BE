@@ -1355,7 +1355,7 @@ class CSPSolver
      *   morning   → slots  0–5  (07:00–09:30)
      *   midday    → slots  6–11 (10:00–12:30)
      *   afternoon → slots 12–17 (13:00–15:30)
-     *   evening   → slots 18–27 (16:00–21:00)
+     *   evening   → slots 18–23 (16:00–19:00)
      */
     private function computeTimeBand(int $startSlot): string
     {

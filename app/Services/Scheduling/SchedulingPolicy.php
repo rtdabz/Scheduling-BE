@@ -71,6 +71,7 @@ final class SchedulingPolicy
         'faculty_assignment',
         'finalized',
         'rejected',
+        'revision',
     ];
 
     /** @var array<string, array{0: string, 1: string}> */

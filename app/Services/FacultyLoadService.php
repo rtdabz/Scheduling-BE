@@ -11,7 +11,7 @@ class FacultyLoadService
     public function get(?int $departmentId, ?int $termId): Collection
     {
         $faculties = Faculty::query()
-            ->with('department')
+            ->with(['department', 'availabilities'])
             ->when($departmentId !== null, fn ($query) => $query->where('department_id', $departmentId))
             ->orderBy('last_name')
             ->orderBy('first_name')

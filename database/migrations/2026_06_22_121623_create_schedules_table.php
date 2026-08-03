@@ -36,7 +36,8 @@ return new class extends Migration
                 'approved',
                 'faculty_assignment',
                 'finalized',
-                'rejected'
+                'rejected',
+                'revision'
             ])->default('draft');
 
             $table->text('rejection_reason')->nullable();
