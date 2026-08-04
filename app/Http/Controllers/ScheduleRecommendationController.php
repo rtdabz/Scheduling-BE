@@ -69,22 +69,26 @@ class ScheduleRecommendationController extends Controller
             'max_solutions'          => 'sometimes|integer|min:1|max:10',
             'timeout_seconds'        => 'sometimes|numeric|min:0.5|max:15',
             'meeting_type'           => 'nullable|in:lecture,laboratory',
+            'preferred_day'          => 'nullable|string',
+            'preferred_start_time'   => 'nullable|string',
         ]);
 
         try {
             $result = $this->splitScheduleService->recommend(
-                termId:         (int) $validated['term_id'],
-                sectionId:      (int) $validated['section_id'],
-                courseId:       (int) $validated['course_id'],
-                departmentId:   (int) $validated['department_id'],
-                durationSlots:  (int) $validated['duration_slots'],
-                roomId:         isset($validated['room_id']) ? (int) $validated['room_id'] : null,
-                mode:           $validated['mode'] ?? 'on-site',
-                facultyId:      isset($validated['faculty_id']) ? (int) $validated['faculty_id'] : null,
-                deleteIds:      array_map('intval', $validated['delete_ids'] ?? []),
-                maxResults:     (int) ($validated['max_solutions'] ?? 5),
-                timeoutSeconds: (float) ($validated['timeout_seconds'] ?? 5.0),
-                meetingType:    $validated['meeting_type'] ?? null,
+                termId:             (int) $validated['term_id'],
+                sectionId:          (int) $validated['section_id'],
+                courseId:           (int) $validated['course_id'],
+                departmentId:       (int) $validated['department_id'],
+                durationSlots:      (int) $validated['duration_slots'],
+                roomId:             isset($validated['room_id']) ? (int) $validated['room_id'] : null,
+                mode:               $validated['mode'] ?? 'on-site',
+                facultyId:          isset($validated['faculty_id']) ? (int) $validated['faculty_id'] : null,
+                deleteIds:          array_map('intval', $validated['delete_ids'] ?? []),
+                maxResults:         (int) ($validated['max_solutions'] ?? 5),
+                timeoutSeconds:     (float) ($validated['timeout_seconds'] ?? 5.0),
+                meetingType:        $validated['meeting_type'] ?? null,
+                preferredDay:       $validated['preferred_day'] ?? null,
+                preferredStartTime: $validated['preferred_start_time'] ?? null,
             );
         } catch (InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);

@@ -631,6 +631,28 @@ class RuleEngine
 
 
 
+        $courseId = $attempt['course_id'] ?? $attempt['subject_id'] ?? 0;
+        $course = \App\Models\Course::find($courseId);
+        $courseCategory = $course?->course_category ?? $course?->subject_category ?? 'major';
+        $isSplit = !empty($attempt['split_group_id']) || !empty($attempt['meeting_index']);
+
+        if ($isSplit && in_array($courseCategory, ['major', 'minor'], true)) {
+            $allowedRules = [
+                'room_conflict',
+                'faculty_conflict',
+                'section_conflict',
+                'valid_day',
+                'delivery_mode',
+                'hybrid_mode',
+                'slot_grid',
+                'operating_hours',
+                'part_time_faculty_availability',
+                'delivery_room_alignment',
+                'room_availability',
+            ];
+            $violations = array_values(array_filter($violations, fn($v) => in_array($v['rule'] ?? '', $allowedRules, true)));
+        }
+
         return $violations;
     }
 

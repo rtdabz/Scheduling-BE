@@ -67,6 +67,8 @@ final class SplitScheduleService
         int    $maxResults = 5,
         float  $timeoutSeconds = 5.0,
         ?string $meetingType = null,
+        ?string $preferredDay = null,
+        ?string $preferredStartTime = null,
     ): array {
         if ($durationSlots < 1 || $durationSlots > self::TOTAL_SLOTS) {
             throw new InvalidArgumentException(
@@ -86,10 +88,12 @@ final class SplitScheduleService
 
         // Build every (day, startSlot, room) candidate for this block.
         $candidates = $this->buildCandidates(
-            course:        $course,
-            rooms:         $rooms,
-            durationSlots: $durationSlots,
-            mode:          $mode,
+            course:             $course,
+            rooms:              $rooms,
+            durationSlots:      $durationSlots,
+            mode:               $mode,
+            preferredDay:       $preferredDay,
+            preferredStartTime: $preferredStartTime,
         );
 
         if (empty($candidates)) {
@@ -125,7 +129,7 @@ final class SplitScheduleService
             $violations = $this->ruleEngine->validate($data);
 
             if (empty($violations)) {
-                $candidate['score'] = $this->scoreCandidate($candidate, $roomId, $mode);
+                $candidate['score'] = $this->scoreCandidate($candidate, $roomId, $mode, $preferredDay);
                 $validCandidates[]  = $candidate;
             }
         }
@@ -221,10 +225,15 @@ final class SplitScheduleService
         \Illuminate\Database\Eloquent\Collection $rooms,
         int        $durationSlots,
         string     $mode,
+        ?string    $preferredDay = null,
+        ?string    $preferredStartTime = null,
     ): array {
         $latestStart = self::TOTAL_SLOTS - $durationSlots;
 
         $days = SchedulingPolicy::WEEKDAYS_AND_SATURDAY;
+        if ($preferredDay !== null) {
+            $days = array_values(array_unique(array_merge([$preferredDay], $days)));
+        }
 
         $candidates = [];
 
@@ -233,6 +242,10 @@ final class SplitScheduleService
                 $endSlot   = $startSlot + $durationSlots;
                 $startTime = $this->slotToTime($startSlot);
                 $endTime   = $this->slotToTime($endSlot);
+
+                if ($preferredStartTime !== null && $startTime !== $preferredStartTime) {
+                    continue;
+                }
 
                 foreach ($rooms as $room) {
                     $candidateMode     = $mode;
@@ -272,6 +285,7 @@ final class SplitScheduleService
         array  $candidate,
         ?int   $preferredRoomId,
         string $preferredMode,
+        ?string $preferredDay = null,
     ): int {
         $score = 100;
 
@@ -295,6 +309,11 @@ final class SplitScheduleService
         // Prefer the originally requested delivery mode.
         if ($candidate['mode'] === $preferredMode) {
             $score += 5;
+        }
+
+        // Prefer the originally requested day.
+        if ($preferredDay !== null && $candidate['day'] === $preferredDay) {
+            $score += 20;
         }
 
         return $score;

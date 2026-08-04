@@ -64,8 +64,8 @@ class InstructorAssignmentController extends Controller
                 ->orderBy('start_time')
                 ->get();
 
-            $faculties = Faculty::query()
-                ->with('department')
+             $faculties = Faculty::query()
+                ->with(['department', 'availabilities'])
                 ->where('department_id', $departmentId)
                 ->where('status', 'active')
                 ->orderBy('last_name')
