@@ -203,26 +203,32 @@ class CurriculumController extends Controller
     public function attachCourse(Request $request, Curriculum $curriculum)
     {
         $validated = $request->validate([
-            'course_id'  => 'required|exists:courses,id',
-            'year_level' => 'required|integer|between:1,4',
-            'semester'   => 'required|integer|between:1,3',
+            'course_id'          => 'required|exists:courses,id',
+            'year_level'         => 'required|integer|between:1,4',
+            'semester'           => 'required|integer|between:1,3',
+            'replace_course_id'  => 'sometimes|integer|exists:courses,id',
         ]);
 
-        $curriculum->courses()->syncWithoutDetaching([
-            $validated['course_id'] => [
-                'year_level' => $validated['year_level'],
-                'semester'   => $validated['semester'],
-            ]
-        ]);
+        $course = Course::findOrFail($validated['course_id']);
+        $this->ensureCourseBelongsToCurriculumDepartment($curriculum, $course);
 
-        $course = Course::find($validated['course_id']);
-        if ($course) {
-            $semStr = $validated['semester'] == 1 ? '1st' : ($validated['semester'] == 2 ? '2nd' : 'summer');
-            $course->update([
-                'year_level' => (string) $validated['year_level'],
-                'semester'   => $semStr,
+        \DB::transaction(function () use ($curriculum, $validated) {
+            $curriculum->courses()->syncWithoutDetaching([
+                $validated['course_id'] => [
+                    'year_level' => $validated['year_level'],
+                    'semester'   => $validated['semester'],
+                ],
             ]);
-        }
+
+            if (
+                isset($validated['replace_course_id'])
+                && (int) $validated['replace_course_id'] !== (int) $validated['course_id']
+            ) {
+                $curriculum->courses()->detach((int) $validated['replace_course_id']);
+            }
+        });
+
+        ApiCache::forgetGroups(['curricula.index', 'initial.data']);
 
         return response()->json(['message' => 'Course attached successfully']);
     }
@@ -238,21 +244,18 @@ class CurriculumController extends Controller
 
         $syncData = [];
         foreach ($validated['courses'] as $item) {
+            $course = Course::findOrFail($item['course_id']);
+            $this->ensureCourseBelongsToCurriculumDepartment($curriculum, $course);
+
             $syncData[$item['course_id']] = [
                 'year_level' => $item['year_level'],
                 'semester'   => $item['semester'],
             ];
-            $course = Course::find($item['course_id']);
-            if ($course) {
-                $semStr = $item['semester'] == 1 ? '1st' : ($item['semester'] == 2 ? '2nd' : 'summer');
-                $course->update([
-                    'year_level' => (string) $item['year_level'],
-                    'semester'   => $semStr,
-                ]);
-            }
         }
 
         $curriculum->courses()->syncWithoutDetaching($syncData);
+
+        ApiCache::forgetGroups(['curricula.index', 'initial.data']);
 
         return response()->json(['message' => count($syncData) . ' course(s) attached successfully']);
     }
@@ -277,7 +280,7 @@ class CurriculumController extends Controller
         foreach ($validated['courses'] as $item) {
             $rowId = $item['row_id'];
             $code = trim(preg_replace('/\s+/', ' ', strtoupper($item['course_code'])));
-            $name = trim(preg_replace('/\s+/', ' ', ucwords(strtolower($item['course_name']))));
+            $name = trim(preg_replace('/\s+/', ' ', $item['course_name']));
             $category = $item['course_category'];
             $lec = $item['lecture_hours'];
             $lab = $item['lab_hours'];
@@ -288,8 +291,17 @@ class CurriculumController extends Controller
             try {
                 \DB::beginTransaction();
 
-                // 1. Check if course already exists by course_code
-                $course = \App\Models\Course::where('course_code', $code)->first();
+                // 1. Check if course already exists (majors scoped to department, minors globally)
+                $course = null;
+                if ($category === 'minor') {
+                    $course = \App\Models\Course::where('course_code', $code)
+                        ->where('course_category', 'minor')
+                        ->first();
+                } else {
+                    $course = \App\Models\Course::where('course_code', $code)
+                        ->where('department_id', $curriculum->department_id)
+                        ->first();
+                }
 
                 $semStr = $semester == 1 ? '1st' : ($semester == 2 ? '2nd' : 'summer');
 
@@ -305,13 +317,22 @@ class CurriculumController extends Controller
                         'room_type_required' => $lab > 0 ? 'laboratory' : 'lecture',
                         'year_level' => (string) $yearLevel,
                         'semester' => $semStr,
-                        'department_id' => $curriculum->department_id,
+                        'department_id' => $category === 'minor' ? null : $curriculum->department_id,
                         'status' => 'active',
                     ]);
                 } else {
+                    $this->ensureCourseBelongsToCurriculumDepartment($curriculum, $course);
+
                     $course->update([
+                        'course_name' => $name,
+                        'lecture_hours' => $lec,
+                        'lab_hours' => $lab,
+                        'units' => $units,
+                        'course_category' => $category,
+                        'room_type_required' => $lab > 0 ? 'laboratory' : 'lecture',
                         'year_level' => (string) $yearLevel,
                         'semester' => $semStr,
+                        'status' => 'active',
                     ]);
                 }
 
@@ -362,6 +383,8 @@ class CurriculumController extends Controller
             }
         }
 
+        ApiCache::forgetGroups(['curricula.index', 'initial.data']);
+
         return response()->json([
             'results' => $results
         ]);
@@ -370,6 +393,9 @@ class CurriculumController extends Controller
     public function detachCourse(Curriculum $curriculum, Course $course)
     {
         $curriculum->courses()->detach($course->id);
+
+        ApiCache::forgetGroups(['curricula.index', 'initial.data']);
+
         return response()->json(['message' => 'Course removed successfully']);
     }
 
@@ -428,5 +454,16 @@ class CurriculumController extends Controller
             ],
             'terms'      => $grouped,
         ]);
+    }
+
+    private function ensureCourseBelongsToCurriculumDepartment(Curriculum $curriculum, Course $course): void
+    {
+        if (
+            $course->course_category === 'major' &&
+            $course->department_id !== null &&
+            (int) $course->department_id !== (int) $curriculum->department_id
+        ) {
+            abort(422, 'Course belongs to another department and cannot be attached to this curriculum.');
+        }
     }
 }

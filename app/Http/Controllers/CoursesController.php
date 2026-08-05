@@ -111,8 +111,20 @@ class CoursesController extends Controller
 
     public function store(Request $request)
     {
+        if ($request->has('course_code')) {
+            $request->merge([
+                'course_code' => $this->normalizeCourseCode($request->input('course_code')),
+            ]);
+        }
+
         $validated = $request->validate([
-            'course_code' => 'required|string|unique:courses,course_code',
+            'course_code' => [
+                'required',
+                'string',
+                \Illuminate\Validation\Rule::unique('courses', 'course_code')->where(function ($query) use ($request) {
+                    return $query->where('department_id', $request->department_id);
+                })
+            ],
             'course_name' => 'required|string',
             'lecture_hours' => 'required|integer|min:0',
             'lab_hours' => 'required|integer|min:0',
@@ -136,8 +148,24 @@ class CoursesController extends Controller
 
     public function update(Request $request, Course $course)
     {
+        if ($request->has('course_code')) {
+            $request->merge([
+                'course_code' => $this->normalizeCourseCode($request->input('course_code')),
+            ]);
+        }
+
         $validated = $request->validate([
-            'course_code' => 'sometimes|required|string|unique:courses,course_code,' . $course->id,
+            'course_code' => [
+                'sometimes',
+                'required',
+                'string',
+                \Illuminate\Validation\Rule::unique('courses', 'course_code')
+                    ->ignore($course->id)
+                    ->where(function ($query) use ($request, $course) {
+                        $deptId = $request->has('department_id') ? $request->department_id : $course->department_id;
+                        return $query->where('department_id', $deptId);
+                    })
+            ],
             'course_name' => 'sometimes|required|string',
             'lecture_hours' => 'sometimes|required|integer|min:0',
             'lab_hours' => 'sometimes|required|integer|min:0',
@@ -152,20 +180,6 @@ class CoursesController extends Controller
 
         $course->update($validated);
 
-        if (isset($validated['year_level']) || isset($validated['semester'])) {
-            $pivotUpdate = [];
-            if (isset($validated['year_level'])) {
-                $pivotUpdate['year_level'] = (int) $validated['year_level'];
-            }
-            if (isset($validated['semester'])) {
-                $semInt = $validated['semester'] === '1st' ? 1 : ($validated['semester'] === '2nd' ? 2 : 3);
-                $pivotUpdate['semester'] = $semInt;
-            }
-            \DB::table('curriculum_course')
-                ->where('course_id', $course->id)
-                ->update($pivotUpdate);
-        }
-
         return response()->json($course->load('department'));
     }
 
@@ -173,5 +187,10 @@ class CoursesController extends Controller
     {
         $course->delete();
         return response()->json(['message' => 'Course deleted successfully']);
+    }
+
+    private function normalizeCourseCode(mixed $courseCode): string
+    {
+        return trim(preg_replace('/\s+/', ' ', strtoupper((string) $courseCode)));
     }
 }

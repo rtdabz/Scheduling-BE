@@ -20,6 +20,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique(['curriculum_id', 'course_id']); // prevent duplicate course in same curriculum
+            $table->index(['curriculum_id', 'year_level', 'semester'], 'curriculum_course_term_lookup_index');
         });
     }
 

@@ -79,6 +79,14 @@ final class SplitScheduleService
         $course  = Course::findOrFail($courseId);
         $section = Sections::with('term')->findOrFail($sectionId);
 
+        $targetRoomType = match (true) {
+            $mode === 'online' => 'online',
+            $mode === 'field'  => 'field',
+            $meetingType === 'lecture' => 'lecture',
+            $meetingType === 'laboratory' => 'laboratory',
+            default            => (string) ($course->room_type_required ?: 'lecture'),
+        };
+
         // Build the list of rooms to search over.
         $rooms = $this->resolveRooms($course, $mode, $roomId, $departmentId, $meetingType);
 
@@ -129,7 +137,7 @@ final class SplitScheduleService
             $violations = $this->ruleEngine->validate($data);
 
             if (empty($violations)) {
-                $candidate['score'] = $this->scoreCandidate($candidate, $roomId, $mode, $preferredDay);
+                $candidate['score'] = $this->scoreCandidate($candidate, $roomId, $mode, $preferredDay, $targetRoomType);
                 $validCandidates[]  = $candidate;
             }
         }
@@ -202,6 +210,20 @@ final class SplitScheduleService
                 ->orderBy('room_code')
                 ->get();
             $rooms = $rooms->merge($lectureRooms);
+        }
+
+        // For lecture courses, also include lab rooms as fallback.
+        if ($targetRoomType === 'lecture') {
+            $labRooms = Rooms::query()
+                ->where('status', 'available')
+                ->where('room_type', 'laboratory')
+                ->where(static function ($q) use ($departmentId): void {
+                    $q->whereNull('department_id')
+                      ->orWhere('department_id', $departmentId);
+                })
+                ->orderBy('room_code')
+                ->get();
+            $rooms = $rooms->merge($labRooms);
         }
 
         // Promote the preferred room to the front.
@@ -286,6 +308,7 @@ final class SplitScheduleService
         ?int   $preferredRoomId,
         string $preferredMode,
         ?string $preferredDay = null,
+        ?string $preferredRoomType = null,
     ): int {
         $score = 100;
 
@@ -304,6 +327,11 @@ final class SplitScheduleService
         // Prefer the originally requested room.
         if ($preferredRoomId !== null && $candidate['room_id'] === $preferredRoomId) {
             $score += 10;
+        }
+
+        // Prefer the preferred room type.
+        if ($preferredRoomType !== null && $candidate['room_type'] !== $preferredRoomType) {
+            $score -= 30;
         }
 
         // Prefer the originally requested delivery mode.

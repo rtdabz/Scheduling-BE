@@ -13,12 +13,6 @@ use Illuminate\Support\Str;
 
 class GenerateScheduleService
 {
-    /**
-     * Course categories that must always meet in 'field' mode
-     * (PATHFIT, NSTP), regardless of what room_type_required says.
-     */
-    private const FIELD_CATEGORIES = ['pathfit', 'nstp'];
-
     public function __construct(
         private readonly CSPSolver $solver,
         private readonly RuleEngine $ruleEngine,
@@ -44,9 +38,9 @@ class GenerateScheduleService
         $courseIds = $this->resolveCourseIdsFromActiveCurriculum($section);
 
         $solutions = $this->solver->solveRanked(
-            sectionId: $sectionId,
-            subjectIds: $courseIds,
-            maxSolutions: $maxSolutions,
+            $sectionId,
+            $courseIds,
+            $maxSolutions,
         );
 
         if (empty($solutions)) {
@@ -59,8 +53,9 @@ class GenerateScheduleService
             ];
         }
 
-        $courseCategoryMap = Course::whereIn('id', $courseIds)
-            ->pluck('course_category', 'id');
+        $coursesById = Course::whereIn('id', $courseIds)
+            ->get()
+            ->keyBy('id');
 
         // Ties every recommendation row from this single generate() call
         // together, so accept() can find/reject siblings later.
@@ -69,7 +64,7 @@ class GenerateScheduleService
         $storedSolutions = [];
 
         foreach ($solutions as $rank => $solution) {
-            $meetings = $this->applyMode($solution['schedules'], $courseCategoryMap);
+            $meetings = $this->applyMode($solution['schedules'], $coursesById);
 
             $recommendation = ScheduleRecommendation::create([
                 'batch_id'              => $batchId,
@@ -126,14 +121,16 @@ class GenerateScheduleService
 
         if (!$semester) {
             abort(response()->json([
-                'message' => 'This section\'s term has no semester set — cannot resolve curriculum courses.',
+                'message' => 'This section\'s term has no semester set - cannot resolve curriculum courses.',
             ], 422));
         }
+
+        $semesterValue = $this->mapSemesterToPivotValue((string) $semester);
 
         $courseIds = DB::table('curriculum_course')
             ->where('curriculum_id', $curriculum->id)
             ->where('year_level', $section->year_level)
-            ->where('semester', $semester)
+            ->where('semester', $semesterValue)
             ->pluck('course_id')
             ->toArray();
 
@@ -145,6 +142,18 @@ class GenerateScheduleService
         }
 
         return $courseIds;
+    }
+
+    private function mapSemesterToPivotValue(string $semester): int
+    {
+        return match ($semester) {
+            '1st' => 1,
+            '2nd' => 2,
+            'summer' => 3,
+            default => abort(response()->json([
+                'message' => "Unsupported semester '{$semester}' for curriculum course lookup.",
+            ], 422)),
+        };
     }
 
     /**
@@ -305,22 +314,22 @@ class GenerateScheduleService
     }
 
     /**
-     * Derive each meeting's 'mode' from its course's category —
-     * pathfit/nstp courses always meet in the field, everything else
-     * defaults to on-site.
+     * Derive each meeting's 'mode' from the actual course metadata.
+     * Field courses must always be marked field so accept-time validation
+     * uses the same rule set as the solver.
      *
      * Fix #10: When the mode is corrected to 'field', also update the room_id
      * to the real field-type room from the database, so the RuleEngine does
      * not reject the schedule at accept-time for a room-type mismatch.
      */
-    private function applyMode(array $meetings, $courseCategoryMap): array
+    private function applyMode(array $meetings, $coursesById): array
     {
         // Lazy-load the canonical field room ID once so we don't query per-meeting.
         $fieldRoomId = null;
 
         foreach ($meetings as &$meeting) {
-            $category = $courseCategoryMap[$meeting['course_id']] ?? null;
-            $isField  = in_array($category, self::FIELD_CATEGORIES, true);
+            $course = $coursesById[$meeting['course_id']] ?? null;
+            $isField = $course !== null && SchedulingPolicy::isFieldCourse($course);
 
             if ($isField) {
                 $meeting['mode'] = 'field';

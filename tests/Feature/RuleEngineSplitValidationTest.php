@@ -127,4 +127,59 @@ class RuleEngineSplitValidationTest extends TestCase
         $this->assertContains('room_conflict', $splitConflictRules);
         $this->assertNotContains('major_department_alignment', $splitConflictRules);
     }
+
+    public function test_online_schedule_does_not_require_room_assignment()
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $dept = Departments::create([
+            'department_name' => 'Department 1',
+            'department_code' => 'DEPT1',
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'IT103',
+            'course_name' => 'Integrated Applications Software',
+            'lecture_hours' => 2,
+            'lab_hours' => 1,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $dept->id,
+            'status' => 'active',
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $dept->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $violations = app(RuleEngine::class)->validate([
+            'term_id' => $term->id,
+            'section_id' => $section->id,
+            'course_id' => $course->id,
+            'room_id' => null,
+            'department_id' => $dept->id,
+            'day' => 'Monday',
+            'start_time' => '10:00',
+            'end_time' => '13:00',
+            'mode' => 'online',
+        ]);
+
+        $rules = collect($violations)->pluck('rule')->all();
+        $this->assertNotContains('room_exists', $rules);
+        $this->assertNotContains('room_type_match', $rules);
+        $this->assertNotContains('delivery_room_alignment', $rules);
+    }
 }

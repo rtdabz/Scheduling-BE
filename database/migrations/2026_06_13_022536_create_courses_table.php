@@ -13,7 +13,7 @@ return new class extends Migration
     {
         Schema::create('courses', function (Blueprint $table) {
             $table->id();
-            $table->string('course_code')->unique();
+            $table->string('course_code');
             $table->string('course_name');
             $table->integer('lecture_hours')->default(0);
             $table->integer('lab_hours')->default(0);
@@ -25,6 +25,8 @@ return new class extends Migration
             $table->foreignId('department_id')->nullable()->constrained('departments')->nullOnDelete();
             $table->enum('status', ['active', 'inactive'])->default('active');
             $table->timestamps();
+
+            $table->unique(['course_code', 'department_id'], 'courses_course_code_department_id_unique');
         });
     }
 

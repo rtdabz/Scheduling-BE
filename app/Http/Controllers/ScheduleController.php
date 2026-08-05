@@ -72,7 +72,7 @@ class ScheduleController extends Controller
             'section_id'        => 'required|exists:sections,id',
             'course_id'         => 'required|exists:courses,id',
             'faculty_id'        => 'nullable|exists:faculties,id',
-            'room_id'           => 'required|exists:rooms,id',
+            'room_id'           => 'nullable|exists:rooms,id',
             'department_id'     => 'required|exists:departments,id',
             'day'               => SchedulingPolicy::allowedDaysRule('required'),
             'start_time'        => 'required|date_format:H:i',
@@ -85,6 +85,7 @@ class ScheduleController extends Controller
             'meeting_index'     => 'nullable|integer|min:1',
             'status'            => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
         ]);
+        $validated = $this->clearOnlineRoomId($validated);
 
         if (!$this->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
@@ -116,7 +117,7 @@ class ScheduleController extends Controller
             'operations.*.course_id' => 'sometimes|integer|exists:courses,id',
             'operations.*.subject_id' => 'sometimes|integer|exists:courses,id',
             'operations.*.faculty_id' => 'nullable|integer|exists:faculties,id',
-            'operations.*.room_id' => 'required_without:operations.*.id|integer|exists:rooms,id',
+            'operations.*.room_id' => 'nullable|integer|exists:rooms,id',
             'operations.*.department_id' => 'required_without:operations.*.id|integer|exists:departments,id',
             'operations.*.day' => SchedulingPolicy::allowedDaysRule('required_without:operations.*.id'),
             'operations.*.start_time' => 'required_without:operations.*.id|date_format:H:i',
@@ -133,6 +134,10 @@ class ScheduleController extends Controller
         ]);
 
         $deleteIds = $validated['delete_ids'] ?? [];
+        $validated['operations'] = array_map(
+            fn (array $operation): array => $this->clearOnlineRoomId($operation),
+            $validated['operations']
+        );
         $allViolations = $this->checkIntraBatchConflicts($validated['operations']);
 
         $operationIds = collect($validated['operations'])
@@ -211,7 +216,7 @@ class ScheduleController extends Controller
             'operations.*.course_id'              => 'sometimes|integer|exists:courses,id',
             'operations.*.subject_id'             => 'sometimes|integer|exists:courses,id',
             'operations.*.faculty_id'             => 'nullable|integer|exists:faculties,id',
-            'operations.*.room_id'                => 'required|integer|exists:rooms,id',
+            'operations.*.room_id'                => 'nullable|integer|exists:rooms,id',
             'operations.*.department_id'          => 'required|integer|exists:departments,id',
             'operations.*.day'                    => SchedulingPolicy::allowedDaysRule('required'),
             'operations.*.start_time'             => 'required|date_format:H:i',
@@ -228,6 +233,10 @@ class ScheduleController extends Controller
         ]);
 
         $deleteIds     = $validated['delete_ids'] ?? [];
+        $validated['operations'] = array_map(
+            fn (array $operation): array => $this->clearOnlineRoomId($operation),
+            $validated['operations']
+        );
         $resolvedOps   = [];
         $allViolations = [];
 
@@ -646,7 +655,7 @@ class ScheduleController extends Controller
             'section_id'        => 'sometimes|required|exists:sections,id',
             'course_id'         => 'sometimes|required|exists:courses,id',
             'faculty_id'        => 'nullable|exists:faculties,id',
-            'room_id'           => 'sometimes|required|exists:rooms,id',
+            'room_id'           => 'sometimes|nullable|exists:rooms,id',
             'department_id'     => 'sometimes|required|exists:departments,id',
             'day'               => SchedulingPolicy::allowedDaysRule('sometimes'),
             'start_time'        => 'sometimes|required|date_format:H:i',
@@ -659,6 +668,7 @@ class ScheduleController extends Controller
             'meeting_index'     => 'nullable|integer|min:1',
             'status'            => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
         ]);
+        $validated = $this->clearOnlineRoomId($validated);
 
         $attemptData = array_merge($schedule->toArray(), $validated, ['ignore_schedule_id' => $schedule->id]);
 
@@ -710,6 +720,15 @@ class ScheduleController extends Controller
         }
 
         return (int) $user->department_id;
+    }
+
+    private function clearOnlineRoomId(array $payload): array
+    {
+        if (($payload['mode'] ?? null) === 'online') {
+            $payload['room_id'] = null;
+        }
+
+        return $payload;
     }
 
     private function payloadBelongsToDepartment(Request $request, int $targetDeptId): bool

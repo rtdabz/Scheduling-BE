@@ -557,7 +557,7 @@ class ScheduleRecommendationController extends Controller
                 'section_id'        => (int) ($row['section_id'] ?? $recommendation->section_id),
                 'course_id'         => $courseId,
                 'faculty_id'        => isset($row['faculty_id']) ? (int) $row['faculty_id'] : null,
-                'room_id'           => (int) $row['room_id'],
+                'room_id'           => isset($row['room_id']) && $row['room_id'] !== null ? (int) $row['room_id'] : null,
                 'department_id'     => (int) ($row['department_id'] ?? $recommendation->department_id),
                 'day'               => (string) $row['day'],
                 'start_time'        => SchedulingPolicy::normalizeTime((string) $row['start_time']),
@@ -689,7 +689,11 @@ class ScheduleRecommendationController extends Controller
                     $violations[] = $this->batchViolation('section_conflict', $leftIndex, $rightIndex);
                 }
 
-                if ($left['room_id'] === $right['room_id']) {
+                if (
+                    $left['room_id'] !== null &&
+                    $right['room_id'] !== null &&
+                    $left['room_id'] === $right['room_id']
+                ) {
                     $violations[] = $this->batchViolation('room_conflict', $leftIndex, $rightIndex);
                 }
 
