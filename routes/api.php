@@ -41,7 +41,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // VPAA-only administration
     Route::middleware('role:vpaa')->group(function () {
-        Route::resource('departments', DepartmentsController::class)->except(['index', 'show']);
+        Route::apiResource('departments', DepartmentsController::class)->except(['index', 'show']);
         Route::get('/departments/trash', [DepartmentsController::class, 'trash'])->name('departments.trash');
         Route::post('/departments/{id}/restore', [DepartmentsController::class, 'restore'])->name('departments.restore');
         Route::delete('/departments/{id}/force-delete', [DepartmentsController::class, 'forceDelete'])->name('departments.forceDelete');
@@ -84,9 +84,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::get('courses', [CoursesController::class, 'index']);
         Route::get('courses/{course}', [CoursesController::class, 'show']);
-        // Backwards compatibility alias
-        Route::get('subjects', [CoursesController::class, 'index']);
-        Route::get('subjects/{course}', [CoursesController::class, 'show']);
 
         Route::get('sections', [SectionsController::class, 'index']);
         Route::get('sections/term/{termId}', [SectionsController::class, 'byTerm']);
@@ -134,10 +131,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('courses', [CoursesController::class, 'store']);
         Route::match(['put', 'patch'], 'courses/{course}', [CoursesController::class, 'update']);
         Route::delete('courses/{course}', [CoursesController::class, 'destroy']);
-        // Backwards compatibility alias
-        Route::post('subjects', [CoursesController::class, 'store']);
-        Route::match(['put', 'patch'], 'subjects/{course}', [CoursesController::class, 'update']);
-        Route::delete('subjects/{course}', [CoursesController::class, 'destroy']);
 
         Route::post('sections', [SectionsController::class, 'store']);
         Route::post('sections/batch', [SectionsController::class, 'batchStore']);

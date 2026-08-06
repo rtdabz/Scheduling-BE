@@ -138,6 +138,29 @@ class ScheduleController extends Controller
             fn (array $operation): array => $this->clearOnlineRoomId($operation),
             $validated['operations']
         );
+
+        foreach ($validated['operations'] as $operation) {
+            if (
+                isset($operation['department_id'])
+                && !$this->payloadBelongsToDepartment($request, (int) $operation['department_id'])
+            ) {
+                return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+            }
+        }
+
+        if (!empty($deleteIds)) {
+            $deleteDepartmentIds = Schedule::query()
+                ->whereIn('id', $deleteIds)
+                ->pluck('department_id')
+                ->unique();
+
+            foreach ($deleteDepartmentIds as $departmentId) {
+                if (!$this->payloadBelongsToDepartment($request, (int) $departmentId)) {
+                    return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+                }
+            }
+        }
+
         $allViolations = $this->checkIntraBatchConflicts($validated['operations']);
 
         $operationIds = collect($validated['operations'])
