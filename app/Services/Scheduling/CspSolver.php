@@ -209,6 +209,17 @@ class CSPSolver
             courses: $courses,
         );
 
+        $courses = $courses
+            ->filter(fn (Course $course): bool => $this->isSchedulableCourse($course))
+            ->values()
+            ->keyBy('id');
+
+        if ($courses->isEmpty()) {
+            throw new RuntimeException(
+                'No schedulable courses found for this section. Courses with 0 lecture hours, 0 lab hours, and 0 units are treated as non-timetable requirements.'
+            );
+        }
+
         $this->validateCoursesForSection(
             section: $section,
             courses: $courses,
@@ -257,6 +268,11 @@ class CSPSolver
             deliveryMode: $deliveryMode,
         );
 
+        $this->preloadExistingSchedules(
+            termId: (int) $section->term_id,
+            sectionId: (int) $section->id,
+        );
+
         $solverSeed = $seed !== null ? (int) $seed : random_int(1, 1000000);
 
         $variables = $this->buildVariables(
@@ -267,6 +283,11 @@ class CSPSolver
             preferredPatternsByCourseId: $preferredPatternsByCourseId,
             sectionId: (int) $section->id,
             seed: $solverSeed,
+        );
+
+        $variables = $this->prunePersistedConflictingCandidates(
+            variables: $variables,
+            sectionId: (int) $section->id,
         );
 
         usort(
@@ -301,11 +322,6 @@ class CSPSolver
 
         $rawSolutions = [];
         $solutionSignatures = [];
-
-        $this->preloadExistingSchedules(
-            termId: (int) $section->term_id,
-            sectionId: (int) $section->id,
-        );
 
         $this->backtrack(
             variableIndex: 0,
@@ -374,24 +390,13 @@ class CSPSolver
             return;
         }
 
-        $nonFieldCount = count(array_filter(
-            $variables,
-            static fn (array $v): bool => !($v['is_field'] ?? false),
-        ));
         $minOnline = 0;
-        $maxOnline = 5;
 
         if ($variableIndex >= count($variables)) {
             $onlineCount = count(array_filter(
                 $assignments,
                 static fn (array $a): bool => ($a['mode'] ?? '') === 'online',
             ));
-
-            // Always enforce the hard max of 5 online classes regardless of strict mode.
-            // In non-strict mode only the minimum requirement is relaxed.
-            if ($onlineCount > $maxOnline) {
-                return;
-            }
 
             if ($strictOnlineTarget && $onlineCount < $minOnline) {
                 return;
@@ -432,13 +437,8 @@ class CSPSolver
 
             $candIsOnline = ($candidate['mode'] ?? '') === 'online';
 
-            // Hard cap: never allow more than $maxOnline online classes in any pass.
             if ($isCurrentNonField) {
                 $nextOnlineCount = $currentOnlineCount + ($candIsOnline ? 1 : 0);
-
-                if ($nextOnlineCount > $maxOnline) {
-                    continue;
-                }
 
                 if ($strictOnlineTarget && ($nextOnlineCount + $remainingNonFieldCount) < $minOnline) {
                     continue;
@@ -601,6 +601,49 @@ class CSPSolver
         }
 
         return $variables;
+    }
+
+    private function prunePersistedConflictingCandidates(array $variables, int $sectionId): array
+    {
+        foreach ($variables as &$variable) {
+            $variable['domain'] = array_values(array_filter(
+                $variable['domain'],
+                fn (array $candidate): bool => !$this->candidateHasPersistedConflict(
+                    candidate: $candidate,
+                    sectionId: $sectionId,
+                ),
+            ));
+        }
+
+        unset($variable);
+
+        return $variables;
+    }
+
+    private function candidateHasPersistedConflict(array $candidate, int $sectionId): bool
+    {
+        foreach ($candidate['blocks'] as $block) {
+            $blockRoomId = $this->nullableRoomId(
+                array_key_exists('room_id', $block)
+                    ? $block['room_id']
+                    : ($candidate['room_id'] ?? null)
+            );
+            $blockMode = $block['mode'] ?? $candidate['mode'] ?? 'on-site';
+
+            if ($this->hasExistingScheduleConflict(
+                roomId: $blockRoomId,
+                sectionId: $sectionId,
+                day: $block['day'],
+                startTime: $block['start_time'],
+                endTime: $block['end_time'],
+                skipRoomConflictCheck: in_array($blockMode, ['online', 'field'], true),
+                facultyId: isset($candidate['faculty_id']) ? $this->nullableRoomId($candidate['faculty_id']) : null,
+            )) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1812,17 +1855,7 @@ class CSPSolver
 
     private function getDurationSlots(Course $course): int
     {
-        $lecHours = (int) ($course->lecture_hours ?? 0);
-        $labHours = (int) ($course->lab_hours ?? 0);
-
-        if ($lecHours > 0 || $labHours > 0) {
-            // Per CHED academic policy:
-            // 1 Lecture unit = 1 clock hour = 2 x 30-min slots
-            // 1 Laboratory unit = 3 clock hours = 6 x 30-min slots
-            $rawSlots = ($lecHours * 2) + ($labHours * 6);
-        } else {
-            $rawSlots = (float) $course->units * 2;
-        }
+        $rawSlots = $this->rawDurationSlots($course);
 
         if (abs($rawSlots - round($rawSlots)) > 0.00001) {
             throw new RuntimeException(sprintf(
@@ -1851,6 +1884,26 @@ class CSPSolver
         }
 
         return $durationSlots;
+    }
+
+    private function isSchedulableCourse(Course $course): bool
+    {
+        return $this->rawDurationSlots($course) > 0;
+    }
+
+    private function rawDurationSlots(Course $course): float
+    {
+        $lecHours = (int) ($course->lecture_hours ?? 0);
+        $labHours = (int) ($course->lab_hours ?? 0);
+
+        if ($lecHours > 0 || $labHours > 0) {
+            // Per CHED academic policy:
+            // 1 Lecture unit = 1 clock hour = 2 x 30-min slots
+            // 1 Laboratory unit = 3 clock hours = 6 x 30-min slots
+            return ($lecHours * 2) + ($labHours * 6);
+        }
+
+        return (float) $course->units * 2;
     }
 
     private function normalizePreferredPattern(mixed $preferredPattern): ?string

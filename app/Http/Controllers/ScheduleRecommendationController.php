@@ -653,7 +653,7 @@ class ScheduleRecommendationController extends Controller
         }
 
         throw new InvalidArgumentException(
-            "The active curriculum ({$curriculum->name}) has no courses defined for Year {$section->year_level}, {$section->semester} semester."
+            "Year {$section->year_level} has no courses for {$section->semester} semester. Add courses to this year level before generating a schedule."
         );
     }
 
