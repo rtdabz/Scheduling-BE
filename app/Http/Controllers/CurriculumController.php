@@ -405,6 +405,10 @@ class CurriculumController extends Controller
         $curriculum->load('department');
 
         $courses = $curriculum->courses()
+            ->where(function ($query) use ($curriculum) {
+                $query->whereNull('courses.department_id')
+                    ->orWhere('courses.department_id', $curriculum->department_id);
+            })
             ->orderBy('curriculum_course.year_level')
             ->orderBy('curriculum_course.semester')
             ->get();
@@ -459,7 +463,6 @@ class CurriculumController extends Controller
     private function ensureCourseBelongsToCurriculumDepartment(Curriculum $curriculum, Course $course): void
     {
         if (
-            $course->course_category === 'major' &&
             $course->department_id !== null &&
             (int) $course->department_id !== (int) $curriculum->department_id
         ) {

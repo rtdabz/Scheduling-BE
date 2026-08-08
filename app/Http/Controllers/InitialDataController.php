@@ -51,6 +51,13 @@ class InitialDataController extends Controller
                 ->whereHas('curricula', function ($q) use ($activeCurricula) {
                     $q->whereIn('curricula.id', $activeCurricula->pluck('id'));
                 })
+                // Only include courses that belong to this department or are shared minors (null dept)
+                ->when($departmentId !== null, function ($q) use ($departmentId) {
+                    $q->where(function ($scope) use ($departmentId) {
+                        $scope->whereNull('department_id')
+                              ->orWhere('department_id', $departmentId);
+                    });
+                })
                 ->get();
 
             $pivotData = \DB::table('curriculum_course')
@@ -87,7 +94,11 @@ class InitialDataController extends Controller
                 return strcmp($a->course_code ?? '', $b->course_code ?? '');
             })->values();
         } else {
-            $courses = Course::with('department')->get();
+            // No active curriculum exists for this department scope.
+            // Return an empty list — courses are only meaningful in the context of an
+            // active curriculum. Shared minors (null dept) are not included here either,
+            // because without a curriculum they have no term/year-level placement.
+            $courses = collect();
         }
 
         $sections = Sections::query()

@@ -511,6 +511,13 @@ class CSPSolver
             }
 
             $domain = match (true) {
+                $deliveryMode === 'online' && $preferredPattern === null => $this->buildSingleDayDomain(
+                    course: $course,
+                    matchingRooms: $rooms,
+                    durationSlots: $durationSlots,
+                    deliveryMode: $deliveryMode,
+                    isHybrid: $isHybrid,
+                ),
                 $hasBothComponents && $preferredPattern === null => $this->buildDefaultLectureLabDomain(
                     course: $course,
                     matchingRooms: $rooms,
@@ -823,7 +830,7 @@ class CSPSolver
         string $deliveryMode,
         bool $isHybrid,
     ): array {
-        if ($deliveryMode === 'online' || $this->isFieldCourse($course)) {
+        if ($this->isFieldCourse($course)) {
             return [];
         }
 
@@ -840,10 +847,6 @@ class CSPSolver
         $labRooms = $matchingRooms->filter(
             static fn (Rooms $room): bool => $room->room_type === 'laboratory',
         );
-
-        if ($labRooms->isEmpty()) {
-            return [];
-        }
 
         $lectureOptions = $lectureRooms
             ->map(static fn (Rooms $room): array => [
@@ -867,6 +870,11 @@ class CSPSolver
             ])
             ->values()
             ->all();
+        $labOptions[] = [
+            'room_id' => null,
+            'room_type' => 'online',
+            'mode' => 'online',
+        ];
 
         $dayPairs = array_values(array_filter(
             SchedulingPolicy::FIXED_MEETING_PATTERNS,
@@ -2203,19 +2211,40 @@ class CSPSolver
         Collection &$rooms,
         string $deliveryMode = 'on-site',
     ): void {
-        // Fix #2 (revised): If no physical room of the required type exists,
-        // silently skip — do NOT fabricate a phantom room with a random ID.
-        // The course's variable domain will be empty, which triggers the
-        // early-exit in solveRanked() and returns a clean "no solution" result.
-        // Only field/online virtual rooms may be created, and those are already
-        // injected by solveRanked() from real DB rows before this method runs.
+        // Missing physical rooms are handled by online fallback candidates in
+        // the domain builders, so generation should not fail up-front here.
+        return;
+
+        // Collect all missing physical room types up-front so the error message
+        // names every missing type in a single, actionable response — rather than
+        // silently returning "no recommendations" and forcing the user to retry.
+        // Virtual rooms (online/field) are always injected before this runs.
+        $missingTypes = [];
+
+        foreach ($courses as $course) {
+            foreach ($this->requiredPhysicalRoomTypesForCourse($course, $deliveryMode) as $roomType) {
+                $hasMatchingRoom = $rooms->contains(
+                    static fn (Rooms $room): bool => $room->room_type === $roomType,
+                );
+
+                if (!$hasMatchingRoom && !in_array($roomType, $missingTypes, true)) {
+                    $missingTypes[] = $roomType;
+                }
+            }
+        }
+
         foreach ($courses as $course) {
             $targetRoomType = $this->targetRoomTypeForCourse(
                 course: $course,
                 deliveryMode: $deliveryMode,
             );
 
-            // For major lab courses, a lecture room is a valid fallback.
+            // Virtual rooms are handled before this method — skip them here.
+            if (in_array($targetRoomType, ['online', 'field'], true)) {
+                continue;
+            }
+
+            // For major lab courses a lecture room is a valid fallback.
             $hasLectureFallback = $this->isMajorLabCourse($course)
                 && $rooms->contains(
                     static fn (Rooms $room): bool => $room->room_type === 'lecture',
@@ -2226,13 +2255,64 @@ class CSPSolver
                     $room->room_type === $targetRoomType,
             );
 
-            // If no room of the required physical type exists, leave the collection
-            // unchanged. The domain builder will produce an empty domain for this
-            // course, and the solver will return [] cleanly.
-            if (!$hasMatchingRoom) {
-                continue;
+            if (!$hasMatchingRoom && !in_array($targetRoomType, $missingTypes, true)) {
+                $missingTypes[] = $targetRoomType;
             }
         }
+
+        if (!empty($missingTypes)) {
+            $labels = array_map(static function (string $type): string {
+                return match ($type) {
+                    'laboratory' => 'laboratory room',
+                    'lecture'    => 'classroom (lecture room)',
+                    default      => "{$type} room",
+                };
+            }, $missingTypes);
+
+            $list = implode(' and ', $labels);
+
+            throw new \InvalidArgumentException(
+                "No {$list} found for this department. "
+                . 'Please add the required room(s) under Room Management before generating a schedule.'
+            );
+        }
+    }
+
+    /**
+     * Return the physical room types that must exist before generation can be
+     * attempted. Online fallback is only useful when a physical room type exists
+     * but is occupied; missing room inventory should be reported directly.
+     *
+     * @return list<string>
+     */
+    private function requiredPhysicalRoomTypesForCourse(Course $course, string $deliveryMode): array
+    {
+        if ($deliveryMode === 'online' || $deliveryMode === 'field' || $this->isFieldCourse($course)) {
+            return [];
+        }
+
+        $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
+        $lectureHours = (int) ($course->lecture_hours ?? 0);
+        $labHours = (int) ($course->lab_hours ?? 0);
+
+        $types = [];
+
+        if ($lectureHours > 0) {
+            $types[] = 'lecture';
+        }
+
+        if ($types === []) {
+            $targetRoomType = $this->targetRoomTypeForCourse(
+                course: $course,
+                deliveryMode: $deliveryMode,
+            );
+
+            if (in_array($targetRoomType, ['lecture', 'laboratory'], true)) {
+                $types[] = $targetRoomType;
+            }
+        }
+
+        return array_values(array_unique($types));
     }
 
     private function requiredRoomTypesForDeliveryMode(

@@ -141,33 +141,32 @@ class ScheduleController extends Controller
 
         foreach ($validated['operations'] as $operation) {
             if (
-                isset($operation['department_id'])
+                !isset($operation['id'])
+                && isset($operation['department_id'])
                 && !$this->payloadBelongsToDepartment($request, (int) $operation['department_id'])
             ) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
             }
         }
 
-        if (!empty($deleteIds)) {
-            $deleteDepartmentIds = Schedule::query()
-                ->whereIn('id', $deleteIds)
-                ->pluck('department_id')
-                ->unique();
-
-            foreach ($deleteDepartmentIds as $departmentId) {
-                if (!$this->payloadBelongsToDepartment($request, (int) $departmentId)) {
-                    return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
-                }
-            }
-        }
-
-        $allViolations = $this->checkIntraBatchConflicts($validated['operations']);
-
         $operationIds = collect($validated['operations'])
             ->pluck('id')
             ->filter()
             ->map('intval')
             ->all();
+
+        if (!$this->scheduleIdsBelongToDepartment($request, $operationIds)) {
+            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+
+        if (!empty($deleteIds)) {
+            if (!$this->scheduleIdsBelongToDepartment($request, $deleteIds)) {
+                return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+            }
+        }
+
+        $allViolations = $this->checkIntraBatchConflicts($validated['operations']);
+
         $mergedIgnoreIds = array_values(array_unique(array_merge($operationIds, array_map('intval', $deleteIds))));
 
         foreach ($validated['operations'] as $index => $op) {
@@ -234,6 +233,7 @@ class ScheduleController extends Controller
     {
         $validated = $request->validate([
             'operations'                          => 'required|array',
+            'operations.*.id'                     => 'nullable|integer|exists:schedules,id',
             'operations.*.term_id'                => 'required|integer|exists:terms,id',
             'operations.*.section_id'             => 'required|integer|exists:sections,id',
             'operations.*.course_id'              => 'sometimes|integer|exists:courses,id',
@@ -263,11 +263,27 @@ class ScheduleController extends Controller
         $resolvedOps   = [];
         $allViolations = [];
 
+        foreach ($validated['operations'] as $operation) {
+            if (
+                !isset($operation['id'])
+                && isset($operation['department_id'])
+                && !$this->payloadBelongsToDepartment($request, (int) $operation['department_id'])
+            ) {
+                return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+            }
+        }
+
         $operationIds = collect($validated['operations'])
             ->pluck('id')
             ->filter()
             ->map('intval')
             ->all();
+
+        if (!$this->scheduleIdsBelongToDepartment($request, $operationIds)
+            || !$this->scheduleIdsBelongToDepartment($request, $deleteIds)) {
+            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+
         $mergedIgnoreIds = array_values(array_unique(array_merge($operationIds, array_map('intval', $deleteIds))));
 
         // Operating hours: 07:00 – 19:00 (OPERATING_START_MINUTES = 420)
@@ -693,6 +709,17 @@ class ScheduleController extends Controller
         ]);
         $validated = $this->clearOnlineRoomId($validated);
 
+        if (!$this->scheduleBelongsToDepartment($request, $schedule)) {
+            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+
+        if (
+            isset($validated['department_id'])
+            && !$this->payloadBelongsToDepartment($request, (int) $validated['department_id'])
+        ) {
+            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+
         $attemptData = array_merge($schedule->toArray(), $validated, ['ignore_schedule_id' => $schedule->id]);
 
         $violations = $this->ruleEngine->validate($attemptData);
@@ -713,6 +740,10 @@ class ScheduleController extends Controller
 
     public function destroy(Request $request, Schedule $schedule)
     {
+        if (!$this->scheduleBelongsToDepartment($request, $schedule)) {
+            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+
         $schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department', 'split']);
         $deletedSchedule = clone $schedule;
 
@@ -722,6 +753,10 @@ class ScheduleController extends Controller
             $schedules = Schedule::whereHas('split', function ($q) use ($splitGroupId) {
                 $q->where('split_group_id', $splitGroupId);
             })->get();
+
+            if (!$this->scheduleIdsBelongToDepartment($request, $schedules->pluck('id')->all())) {
+                return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+            }
 
             foreach ($schedules as $s) {
                 $s->delete();
@@ -760,6 +795,24 @@ class ScheduleController extends Controller
         return $scope === null || $scope === $targetDeptId;
     }
 
+    private function scheduleBelongsToDepartment(Request $request, Schedule $schedule): bool
+    {
+        return $this->payloadBelongsToDepartment($request, (int) $schedule->department_id);
+    }
+
+    private function scheduleIdsBelongToDepartment(Request $request, array $scheduleIds): bool
+    {
+        $scope = $this->departmentScope($request);
+        if ($scope === null || $scheduleIds === []) {
+            return true;
+        }
+
+        return !Schedule::query()
+            ->whereIn('id', array_values(array_unique(array_map('intval', $scheduleIds))))
+            ->where('department_id', '!=', $scope)
+            ->exists();
+    }
+
     private function notifyScheduleSaved(Request $request, Schedule $schedule, string $action): void
     {
         $actor = $request->user();
@@ -786,6 +839,10 @@ class ScheduleController extends Controller
             'ids.*' => 'integer|exists:schedules,id',
             'status' => SchedulingPolicy::allowedScheduleStatusesRule('required'),
         ]);
+
+        if (!$this->scheduleIdsBelongToDepartment($request, $validated['ids'])) {
+            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
 
         $updated = Schedule::whereIn('id', $validated['ids'])
             ->update([

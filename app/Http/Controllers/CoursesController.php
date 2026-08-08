@@ -28,6 +28,12 @@ class CoursesController extends Controller
                     ->whereHas('curricula', function ($q) use ($activeCurriculaIds) {
                         $q->whereIn('curricula.id', $activeCurriculaIds);
                     })
+                    ->when($deptId, function ($q) use ($deptId) {
+                        $q->where(function ($courseQuery) use ($deptId) {
+                            $courseQuery->whereNull('department_id')
+                                ->orWhere('department_id', $deptId);
+                        });
+                    })
                     ->when($request->has('status') && $request->query('status'), function ($q) use ($request) {
                         $q->where('status', $request->query('status'));
                     })

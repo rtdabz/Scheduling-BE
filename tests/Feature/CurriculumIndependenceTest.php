@@ -233,6 +233,197 @@ class CurriculumIndependenceTest extends TestCase
         ]);
     }
 
+    public function test_curriculum_cannot_attach_department_owned_minor_course_from_another_department()
+    {
+        $user = User::create([
+            'name' => 'Secretary User',
+            'username' => 'sec_cross_minor',
+            'email' => 'sec-cross-minor@example.com',
+            'password' => bcrypt('password'),
+            'role' => 'secretary',
+        ]);
+        $this->actingAs($user);
+
+        $hmDept = Departments::create(['department_name' => 'Hospitality Management', 'department_code' => 'HM']);
+        $itDept = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'IT']);
+
+        $hmCurriculum = Curriculum::create([
+            'name' => 'HM Curriculum',
+            'code' => 'HM-CURR-MINOR',
+            'department_id' => $hmDept->id,
+            'effective_school_year' => '2026-2027',
+            'status' => 'draft',
+        ]);
+
+        $itOwnedMinor = Course::create([
+            'course_code' => 'GEE 4',
+            'course_name' => 'Living in IT Era',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'minor',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $itDept->id,
+            'status' => 'active',
+        ]);
+
+        $response = $this->postJson("/api/curricula/{$hmCurriculum->id}/courses", [
+            'course_id' => $itOwnedMinor->id,
+            'year_level' => 1,
+            'semester' => 1,
+        ]);
+
+        $response->assertStatus(422);
+        $this->assertDatabaseMissing('curriculum_course', [
+            'curriculum_id' => $hmCurriculum->id,
+            'course_id' => $itOwnedMinor->id,
+        ]);
+    }
+
+    public function test_curriculum_detail_hides_cross_department_major_courses()
+    {
+        $user = User::create([
+            'name' => 'Secretary User',
+            'username' => 'hm_sec',
+            'email' => 'hm@example.com',
+            'password' => bcrypt('password'),
+            'role' => 'secretary',
+        ]);
+        $this->actingAs($user);
+
+        $hmDept = Departments::create(['department_name' => 'Hospitality Management', 'department_code' => 'HM']);
+        $itDept = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'IT']);
+
+        $hmCurriculum = Curriculum::create([
+            'name' => 'HM Curriculum',
+            'code' => 'HM-CURR',
+            'department_id' => $hmDept->id,
+            'effective_school_year' => '2026-2027',
+            'status' => 'active',
+        ]);
+
+        $hmCourse = Course::create([
+            'course_code' => 'HM 101',
+            'course_name' => 'Hospitality Operations',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $hmDept->id,
+            'status' => 'active',
+        ]);
+
+        $itCourse = Course::create([
+            'course_code' => 'IT 101',
+            'course_name' => 'Introduction To Computing',
+            'lecture_hours' => 2,
+            'lab_hours' => 1,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $itDept->id,
+            'status' => 'active',
+        ]);
+
+        $minorCourse = Course::create([
+            'course_code' => 'GEC 1',
+            'course_name' => 'Understanding the Self',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'minor',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => null,
+            'status' => 'active',
+        ]);
+
+        $hmCurriculum->courses()->attach([
+            $hmCourse->id => ['year_level' => 1, 'semester' => 1],
+            $itCourse->id => ['year_level' => 1, 'semester' => 1],
+            $minorCourse->id => ['year_level' => 1, 'semester' => 1],
+        ]);
+
+        $response = $this->getJson("/api/curricula/{$hmCurriculum->id}/full");
+
+        $response->assertOk();
+        $courseCodes = collect($response->json('terms.0.courses'))->pluck('code')->all();
+        $this->assertContains('HM 101', $courseCodes);
+        $this->assertContains('GEC 1', $courseCodes);
+        $this->assertNotContains('IT 101', $courseCodes);
+    }
+
+    public function test_department_course_index_hides_cross_department_major_courses_from_active_curriculum()
+    {
+        $user = User::create([
+            'name' => 'Secretary User',
+            'username' => 'hm_sec_index',
+            'email' => 'hm-index@example.com',
+            'password' => bcrypt('password'),
+            'role' => 'secretary',
+        ]);
+        $this->actingAs($user);
+
+        $hmDept = Departments::create(['department_name' => 'Hospitality Management', 'department_code' => 'HM']);
+        $midwiferyDept = Departments::create(['department_name' => 'Midwifery', 'department_code' => 'MID']);
+
+        $hmCurriculum = Curriculum::create([
+            'name' => 'HM Curriculum',
+            'code' => 'HM-CURR-INDEX',
+            'department_id' => $hmDept->id,
+            'effective_school_year' => '2026-2027',
+            'status' => 'active',
+        ]);
+
+        $hmCourse = Course::create([
+            'course_code' => 'HM 102',
+            'course_name' => 'Housekeeping Operations',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $hmDept->id,
+            'status' => 'active',
+        ]);
+
+        $midwiferyCourse = Course::create([
+            'course_code' => 'MID 101',
+            'course_name' => 'Fundamentals of Midwifery',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $midwiferyDept->id,
+            'status' => 'active',
+        ]);
+
+        $hmCurriculum->courses()->attach([
+            $hmCourse->id => ['year_level' => 1, 'semester' => 1],
+            $midwiferyCourse->id => ['year_level' => 1, 'semester' => 1],
+        ]);
+
+        $response = $this->getJson("/api/courses?department_id={$hmDept->id}");
+
+        $response->assertOk();
+        $courseCodes = collect($response->json())->pluck('course_code')->all();
+        $this->assertContains('HM 102', $courseCodes);
+        $this->assertNotContains('MID 101', $courseCodes);
+    }
+
     public function test_batch_create_updates_existing_same_department_course_metadata()
     {
         $user = User::create([
