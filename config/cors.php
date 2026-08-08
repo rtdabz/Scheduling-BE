@@ -24,10 +24,7 @@ return [
         'http://127.0.0.1:5173',
         'http://localhost:5174',
         'http://127.0.0.1:5174',
-        'http://localhost:*',
-        'http://127.0.0.1:*',
         'https://18933xwt-5173.asse.devtunnels.ms',
-        'https://18933xwt-5174.asse.devtunnels.ms',
     ],
 
     'allowed_origins_patterns' => [],
