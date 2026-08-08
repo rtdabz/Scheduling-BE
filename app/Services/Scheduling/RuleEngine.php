@@ -626,37 +626,6 @@ class RuleEngine
                 $violations[] = $onlineLimitViolation;
             }
         }
-
-
-
-
-
-        $courseId = $attempt['course_id'] ?? $attempt['subject_id'] ?? 0;
-        $course = \App\Models\Course::find($courseId);
-        $courseCategory = $course?->course_category ?? $course?->subject_category ?? 'major';
-        $isSplit = !empty($attempt['split_group_id']) || !empty($attempt['meeting_index']);
-
-        if ($isSplit && in_array($courseCategory, ['major', 'minor'], true)) {
-            $allowedRules = [
-                'room_conflict',
-                'faculty_conflict',
-                'section_conflict',
-                'valid_day',
-                'delivery_mode',
-                'hybrid_mode',
-                'slot_grid',
-                'operating_hours',
-                'part_time_faculty_availability',
-                'delivery_room_alignment',
-                'room_availability',
-                'nstp_day_constraint',
-                'field_day_constraint',
-                'minor_day_constraint',
-                'major_sunday_mode_constraint',
-            ];
-            $violations = array_values(array_filter($violations, fn($v) => in_array($v['rule'] ?? '', $allowedRules, true)));
-        }
-
         return $violations;
     }
 
@@ -699,7 +668,7 @@ class RuleEngine
     /**
      * Enforces which days each course type may be scheduled on:
      *
-     *  - NSTP (ROTC/CWTS)           : Sunday only.
+     *  - NSTP (ROTC/CWTS/LTS)       : Monday-Sunday.
      *  - PATHFIT / other field (non-NSTP): Monday–Friday only.
      *  - Minor non-field (GEC, GEE): Monday–Friday only.
      *  - Major on Sunday            : online mode only (no room assignment).
@@ -710,10 +679,10 @@ class RuleEngine
         string $mode,
     ): ?array {
         if ($this->isNstpCourse($course)) {
-            if ($day !== 'Saturday') {
+            if (!in_array($day, SchedulingPolicy::DAYS, true)) {
                 return [
                     'rule'    => 'nstp_day_constraint',
-                    'message' => 'NSTP/ROTC/CWTS courses must be scheduled on Saturday.',
+                    'message' => 'NSTP/ROTC/CWTS/LTS courses must be scheduled Monday through Sunday.',
                 ];
             }
             return null;
@@ -755,7 +724,7 @@ class RuleEngine
     }
 
     /**
-     * Returns true when the course is an NSTP-type course (ROTC or CWTS).
+     * Returns true when the course is an NSTP-type course (ROTC, CWTS, or LTS).
      */
     private function isNstpCourse(Course $course): bool
     {

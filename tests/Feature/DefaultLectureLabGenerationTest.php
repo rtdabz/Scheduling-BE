@@ -16,7 +16,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_major_course_with_lecture_and_lab_generates_separate_default_components(): void
+    public function test_major_course_with_lecture_and_lab_stays_single_block_when_override_is_disabled(): void
     {
         $term = Terms::create([
             'academic_year' => '2026-2027',
@@ -28,6 +28,67 @@ class DefaultLectureLabGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
+            'lecture_lab_schedule_override_enabled' => false,
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'IT 100',
+            'course_name' => 'Computing Fundamentals',
+            'lecture_hours' => 2,
+            'lab_hours' => 1,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+
+        Rooms::create([
+            'room_code' => 'CompLab1',
+            'building' => 'Building 4',
+            'room_type' => 'laboratory',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            selectedLectureLabCourseIds: [$course->id],
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+        $this->assertCount(1, $solutions[0]['schedules']);
+        $this->assertArrayNotHasKey('split_group_id', $solutions[0]['schedules'][0]);
+        $this->assertSame(180, $this->durationMinutes($solutions[0]['schedules'][0]));
+    }
+
+    public function test_major_course_with_lecture_and_lab_generates_separate_components_when_override_is_enabled(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+            'lecture_lab_schedule_override_enabled' => true,
         ]);
 
         $section = Sections::create([
@@ -73,6 +134,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             sectionId: $section->id,
             courseIds: [$course->id],
             maxSolutions: 1,
+            selectedLectureLabCourseIds: [$course->id],
             seed: 1234,
         );
 
@@ -105,6 +167,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
+            'lecture_lab_schedule_override_enabled' => true,
         ]);
 
         $section = Sections::create([
@@ -142,6 +205,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             sectionId: $section->id,
             courseIds: [$course->id],
             maxSolutions: 1,
+            selectedLectureLabCourseIds: [$course->id],
             seed: 1234,
         );
 
@@ -171,6 +235,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
+            'lecture_lab_schedule_override_enabled' => true,
         ]);
 
         $section = Sections::create([
@@ -208,6 +273,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             sectionId: $section->id,
             courseIds: [$course->id],
             maxSolutions: 1,
+            selectedLectureLabCourseIds: [$course->id],
             seed: 1234,
         );
 

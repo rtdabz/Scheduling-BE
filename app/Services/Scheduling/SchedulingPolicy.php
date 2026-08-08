@@ -545,7 +545,7 @@ final class SchedulingPolicy
     }
 
     /**
-     * Returns true when the course is an NSTP-type course (ROTC or CWTS).
+     * Returns true when the course is an NSTP-type course (ROTC, CWTS, or LTS).
      */
     public static function isNstpCourse(Course $course): bool
     {
@@ -553,11 +553,11 @@ final class SchedulingPolicy
         $name     = strtoupper((string) ($course->course_name ?? $course->subject_name ?? ''));
         $category = strtolower((string) ($course->course_category ?? $course->subject_category ?? ''));
 
-        if (in_array($category, ['nstp', 'rotc', 'cwts'], true)) {
+        if (in_array($category, ['nstp', 'rotc', 'cwts', 'lts'], true)) {
             return true;
         }
 
-        foreach (['NSTP', 'ROTC', 'CWTS'] as $keyword) {
+        foreach (['NSTP', 'ROTC', 'CWTS', 'LTS'] as $keyword) {
             if (str_contains($code, $keyword) || str_contains($name, $keyword)) {
                 return true;
             }
@@ -579,11 +579,11 @@ final class SchedulingPolicy
         $name     = strtoupper((string) ($course->course_name ?? $course->subject_name ?? ''));
         $category = strtolower((string) ($course->course_category ?? $course->subject_category ?? ''));
 
-        if (in_array($category, ['pathfit', 'nstp', 'rotc', 'cwts'], true)) {
+        if (in_array($category, ['pathfit', 'nstp', 'rotc', 'cwts', 'lts'], true)) {
             return true;
         }
 
-        foreach (['PATHFIT', 'PATH FIT', 'PATH-FIT', 'NSTP', 'ROTC', 'CWTS', 'PE 1', 'PE 2', 'PE 3', 'PE 4', 'PHYSICAL EDUCATION'] as $keyword) {
+        foreach (['PATHFIT', 'PATH FIT', 'PATH-FIT', 'NSTP', 'ROTC', 'CWTS', 'LTS', 'PE 1', 'PE 2', 'PE 3', 'PE 4', 'PHYSICAL EDUCATION'] as $keyword) {
             if (str_contains($code, $keyword) || str_contains($name, $keyword)) {
                 return true;
             }

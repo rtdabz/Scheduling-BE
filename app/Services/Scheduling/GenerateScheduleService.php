@@ -182,7 +182,8 @@ class GenerateScheduleService
         $violations = $this->validateMeetings(
             $meetings,
             $recommendation->term_id,
-            $recommendation->section_id
+            $recommendation->section_id,
+            $recommendation->department_id
         );
 
         if (!empty($violations)) {
@@ -265,7 +266,7 @@ class GenerateScheduleService
      * Re-validate every meeting (overridden or not) through RuleEngine
      * right before saving.
      */
-    private function validateMeetings(array $meetings, int $termId, int $sectionId): array
+    private function validateMeetings(array $meetings, int $termId, int $sectionId, int $departmentId): array
     {
         $violations = [];
 
@@ -276,6 +277,7 @@ class GenerateScheduleService
                 'course_id'         => $meeting['course_id'],
                 'faculty_id'        => null,
                 'room_id'           => $meeting['room_id'],
+                'department_id'     => $meeting['department_id'] ?? $departmentId,
                 'day'               => $meeting['day'],
                 'start_time'        => $meeting['start_time'],
                 'end_time'          => $meeting['end_time'],

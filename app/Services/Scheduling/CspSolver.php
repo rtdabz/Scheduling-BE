@@ -8,6 +8,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Course;
+use App\Models\Departments;
 use Illuminate\Database\Eloquent\Collection;
 use InvalidArgumentException;
 use RuntimeException;
@@ -24,6 +25,12 @@ class CSPSolver
      * @var array<string, list<array{start_time: string, end_time: string}>>
      */
     private array $existingScheduleIndex = [];
+
+    /** @var array<int, int> */
+    private array $existingRoomUseCounts = [];
+
+    /** @var array<string, int> */
+    private array $existingRoomDayUseSlots = [];
 
     private int $iterations = 0;
     private int $maxIterations = 250_000;
@@ -98,6 +105,7 @@ class CSPSolver
             deliveryMode: $schema['delivery_mode'],
             isHybrid: $schema['is_hybrid'],
             preferredPatternsByCourseId: $schema['preferred_patterns'],
+            selectedLectureLabCourseIds: $schema['selected_split_session_course_ids'],
             seed: $schema['seed'] ?? null,
         );
     }
@@ -115,6 +123,7 @@ class CSPSolver
         string $deliveryMode = 'on-site',
         bool $isHybrid = false,
         array $preferredPatternsByCourseId = [],
+        array $selectedLectureLabCourseIds = [],
         ?int $seed = null,
     ): array {
         $rankedSolutions = $this->solveRanked(
@@ -126,6 +135,7 @@ class CSPSolver
             deliveryMode: $deliveryMode,
             isHybrid: $isHybrid,
             preferredPatternsByCourseId: $preferredPatternsByCourseId,
+            selectedLectureLabCourseIds: $selectedLectureLabCourseIds,
             seed: $seed,
         );
 
@@ -148,6 +158,7 @@ class CSPSolver
         string $deliveryMode = 'on-site',
         bool $isHybrid = false,
         array $preferredPatternsByCourseId = [],
+        array $selectedLectureLabCourseIds = [],
         ?int $seed = null,
     ): array {
         $this->validateArguments(
@@ -229,6 +240,7 @@ class CSPSolver
             preferredPatternsByCourseId: $preferredPatternsByCourseId,
             validCourseIds: $courseIds,
         );
+        $selectedLectureLabCourseIds = $this->normalizeCourseIds($selectedLectureLabCourseIds);
 
         $requiredRoomTypes = $this->requiredRoomTypesForDeliveryMode(
             courses: $courses,
@@ -271,9 +283,13 @@ class CSPSolver
         $this->preloadExistingSchedules(
             termId: (int) $section->term_id,
             sectionId: (int) $section->id,
+            replaceCourseIds: $courseIds,
         );
 
         $solverSeed = $seed !== null ? (int) $seed : random_int(1, 1000000);
+
+        $department = Departments::query()->find((int) $section->department_id);
+        $lectureLabScheduleOverrideEnabled = (bool) ($department?->lecture_lab_schedule_override_enabled ?? false);
 
         $variables = $this->buildVariables(
             courses: $courses,
@@ -283,6 +299,8 @@ class CSPSolver
             preferredPatternsByCourseId: $preferredPatternsByCourseId,
             sectionId: (int) $section->id,
             seed: $solverSeed,
+            lectureLabScheduleOverrideEnabled: $lectureLabScheduleOverrideEnabled,
+            selectedLectureLabCourseIds: $selectedLectureLabCourseIds,
         );
 
         $variables = $this->prunePersistedConflictingCandidates(
@@ -316,8 +334,8 @@ class CSPSolver
         // (capped at 200) to maximise the variety of distinct scheduling choices
         // before applying diversity-aware selection.
         $candidatePoolLimit = min(
-            max($maxSolutions * 20, 40),
-            200,
+            max($maxSolutions * 4, $maxSolutions),
+            25,
         );
 
         $rawSolutions = [];
@@ -491,6 +509,8 @@ class CSPSolver
         array $preferredPatternsByCourseId,
         int $sectionId = 0,
         int $seed = 0,
+        bool $lectureLabScheduleOverrideEnabled = false,
+        array $selectedLectureLabCourseIds = [],
     ): array {
         $variables = [];
 
@@ -498,7 +518,11 @@ class CSPSolver
             $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
             $lecHours = (int) ($course->lecture_hours ?? 0);
             $labHours = (int) ($course->lab_hours ?? 0);
-            $hasBothComponents = $isMajor && $lecHours > 0 && $labHours > 0;
+            $hasBothComponents = $lectureLabScheduleOverrideEnabled
+                && $isMajor
+                && in_array((int) $course->id, $selectedLectureLabCourseIds, true)
+                && $lecHours > 0
+                && $labHours > 0;
 
             $preferredPattern = $this->normalizePreferredPattern(
                 $preferredPatternsByCourseId[(int) $course->id] ?? null,
@@ -592,8 +616,21 @@ class CSPSolver
             //   2 → online delivery mode              (tried last when physical rooms unavailable)
             usort(
                 $domain,
-                static fn (array $a, array $b): int => self::candidatePriority($a)
-                    <=> self::candidatePriority($b),
+                function (array $a, array $b): int {
+                    $priorityDiff = self::candidatePriority($a) <=> self::candidatePriority($b);
+                    if ($priorityDiff !== 0) {
+                        return $priorityDiff;
+                    }
+
+                    $availabilityDiff = $this->candidateRoomAvailabilityPenalty($a)
+                        <=> $this->candidateRoomAvailabilityPenalty($b);
+                    if ($availabilityDiff !== 0) {
+                        return $availabilityDiff;
+                    }
+
+                    return $this->candidateRoomConcentrationPenalty($a)
+                        <=> $this->candidateRoomConcentrationPenalty($b);
+                },
             );
 
             $variables[] = [
@@ -687,7 +724,7 @@ class CSPSolver
      * Returns the list of (day, mode) pairs that are valid for a given course
      * based on its category, delivery type, and institutional scheduling rules:
      *
-     *  - NSTP (ROTC/CWTS)            : Sunday only, field mode.
+     *  - NSTP (ROTC/CWTS/LTS)        : Monday-Sunday, field mode.
      *  - PATHFIT / other field (non-NSTP): Monday–Friday, field mode.
      *  - Minor non-field (GEC, GEE, …): Monday–Friday, on-site or online.
      *  - Major                        : Monday–Saturday on-site or online;
@@ -698,8 +735,10 @@ class CSPSolver
     private function allowedDayModePairsForCourse(Course $course): array
     {
         if ($this->isNstpCourse($course)) {
-            // NSTP/ROTC/CWTS: Saturday only, always field.
-            return [['Saturday', 'field']];
+            return array_map(
+                static fn (string $d): array => [$d, 'field'],
+                SchedulingPolicy::DAYS,
+            );
         }
 
         if ($this->isFieldCourse($course)) {
@@ -769,9 +808,6 @@ class CSPSolver
             }
 
             for ($startSlot = 0; $startSlot <= $latestStartSlot; $startSlot++) {
-                if ($startSlot % $durationSlots !== 0) {
-                    continue;
-                }
                 $endSlot = $startSlot + $durationSlots;
 
                 if ($mode === 'online') {
@@ -913,17 +949,9 @@ class CSPSolver
                 $secondOptions = $secondComponent['type'] === 'laboratory' ? $labOptions : $lectureOptions;
 
                 for ($day1Start = 0; $day1Start <= $day1LatestStart; $day1Start++) {
-                    if ($day1Start % $firstComponent['slots'] !== 0) {
-                        continue;
-                    }
-
                     $day1End = $day1Start + $firstComponent['slots'];
 
                     for ($day2Start = 0; $day2Start <= $day2LatestStart; $day2Start++) {
-                        if ($day2Start % $secondComponent['slots'] !== 0) {
-                            continue;
-                        }
-
                         $day2End = $day2Start + $secondComponent['slots'];
 
                         foreach ($firstOptions as $option1) {
@@ -1040,15 +1068,9 @@ class CSPSolver
                 }
 
                 for ($day1Start = 0; $day1Start <= $day1LatestStart; $day1Start++) {
-                    if ($day1Start % $day1Duration !== 0) {
-                        continue;
-                    }
                     $day1End = $day1Start + $day1Duration;
 
                     for ($day2Start = 0; $day2Start <= $day2LatestStart; $day2Start++) {
-                        if ($day2Start % $day2Duration !== 0) {
-                            continue;
-                        }
                         $day2End = $day2Start + $day2Duration;
 
                         if ($hasBothComponents && $mode === 'on-site') {
@@ -1658,6 +1680,8 @@ class CSPSolver
     {
         $score = 0;
         $byDay = [];
+        $physicalRoomBlockCounts = [];
+        $physicalRoomBlockTotal = 0;
 
         foreach ($assignments as $assignment) {
             $blockDurations = [];
@@ -1675,20 +1699,25 @@ class CSPSolver
                     'end_slot' => $block['end_slot'],
                 ];
 
+                $blockMode = (string) ($block['mode'] ?? $assignment['mode'] ?? 'on-site');
+                $blockRoomType = (string) ($block['room_type'] ?? $assignment['room_type'] ?? '');
+                if (
+                    $blockRoomId !== null
+                    && $blockMode !== 'online'
+                    && $blockMode !== 'field'
+                    && !in_array($blockRoomType, ['online', 'field'], true)
+                ) {
+                    $physicalRoomBlockCounts[$blockRoomId] = ($physicalRoomBlockCounts[$blockRoomId] ?? 0) + 1;
+                    $physicalRoomBlockTotal++;
+
+                    // Prefer rooms that are still empty or lightly used in the current term.
+                    $score += ($this->existingRoomUseCounts[$blockRoomId] ?? 0) * 3;
+                }
+
                 $blockDurations[] = $block['end_slot'] - $block['start_slot'];
 
                 if ($block['day'] === 'Saturday' || $block['day'] === 'Sunday') {
-                    // Do not penalize Saturday for NSTP/ROTC/CWTS courses since Saturday is their required day
-                    $isNstp = false;
-                    $courseId = $assignment['course_id'];
-                    $courseObj = $courses[$courseId] ?? null;
-                    if ($courseObj && $this->isNstpCourse($courseObj)) {
-                        $isNstp = true;
-                    }
-
-                    if (!$isNstp) {
-                        $score += SchedulingPolicy::SOFT_SATURDAY_PENALTY;
-                    }
+                    $score += SchedulingPolicy::SOFT_SATURDAY_PENALTY;
                 }
 
                 if ($block['start_slot'] > SchedulingPolicy::SOFT_LATE_START_AFTER_SLOT) {
@@ -1700,6 +1729,12 @@ class CSPSolver
             if (count($blockDurations) === 2) {
                 $score += abs($blockDurations[0] - $blockDurations[1]);
             }
+        }
+
+        if ($physicalRoomBlockTotal > 0) {
+            $uniquePhysicalRooms = count($physicalRoomBlockCounts);
+            // Avoid concentrating generated classes in one room when other compatible rooms are free.
+            $score += max(0, $physicalRoomBlockTotal - $uniquePhysicalRooms) * 12;
         }
 
         foreach ($byDay as $dayName => $dayAssignments) {
@@ -1901,16 +1936,6 @@ class CSPSolver
 
     private function rawDurationSlots(Course $course): float
     {
-        $lecHours = (int) ($course->lecture_hours ?? 0);
-        $labHours = (int) ($course->lab_hours ?? 0);
-
-        if ($lecHours > 0 || $labHours > 0) {
-            // Per CHED academic policy:
-            // 1 Lecture unit = 1 clock hour = 2 x 30-min slots
-            // 1 Laboratory unit = 3 clock hours = 6 x 30-min slots
-            return ($lecHours * 2) + ($labHours * 6);
-        }
-
         return (float) $course->units * 2;
     }
 
@@ -2001,6 +2026,9 @@ class CSPSolver
             'is_hybrid' => $isHybrid,
             'preferred_patterns' => $input['preferred_patterns']
                 ?? $input['preferredPatternsByCourseId']
+                ?? [],
+            'selected_split_session_course_ids' => $input['selected_split_session_course_ids']
+                ?? $input['selectedSplitSessionCourseIds']
                 ?? [],
             'max_solutions' => (int) ($input['max_solutions'] ?? $input['maxSolutions'] ?? 2),
             'max_iterations' => (int) ($input['max_iterations'] ?? $input['maxIterations'] ?? 250_000),
@@ -2416,6 +2444,59 @@ class CSPSolver
         return 0;
     }
 
+    private function candidateRoomAvailabilityPenalty(array $candidate): int
+    {
+        $penalty = 0;
+
+        foreach ($candidate['blocks'] ?? [] as $block) {
+            $roomId = $this->nullableRoomId(
+                array_key_exists('room_id', $block)
+                    ? $block['room_id']
+                    : ($candidate['room_id'] ?? null)
+            );
+
+            if ($roomId === null || $this->isVirtualCandidateBlock($candidate, $block)) {
+                continue;
+            }
+
+            $day = (string) ($block['day'] ?? '');
+            $penalty += $this->existingRoomDayUseSlots["{$roomId}:{$day}"] ?? 0;
+        }
+
+        return $penalty;
+    }
+
+    private function candidateRoomConcentrationPenalty(array $candidate): int
+    {
+        $penalty = 0;
+
+        foreach ($candidate['blocks'] ?? [] as $block) {
+            $roomId = $this->nullableRoomId(
+                array_key_exists('room_id', $block)
+                    ? $block['room_id']
+                    : ($candidate['room_id'] ?? null)
+            );
+
+            if ($roomId === null || $this->isVirtualCandidateBlock($candidate, $block)) {
+                continue;
+            }
+
+            $penalty += $this->existingRoomUseCounts[$roomId] ?? 0;
+        }
+
+        return $penalty;
+    }
+
+    private function isVirtualCandidateBlock(array $candidate, array $block): bool
+    {
+        $mode = (string) ($block['mode'] ?? $candidate['mode'] ?? 'on-site');
+        $roomType = (string) ($block['room_type'] ?? $candidate['room_type'] ?? '');
+
+        return $mode === 'online'
+            || $mode === 'field'
+            || in_array($roomType, ['online', 'field'], true);
+    }
+
     private function normalizePreferredPatternsByCourseId(
         array $preferredPatternsByCourseId,
         array $validCourseIds,
@@ -2449,13 +2530,26 @@ class CSPSolver
      * This single query replaces the repeated per-candidate DB queries that were
      * previously issued inside the backtracking loop.
      */
-    private function preloadExistingSchedules(int $termId, int $sectionId): void
+    private function preloadExistingSchedules(int $termId, int $sectionId, array $replaceCourseIds = []): void
     {
         $this->existingScheduleIndex = [];
+        $this->existingRoomUseCounts = [];
+        $this->existingRoomDayUseSlots = [];
+
+        $replaceCourseIds = array_values(array_unique(array_filter(
+            array_map(static fn (mixed $courseId): int => (int) $courseId, $replaceCourseIds),
+            static fn (int $courseId): bool => $courseId > 0,
+        )));
 
         $schedules = Schedule::query()
             ->where('term_id', $termId)
-            ->where('section_id', '!=', $sectionId)
+            ->when($replaceCourseIds !== [], function ($query) use ($sectionId, $replaceCourseIds): void {
+                $query->where(function ($q) use ($sectionId, $replaceCourseIds): void {
+                    $q->where('section_id', '!=', $sectionId)
+                        ->orWhereNotIn('course_id', $replaceCourseIds)
+                        ->orWhereNotIn('status', ['draft', 'completed']);
+                });
+            })
             ->get(['room_id', 'section_id', 'faculty_id', 'day', 'start_time', 'end_time']);
 
         foreach ($schedules as $schedule) {
@@ -2466,6 +2560,11 @@ class CSPSolver
 
             if ($schedule->room_id !== null) {
                 $this->existingScheduleIndex["r:{$schedule->room_id}:{$schedule->day}"][] = $timeRange;
+                $roomId = (int) $schedule->room_id;
+                $this->existingRoomUseCounts[$roomId] = ($this->existingRoomUseCounts[$roomId] ?? 0) + 1;
+                $this->existingRoomDayUseSlots["{$roomId}:{$schedule->day}"] =
+                    ($this->existingRoomDayUseSlots["{$roomId}:{$schedule->day}"] ?? 0)
+                    + max(0, $this->timeToMinutes((string) $schedule->end_time) - $this->timeToMinutes((string) $schedule->start_time));
             }
             $this->existingScheduleIndex["s:{$schedule->section_id}:{$schedule->day}"][] = $timeRange;
 
@@ -2531,5 +2630,12 @@ class CSPSolver
         }
 
         return (int) $roomId;
+    }
+
+    private function timeToMinutes(string $time): int
+    {
+        [$hours, $minutes] = array_map('intval', explode(':', SchedulingPolicy::normalizeTime($time)));
+
+        return ($hours * 60) + $minutes;
     }
 }

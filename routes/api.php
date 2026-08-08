@@ -22,6 +22,7 @@ use App\Http\Controllers\SystemNotificationController;
 use App\Http\Controllers\TermsController;
 use App\Http\Controllers\InitialDataController;
 use App\Http\Controllers\CurriculumController;
+use App\Http\Controllers\SchedulingSettingsController;
 
 Route::post('/login', [AuthController::class, 'login']);
 
@@ -121,6 +122,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedule-recommendations/{scheduleRecommendation}/review', [ScheduleRecommendationController::class, 'review']);
         Route::post('schedule-recommendations/{scheduleRecommendation}/accept', [ScheduleRecommendationController::class, 'accept']);
         Route::post('schedule-recommendations/{scheduleRecommendation}/reject', [ScheduleRecommendationController::class, 'reject']);
+        Route::get('scheduling-settings', [SchedulingSettingsController::class, 'show']);
+        Route::patch('scheduling-settings', [SchedulingSettingsController::class, 'update']);
         Route::post('curricula/{curriculum}/courses', [CurriculumController::class, 'attachCourse']);
         Route::post('curricula/{curriculum}/courses/batch', [CurriculumController::class, 'attachCoursesBatch']);
         Route::post('curricula/{curriculum}/courses/batch-create', [CurriculumController::class, 'batchCreateAndAttachCourses']);

@@ -16,7 +16,7 @@ class RuleEngineSplitValidationTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_split_schedule_only_validates_conflicts_and_ignores_relational_integrity()
+    public function test_split_schedule_validates_relational_integrity_and_conflicts()
     {
         // 1. Setup Active Term
         $term = Terms::create([
@@ -90,13 +90,15 @@ class RuleEngineSplitValidationTest extends TestCase
         $this->assertContains('major_department_alignment', $rules);
 
         // Scenario B: Split schedule validation.
-        // Relational integrity rules (e.g. major_department_alignment) should be skipped/ignored.
+        // Split rows must follow the same relational integrity rules as normal rows.
         $splitAttempt = array_merge($nonSplitAttempt, [
             'split_group_id' => 'abc-123-xyz',
             'meeting_index' => 1,
         ]);
         $splitViolations = $ruleEngine->validate($splitAttempt);
-        $this->assertEmpty($splitViolations);
+        $this->assertNotEmpty($splitViolations);
+        $splitRules = collect($splitViolations)->pluck('rule')->all();
+        $this->assertContains('major_department_alignment', $splitRules);
 
         // Scenario C: Split schedule actual conflict validation.
         // If there is a real room conflict (occupied by another section), it should still flag it.
@@ -125,7 +127,7 @@ class RuleEngineSplitValidationTest extends TestCase
         $this->assertNotEmpty($splitConflictViolations);
         $splitConflictRules = collect($splitConflictViolations)->pluck('rule')->all();
         $this->assertContains('room_conflict', $splitConflictRules);
-        $this->assertNotContains('major_department_alignment', $splitConflictRules);
+        $this->assertContains('major_department_alignment', $splitConflictRules);
     }
 
     public function test_online_schedule_does_not_require_room_assignment()
