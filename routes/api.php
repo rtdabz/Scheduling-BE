@@ -23,6 +23,7 @@ use App\Http\Controllers\TermsController;
 use App\Http\Controllers\InitialDataController;
 use App\Http\Controllers\CurriculumController;
 use App\Http\Controllers\SchedulingSettingsController;
+use App\Http\Controllers\TimeslotController;
 
 Route::post('/login', [AuthController::class, 'login']);
 
@@ -104,6 +105,22 @@ Route::middleware('auth:sanctum')->group(function () {
         // Faculties Read-only
         Route::get('faculties', [FacultyController::class, 'index']);
         Route::get('faculties/{faculty}', [FacultyController::class, 'show']);
+    });
+
+    Route::middleware('role:vpaa,dean,secretary,program_head,admin')->group(function () {
+        Route::get('timeslots', [TimeslotController::class, 'index']);
+        Route::post('timeslots/generate', [TimeslotController::class, 'generateSlots']);
+        Route::get('timeslots/available/{duration}', [TimeslotController::class, 'getAvailableSlots'])
+            ->whereNumber('duration');
+    });
+
+    Route::middleware('role:vpaa,admin')->group(function () {
+        Route::patch('timeslots/settings', [TimeslotController::class, 'updateSettings']);
+        Route::post('timeslots/overrides', [TimeslotController::class, 'storeOverride']);
+        Route::match(['put', 'patch'], 'timeslots/overrides/{id}', [TimeslotController::class, 'updateOverride'])
+            ->whereNumber('id');
+        Route::delete('timeslots/overrides/{id}', [TimeslotController::class, 'destroyOverride'])
+            ->whereNumber('id');
     });
 
     // Courses, Sections & Faculties — writable by VPAA, Secretary and Program Head.

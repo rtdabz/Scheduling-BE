@@ -22,6 +22,7 @@ class Departments extends Model
         'custom_lab_duration_5_hours_enabled',
         'custom_lab_duration_other_enabled',
         'gec_split_schedule_override_enabled',
+        'force_schedule_reuse_enabled',
     ];
 
     protected $casts = [
@@ -33,6 +34,7 @@ class Departments extends Model
         'custom_lab_duration_5_hours_enabled' => 'boolean',
         'custom_lab_duration_other_enabled' => 'boolean',
         'gec_split_schedule_override_enabled' => 'boolean',
+        'force_schedule_reuse_enabled' => 'boolean',
     ];
 
     public function users()

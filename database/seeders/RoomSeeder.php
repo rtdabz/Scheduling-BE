@@ -97,8 +97,8 @@ class RoomSeeder extends Seeder
         }
 
         $shared = [
-            ['room_code' => 'ONLINE', 'building' => null, 'room_type' => 'online', 'department_id' => null],
-            ['room_code' => 'FIELD', 'building' => null, 'room_type' => 'field', 'department_id' => null],
+            ['room_code' => 'ONLINE', 'building' => null, 'room_type' => 'online', 'department_id' => null, 'max_concurrent_classes' => 1],
+            ['room_code' => 'FIELD', 'building' => null, 'room_type' => 'field', 'department_id' => null, 'max_concurrent_classes' => 3],
         ];
 
         foreach ($shared as $room) {

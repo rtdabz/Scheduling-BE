@@ -31,7 +31,12 @@ class RoomsController extends Controller
             'room_type' => SchedulingPolicy::allowedRoomTypesRule('required|string'),
             'status' => SchedulingPolicy::allowedRoomStatusesRule('nullable|string'),
             'department_id' => 'nullable|exists:departments,id',
+            'max_concurrent_classes' => 'sometimes|integer|min:1|max:20',
         ]);
+
+        $validated['max_concurrent_classes'] = (int) ($validated['max_concurrent_classes'] ?? (
+            ($validated['room_type'] ?? null) === 'field' ? 3 : 1
+        ));
 
         $room = Rooms::create($validated);
         ApiCache::forgetGroups([
@@ -67,7 +72,12 @@ class RoomsController extends Controller
             'room_type' => SchedulingPolicy::allowedRoomTypesRule('sometimes|required|string'),
             'status' => SchedulingPolicy::allowedRoomStatusesRule('sometimes|nullable|string'),
             'department_id' => 'nullable|exists:departments,id',
+            'max_concurrent_classes' => 'sometimes|integer|min:1|max:20',
         ]);
+
+        if (($validated['room_type'] ?? $room->room_type) !== 'field' && array_key_exists('max_concurrent_classes', $validated)) {
+            $validated['max_concurrent_classes'] = 1;
+        }
 
         $room->update($validated);
         ApiCache::forgetGroups([

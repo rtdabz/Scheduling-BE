@@ -11,6 +11,7 @@ use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
 use App\Services\FacultyLoadService;
+use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -137,6 +138,8 @@ class InitialDataController extends Controller
             'sections' => $sections,
             'schedules' => $schedules,
             'departments' => $departments,
+            'field_course_assignment_enabled' => SchedulingPolicy::fieldCourseSettingEnabled(),
+            'field_course_codes' => array_keys(SchedulingPolicy::fieldCourseCodeMap()),
             'users' => User::query()
                 ->with('department')
                 ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))

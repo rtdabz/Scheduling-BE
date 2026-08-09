@@ -21,6 +21,32 @@ class RuleEngine
         int|array|null $ignoreScheduleId = null
     ): ?array {
         $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
+        $room = Rooms::query()->find($roomId);
+        $capacity = max(1, (int) ($room?->max_concurrent_classes ?? 1));
+
+        if (($room?->room_type ?? null) === 'field' && $capacity > 1) {
+            $overlaps = Schedule::where('room_id', $roomId)
+                ->where('term_id', $termId)
+                ->where('day', $day)
+                ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
+                ->where('start_time', '<', $endTime)
+                ->where('end_time', '>', $startTime)
+                ->with(['course', 'section'])
+                ->get();
+
+            if ($this->exceedsRoomCapacity($overlaps, $startTime, $endTime, $capacity)) {
+                $firstConflict = $overlaps->first();
+
+                return [
+                    'rule' => 'room_capacity_conflict',
+                    'message' => "{$room->room_code} capacity is full on {$day} from {$startTime} to {$endTime}. "
+                        ."Maximum concurrent classes: {$capacity}.",
+                    'conflicting_schedule_id' => $firstConflict?->id,
+                ];
+            }
+
+            return null;
+        }
 
         $conflict = Schedule::where('room_id', $roomId)
             ->where('term_id', $termId)
@@ -41,6 +67,43 @@ class RuleEngine
                 ."for {$conflict->course?->course_code} ({$conflict->section?->section_name}).",
             'conflicting_schedule_id' => $conflict->id,
         ];
+    }
+
+    private function exceedsRoomCapacity(
+        \Illuminate\Support\Collection $overlaps,
+        string $startTime,
+        string $endTime,
+        int $capacity,
+    ): bool {
+        $events = [
+            [$this->timeToMinutes($startTime), 1],
+            [$this->timeToMinutes($endTime), -1],
+        ];
+
+        foreach ($overlaps as $schedule) {
+            $events[] = [$this->timeToMinutes((string) $schedule->start_time), 1];
+            $events[] = [$this->timeToMinutes((string) $schedule->end_time), -1];
+        }
+
+        usort(
+            $events,
+            static fn (array $left, array $right): int =>
+                ($left[0] <=> $right[0]) ?: ($left[1] <=> $right[1]),
+        );
+
+        $active = 0;
+        foreach ($events as [$minute, $delta]) {
+            if ($minute === null) {
+                continue;
+            }
+
+            $active += $delta;
+            if ($active > $capacity) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function checkFacultyConflict(
@@ -139,14 +202,16 @@ class RuleEngine
         if ($start < SchedulingPolicy::openingTime()) {
             return [
                 'rule' => 'operating_hours',
-                'message' => "Schedule starts at {$startTime}, which is before operating hours begin (7:00 AM).",
+                'message' => "Schedule starts at {$startTime}, which is before operating hours begin ("
+                    .date('g:i A', strtotime(SchedulingPolicy::openingTime())).").",
             ];
         }
 
         if ($end > SchedulingPolicy::closingTime()) {
             return [
                 'rule' => 'operating_hours',
-                'message' => "Schedule ends at {$endTime}, which exceeds operating hours (7:00 PM cutoff).",
+                'message' => "Schedule ends at {$endTime}, which exceeds operating hours ("
+                    .date('g:i A', strtotime(SchedulingPolicy::closingTime()))." cutoff).",
             ];
         }
 
@@ -239,8 +304,8 @@ class RuleEngine
         }
 
         if (
-            ($startMinutes - SchedulingPolicy::OPERATING_START_MINUTES) % SchedulingPolicy::SLOT_MINUTES !== 0
-            || ($endMinutes - SchedulingPolicy::OPERATING_START_MINUTES) % SchedulingPolicy::SLOT_MINUTES !== 0
+            ($startMinutes - SchedulingPolicy::timeToMinutes(SchedulingPolicy::openingTime())) % SchedulingPolicy::SLOT_MINUTES !== 0
+            || ($endMinutes - SchedulingPolicy::timeToMinutes(SchedulingPolicy::openingTime())) % SchedulingPolicy::SLOT_MINUTES !== 0
         ) {
             return [
                 'rule' => 'slot_grid',
@@ -505,6 +570,26 @@ class RuleEngine
     {
         $violations = [];
         $ignoreId = $attempt['ignore_schedule_id'] ?? null;
+
+        foreach (['term_id', 'section_id', 'day', 'start_time', 'end_time'] as $field) {
+            if (!array_key_exists($field, $attempt) || $attempt[$field] === null || $attempt[$field] === '') {
+                $violations[] = [
+                    'rule' => 'required_field',
+                    'message' => "Schedule attempt is missing required field '{$field}'.",
+                ];
+            }
+        }
+
+        if (!isset($attempt['course_id']) && !isset($attempt['subject_id'])) {
+            $violations[] = [
+                'rule' => 'required_field',
+                'message' => "Schedule attempt is missing required field 'course_id'.",
+            ];
+        }
+
+        if ($violations !== []) {
+            return $violations;
+        }
 
         if (!in_array($attempt['day'], SchedulingPolicy::PERSISTABLE_DAYS, true)) {
             $violations[] = [

@@ -8,6 +8,7 @@ use App\Models\Rooms;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
+use App\Services\TimeslotService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,6 +20,7 @@ class ScheduleController extends Controller
     public function __construct(
         RuleEngine $ruleEngine,
         private readonly SystemNotificationService $notifications,
+        private readonly TimeslotService $timeslotService,
     )
     {
         $this->ruleEngine = $ruleEngine;
@@ -110,7 +112,7 @@ class ScheduleController extends Controller
     public function batch(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'operations' => 'required|array',
+            'operations' => 'required_without:delete_ids|array',
             'operations.*.id' => 'nullable|integer|exists:schedules,id',
             'operations.*.term_id' => 'required_without:operations.*.id|integer|exists:terms,id',
             'operations.*.section_id' => 'required_without:operations.*.id|integer|exists:sections,id',
@@ -134,10 +136,33 @@ class ScheduleController extends Controller
         ]);
 
         $deleteIds = $validated['delete_ids'] ?? [];
+        $validated['operations'] = $validated['operations'] ?? [];
         $validated['operations'] = array_map(
-            fn (array $operation): array => $this->clearOnlineRoomId($operation),
+            fn (array $operation): array => $this->hydrateExistingScheduleOperation(
+                $this->clearOnlineRoomId($operation)
+            ),
             $validated['operations']
         );
+
+        $missingCreateFields = [];
+        foreach ($validated['operations'] as $index => $operation) {
+            if (isset($operation['id'])) {
+                continue;
+            }
+
+            foreach (['term_id', 'section_id', 'course_id', 'department_id', 'day', 'start_time', 'end_time'] as $field) {
+                if (!array_key_exists($field, $operation) || $operation[$field] === null || $operation[$field] === '') {
+                    $missingCreateFields[] = "operations.{$index}.{$field}";
+                }
+            }
+        }
+
+        if ($missingCreateFields !== []) {
+            return response()->json([
+                'message' => 'Schedule operation is missing required fields.',
+                'missing_fields' => $missingCreateFields,
+            ], 422);
+        }
 
         foreach ($validated['operations'] as $operation) {
             if (
@@ -169,7 +194,11 @@ class ScheduleController extends Controller
 
         $mergedIgnoreIds = array_values(array_unique(array_merge($operationIds, array_map('intval', $deleteIds))));
 
-        foreach ($validated['operations'] as $index => $op) {
+        $orderedOperations = $this->prioritizeSplitAnchorMeetings($validated['operations']);
+
+        foreach ($orderedOperations as $orderedOperation) {
+            $index = (int) $orderedOperation['index'];
+            $op = $orderedOperation['operation'];
             $attemptData = $op;
             if (isset($attemptData['subject_id']) && !isset($attemptData['course_id'])) {
                 $attemptData['course_id'] = $attemptData['subject_id'];
@@ -179,7 +208,11 @@ class ScheduleController extends Controller
 
             $violations = $this->ruleEngine->validate($attemptData);
             if (!empty($violations)) {
-                $allViolations = array_merge($allViolations, $violations);
+                foreach ($violations as $violation) {
+                    $allViolations[] = array_merge($violation, [
+                        'operation_index' => $index,
+                    ]);
+                }
             }
         }
 
@@ -257,10 +290,13 @@ class ScheduleController extends Controller
 
         $deleteIds     = $validated['delete_ids'] ?? [];
         $validated['operations'] = array_map(
-            fn (array $operation): array => $this->clearOnlineRoomId($operation),
+            fn (array $operation): array => $this->hydrateExistingScheduleOperation(
+                $this->clearOnlineRoomId($operation)
+            ),
             $validated['operations']
         );
         $resolvedOps   = [];
+        $resolvedOpsByOriginalIndex = [];
         $allViolations = [];
 
         foreach ($validated['operations'] as $operation) {
@@ -286,12 +322,11 @@ class ScheduleController extends Controller
 
         $mergedIgnoreIds = array_values(array_unique(array_merge($operationIds, array_map('intval', $deleteIds))));
 
-        // Operating hours: 07:00 – 19:00 (OPERATING_START_MINUTES = 420)
-        $operatingStartMinutes = SchedulingPolicy::OPERATING_START_MINUTES; // 420
-        $operatingEndMinutes   = $operatingStartMinutes + (SchedulingPolicy::TOTAL_SLOTS * SchedulingPolicy::SLOT_MINUTES); // 420 + 720 = 1140 = 19:00
-        $slotMinutes           = SchedulingPolicy::SLOT_MINUTES; // 30
+        $orderedOperations = $this->prioritizeSplitAnchorMeetings($validated['operations']);
 
-        foreach ($validated['operations'] as $index => $op) {
+        foreach ($orderedOperations as $orderedOperation) {
+            $index = (int) $orderedOperation['index'];
+            $op = $orderedOperation['operation'];
             if (isset($op['subject_id']) && !isset($op['course_id'])) {
                 $op['course_id'] = $op['subject_id'];
             }
@@ -304,12 +339,13 @@ class ScheduleController extends Controller
                 // No conflict — keep the original timing.
                 unset($op['ignore_schedule_id']);
                 $resolvedOps[] = $op;
+                $resolvedOpsByOriginalIndex[$index] = $op;
                 continue;
             }
 
             // Determine whether the violation is a time-based conflict that a
             // slot-shift can fix (section, room, or faculty conflict).
-            $timeConflictRules = ['section_conflict', 'room_conflict', 'faculty_conflict'];
+            $timeConflictRules = ['section_conflict', 'room_conflict', 'faculty_conflict', 'split_group_day_separation'];
             $hasTimeConflict   = collect($violations)->contains(
                 fn ($v) => in_array($v['rule'] ?? '', $timeConflictRules, true)
             );
@@ -317,15 +353,16 @@ class ScheduleController extends Controller
             if (!$hasTimeConflict) {
                 // Non-time violations — check if it's a room type mismatch that
                 // can be fixed by swapping to a compatible room automatically.
-                $hasRoomTypeMismatch = collect($violations)->contains(
-                    fn ($v) => ($v['rule'] ?? '') === 'room_type_match'
+                $hasRoomAssignmentIssue = collect($violations)->contains(
+                    fn ($v) => in_array(($v['rule'] ?? ''), ['room_type_match', 'delivery_room_alignment'], true)
                 );
 
-                if ($hasRoomTypeMismatch) {
+                if ($hasRoomAssignmentIssue) {
                     $swappedOp = $this->attemptRoomSwapResolution($op, $resolvedOps);
                     if ($swappedOp !== null) {
                         unset($swappedOp['ignore_schedule_id']);
                         $resolvedOps[] = $swappedOp;
+                        $resolvedOpsByOriginalIndex[$index] = $swappedOp;
                         continue;
                     }
                 }
@@ -347,15 +384,13 @@ class ScheduleController extends Controller
             // --- Resilient Slot-shift & Pattern-day Resolution ---
             $resolvedOp = $this->attemptSlotShiftResolution(
                 $op,
-                $operatingStartMinutes,
-                $operatingEndMinutes,
-                $slotMinutes,
                 $resolvedOps
             );
 
             if ($resolvedOp !== null) {
                 unset($resolvedOp['ignore_schedule_id']);
                 $resolvedOps[] = $resolvedOp;
+                $resolvedOpsByOriginalIndex[$index] = $resolvedOp;
             } else {
                 // Could not find a valid slot within operating hours.
                 $courseCode = Course::find($op['course_id'] ?? 0)?->course_code ?? 'Course';
@@ -384,15 +419,63 @@ class ScheduleController extends Controller
         return response()->json([
             'status'     => 'ok',
             'message'    => 'All split sessions validated successfully.',
-            'operations' => $resolvedOps,
+            'operations' => $this->restoreOriginalOperationOrder($resolvedOpsByOriginalIndex),
         ]);
+    }
+
+    private function prioritizeSplitAnchorMeetings(array $operations): array
+    {
+        return collect($operations)
+            ->map(fn (array $operation, int $index): array => [
+                'index' => $index,
+                'operation' => $operation,
+                'priority' => !empty($operation['split_group_id']) && (int) ($operation['meeting_index'] ?? 1) === 1 ? 0 : 1,
+            ])
+            ->sortBy([
+                ['priority', 'asc'],
+                ['index', 'asc'],
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function restoreOriginalOperationOrder(array $operationsByOriginalIndex): array
+    {
+        ksort($operationsByOriginalIndex);
+
+        return array_values($operationsByOriginalIndex);
     }
 
     private function validateCandidate(array $op, array $resolvedOps): array
     {
         $dbViolations = $this->ruleEngine->validate($op);
         $intraViolations = $this->checkIntraBatchConflicts(array_merge($resolvedOps, [$op]));
-        return array_merge($dbViolations, $intraViolations);
+        $splitDayViolations = $this->checkSplitGroupDayConflicts($op, $resolvedOps);
+
+        return array_merge($dbViolations, $intraViolations, $splitDayViolations);
+    }
+
+    private function checkSplitGroupDayConflicts(array $op, array $resolvedOps): array
+    {
+        $splitGroupId = (string) ($op['split_group_id'] ?? '');
+        if ($splitGroupId === '') {
+            return [];
+        }
+
+        $day = (string) ($op['day'] ?? '');
+        foreach ($resolvedOps as $resolvedOp) {
+            if (
+                (string) ($resolvedOp['split_group_id'] ?? '') === $splitGroupId
+                && (string) ($resolvedOp['day'] ?? '') === $day
+            ) {
+                return [[
+                    'rule' => 'split_group_day_separation',
+                    'message' => 'Split meetings for the same course must be scheduled on different days.',
+                ]];
+            }
+        }
+
+        return [];
     }
 
     private function testAndResolveCandidate(array $candidate, array $resolvedOps): ?array
@@ -402,11 +485,11 @@ class ScheduleController extends Controller
             return $candidate;
         }
 
-        $hasRoomTypeMismatch = collect($violations)->contains(
-            fn ($v) => ($v['rule'] ?? '') === 'room_type_match'
+        $hasRoomAssignmentIssue = collect($violations)->contains(
+            fn ($v) => in_array(($v['rule'] ?? ''), ['room_type_match', 'delivery_room_alignment'], true)
         );
 
-        if ($hasRoomTypeMismatch) {
+        if ($hasRoomAssignmentIssue) {
             $swapped = $this->attemptRoomSwapResolution($candidate, $resolvedOps);
             if ($swapped !== null) {
                 return $swapped;
@@ -418,35 +501,22 @@ class ScheduleController extends Controller
 
     private function attemptSlotShiftResolution(
         array $op,
-        int $operatingStartMinutes,
-        int $operatingEndMinutes,
-        int $slotMinutes,
         array $resolvedOps
     ): ?array {
         $origStartMins = $this->timeToMinutesLocal($op['start_time']);
         $origEndMins   = $this->timeToMinutesLocal($op['end_time']);
         $durationMins  = $origEndMins - $origStartMins;
+        $candidateStartMinutes = $this->generatedStartMinutesByCloseness($durationMins, $origStartMins);
 
-        // Bidirectional search: +1, -1, +2, -2, ... up to 28 slots (full 14-hr operating window)
-        $shiftOffsets = [];
-        for ($i = 1; $i <= 28; $i++) {
-            $shiftOffsets[] = $i;
-            $shiftOffsets[] = -$i;
-        }
-
-        foreach ($shiftOffsets as $shift) {
-            $newStartMins = $origStartMins + ($shift * $slotMinutes);
-            $newEndMins   = $newStartMins + $durationMins;
-
-            if ($newStartMins < $operatingStartMinutes || $newEndMins > $operatingEndMinutes) {
+        foreach ($candidateStartMinutes as $newStartMins) {
+            if ($newStartMins === $origStartMins) {
                 continue;
             }
 
-            $candidate               = $op;
-            $candidate['start_time'] = $this->minutesToTimeString($newStartMins);
-            $candidate['end_time']   = $this->minutesToTimeString($newEndMins);
-
-            $res = $this->testAndResolveCandidate($candidate, $resolvedOps);
+            $res = $this->testAndResolveCandidate(
+                $this->withTime($op, $newStartMins, $durationMins),
+                $resolvedOps
+            );
             if ($res !== null) {
                 return $res;
             }
@@ -473,19 +543,11 @@ class ScheduleController extends Controller
                 return $res;
             }
 
-            // Try bidirectional shifts on alternate day
-            foreach ($shiftOffsets as $shift) {
-                $newStartMins = $origStartMins + ($shift * $slotMinutes);
-                $newEndMins   = $newStartMins + $durationMins;
-
-                if ($newStartMins < $operatingStartMinutes || $newEndMins > $operatingEndMinutes) {
-                    continue;
-                }
-
-                $candidate['start_time'] = $this->minutesToTimeString($newStartMins);
-                $candidate['end_time']   = $this->minutesToTimeString($newEndMins);
-
-                $res = $this->testAndResolveCandidate($candidate, $resolvedOps);
+            foreach ($candidateStartMinutes as $newStartMins) {
+                $res = $this->testAndResolveCandidate(
+                    $this->withTime($candidate, $newStartMins, $durationMins),
+                    $resolvedOps
+                );
                 if ($res !== null) {
                     return $res;
                 }
@@ -493,6 +555,30 @@ class ScheduleController extends Controller
         }
 
         return null;
+    }
+
+    private function withTime(array $op, int $startMinutes, int $durationMinutes): array
+    {
+        $op['start_time'] = $this->minutesToTimeString($startMinutes);
+        $op['end_time'] = $this->minutesToTimeString($startMinutes + $durationMinutes);
+
+        return $op;
+    }
+
+    private function generatedStartMinutesByCloseness(int $durationMinutes, int $originalStartMinutes): array
+    {
+        $minutes = array_map(
+            fn (string $time): int => $this->timeToMinutesLocal($time),
+            $this->timeslotService->generateStartTimes($durationMinutes)
+        );
+
+        usort(
+            $minutes,
+            static fn (int $left, int $right): int =>
+                abs($left - $originalStartMinutes) <=> abs($right - $originalStartMinutes)
+        );
+
+        return array_values(array_unique($minutes));
     }
 
     /**
@@ -589,6 +675,17 @@ class ScheduleController extends Controller
         $coursesMap = !empty($courseIds)
             ? Course::whereIn('id', $courseIds)->get()->keyBy('id')
             : collect();
+        $roomIds = array_values(array_unique(array_filter(array_map(
+            fn ($op) => (int) ($op['room_id'] ?? 0),
+            $operations,
+        ))));
+        $roomCapacityMap = !empty($roomIds)
+            ? Rooms::whereIn('id', $roomIds)
+                ->get(['id', 'room_type', 'max_concurrent_classes'])
+                ->mapWithKeys(fn (Rooms $room): array => [
+                    (int) $room->id => max(1, (int) ($room->max_concurrent_classes ?? 1)),
+                ])
+            : collect();
 
         for ($i = 0; $i < $count; $i++) {
             $op1 = $operations[$i];
@@ -631,7 +728,8 @@ class ScheduleController extends Controller
                             ];
                         }
 
-                        if ($roomId1 === $roomId2 && $mode1 !== 'online' && $mode1 !== 'field' && $mode2 !== 'online' && $mode2 !== 'field') {
+                        $roomCapacity = (int) ($roomCapacityMap->get($roomId1) ?? 1);
+                        if ($roomId1 === $roomId2 && $mode1 !== 'online' && $mode2 !== 'online' && $roomCapacity <= 1) {
                             $violations[] = [
                                 'rule' => 'room_conflict',
                                 'operation_index' => $j,
@@ -656,6 +754,40 @@ class ScheduleController extends Controller
         }
 
         return $violations;
+    }
+
+    private function hydrateExistingScheduleOperation(array $operation): array
+    {
+        if (!isset($operation['id'])) {
+            return $operation;
+        }
+
+        $schedule = Schedule::query()->find((int) $operation['id']);
+        if ($schedule === null) {
+            return $operation;
+        }
+
+        $persisted = [
+            'id' => $schedule->id,
+            'term_id' => $schedule->term_id,
+            'section_id' => $schedule->section_id,
+            'course_id' => $schedule->course_id,
+            'faculty_id' => $schedule->faculty_id,
+            'room_id' => $schedule->room_id,
+            'department_id' => $schedule->department_id,
+            'day' => $schedule->day,
+            'start_time' => $schedule->start_time,
+            'end_time' => $schedule->end_time,
+            'mode' => $schedule->mode,
+            'is_hybrid' => $schedule->is_hybrid,
+            'preferred_pattern' => $schedule->preferred_pattern,
+            'split_group_id' => $schedule->split_group_id,
+            'meeting_type' => $schedule->meeting_type,
+            'meeting_index' => $schedule->meeting_index,
+            'status' => $schedule->status,
+        ];
+
+        return array_merge($persisted, $operation);
     }
 
     public function show(Schedule $schedule)

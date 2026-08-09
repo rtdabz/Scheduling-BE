@@ -5,14 +5,26 @@ declare(strict_types=1);
 namespace App\Services\Scheduling;
 
 use App\Models\Course;
+use App\Services\TimeslotService;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use InvalidArgumentException;
 
 final class SchedulingPolicy
 {
-    public const OPERATING_START_MINUTES = 7 * 60;
     public const SLOT_MINUTES = 30;
-    public const TOTAL_SLOTS = 24;
+
+    private static ?string $cachedOpeningTime = null;
+    private static ?string $cachedClosingTime = null;
+
+    /** @var array<int, list<int>> */
+    private static array $cachedStartSlotsByDuration = [];
+
+    private static ?bool $cachedFieldCourseSettingEnabled = null;
+
+    /** @var array<string, true>|null */
+    private static ?array $cachedFieldCourseCodeMap = null;
 
     public const DAYS = [
         'Monday',
@@ -88,6 +100,8 @@ final class SchedulingPolicy
     public const SOFT_LATE_START_AFTER_SLOT = 22;
     public const SOFT_LATE_SLOT_PENALTY = 2;
     public const SOFT_GAP_SLOT_PENALTY = 3;
+    public const SOFT_ROOM_IDLE_GAP_SLOT_PENALTY = 8;
+    public const SOFT_FILLABLE_ROOM_GAP_BONUS_PENALTY = 20;
     public const SOFT_ROOM_CHANGE_PENALTY = 1;
     /**
      * Applied when a major course that prefers a laboratory room is assigned
@@ -122,7 +136,7 @@ final class SchedulingPolicy
         'operating_hours' => [
             'severity' => 'hard',
             'category' => 'time',
-            'description' => 'Schedules must be within 7:00 AM and 7:00 PM.',
+            'description' => 'Schedules must be within configured institution operating hours.',
             'enforced_by' => ['request_validation', 'rule_engine', 'csp'],
         ],
         'slot_grid' => [
@@ -311,6 +325,12 @@ final class SchedulingPolicy
             'description' => 'Prefer compact daily section schedules with fewer gaps.',
             'enforced_by' => ['csp'],
         ],
+        'facility_utilization_gap_penalty' => [
+            'severity' => 'soft',
+            'category' => 'facility_utilization',
+            'description' => 'Prefer schedules that reduce fillable idle gaps in physical rooms during operating hours.',
+            'enforced_by' => ['csp'],
+        ],
         'room_change_penalty' => [
             'severity' => 'soft',
             'category' => 'preference',
@@ -396,12 +416,30 @@ final class SchedulingPolicy
 
     public static function openingTime(): string
     {
-        return self::slotToTime(0);
+        return self::$cachedOpeningTime ??= self::normalizeTime(
+            app(TimeslotService::class)->settings()->opening_time
+        );
     }
 
     public static function closingTime(): string
     {
-        return self::slotToTime(self::TOTAL_SLOTS);
+        return self::$cachedClosingTime ??= self::normalizeTime(
+            app(TimeslotService::class)->settings()->closing_time
+        );
+    }
+
+    public static function clearTimeCache(): void
+    {
+        self::$cachedOpeningTime = null;
+        self::$cachedClosingTime = null;
+        self::$cachedStartSlotsByDuration = [];
+    }
+
+    public static function totalSlots(): int
+    {
+        $minutes = self::timeToMinutes(self::closingTime()) - self::timeToMinutes(self::openingTime());
+
+        return max(0, intdiv($minutes, self::SLOT_MINUTES));
     }
 
     public static function normalizeTime(string $time): string
@@ -419,15 +457,17 @@ final class SchedulingPolicy
 
     public static function slotToTime(int $slot): string
     {
-        if ($slot < 0 || $slot > self::TOTAL_SLOTS) {
+        $totalSlots = self::totalSlots();
+
+        if ($slot < 0 || $slot > $totalSlots) {
             throw new InvalidArgumentException(sprintf(
                 'Slot %d is outside the valid 0-%d range.',
                 $slot,
-                self::TOTAL_SLOTS,
+                $totalSlots,
             ));
         }
 
-        $minutes = self::OPERATING_START_MINUTES
+        $minutes = self::timeToMinutes(self::openingTime())
             + ($slot * self::SLOT_MINUTES);
 
         return sprintf(
@@ -435,6 +475,44 @@ final class SchedulingPolicy
             intdiv($minutes, 60),
             $minutes % 60,
         );
+    }
+
+    /** @return list<int> */
+    public static function generatedStartSlotsForDuration(int $durationSlots): array
+    {
+        if (isset(self::$cachedStartSlotsByDuration[$durationSlots])) {
+            return self::$cachedStartSlotsByDuration[$durationSlots];
+        }
+
+        $durationMinutes = $durationSlots * self::SLOT_MINUTES;
+        $openingMinutes = self::timeToMinutes(self::openingTime());
+
+        return self::$cachedStartSlotsByDuration[$durationSlots] = array_values(array_filter(
+            array_map(
+                static fn (string $time): ?int => self::timeToSlot($time, $openingMinutes),
+                app(TimeslotService::class)->generateStartTimes($durationMinutes),
+            ),
+            static fn (?int $slot): bool => $slot !== null,
+        ));
+    }
+
+    public static function timeToMinutes(string $time): int
+    {
+        $parts = explode(':', self::normalizeTime($time));
+
+        return ((int) $parts[0] * 60) + (int) $parts[1];
+    }
+
+    private static function timeToSlot(string $time, int $openingMinutes): ?int
+    {
+        $minutes = self::timeToMinutes(Carbon::parse($time)->format('H:i:s'));
+        $offset = $minutes - $openingMinutes;
+
+        if ($offset < 0 || $offset % self::SLOT_MINUTES !== 0) {
+            return null;
+        }
+
+        return (int) ($offset / self::SLOT_MINUTES);
     }
 
     public static function dayIndex(string $day): int
@@ -575,20 +653,69 @@ final class SchedulingPolicy
             return true;
         }
 
-        $code     = strtoupper((string) ($course->course_code ?? $course->subject_code ?? ''));
-        $name     = strtoupper((string) ($course->course_name ?? $course->subject_name ?? ''));
-        $category = strtolower((string) ($course->course_category ?? $course->subject_category ?? ''));
-
-        if (in_array($category, ['pathfit', 'nstp', 'rotc', 'cwts', 'lts'], true)) {
-            return true;
+        if (!self::fieldCourseSettingEnabled()) {
+            return false;
         }
 
-        foreach (['PATHFIT', 'PATH FIT', 'PATH-FIT', 'NSTP', 'ROTC', 'CWTS', 'LTS', 'PE 1', 'PE 2', 'PE 3', 'PE 4', 'PHYSICAL EDUCATION'] as $keyword) {
-            if (str_contains($code, $keyword) || str_contains($name, $keyword)) {
-                return true;
-            }
+        $code = self::normalizeCourseCode((string) ($course->course_code ?? $course->subject_code ?? ''));
+
+        return isset(self::fieldCourseCodeMap()[$code]);
+    }
+
+    public static function fieldCourseSettingEnabled(): bool
+    {
+        if (self::$cachedFieldCourseSettingEnabled !== null) {
+            return self::$cachedFieldCourseSettingEnabled;
         }
 
-        return false;
+        if (!self::fieldCourseSettingsTableExists()) {
+            return self::$cachedFieldCourseSettingEnabled = false;
+        }
+
+        return self::$cachedFieldCourseSettingEnabled = (bool) DB::table('field_course_settings')
+            ->whereNull('course_code')
+            ->value('enabled');
+    }
+
+    /**
+     * @return array<string, true>
+     */
+    public static function fieldCourseCodeMap(): array
+    {
+        if (self::$cachedFieldCourseCodeMap !== null) {
+            return self::$cachedFieldCourseCodeMap;
+        }
+
+        if (!self::fieldCourseSettingsTableExists()) {
+            return self::$cachedFieldCourseCodeMap = [];
+        }
+
+        return self::$cachedFieldCourseCodeMap = DB::table('field_course_settings')
+            ->whereNotNull('course_code')
+            ->pluck('course_code')
+            ->map(static fn ($code): string => self::normalizeCourseCode((string) $code))
+            ->filter()
+            ->mapWithKeys(static fn (string $code): array => [$code => true])
+            ->all();
+    }
+
+    public static function normalizeCourseCode(string $courseCode): string
+    {
+        return strtoupper(trim(preg_replace('/\s+/', ' ', $courseCode) ?? $courseCode));
+    }
+
+    public static function clearFieldCourseCache(): void
+    {
+        self::$cachedFieldCourseSettingEnabled = null;
+        self::$cachedFieldCourseCodeMap = null;
+    }
+
+    private static function fieldCourseSettingsTableExists(): bool
+    {
+        try {
+            return DB::getSchemaBuilder()->hasTable('field_course_settings');
+        } catch (\Throwable) {
+            return false;
+        }
     }
 }

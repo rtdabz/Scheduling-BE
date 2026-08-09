@@ -12,6 +12,7 @@ class Rooms extends Model
         'building',
         'room_type',
         'status',
+        'max_concurrent_classes',
         'department_id',
     ];
 

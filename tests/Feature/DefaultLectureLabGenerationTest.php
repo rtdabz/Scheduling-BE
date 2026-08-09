@@ -9,12 +9,78 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Services\Scheduling\CspSolver;
+use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class DefaultLectureLabGenerationTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_generation_honors_forced_course_day_rule(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'NSTP 1',
+            'course_name' => 'National Service Training Program',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'minor',
+            'room_type_required' => 'field',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => null,
+            'status' => 'active',
+        ]);
+
+        Rooms::create([
+            'room_code' => 'FIELD',
+            'building' => 'Campus',
+            'room_type' => 'field',
+            'status' => 'available',
+            'department_id' => null,
+        ]);
+
+        DB::table('department_forced_course_days')->insert([
+            'department_id' => $department->id,
+            'course_id' => $course->id,
+            'day' => 'Saturday',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+        $this->assertSame('Saturday', $solutions[0]['schedules'][0]['day']);
+    }
 
     public function test_major_course_with_lecture_and_lab_stays_single_block_when_override_is_disabled(): void
     {
@@ -223,7 +289,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertSame($labRoom->id, $laboratory['room_id']);
     }
 
-    public function test_default_lecture_lab_generation_places_laboratory_online_when_no_lab_room_exists(): void
+    public function test_default_lecture_lab_generation_requires_physical_laboratory_room(): void
     {
         $term = Terms::create([
             'academic_year' => '2026-2027',
@@ -277,18 +343,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             seed: 1234,
         );
 
-        $this->assertNotEmpty($solutions);
-
-        $rows = $solutions[0]['schedules'];
-        $lecture = collect($rows)->firstWhere('meeting_type', 'lecture');
-        $laboratory = collect($rows)->firstWhere('meeting_type', 'laboratory');
-
-        $this->assertNotNull($lecture);
-        $this->assertNotNull($laboratory);
-        $this->assertSame('on-site', $lecture['mode']);
-        $this->assertNotNull($lecture['room_id']);
-        $this->assertSame('online', $laboratory['mode']);
-        $this->assertNull($laboratory['room_id']);
+        $this->assertEmpty($solutions);
     }
 
     public function test_missing_laboratory_course_can_be_generated_online_when_requested(): void
@@ -585,6 +640,100 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNotEmpty($solutions);
         $this->assertCount(1, $solutions[0]['schedules']);
         $this->assertSame($regularCourse->id, $solutions[0]['schedules'][0]['course_id']);
+    }
+
+    public function test_generation_uses_fixed_start_time_patterns_by_duration(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $department = Departments::create([
+            'department_name' => 'College of Business Administration',
+            'department_code' => 'BSBA',
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'BSBA 2A',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $courses = [
+            Course::create([
+                'course_code' => 'MGT 201',
+                'course_name' => 'Three Hour Course',
+                'lecture_hours' => 3,
+                'lab_hours' => 0,
+                'units' => 3,
+                'course_category' => 'major',
+                'room_type_required' => 'lecture',
+                'year_level' => '2',
+                'semester' => '1st',
+                'department_id' => $department->id,
+                'status' => 'active',
+            ]),
+            Course::create([
+                'course_code' => 'MGT 202',
+                'course_name' => 'Two Hour Course',
+                'lecture_hours' => 2,
+                'lab_hours' => 0,
+                'units' => 2,
+                'course_category' => 'major',
+                'room_type_required' => 'lecture',
+                'year_level' => '2',
+                'semester' => '1st',
+                'department_id' => $department->id,
+                'status' => 'active',
+            ]),
+        ];
+
+        Rooms::create([
+            'room_code' => 'BA 201',
+            'building' => 'Business Building',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: array_map(static fn (Course $course): int => $course->id, $courses),
+            maxSolutions: 1,
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+
+        $allowedStartsByMinutes = [
+            180 => ['07:00:00', '10:00:00', '13:00:00', '16:00:00'],
+            120 => ['07:00:00', '09:00:00', '11:00:00', '13:00:00', '15:00:00', '17:00:00'],
+        ];
+
+        foreach ($solutions[0]['schedules'] as $schedule) {
+            $durationMinutes = $this->durationMinutes($schedule);
+
+            $this->assertContains(
+                $schedule['start_time'],
+                $allowedStartsByMinutes[$durationMinutes],
+                "{$schedule['start_time']} is not allowed for a {$durationMinutes}-minute class.",
+            );
+            $this->assertLessThanOrEqual('19:00:00', $schedule['end_time']);
+        }
+
+        $this->assertSame(
+            ['07:00:00', '08:30:00', '10:00:00', '11:30:00', '13:00:00', '14:30:00', '16:00:00', '17:30:00'],
+            array_map(
+                static fn (int $slot): string => SchedulingPolicy::slotToTime($slot),
+                SchedulingPolicy::generatedStartSlotsForDuration(3),
+            ),
+        );
     }
 
     private function durationMinutes(array $row): int

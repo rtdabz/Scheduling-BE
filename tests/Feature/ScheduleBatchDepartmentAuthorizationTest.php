@@ -79,6 +79,49 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
         ]);
     }
 
+    public function test_batch_can_delete_schedules_without_operations(): void
+    {
+        [$deptA, , $term, $roomA, , $courseA, , $sectionA] = $this->fixture();
+        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $schedule = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA);
+
+        $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
+            'delete_ids' => [$schedule->id],
+        ]);
+
+        $response->assertOk()
+            ->assertJson([
+                'deleted_schedule_ids' => [$schedule->id],
+            ]);
+
+        $this->assertDatabaseMissing('schedules', [
+            'id' => $schedule->id,
+        ]);
+    }
+
+    public function test_batch_can_update_existing_schedule_with_partial_operation(): void
+    {
+        [$deptA, , $term, $roomA, , $courseA, , $sectionA] = $this->fixture();
+        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $schedule = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, [
+            'status' => 'draft',
+        ]);
+
+        $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
+            'operations' => [[
+                'id' => $schedule->id,
+                'status' => 'completed',
+            ]],
+        ]);
+
+        $response->assertOk();
+        $schedule->refresh();
+        $this->assertSame('completed', $schedule->status);
+        $this->assertSame($term->id, $schedule->term_id);
+        $this->assertSame($sectionA->id, $schedule->section_id);
+        $this->assertSame('Monday', $schedule->day);
+    }
+
     public function test_split_validation_delete_ids_use_persisted_schedule_department_for_authorization(): void
     {
         [$deptA, $deptB, $term, $roomA, $roomB, $courseA, $courseB, $sectionA, $sectionB] = $this->fixture();

@@ -25,15 +25,6 @@ final class SplitScheduleService
     /** Slot duration in minutes. */
     private const SLOT_MINUTES = SchedulingPolicy::SLOT_MINUTES;
 
-    /** Grid start: 07:00 AM in minutes from midnight. */
-    private const GRID_START_MINUTES = SchedulingPolicy::OPERATING_START_MINUTES;
-
-    /** Grid end: 07:00 PM = 19:00 in minutes from midnight. */
-    private const GRID_END_MINUTES = 19 * 60;
-
-    /** Total 30-min slots in the operating window: 24. */
-    private const TOTAL_SLOTS = SchedulingPolicy::TOTAL_SLOTS;
-
     public function __construct(
         private readonly RuleEngine $ruleEngine,
     ) {}
@@ -70,9 +61,9 @@ final class SplitScheduleService
         ?string $preferredDay = null,
         ?string $preferredStartTime = null,
     ): array {
-        if ($durationSlots < 1 || $durationSlots > self::TOTAL_SLOTS) {
+        if ($durationSlots < 1 || $durationSlots > SchedulingPolicy::totalSlots()) {
             throw new InvalidArgumentException(
-                "durationSlots must be between 1 and " . self::TOTAL_SLOTS . ", got {$durationSlots}."
+                "durationSlots must be between 1 and " . SchedulingPolicy::totalSlots() . ", got {$durationSlots}."
             );
         }
 
@@ -250,7 +241,7 @@ final class SplitScheduleService
         ?string    $preferredDay = null,
         ?string    $preferredStartTime = null,
     ): array {
-        $latestStart = self::TOTAL_SLOTS - $durationSlots;
+        $startSlots = SchedulingPolicy::generatedStartSlotsForDuration($durationSlots);
 
         $days = SchedulingPolicy::WEEKDAYS_AND_SATURDAY;
         if ($preferredDay !== null) {
@@ -260,7 +251,7 @@ final class SplitScheduleService
         $candidates = [];
 
         foreach ($days as $day) {
-            for ($startSlot = 0; $startSlot <= $latestStart; $startSlot++) {
+            foreach ($startSlots as $startSlot) {
                 $endSlot   = $startSlot + $durationSlots;
                 $startTime = $this->slotToTime($startSlot);
                 $endTime   = $this->slotToTime($endSlot);
@@ -319,7 +310,7 @@ final class SplitScheduleService
 
         // Prefer earlier start times.
         $startMinutes = $this->timeToMinutes($candidate['start_time']);
-        $afterSlot22  = self::GRID_START_MINUTES + (22 * self::SLOT_MINUTES); // ~18:00
+        $afterSlot22  = SchedulingPolicy::timeToMinutes(SchedulingPolicy::openingTime()) + (22 * self::SLOT_MINUTES);
         if ($startMinutes > $afterSlot22) {
             $score -= 4;
         }
@@ -349,8 +340,7 @@ final class SplitScheduleService
 
     private function slotToTime(int $slot): string
     {
-        $minutes = self::GRID_START_MINUTES + ($slot * self::SLOT_MINUTES);
-        return sprintf('%02d:%02d', intdiv($minutes, 60), $minutes % 60);
+        return SchedulingPolicy::slotToTime($slot);
     }
 
     private function timeToMinutes(string $time): int

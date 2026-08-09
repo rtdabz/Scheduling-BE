@@ -8,7 +8,6 @@ use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Curriculum;
 use App\Services\Scheduling\CSPSolver;
-use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\Scheduling\SplitScheduleService;
 use App\Services\SystemNotificationService;
@@ -22,7 +21,6 @@ class ScheduleRecommendationController extends Controller
 {
     public function __construct(
         private readonly CSPSolver $cspSolver,
-        private readonly RuleEngine $ruleEngine,
         private readonly SplitScheduleService $splitScheduleService,
         private readonly SystemNotificationService $notifications,
     ) {
@@ -136,6 +134,12 @@ class ScheduleRecommendationController extends Controller
             'section_id' => 'required|integer|exists:sections,id',
             'course_ids' => 'sometimes|array|min:1',
             'course_ids.*' => 'integer|exists:courses,id',
+            'anchored_schedules' => 'sometimes|array',
+            'anchored_schedules.*.course_id' => 'required|integer|exists:courses,id',
+            'anchored_schedules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
+            'anchored_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+            'anchored_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:anchored_schedules.*.start_time'],
+            'anchored_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
             'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'is_hybrid' => 'sometimes|boolean',
             'preferred_patterns' => 'sometimes|array',
@@ -249,6 +253,12 @@ class ScheduleRecommendationController extends Controller
             'section_id' => 'required|integer|exists:sections,id',
             'course_ids' => 'sometimes|array|min:1',
             'course_ids.*' => 'integer|exists:courses,id',
+            'anchored_schedules' => 'sometimes|array',
+            'anchored_schedules.*.course_id' => 'required|integer|exists:courses,id',
+            'anchored_schedules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
+            'anchored_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+            'anchored_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:anchored_schedules.*.start_time'],
+            'anchored_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
             'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'is_hybrid' => 'sometimes|boolean',
             'preferred_patterns' => 'sometimes|array',
@@ -256,6 +266,12 @@ class ScheduleRecommendationController extends Controller
             'split_session_enabled' => 'sometimes|boolean',
             'selected_split_session_course_ids' => 'sometimes|array',
             'selected_split_session_course_ids.*' => 'integer|exists:courses,id',
+            'split_units_enabled' => 'sometimes|boolean',
+            'selected_split_unit_course_ids' => 'sometimes|array',
+            'selected_split_unit_course_ids.*' => 'integer|exists:courses,id',
+            'split_gec_enabled' => 'sometimes|boolean',
+            'selected_gec_course_ids' => 'sometimes|array',
+            'selected_gec_course_ids.*' => 'integer|exists:courses,id',
             'max_solutions' => 'sometimes|integer|min:1|max:5',
             'max_iterations' => 'sometimes|integer|min:1',
             'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
@@ -672,7 +688,7 @@ class ScheduleRecommendationController extends Controller
                 ->toArray();
 
             if (!empty($courseIds)) {
-                return $courseIds;
+                return $this->mergeForcedScheduleCourseIds($section, $curriculum, $courseIds);
             }
         }
 
@@ -701,6 +717,27 @@ class ScheduleRecommendationController extends Controller
         throw new InvalidArgumentException(
             "Year {$section->year_level} has no courses for {$section->semester} semester. Add courses to this year level before generating a schedule."
         );
+    }
+
+    private function mergeForcedScheduleCourseIds(Sections $section, Curriculum $curriculum, array $courseIds): array
+    {
+        $forcedCourseCodes = DB::table('department_forced_schedule_course_codes')
+            ->where('department_id', $section->department_id)
+            ->pluck('course_code')
+            ->all();
+
+        if ($forcedCourseCodes === []) {
+            return $courseIds;
+        }
+
+        $forcedCourseIds = $curriculum->courses()
+            ->whereIn('course_code', $forcedCourseCodes)
+            ->wherePivot('year_level', (int) $section->year_level)
+            ->wherePivot('semester', $this->mapSemesterToInt($section->semester))
+            ->pluck('courses.id')
+            ->toArray();
+
+        return array_values(array_unique(array_merge($courseIds, $forcedCourseIds)));
     }
 
     private function mapSemesterToInt(string $semester): int
