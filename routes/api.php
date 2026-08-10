@@ -36,13 +36,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/notifications', [SystemNotificationController::class, 'index']);
     Route::patch('/notifications/read-all', [SystemNotificationController::class, 'markAllAsRead']);
     Route::patch('/notifications/{notification}/read', [SystemNotificationController::class, 'markAsRead']);
-    Route::get('/user', [UserController::class, 'index']);
-    Route::post('/user', [UserController::class, 'store']);
-    Route::put('/user/{user}', [UserController::class, 'update']);
-    Route::delete('/user/{user}', [UserController::class, 'destroy']);
 
     // VPAA-only administration
     Route::middleware('role:vpaa')->group(function () {
+        Route::get('/user', [UserController::class, 'index']);
+        Route::post('/user', [UserController::class, 'store']);
+        Route::put('/user/{user}', [UserController::class, 'update']);
+        Route::delete('/user/{user}', [UserController::class, 'destroy']);
+
         Route::apiResource('departments', DepartmentsController::class)->except(['index', 'show']);
         Route::get('/departments/trash', [DepartmentsController::class, 'trash'])->name('departments.trash');
         Route::post('/departments/{id}/restore', [DepartmentsController::class, 'restore'])->name('departments.restore');
