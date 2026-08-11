@@ -27,6 +27,17 @@ class Course extends Model
         return $this->belongsTo(Departments::class, 'department_id');
     }
 
+    public function teachingAssignment()
+    {
+        return $this->hasOne(CourseTeachingAssignment::class, 'course_id');
+    }
+
+    public function categories()
+    {
+        return $this->belongsToMany(CourseCategory::class, 'course_category_mapping', 'course_id', 'category_id')
+            ->withTimestamps();
+    }
+
     public function schedules()
     {
         return $this->hasMany(Schedule::class, 'course_id');

@@ -178,7 +178,7 @@ class SystemNotificationService
                     $total,
                 ),
                 $actor,
-                $subjectDepartmentId,
+                $courseDepartmentId,
                 $termId,
                 null,
                 [

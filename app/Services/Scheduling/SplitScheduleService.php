@@ -128,7 +128,7 @@ final class SplitScheduleService
             $violations = $this->ruleEngine->validate($data);
 
             if (empty($violations)) {
-                $candidate['score'] = $this->scoreCandidate($candidate, $roomId, $mode, $preferredDay, $targetRoomType);
+                $candidate['score'] = $this->scoreCandidate($candidate, $roomId, $mode, $preferredDay, $targetRoomType, $preferredStartTime);
                 $validCandidates[]  = $candidate;
             }
         }
@@ -256,10 +256,6 @@ final class SplitScheduleService
                 $startTime = $this->slotToTime($startSlot);
                 $endTime   = $this->slotToTime($endSlot);
 
-                if ($preferredStartTime !== null && $startTime !== $preferredStartTime) {
-                    continue;
-                }
-
                 foreach ($rooms as $room) {
                     $candidateMode     = $mode;
                     $candidateRoomType = (string) $room->room_type;
@@ -300,6 +296,7 @@ final class SplitScheduleService
         string $preferredMode,
         ?string $preferredDay = null,
         ?string $preferredRoomType = null,
+        ?string $preferredStartTime = null,
     ): int {
         $score = 100;
 
@@ -333,6 +330,10 @@ final class SplitScheduleService
         // Prefer the originally requested day.
         if ($preferredDay !== null && $candidate['day'] === $preferredDay) {
             $score += 20;
+        }
+
+        if ($preferredStartTime !== null && $candidate['start_time'] === $preferredStartTime) {
+            $score += 6;
         }
 
         return $score;

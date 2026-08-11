@@ -35,7 +35,7 @@ class RoomsController extends Controller
         ]);
 
         $validated['max_concurrent_classes'] = (int) ($validated['max_concurrent_classes'] ?? (
-            ($validated['room_type'] ?? null) === 'field' ? 3 : 1
+            in_array(($validated['room_type'] ?? null), ['field', 'online'], true) ? 3 : 1
         ));
 
         $room = Rooms::create($validated);
@@ -75,7 +75,7 @@ class RoomsController extends Controller
             'max_concurrent_classes' => 'sometimes|integer|min:1|max:20',
         ]);
 
-        if (($validated['room_type'] ?? $room->room_type) !== 'field' && array_key_exists('max_concurrent_classes', $validated)) {
+        if (!in_array(($validated['room_type'] ?? $room->room_type), ['field', 'online'], true) && array_key_exists('max_concurrent_classes', $validated)) {
             $validated['max_concurrent_classes'] = 1;
         }
 

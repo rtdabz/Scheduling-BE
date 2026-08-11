@@ -9,10 +9,13 @@ use App\Models\Schedule;
 use App\Models\ScheduleRecommendation;
 use App\Models\Sections;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class GenerateScheduleService
 {
+    private const REPLACEABLE_SCHEDULE_STATUSES = ['draft', 'completed', 'revision'];
+
     public function __construct(
         private readonly CSPSolver $solver,
         private readonly RuleEngine $ruleEngine,
@@ -53,7 +56,13 @@ class GenerateScheduleService
             ];
         }
 
-        $coursesById = Course::whereIn('id', $courseIds)
+        $coursesQuery = Course::query();
+        if ($this->courseCategoryTablesExist()) {
+            $coursesQuery->with('categories');
+        }
+
+        $coursesById = $coursesQuery
+            ->whereIn('id', $courseIds)
             ->get()
             ->keyBy('id');
 
@@ -197,7 +206,7 @@ class GenerateScheduleService
         // Clear previous schedules for this section and term to prevent duplicate/merge issues
         Schedule::where('section_id', $recommendation->section_id)
             ->where('term_id', $recommendation->term_id)
-            ->whereIn('status', ['draft', 'completed'])
+            ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
             ->delete();
 
         return DB::transaction(function () use ($recommendation, $userId, $meetings) {
@@ -348,5 +357,15 @@ class GenerateScheduleService
         }
 
         return $meetings;
+    }
+
+    private function courseCategoryTablesExist(): bool
+    {
+        try {
+            return Schema::hasTable('course_categories')
+                && Schema::hasTable('course_category_mapping');
+        } catch (\Throwable) {
+            return false;
+        }
     }
 }

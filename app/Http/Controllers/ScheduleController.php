@@ -15,6 +15,8 @@ use Illuminate\Support\Facades\DB;
 
 class ScheduleController extends Controller
 {
+    private const ONLINE_MAX_CONCURRENT_CLASSES = 3;
+
     protected RuleEngine $ruleEngine;
 
     public function __construct(
@@ -190,9 +192,8 @@ class ScheduleController extends Controller
             }
         }
 
-        $allViolations = $this->checkIntraBatchConflicts($validated['operations']);
-
         $mergedIgnoreIds = array_values(array_unique(array_merge($operationIds, array_map('intval', $deleteIds))));
+        $allViolations = $this->checkIntraBatchConflicts($validated['operations'], $mergedIgnoreIds);
 
         $orderedOperations = $this->prioritizeSplitAnchorMeetings($validated['operations']);
 
@@ -659,7 +660,7 @@ class ScheduleController extends Controller
         return sprintf('%02d:%02d', $h, $m);
     }
 
-    private function checkIntraBatchConflicts(array $operations): array
+    private function checkIntraBatchConflicts(array $operations, array $ignoreScheduleIds = []): array
     {
         $violations = [];
         $count = count($operations);
@@ -683,7 +684,9 @@ class ScheduleController extends Controller
             ? Rooms::whereIn('id', $roomIds)
                 ->get(['id', 'room_type', 'max_concurrent_classes'])
                 ->mapWithKeys(fn (Rooms $room): array => [
-                    (int) $room->id => max(1, (int) ($room->max_concurrent_classes ?? 1)),
+                    (int) $room->id => in_array($room->room_type, ['field', 'online'], true)
+                        ? 3
+                        : max(1, (int) ($room->max_concurrent_classes ?? 1)),
                 ])
             : collect();
 
@@ -750,6 +753,248 @@ class ScheduleController extends Controller
                         }
                     }
                 }
+            }
+        }
+
+        $violations = array_merge(
+            $violations,
+            $this->checkIntraBatchRoomCapacityConflicts($operations, $coursesMap, $roomCapacityMap, $ignoreScheduleIds),
+            $this->checkIntraBatchOnlineCapacityConflicts($operations, $coursesMap, $ignoreScheduleIds),
+        );
+
+        return $violations;
+    }
+
+    private function checkIntraBatchOnlineCapacityConflicts(array $operations, $coursesMap, array $ignoreScheduleIds): array
+    {
+        $violations = [];
+        $groups = [];
+
+        foreach ($operations as $index => $operation) {
+            if (($operation['mode'] ?? 'on-site') !== 'online') {
+                continue;
+            }
+
+            $termId = (int) ($operation['term_id'] ?? 0);
+            $departmentId = (int) ($operation['department_id'] ?? 0);
+            $day = (string) ($operation['day'] ?? '');
+            if ($termId <= 0 || $departmentId <= 0 || $day === '') {
+                continue;
+            }
+
+            $groups["{$termId}:{$departmentId}:{$day}"][] = [
+                'index' => $index,
+                'term_id' => $termId,
+                'department_id' => $departmentId,
+                'day' => $day,
+                'start' => $this->timeToMinutesLocal((string) ($operation['start_time'] ?? '00:00')),
+                'end' => $this->timeToMinutesLocal((string) ($operation['end_time'] ?? '00:00')),
+                'course_id' => (int) ($operation['course_id'] ?? $operation['subject_id'] ?? 0),
+            ];
+        }
+
+        if ($groups === []) {
+            return [];
+        }
+
+        $termIds = [];
+        $departmentIds = [];
+        $days = [];
+        foreach ($groups as $items) {
+            foreach ($items as $item) {
+                $termIds[$item['term_id']] = $item['term_id'];
+                $departmentIds[$item['department_id']] = $item['department_id'];
+                $days[$item['day']] = $item['day'];
+            }
+        }
+
+        $existingSchedules = Schedule::query()
+            ->where('mode', 'online')
+            ->whereIn('term_id', array_values($termIds))
+            ->whereIn('department_id', array_values($departmentIds))
+            ->whereIn('day', array_values($days))
+            ->when($ignoreScheduleIds !== [], fn ($query) => $query->whereNotIn('id', $ignoreScheduleIds))
+            ->get(['id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
+
+        foreach ($existingSchedules as $schedule) {
+            $groups["{$schedule->term_id}:{$schedule->department_id}:{$schedule->day}"][] = [
+                'index' => null,
+                'schedule_id' => (int) $schedule->id,
+                'day' => (string) $schedule->day,
+                'start' => $this->timeToMinutesLocal((string) $schedule->start_time),
+                'end' => $this->timeToMinutesLocal((string) $schedule->end_time),
+                'course_id' => 0,
+            ];
+        }
+
+        foreach ($groups as $items) {
+            $events = [];
+            foreach ($items as $item) {
+                $events[] = ['minute' => $item['start'], 'delta' => 1, 'item' => $item];
+                $events[] = ['minute' => $item['end'], 'delta' => -1, 'item' => $item];
+            }
+
+            usort(
+                $events,
+                static fn (array $left, array $right): int =>
+                    ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
+            );
+
+            $active = [];
+            $reported = [];
+            foreach ($events as $event) {
+                $item = $event['item'];
+                $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
+                if ($event['delta'] < 0) {
+                    unset($active[$activeKey]);
+                    continue;
+                }
+
+                $active[$activeKey] = $item;
+                if ($item['index'] === null || count($active) <= self::ONLINE_MAX_CONCURRENT_CLASSES || isset($reported[$item['index']])) {
+                    continue;
+                }
+
+                $courseCode = $coursesMap->get($item['course_id'])?->course_code ?? 'Course';
+                $violations[] = [
+                    'rule' => 'online_capacity_conflict',
+                    'operation_index' => $item['index'],
+                    'course_code' => $courseCode,
+                    'day' => $item['day'],
+                    'message' => "Intra-batch Online Capacity Conflict: Online allows only ".self::ONLINE_MAX_CONCURRENT_CLASSES." concurrent classes per department on {$item['day']}.",
+                ];
+                $reported[$item['index']] = true;
+            }
+        }
+
+        return $violations;
+    }
+
+    private function checkIntraBatchRoomCapacityConflicts(array $operations, $coursesMap, $roomCapacityMap, array $ignoreScheduleIds): array
+    {
+        $violations = [];
+        $groups = [];
+
+        foreach ($operations as $index => $operation) {
+            $roomId = (int) ($operation['room_id'] ?? 0);
+            $termId = (int) ($operation['term_id'] ?? 0);
+            $departmentId = (int) ($operation['department_id'] ?? 0);
+            $day = (string) ($operation['day'] ?? '');
+            $mode = (string) ($operation['mode'] ?? 'on-site');
+            $capacity = (int) ($roomCapacityMap->get($roomId) ?? 1);
+
+            if ($roomId <= 0 || $termId <= 0 || $departmentId <= 0 || $day === '' || $mode === 'online' || $capacity <= 1) {
+                continue;
+            }
+
+            $start = $this->timeToMinutesLocal((string) ($operation['start_time'] ?? '00:00'));
+            $end = $this->timeToMinutesLocal((string) ($operation['end_time'] ?? '00:00'));
+            if ($start >= $end) {
+                continue;
+            }
+
+            $groups["{$termId}:{$departmentId}:{$roomId}:{$day}"][] = [
+                'index' => $index,
+                'room_id' => $roomId,
+                'department_id' => $departmentId,
+                'day' => $day,
+                'start' => $start,
+                'end' => $end,
+                'capacity' => $capacity,
+                'course_id' => (int) ($operation['course_id'] ?? $operation['subject_id'] ?? 0),
+            ];
+        }
+
+        if ($groups !== []) {
+            $roomIds = [];
+            $termIds = [];
+            $departmentIds = [];
+            $days = [];
+            foreach ($groups as $items) {
+                foreach ($items as $item) {
+                    $roomIds[$item['room_id']] = $item['room_id'];
+                    $departmentIds[$item['department_id']] = $item['department_id'];
+                    $days[$item['day']] = $item['day'];
+                }
+            }
+            foreach ($operations as $operation) {
+                $termId = (int) ($operation['term_id'] ?? 0);
+                if ($termId > 0) {
+                    $termIds[$termId] = $termId;
+                }
+            }
+
+            $existingSchedules = Schedule::query()
+                ->whereIn('room_id', array_values($roomIds))
+                ->whereIn('term_id', array_values($termIds))
+                ->whereIn('department_id', array_values($departmentIds))
+                ->whereIn('day', array_values($days))
+                ->when($ignoreScheduleIds !== [], fn ($query) => $query->whereNotIn('id', $ignoreScheduleIds))
+                ->get(['id', 'room_id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
+
+            foreach ($existingSchedules as $schedule) {
+                $roomId = (int) $schedule->room_id;
+                $termId = (int) $schedule->term_id;
+                $day = (string) $schedule->day;
+                $capacity = (int) ($roomCapacityMap->get($roomId) ?? 1);
+                if ($capacity <= 1) {
+                    continue;
+                }
+
+                $groups["{$termId}:{$schedule->department_id}:{$roomId}:{$day}"][] = [
+                    'index' => null,
+                    'schedule_id' => (int) $schedule->id,
+                    'room_id' => $roomId,
+                    'department_id' => (int) $schedule->department_id,
+                    'day' => $day,
+                    'start' => $this->timeToMinutesLocal((string) $schedule->start_time),
+                    'end' => $this->timeToMinutesLocal((string) $schedule->end_time),
+                    'capacity' => $capacity,
+                    'course_id' => 0,
+                ];
+            }
+        }
+
+        foreach ($groups as $items) {
+            $events = [];
+            foreach ($items as $item) {
+                $events[] = ['minute' => $item['start'], 'delta' => 1, 'item' => $item];
+                $events[] = ['minute' => $item['end'], 'delta' => -1, 'item' => $item];
+            }
+
+            usort(
+                $events,
+                static fn (array $left, array $right): int =>
+                    ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
+            );
+
+            $active = [];
+            $reported = [];
+            foreach ($events as $event) {
+                $item = $event['item'];
+                $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
+                if ($event['delta'] < 0) {
+                    unset($active[$activeKey]);
+                    continue;
+                }
+
+                $active[$activeKey] = $item;
+                if ($item['index'] === null || count($active) <= $item['capacity'] || isset($reported[$item['index']])) {
+                    continue;
+                }
+
+                $courseCode = $coursesMap->get($item['course_id'])?->course_code ?? 'Course';
+                $overlapStart = $this->minutesToTimeString(max(array_column($active, 'start')));
+                $overlapEnd = $this->minutesToTimeString(min(array_column($active, 'end')));
+
+                $violations[] = [
+                    'rule' => 'room_capacity_conflict',
+                    'operation_index' => $item['index'],
+                    'course_code' => $courseCode,
+                    'day' => $item['day'],
+                    'message' => "Intra-batch Room Capacity Conflict: FIELD allows only {$item['capacity']} concurrent classes per department on {$item['day']} from {$overlapStart} to {$overlapEnd}.",
+                ];
+                $reported[$item['index']] = true;
             }
         }
 
@@ -914,6 +1159,17 @@ class ScheduleController extends Controller
 
     private function clearOnlineRoomId(array $payload): array
     {
+        $roomId = (int) ($payload['room_id'] ?? 0);
+        if ($roomId > 0) {
+            $roomType = Rooms::query()
+                ->whereKey($roomId)
+                ->value('room_type');
+
+            if ($roomType === 'online') {
+                $payload['mode'] = 'online';
+            }
+        }
+
         if (($payload['mode'] ?? null) === 'online') {
             $payload['room_id'] = null;
         }

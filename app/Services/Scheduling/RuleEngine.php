@@ -3,6 +3,7 @@
 namespace App\Services\Scheduling;
 
 use App\Models\Faculty;
+use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
@@ -12,22 +13,26 @@ use InvalidArgumentException;
 
 class RuleEngine
 {
+    private const ONLINE_MAX_CONCURRENT_CLASSES = 3;
+
     public function checkRoomConflict(
         int $roomId,
         int $termId,
         string $day,
         string $startTime,
         string $endTime,
-        int|array|null $ignoreScheduleId = null
+        int|array|null $ignoreScheduleId = null,
+        ?int $departmentId = null,
     ): ?array {
         $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
         $room = Rooms::query()->find($roomId);
-        $capacity = max(1, (int) ($room?->max_concurrent_classes ?? 1));
+        $capacity = $this->effectiveRoomCapacity($room);
 
         if (($room?->room_type ?? null) === 'field' && $capacity > 1) {
             $overlaps = Schedule::where('room_id', $roomId)
                 ->where('term_id', $termId)
                 ->where('day', $day)
+                ->when($departmentId !== null, fn ($q) => $q->where('department_id', $departmentId))
                 ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
                 ->where('start_time', '<', $endTime)
                 ->where('end_time', '>', $startTime)
@@ -39,7 +44,7 @@ class RuleEngine
 
                 return [
                     'rule' => 'room_capacity_conflict',
-                    'message' => "{$room->room_code} capacity is full on {$day} from {$startTime} to {$endTime}. "
+                    'message' => "{$room->room_code} capacity is full for this department on {$day} from {$startTime} to {$endTime}. "
                         ."Maximum concurrent classes: {$capacity}.",
                     'conflicting_schedule_id' => $firstConflict?->id,
                 ];
@@ -104,6 +109,15 @@ class RuleEngine
         }
 
         return false;
+    }
+
+    private function effectiveRoomCapacity(?Rooms $room): int
+    {
+        if (($room?->room_type ?? null) === 'field') {
+            return 3;
+        }
+
+        return max(1, (int) ($room?->max_concurrent_classes ?? 1));
     }
 
     public function checkFacultyConflict(
@@ -264,7 +278,16 @@ class RuleEngine
             ];
         }
 
-        $requiredRoomType = $meetingType ?? $course->room_type_required;
+        $requiredRoomType = $meetingType
+            ?? (SchedulingPolicy::isLaboratoryCourse($course) ? 'laboratory' : $course->room_type_required);
+
+        if ($requiredRoomType === 'laboratory' && $room->room_type !== 'laboratory') {
+            return [
+                'rule' => 'room_type_match',
+                'message' => "Course {$course->course_code} requires a laboratory room, "
+                    ."but '{$room->room_code}' is a '{$room->room_type}' room.",
+            ];
+        }
 
         // If both the required type and the actual room type are physical (lecture or laboratory), they match.
         $isPhysicalRequired = in_array($requiredRoomType, ['lecture', 'laboratory'], true);
@@ -520,14 +543,12 @@ class RuleEngine
                 }
             }
 
-            if (
-                $course->department_id !== null
-                && $courseCategory === 'minor'
-            ) {
-                if ((int) $faculty->department_id !== (int) $course->department_id) {
+            $assignedTeachingDepartmentId = SchedulingPolicy::assignedTeachingDepartmentId($course);
+            if ($assignedTeachingDepartmentId !== null) {
+                if ((int) $faculty->department_id !== $assignedTeachingDepartmentId) {
                     $violations[] = [
                         'rule' => 'service_subject_faculty_department_alignment',
-                        'message' => 'This course must be assigned to an instructor from its owning department.',
+                        'message' => 'This course must be assigned to an instructor from its VPAA-assigned teaching department.',
                     ];
                 }
             } elseif ((int) $faculty->department_id !== (int) $section->department_id) {
@@ -558,6 +579,7 @@ class RuleEngine
             course: $course,
             day: (string) ($attempt['day'] ?? ''),
             mode: $mode,
+            section: $section,
         );
         if ($dayCategoryViolation !== null) {
             $violations[] = $dayCategoryViolation;
@@ -630,18 +652,17 @@ class RuleEngine
 
         $mode = (string) ($attempt['mode'] ?? 'on-site');
 
-        // Online and field classes share a single virtual room (no physical capacity).
-        // Room occupancy is irrelevant for these delivery modes — multiple sections
-        // may run an online or field class at the same day and time without conflict.
-        // On-site schedules continue to enforce room exclusivity.
-        if ($mode !== 'online' && $mode !== 'field') {
+        // FIELD uses department-scoped shared room capacity. ONLINE is checked
+        // separately because it does not use a physical room assignment.
+        if ($mode !== 'online') {
             $roomConflict = $this->checkRoomConflict(
                 (int) $attempt['room_id'],
                 $attempt['term_id'],
                 $attempt['day'],
                 $attempt['start_time'],
                 $attempt['end_time'],
-                $ignoreId
+                $ignoreId,
+                isset($attempt['department_id']) ? (int) $attempt['department_id'] : null,
             );
             if ($roomConflict) {
                 $violations[] = $roomConflict;
@@ -702,6 +723,18 @@ class RuleEngine
         }
 
         if (($attempt['mode'] ?? 'on-site') === 'online') {
+            $onlineCapacityViolation = $this->checkOnlineCapacity(
+                (int) $attempt['term_id'],
+                (string) $attempt['day'],
+                (string) $attempt['start_time'],
+                (string) $attempt['end_time'],
+                $ignoreId,
+                isset($attempt['department_id']) ? (int) $attempt['department_id'] : null,
+            );
+            if ($onlineCapacityViolation) {
+                $violations[] = $onlineCapacityViolation;
+            }
+
             $onlineLimitViolation = $this->checkSectionOnlineLimit(
                 (int) $attempt['section_id'],
                 (int) $attempt['term_id'],
@@ -712,6 +745,35 @@ class RuleEngine
             }
         }
         return $violations;
+    }
+
+    private function checkOnlineCapacity(
+        int $termId,
+        string $day,
+        string $startTime,
+        string $endTime,
+        int|array|null $ignoreScheduleId = null,
+        ?int $departmentId = null,
+    ): ?array {
+        $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
+        $overlapCount = Schedule::query()
+            ->where('term_id', $termId)
+            ->where('mode', 'online')
+            ->where('day', $day)
+            ->when($departmentId !== null, fn ($q) => $q->where('department_id', $departmentId))
+            ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
+            ->where('start_time', '<', $endTime)
+            ->where('end_time', '>', $startTime)
+            ->count();
+
+        if ($overlapCount >= self::ONLINE_MAX_CONCURRENT_CLASSES) {
+            return [
+                'rule' => 'online_capacity_conflict',
+                'message' => "Online capacity is full for this department on {$day} from {$startTime} to {$endTime}. Maximum concurrent online classes: ".self::ONLINE_MAX_CONCURRENT_CLASSES.'.',
+            ];
+        }
+
+        return null;
     }
 
     private function timeToMinutes(string $time): ?int
@@ -762,6 +824,7 @@ class RuleEngine
         Course $course,
         string $day,
         string $mode,
+        Sections $section,
     ): ?array {
         if ($this->isNstpCourse($course)) {
             if (!in_array($day, SchedulingPolicy::DAYS, true)) {
@@ -798,7 +861,14 @@ class RuleEngine
         }
 
         // Major courses: any day Mon–Sat; Sunday requires online mode.
-        if ($day === 'Sunday' && $mode !== 'online') {
+        $sundayOnlineOnlyEnabled = (bool) (
+            Departments::query()
+                ->whereKey((int) $section->department_id)
+                ->value('sunday_online_only_enabled')
+            ?? true
+        );
+
+        if ($sundayOnlineOnlyEnabled && $day === 'Sunday' && $mode !== 'online') {
             return [
                 'rule'    => 'major_sunday_mode_constraint',
                 'message' => 'Major courses scheduled on Sunday must use online delivery mode.',

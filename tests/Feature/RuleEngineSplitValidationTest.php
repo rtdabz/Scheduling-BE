@@ -3,12 +3,15 @@
 namespace Tests\Feature;
 
 use App\Models\Course;
+use App\Models\CourseTeachingAssignment;
 use App\Models\Departments;
+use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Services\Scheduling\RuleEngine;
+use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -183,5 +186,459 @@ class RuleEngineSplitValidationTest extends TestCase
         $this->assertNotContains('room_exists', $rules);
         $this->assertNotContains('room_type_match', $rules);
         $this->assertNotContains('delivery_room_alignment', $rules);
+    }
+
+    public function test_online_capacity_allows_three_classes_per_department_only(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $dept = Departments::create([
+            'department_name' => 'Department 1',
+            'department_code' => 'DEPT1',
+        ]);
+        $otherDept = Departments::create([
+            'department_name' => 'Department 2',
+            'department_code' => 'DEPT2',
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'IT104',
+            'course_name' => 'Web Systems',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $dept->id,
+            'status' => 'active',
+        ]);
+
+        $sections = collect(['IT 1A', 'IT 1B', 'IT 1C', 'IT 1D'])
+            ->map(fn (string $name) => Sections::create([
+                'section_name' => $name,
+                'year_level' => '1',
+                'semester' => '1st',
+                'department_id' => $dept->id,
+                'term_id' => $term->id,
+                'status' => 'active',
+            ]));
+        $otherSection = Sections::create([
+            'section_name' => 'BA 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $otherDept->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        foreach ($sections->take(2) as $section) {
+            Schedule::create([
+                'term_id' => $term->id,
+                'section_id' => $section->id,
+                'course_id' => $course->id,
+                'room_id' => null,
+                'department_id' => $dept->id,
+                'day' => 'Monday',
+                'start_time' => '07:00',
+                'end_time' => '10:00',
+                'mode' => 'online',
+                'status' => 'draft',
+            ]);
+        }
+
+        Schedule::create([
+            'term_id' => $term->id,
+            'section_id' => $otherSection->id,
+            'course_id' => $course->id,
+            'room_id' => null,
+            'department_id' => $otherDept->id,
+            'day' => 'Monday',
+            'start_time' => '07:00',
+            'end_time' => '10:00',
+            'mode' => 'online',
+            'status' => 'draft',
+        ]);
+
+        $thirdAttempt = [
+            'term_id' => $term->id,
+            'section_id' => $sections[2]->id,
+            'course_id' => $course->id,
+            'room_id' => null,
+            'department_id' => $dept->id,
+            'day' => 'Monday',
+            'start_time' => '07:00',
+            'end_time' => '10:00',
+            'mode' => 'online',
+        ];
+
+        $thirdRules = collect(app(RuleEngine::class)->validate($thirdAttempt))->pluck('rule')->all();
+        $this->assertNotContains('online_capacity_conflict', $thirdRules);
+
+        Schedule::create(array_merge($thirdAttempt, [
+            'status' => 'draft',
+        ]));
+
+        $fourthRules = collect(app(RuleEngine::class)->validate(array_merge($thirdAttempt, [
+            'section_id' => $sections[3]->id,
+        ])))->pluck('rule')->all();
+
+        $this->assertContains('online_capacity_conflict', $fourthRules);
+    }
+
+    public function test_field_capacity_allows_three_classes_per_department_only(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $dept = Departments::create([
+            'department_name' => 'Department 1',
+            'department_code' => 'DEPT1',
+        ]);
+        $otherDept = Departments::create([
+            'department_name' => 'Department 2',
+            'department_code' => 'DEPT2',
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'PATH FIT 1',
+            'course_name' => 'Physical Activities',
+            'lecture_hours' => 2,
+            'lab_hours' => 0,
+            'units' => 2,
+            'course_category' => 'minor',
+            'room_type_required' => 'field',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => null,
+            'status' => 'active',
+        ]);
+
+        $fieldRoom = Rooms::create([
+            'room_code' => 'FIELD',
+            'room_name' => 'Field',
+            'room_type' => 'field',
+            'status' => 'available',
+            'department_id' => null,
+            'max_concurrent_classes' => 3,
+        ]);
+
+        $sections = collect(['IT 1A', 'IT 1B', 'IT 1C', 'IT 1D'])
+            ->map(fn (string $name) => Sections::create([
+                'section_name' => $name,
+                'year_level' => '1',
+                'semester' => '1st',
+                'department_id' => $dept->id,
+                'term_id' => $term->id,
+                'status' => 'active',
+            ]));
+        $otherSection = Sections::create([
+            'section_name' => 'BA 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $otherDept->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        foreach ($sections->take(2) as $section) {
+            Schedule::create([
+                'term_id' => $term->id,
+                'section_id' => $section->id,
+                'course_id' => $course->id,
+                'room_id' => $fieldRoom->id,
+                'department_id' => $dept->id,
+                'day' => 'Monday',
+                'start_time' => '07:00',
+                'end_time' => '10:00',
+                'mode' => 'field',
+                'status' => 'draft',
+            ]);
+        }
+
+        Schedule::create([
+            'term_id' => $term->id,
+            'section_id' => $otherSection->id,
+            'course_id' => $course->id,
+            'room_id' => $fieldRoom->id,
+            'department_id' => $otherDept->id,
+            'day' => 'Monday',
+            'start_time' => '07:00',
+            'end_time' => '10:00',
+            'mode' => 'field',
+            'status' => 'draft',
+        ]);
+
+        $thirdAttempt = [
+            'term_id' => $term->id,
+            'section_id' => $sections[2]->id,
+            'course_id' => $course->id,
+            'room_id' => $fieldRoom->id,
+            'department_id' => $dept->id,
+            'day' => 'Monday',
+            'start_time' => '07:00',
+            'end_time' => '10:00',
+            'mode' => 'field',
+        ];
+
+        $thirdRules = collect(app(RuleEngine::class)->validate($thirdAttempt))->pluck('rule')->all();
+        $this->assertNotContains('room_capacity_conflict', $thirdRules);
+
+        Schedule::create(array_merge($thirdAttempt, [
+            'status' => 'draft',
+        ]));
+
+        $fourthRules = collect(app(RuleEngine::class)->validate(array_merge($thirdAttempt, [
+            'section_id' => $sections[3]->id,
+        ])))->pluck('rule')->all();
+
+        $this->assertContains('room_capacity_conflict', $fourthRules);
+    }
+
+    public function test_only_gec_service_subjects_require_cas_faculty(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $cas = Departments::create([
+            'department_name' => 'College of Arts and Sciences',
+            'department_code' => 'CAS',
+        ]);
+        $cit = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+        ]);
+
+        $citFaculty = Faculty::create([
+            'first_name' => 'Ada',
+            'last_name' => 'Lovelace',
+            'employment_type' => 'full-time',
+            'max_units' => 21,
+            'department_id' => $cit->id,
+            'status' => 'active',
+        ]);
+        $casFaculty = Faculty::create([
+            'first_name' => 'Jose',
+            'last_name' => 'Rizal',
+            'employment_type' => 'full-time',
+            'max_units' => 21,
+            'department_id' => $cas->id,
+            'status' => 'active',
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $cit->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $lectureRoom = Rooms::create([
+            'room_code' => 'IT105',
+            'room_name' => 'IT Room 105',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $cit->id,
+        ]);
+        $fieldRoom = Rooms::create([
+            'room_code' => 'FIELD',
+            'room_name' => 'Field',
+            'room_type' => 'field',
+            'status' => 'available',
+            'department_id' => null,
+            'max_concurrent_classes' => 3,
+        ]);
+
+        $gec = Course::create([
+            'course_code' => 'GEC 1',
+            'course_name' => 'Understanding the Self',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'minor',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $cas->id,
+            'status' => 'active',
+        ]);
+        $pathfit = Course::create([
+            'course_code' => 'PATH FIT 1',
+            'course_name' => 'Movement Competency Training',
+            'lecture_hours' => 2,
+            'lab_hours' => 0,
+            'units' => 2,
+            'course_category' => 'minor',
+            'room_type_required' => 'field',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $cas->id,
+            'status' => 'active',
+        ]);
+        $nstp = Course::create([
+            'course_code' => 'NSTP 1',
+            'course_name' => 'National Service Training Program',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'minor',
+            'room_type_required' => 'field',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $cas->id,
+            'status' => 'active',
+        ]);
+
+        $ruleEngine = app(RuleEngine::class);
+        $base = [
+            'term_id' => $term->id,
+            'section_id' => $section->id,
+            'department_id' => $cit->id,
+            'day' => 'Monday',
+            'start_time' => '10:00',
+            'end_time' => '12:00',
+        ];
+
+        $gecRules = collect($ruleEngine->validate(array_merge($base, [
+            'course_id' => $gec->id,
+            'faculty_id' => $citFaculty->id,
+            'room_id' => $lectureRoom->id,
+            'mode' => 'on-site',
+            'end_time' => '13:00',
+        ])))->pluck('rule')->all();
+        $this->assertContains('service_subject_faculty_department_alignment', $gecRules);
+
+        $gecWithCasFacultyRules = collect($ruleEngine->validate(array_merge($base, [
+            'course_id' => $gec->id,
+            'faculty_id' => $casFaculty->id,
+            'room_id' => $lectureRoom->id,
+            'mode' => 'on-site',
+            'end_time' => '13:00',
+        ])))->pluck('rule')->all();
+        $this->assertNotContains('service_subject_faculty_department_alignment', $gecWithCasFacultyRules);
+
+        foreach ([$pathfit, $nstp] as $course) {
+            $rules = collect($ruleEngine->validate(array_merge($base, [
+                'course_id' => $course->id,
+                'faculty_id' => $citFaculty->id,
+                'room_id' => $fieldRoom->id,
+                'mode' => 'field',
+            ])))->pluck('rule')->all();
+
+            $this->assertNotContains('service_subject_faculty_department_alignment', $rules);
+            $this->assertNotContains('faculty_department_alignment', $rules);
+        }
+    }
+
+    public function test_vpaa_course_teaching_assignment_controls_allowed_faculty_department(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $cas = Departments::create([
+            'department_name' => 'College of Arts and Sciences',
+            'department_code' => 'CAS',
+        ]);
+        $cit = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+        ]);
+
+        $casFaculty = Faculty::create([
+            'first_name' => 'Jose',
+            'last_name' => 'Rizal',
+            'employment_type' => 'full-time',
+            'max_units' => 21,
+            'department_id' => $cas->id,
+            'status' => 'active',
+        ]);
+        $citFaculty = Faculty::create([
+            'first_name' => 'Ada',
+            'last_name' => 'Lovelace',
+            'employment_type' => 'full-time',
+            'max_units' => 21,
+            'department_id' => $cit->id,
+            'status' => 'active',
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $cit->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $room = Rooms::create([
+            'room_code' => 'IT105',
+            'room_name' => 'IT Room 105',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $cit->id,
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'GEC 2',
+            'course_name' => 'Readings in Philippine History',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'minor',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $cas->id,
+            'status' => 'active',
+        ]);
+
+        CourseTeachingAssignment::create([
+            'course_id' => $course->id,
+            'department_id' => $cit->id,
+        ]);
+        SchedulingPolicy::clearCourseTeachingAssignmentCache();
+
+        $base = [
+            'term_id' => $term->id,
+            'section_id' => $section->id,
+            'course_id' => $course->id,
+            'room_id' => $room->id,
+            'department_id' => $cit->id,
+            'day' => 'Monday',
+            'start_time' => '10:00',
+            'end_time' => '13:00',
+            'mode' => 'on-site',
+        ];
+
+        $casRules = collect(app(RuleEngine::class)->validate(array_merge($base, [
+            'faculty_id' => $casFaculty->id,
+        ])))->pluck('rule')->all();
+        $this->assertContains('service_subject_faculty_department_alignment', $casRules);
+
+        $citRules = collect(app(RuleEngine::class)->validate(array_merge($base, [
+            'faculty_id' => $citFaculty->id,
+        ])))->pluck('rule')->all();
+        $this->assertNotContains('service_subject_faculty_department_alignment', $citRules);
+        $this->assertNotContains('faculty_department_alignment', $citRules);
     }
 }

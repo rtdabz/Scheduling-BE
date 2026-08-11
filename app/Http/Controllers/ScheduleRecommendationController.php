@@ -19,6 +19,10 @@ use RuntimeException;
 
 class ScheduleRecommendationController extends Controller
 {
+    private const REPLACEABLE_SCHEDULE_STATUSES = ['draft', 'completed', 'revision'];
+
+    private const ONLINE_MAX_CONCURRENT_CLASSES = 3;
+
     public function __construct(
         private readonly CSPSolver $cspSolver,
         private readonly SplitScheduleService $splitScheduleService,
@@ -160,7 +164,7 @@ class ScheduleRecommendationController extends Controller
         // Clear previous generated schedules and cached solutions
         Schedule::where('section_id', $section->id)
             ->where('term_id', $section->term_id)
-            ->whereIn('status', ['draft', 'completed'])
+            ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
             ->delete();
 
         ScheduleRecommendation::where('section_id', $section->id)
@@ -293,6 +297,18 @@ class ScheduleRecommendationController extends Controller
                     $validated['course_ids'],
                 ))
                 : [];
+            $selectedGecSplitCourseIds = ($validated['split_gec_enabled'] ?? false)
+                ? array_values(array_intersect(
+                    array_map('intval', $validated['selected_gec_course_ids'] ?? []),
+                    $validated['course_ids'],
+                ))
+                : [];
+            $validated['preferred_patterns'] = $this->mergeSelectedSplitPatterns(
+                $validated['preferred_patterns'] ?? [],
+                $selectedGecSplitCourseIds,
+                $validated['course_ids'],
+            );
+            $validated['balanced_split_course_ids'] = $selectedGecSplitCourseIds;
             $solutions = $this->cspSolver->solveRankedFromSchema($validated);
         } catch (InvalidArgumentException | RuntimeException $exception) {
             return response()->json([
@@ -478,7 +494,7 @@ class ScheduleRecommendationController extends Controller
                     ->where('term_id', $rows[0]['term_id'])
                     ->where('section_id', $rows[0]['section_id'])
                     ->whereIn('course_id', $courseIdsToCreate)
-                    ->whereIn('status', ['draft', 'completed'])
+                    ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
                     ->delete();
 
                 $createdIds = [];
@@ -688,7 +704,7 @@ class ScheduleRecommendationController extends Controller
                 ->toArray();
 
             if (!empty($courseIds)) {
-                return $this->mergeForcedScheduleCourseIds($section, $curriculum, $courseIds);
+                return $courseIds;
             }
         }
 
@@ -719,27 +735,6 @@ class ScheduleRecommendationController extends Controller
         );
     }
 
-    private function mergeForcedScheduleCourseIds(Sections $section, Curriculum $curriculum, array $courseIds): array
-    {
-        $forcedCourseCodes = DB::table('department_forced_schedule_course_codes')
-            ->where('department_id', $section->department_id)
-            ->pluck('course_code')
-            ->all();
-
-        if ($forcedCourseCodes === []) {
-            return $courseIds;
-        }
-
-        $forcedCourseIds = $curriculum->courses()
-            ->whereIn('course_code', $forcedCourseCodes)
-            ->wherePivot('year_level', (int) $section->year_level)
-            ->wherePivot('semester', $this->mapSemesterToInt($section->semester))
-            ->pluck('courses.id')
-            ->toArray();
-
-        return array_values(array_unique(array_merge($courseIds, $forcedCourseIds)));
-    }
-
     private function mapSemesterToInt(string $semester): int
     {
         return match ($semester) {
@@ -750,9 +745,39 @@ class ScheduleRecommendationController extends Controller
         };
     }
 
+    private function mergeSelectedSplitPatterns(array $preferredPatterns, array $selectedCourseIds, array $validCourseIds): array
+    {
+        $validCourseIds = array_flip(array_map('intval', $validCourseIds));
+
+        foreach ($selectedCourseIds as $courseId) {
+            $courseId = (int) $courseId;
+            if ($courseId <= 0 || !isset($validCourseIds[$courseId])) {
+                continue;
+            }
+
+            $preferredPatterns[$courseId] ??= 'MW';
+        }
+
+        return $preferredPatterns;
+    }
+
     private function validateBatchConflicts(array $rows): void
     {
         $violations = [];
+        $roomIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $row): int => (int) ($row['room_id'] ?? 0),
+            $rows,
+        ))));
+        $roomCapacityMap = $roomIds === []
+            ? collect()
+            : DB::table('rooms')
+                ->whereIn('id', $roomIds)
+                ->get(['id', 'room_type', 'max_concurrent_classes'])
+                ->mapWithKeys(static fn ($room): array => [
+                    (int) $room->id => in_array($room->room_type, ['field', 'online'], true)
+                        ? 3
+                        : max(1, (int) ($room->max_concurrent_classes ?? 1)),
+                ]);
 
         foreach ($rows as $leftIndex => $left) {
             foreach ($rows as $rightIndex => $right) {
@@ -775,7 +800,10 @@ class ScheduleRecommendationController extends Controller
                 if (
                     $left['room_id'] !== null &&
                     $right['room_id'] !== null &&
-                    $left['room_id'] === $right['room_id']
+                    $left['room_id'] === $right['room_id'] &&
+                    ($left['mode'] ?? 'on-site') !== 'online' &&
+                    ($right['mode'] ?? 'on-site') !== 'online' &&
+                    (int) ($roomCapacityMap->get((int) $left['room_id']) ?? 1) <= 1
                 ) {
                     $violations[] = $this->batchViolation('room_conflict', $leftIndex, $rightIndex);
                 }
@@ -790,12 +818,18 @@ class ScheduleRecommendationController extends Controller
             }
         }
 
+        $violations = array_merge(
+            $violations,
+            $this->batchRoomCapacityViolations($rows, $roomCapacityMap),
+            $this->batchOnlineCapacityViolations($rows),
+        );
+
         foreach ($rows as $index => $row) {
             $duplicateExists = Schedule::query()
                 ->where('term_id', $row['term_id'])
                 ->where('section_id', $row['section_id'])
                 ->where('course_id', $row['course_id'])
-                ->whereNotIn('status', ['draft', 'completed'])
+                ->whereNotIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
                 ->exists();
 
             if ($duplicateExists) {
@@ -812,9 +846,223 @@ class ScheduleRecommendationController extends Controller
         }
     }
 
+    private function batchRoomCapacityViolations(array $rows, $roomCapacityMap): array
+    {
+        $violations = [];
+        $groups = [];
+
+        foreach ($rows as $index => $row) {
+            $roomId = (int) ($row['room_id'] ?? 0);
+            $capacity = (int) ($roomCapacityMap->get($roomId) ?? 1);
+            $termId = (int) ($row['term_id'] ?? 0);
+            $departmentId = (int) ($row['department_id'] ?? 0);
+            $day = (string) ($row['day'] ?? '');
+
+            if ($roomId <= 0 || $capacity <= 1 || $termId <= 0 || $departmentId <= 0 || $day === '') {
+                continue;
+            }
+
+            $groups["{$termId}:{$departmentId}:{$roomId}:{$day}"][] = [
+                'index' => $index,
+                'term_id' => $termId,
+                'department_id' => $departmentId,
+                'room_id' => $roomId,
+                'capacity' => $capacity,
+                'day' => $day,
+                'start' => $this->timeToMinutes((string) $row['start_time']),
+                'end' => $this->timeToMinutes((string) $row['end_time']),
+            ];
+        }
+
+        if ($groups !== []) {
+            $roomIds = [];
+            $termIds = [];
+            $departmentIds = [];
+            $days = [];
+            foreach ($groups as $items) {
+                foreach ($items as $item) {
+                    $roomIds[$item['room_id'] ?? 0] = $item['room_id'] ?? 0;
+                    $termIds[$item['term_id'] ?? 0] = $item['term_id'] ?? 0;
+                    $departmentIds[$item['department_id'] ?? 0] = $item['department_id'] ?? 0;
+                    $days[$item['day']] = $item['day'];
+                }
+            }
+
+            $existingSchedules = Schedule::query()
+                ->whereIn('room_id', array_filter(array_values($roomIds)))
+                ->whereIn('term_id', array_filter(array_values($termIds)))
+                ->whereIn('department_id', array_filter(array_values($departmentIds)))
+                ->whereIn('day', array_values($days))
+                ->get(['id', 'room_id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
+
+            foreach ($existingSchedules as $schedule) {
+                $roomId = (int) $schedule->room_id;
+                $capacity = (int) ($roomCapacityMap->get($roomId) ?? 1);
+                if ($capacity <= 1) {
+                    continue;
+                }
+
+                $groups["{$schedule->term_id}:{$schedule->department_id}:{$roomId}:{$schedule->day}"][] = [
+                    'index' => null,
+                    'schedule_id' => (int) $schedule->id,
+                    'department_id' => (int) $schedule->department_id,
+                    'capacity' => $capacity,
+                    'day' => (string) $schedule->day,
+                    'start' => $this->timeToMinutes((string) $schedule->start_time),
+                    'end' => $this->timeToMinutes((string) $schedule->end_time),
+                ];
+            }
+        }
+
+        foreach ($groups as $items) {
+            $events = [];
+            foreach ($items as $item) {
+                $events[] = ['minute' => $item['start'], 'delta' => 1, 'item' => $item];
+                $events[] = ['minute' => $item['end'], 'delta' => -1, 'item' => $item];
+            }
+
+            usort(
+                $events,
+                static fn (array $left, array $right): int =>
+                    ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
+            );
+
+            $active = [];
+            $reported = [];
+            foreach ($events as $event) {
+                $item = $event['item'];
+                $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
+                if ($event['delta'] < 0) {
+                    unset($active[$activeKey]);
+                    continue;
+                }
+
+                $active[$activeKey] = $item;
+                if ($item['index'] === null || count($active) <= $item['capacity'] || isset($reported[$item['index']])) {
+                    continue;
+                }
+
+                $violations[] = [
+                    'rule' => 'room_capacity_conflict',
+                    'message' => "Recommended row {$item['index']} exceeds room capacity. FIELD allows only {$item['capacity']} concurrent classes per department on {$item['day']}.",
+                    'recommendation_row' => $item['index'],
+                ];
+                $reported[$item['index']] = true;
+            }
+        }
+
+        return $violations;
+    }
+
+    private function batchOnlineCapacityViolations(array $rows): array
+    {
+        $violations = [];
+        $groups = [];
+
+        foreach ($rows as $index => $row) {
+            if (($row['mode'] ?? 'on-site') !== 'online') {
+                continue;
+            }
+
+            $termId = (int) ($row['term_id'] ?? 0);
+            $departmentId = (int) ($row['department_id'] ?? 0);
+            $day = (string) ($row['day'] ?? '');
+            if ($termId <= 0 || $departmentId <= 0 || $day === '') {
+                continue;
+            }
+
+            $groups["{$termId}:{$departmentId}:{$day}"][] = [
+                'index' => $index,
+                'term_id' => $termId,
+                'department_id' => $departmentId,
+                'day' => $day,
+                'start' => $this->timeToMinutes((string) $row['start_time']),
+                'end' => $this->timeToMinutes((string) $row['end_time']),
+            ];
+        }
+
+        if ($groups === []) {
+            return [];
+        }
+
+        $termIds = [];
+        $departmentIds = [];
+        $days = [];
+        foreach ($groups as $items) {
+            foreach ($items as $item) {
+                $termIds[$item['term_id']] = $item['term_id'];
+                $departmentIds[$item['department_id']] = $item['department_id'];
+                $days[$item['day']] = $item['day'];
+            }
+        }
+
+        $existingSchedules = Schedule::query()
+            ->where('mode', 'online')
+            ->whereIn('term_id', array_values($termIds))
+            ->whereIn('department_id', array_values($departmentIds))
+            ->whereIn('day', array_values($days))
+            ->get(['id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
+
+        foreach ($existingSchedules as $schedule) {
+            $groups["{$schedule->term_id}:{$schedule->department_id}:{$schedule->day}"][] = [
+                'index' => null,
+                'schedule_id' => (int) $schedule->id,
+                'day' => (string) $schedule->day,
+                'start' => $this->timeToMinutes((string) $schedule->start_time),
+                'end' => $this->timeToMinutes((string) $schedule->end_time),
+            ];
+        }
+
+        foreach ($groups as $items) {
+            $events = [];
+            foreach ($items as $item) {
+                $events[] = ['minute' => $item['start'], 'delta' => 1, 'item' => $item];
+                $events[] = ['minute' => $item['end'], 'delta' => -1, 'item' => $item];
+            }
+
+            usort(
+                $events,
+                static fn (array $left, array $right): int =>
+                    ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
+            );
+
+            $active = [];
+            $reported = [];
+            foreach ($events as $event) {
+                $item = $event['item'];
+                $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
+                if ($event['delta'] < 0) {
+                    unset($active[$activeKey]);
+                    continue;
+                }
+
+                $active[$activeKey] = $item;
+                if ($item['index'] === null || count($active) <= self::ONLINE_MAX_CONCURRENT_CLASSES || isset($reported[$item['index']])) {
+                    continue;
+                }
+
+                $violations[] = [
+                    'rule' => 'online_capacity_conflict',
+                    'message' => "Recommended row {$item['index']} exceeds online capacity. Online allows only ".self::ONLINE_MAX_CONCURRENT_CLASSES." concurrent classes per department on {$item['day']}.",
+                    'recommendation_row' => $item['index'],
+                ];
+                $reported[$item['index']] = true;
+            }
+        }
+
+        return $violations;
+    }
+
     private function timesOverlap(string $leftStart, string $leftEnd, string $rightStart, string $rightEnd): bool
     {
         return $leftStart < $rightEnd && $rightStart < $leftEnd;
+    }
+
+    private function timeToMinutes(string $time): int
+    {
+        [$hour, $minute] = array_map('intval', explode(':', substr($time, 0, 5)));
+
+        return ($hour * 60) + $minute;
     }
 
     private function batchViolation(string $rule, int $leftIndex, int $rightIndex): array
@@ -851,7 +1099,7 @@ class ScheduleRecommendationController extends Controller
         // Clear previous generated schedules and cached solutions
         Schedule::where('section_id', $section->id)
             ->where('term_id', $section->term_id)
-            ->whereIn('status', ['draft', 'completed'])
+            ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
             ->delete();
 
         ScheduleRecommendation::where('section_id', $section->id)
@@ -907,7 +1155,7 @@ class ScheduleRecommendationController extends Controller
                     ->where('term_id', $rows[0]['term_id'])
                     ->where('section_id', $rows[0]['section_id'])
                     ->whereIn('course_id', $courseIdsToCreate)
-                    ->whereIn('status', ['draft', 'completed'])
+                    ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
                     ->delete();
 
                 $createdIds = [];

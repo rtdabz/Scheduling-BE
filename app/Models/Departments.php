@@ -23,6 +23,9 @@ class Departments extends Model
         'custom_lab_duration_other_enabled',
         'gec_split_schedule_override_enabled',
         'force_schedule_reuse_enabled',
+        'field_evening_schedule_enabled',
+        'sunday_online_only_enabled',
+        'sunday_online_only_enabled',
     ];
 
     protected $casts = [
@@ -35,11 +38,19 @@ class Departments extends Model
         'custom_lab_duration_other_enabled' => 'boolean',
         'gec_split_schedule_override_enabled' => 'boolean',
         'force_schedule_reuse_enabled' => 'boolean',
+        'field_evening_schedule_enabled' => 'boolean',
+        'sunday_online_only_enabled' => 'boolean',
+        'sunday_online_only_enabled' => 'boolean',
     ];
 
     public function users()
     {
         return $this->hasMany(User::class, 'department_id');
+    }
+
+    public function programs()
+    {
+        return $this->hasMany(Program::class, 'department_id');
     }
 
     public function rooms()
