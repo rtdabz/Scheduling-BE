@@ -2,14 +2,17 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Course;
+use App\Models\Curriculum;
 use App\Models\Schedule;
 use App\Models\ScheduleRecommendation;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
-use App\Models\Curriculum;
 use App\Services\Scheduling\CSPSolver;
+use App\Services\Scheduling\ScheduleCandidateOptimizer;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\Scheduling\SplitScheduleService;
+use App\Services\Scheduling\YearLevelScheduleGenerationService;
 use App\Services\SystemNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -25,10 +28,11 @@ class ScheduleRecommendationController extends Controller
 
     public function __construct(
         private readonly CSPSolver $cspSolver,
+        private readonly ScheduleCandidateOptimizer $candidateOptimizer,
         private readonly SplitScheduleService $splitScheduleService,
+        private readonly YearLevelScheduleGenerationService $yearLevelGenerator,
         private readonly SystemNotificationService $notifications,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -40,7 +44,7 @@ class ScheduleRecommendationController extends Controller
         if (isset($validated['section_id'])) {
             /** @var Sections $section */
             $section = Sections::query()->findOrFail($validated['section_id']);
-            if (!$this->canManageDepartment($request, (int) $section->department_id)) {
+            if (! $this->canManageDepartment($request, (int) $section->department_id)) {
                 return $this->departmentForbiddenResponse();
             }
         }
@@ -67,24 +71,24 @@ class ScheduleRecommendationController extends Controller
     public function recommendSplit(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'term_id'                => 'required|integer|exists:terms,id',
-            'section_id'             => 'required|integer|exists:sections,id',
-            'course_id'              => 'required|integer|exists:courses,id',
-            'department_id'          => 'required|integer|exists:departments,id',
-            'duration_slots'         => 'required|integer|min:1|max:24',
-            'room_id'                => 'nullable|integer|exists:rooms,id',
-            'mode'                   => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
-            'faculty_id'             => 'nullable|integer|exists:faculties,id',
-            'delete_ids'             => 'sometimes|array',
-            'delete_ids.*'           => 'integer|exists:schedules,id',
-            'max_solutions'          => 'sometimes|integer|min:1|max:10',
-            'timeout_seconds'        => 'sometimes|numeric|min:0.5|max:15',
-            'meeting_type'           => 'nullable|in:lecture,laboratory',
-            'preferred_day'          => 'nullable|string',
-            'preferred_start_time'   => 'nullable|string',
+            'term_id' => 'required|integer|exists:terms,id',
+            'section_id' => 'required|integer|exists:sections,id',
+            'course_id' => 'required|integer|exists:courses,id',
+            'department_id' => 'required|integer|exists:departments,id',
+            'duration_slots' => 'required|integer|min:1|max:24',
+            'room_id' => 'nullable|integer|exists:rooms,id',
+            'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'faculty_id' => 'nullable|integer|exists:faculties,id',
+            'delete_ids' => 'sometimes|array',
+            'delete_ids.*' => 'integer|exists:schedules,id',
+            'max_solutions' => 'sometimes|integer|min:1|max:10',
+            'timeout_seconds' => 'sometimes|numeric|min:0.5|max:15',
+            'meeting_type' => 'nullable|in:lecture,laboratory',
+            'preferred_day' => 'nullable|string',
+            'preferred_start_time' => 'nullable|string',
         ]);
 
-        if (!$this->canManageDepartment($request, (int) $validated['department_id'])) {
+        if (! $this->canManageDepartment($request, (int) $validated['department_id'])) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -96,19 +100,19 @@ class ScheduleRecommendationController extends Controller
 
         try {
             $result = $this->splitScheduleService->recommend(
-                termId:             (int) $validated['term_id'],
-                sectionId:          (int) $validated['section_id'],
-                courseId:           (int) $validated['course_id'],
-                departmentId:       (int) $validated['department_id'],
-                durationSlots:      (int) $validated['duration_slots'],
-                roomId:             isset($validated['room_id']) ? (int) $validated['room_id'] : null,
-                mode:               $validated['mode'] ?? 'on-site',
-                facultyId:          isset($validated['faculty_id']) ? (int) $validated['faculty_id'] : null,
-                deleteIds:          array_map('intval', $validated['delete_ids'] ?? []),
-                maxResults:         (int) ($validated['max_solutions'] ?? 5),
-                timeoutSeconds:     (float) ($validated['timeout_seconds'] ?? 5.0),
-                meetingType:        $validated['meeting_type'] ?? null,
-                preferredDay:       $validated['preferred_day'] ?? null,
+                termId: (int) $validated['term_id'],
+                sectionId: (int) $validated['section_id'],
+                courseId: (int) $validated['course_id'],
+                departmentId: (int) $validated['department_id'],
+                durationSlots: (int) $validated['duration_slots'],
+                roomId: isset($validated['room_id']) ? (int) $validated['room_id'] : null,
+                mode: $validated['mode'] ?? 'on-site',
+                facultyId: isset($validated['faculty_id']) ? (int) $validated['faculty_id'] : null,
+                deleteIds: array_map('intval', $validated['delete_ids'] ?? []),
+                maxResults: (int) ($validated['max_solutions'] ?? 5),
+                timeoutSeconds: (float) ($validated['timeout_seconds'] ?? 5.0),
+                meetingType: $validated['meeting_type'] ?? null,
+                preferredDay: $validated['preferred_day'] ?? null,
                 preferredStartTime: $validated['preferred_start_time'] ?? null,
             );
         } catch (InvalidArgumentException $e) {
@@ -117,17 +121,17 @@ class ScheduleRecommendationController extends Controller
 
         if ($result['status'] === 'no_solution') {
             return response()->json([
-                'status'  => 'no_solution',
+                'status' => 'no_solution',
                 'message' => 'No conflict-free time slot found for this split session. '
-                    . 'All available times on all days are occupied. '
-                    . 'Try a different room, delivery mode, or reduce other scheduled sessions.',
+                    .'All available times on all days are occupied. '
+                    .'Try a different room, delivery mode, or reduce other scheduled sessions.',
                 'recommendations' => [],
             ]);
         }
 
         return response()->json([
-            'status'          => 'ok',
-            'message'         => 'Conflict-free placements found for this split session.',
+            'status' => 'ok',
+            'message' => 'Conflict-free placements found for this split session.',
             'recommendations' => $result['recommendations'],
         ]);
     }
@@ -157,7 +161,7 @@ class ScheduleRecommendationController extends Controller
         /** @var Sections $section */
         $section = Sections::query()->findOrFail($validated['section_id']);
 
-        if (!$this->canManageDepartment($request, (int) $section->department_id)) {
+        if (! $this->canManageDepartment($request, (int) $section->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -173,8 +177,12 @@ class ScheduleRecommendationController extends Controller
 
         try {
             $validated['course_ids'] = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
-            $solutions = $this->cspSolver->solveRankedFromSchema($validated);
-        } catch (InvalidArgumentException | RuntimeException $exception) {
+            $solutions = $this->candidateOptimizer->rankForSection(
+                $this->cspSolver->solveRankedFromSchema($validated),
+                $section,
+                $validated,
+            );
+        } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json([
                 'message' => $exception->getMessage(),
             ], 422);
@@ -285,7 +293,7 @@ class ScheduleRecommendationController extends Controller
         /** @var Sections $section */
         $section = Sections::query()->findOrFail($validated['section_id']);
 
-        if (!$this->canManageDepartment($request, (int) $section->department_id)) {
+        if (! $this->canManageDepartment($request, (int) $section->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -309,8 +317,12 @@ class ScheduleRecommendationController extends Controller
                 $validated['course_ids'],
             );
             $validated['balanced_split_course_ids'] = $selectedGecSplitCourseIds;
-            $solutions = $this->cspSolver->solveRankedFromSchema($validated);
-        } catch (InvalidArgumentException | RuntimeException $exception) {
+            $solutions = $this->candidateOptimizer->rankForSection(
+                $this->cspSolver->solveRankedFromSchema($validated),
+                $section,
+                $validated,
+            );
+        } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json([
                 'message' => $exception->getMessage(),
             ], 422);
@@ -323,6 +335,108 @@ class ScheduleRecommendationController extends Controller
             'search_limit_reached' => $this->cspSolver->searchLimitReached(),
             'iterations_used' => $this->cspSolver->iterationsUsed(),
             'recommendations' => $solutions,
+        ]);
+    }
+
+    public function yearLevelPreview(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'term_id' => 'required|integer|exists:terms,id',
+            'department_id' => 'required|integer|exists:departments,id',
+            'year_level' => 'required|integer|min:1|max:4',
+            'section_configs' => 'required|array|min:1',
+            'section_configs.*.section_id' => 'required|integer|distinct|exists:sections,id',
+            'section_configs.*.course_ids' => 'sometimes|array|min:1',
+            'section_configs.*.course_ids.*' => 'integer|exists:courses,id',
+            'section_configs.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'section_configs.*.is_hybrid' => 'sometimes|boolean',
+            'section_configs.*.selected_split_session_course_ids' => 'sometimes|array',
+            'section_configs.*.selected_split_session_course_ids.*' => 'integer|exists:courses,id',
+            'section_configs.*.selected_gec_course_ids' => 'sometimes|array',
+            'section_configs.*.selected_gec_course_ids.*' => 'integer|exists:courses,id',
+            'section_configs.*.preferred_patterns' => 'sometimes|array',
+            'section_configs.*.preferred_patterns.*' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
+            'section_configs.*.delivery_modes_by_course_id' => 'sometimes|array',
+            'section_configs.*.delivery_modes_by_course_id.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
+        ]);
+
+        if (! $this->canManageDepartment($request, (int) $validated['department_id'])) {
+            return $this->departmentForbiddenResponse();
+        }
+
+        $sections = Sections::query()
+            ->where('term_id', (int) $validated['term_id'])
+            ->where('department_id', (int) $validated['department_id'])
+            ->where('year_level', (string) $validated['year_level'])
+            ->where('status', 'active')
+            ->orderBy('section_name')
+            ->get();
+
+        if ($sections->isEmpty()) {
+            return response()->json(['message' => 'No active sections were found for the selected year level.'], 422);
+        }
+
+        $configs = collect($validated['section_configs'])->keyBy(static fn (array $config): int => (int) $config['section_id']);
+        $expectedSectionIds = $sections->pluck('id')->map('intval')->sort()->values()->all();
+        $configuredSectionIds = $configs->keys()->map('intval')->sort()->values()->all();
+        if ($expectedSectionIds !== $configuredSectionIds) {
+            return response()->json(['message' => 'Provide one configuration for every active section in the selected year level.'], 422);
+        }
+
+        $configsBySectionId = [];
+        try {
+            foreach ($sections as $section) {
+                $config = $configs->get((int) $section->id);
+                $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
+                $splitIds = array_values(array_intersect(array_map('intval', $config['selected_split_session_course_ids'] ?? []), $courseIds));
+                $gecIds = array_values(array_intersect(array_map('intval', $config['selected_gec_course_ids'] ?? []), $courseIds));
+                $preferredPatterns = $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $gecIds, $courseIds);
+
+                $configsBySectionId[(int) $section->id] = [
+                    'course_ids' => $courseIds,
+                    'mode' => (string) ($config['mode'] ?? 'on-site'),
+                    'is_hybrid' => (bool) ($config['is_hybrid'] ?? false),
+                    'selected_split_session_course_ids' => $splitIds,
+                    'balanced_split_course_ids' => $gecIds,
+                    'preferred_patterns' => $preferredPatterns,
+                    'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
+                    'seed' => $this->yearLevelConfigSeed(
+                        termId: (int) $validated['term_id'],
+                        departmentId: (int) $validated['department_id'],
+                        yearLevel: (int) $validated['year_level'],
+                        sectionId: (int) $section->id,
+                        courseIds: $courseIds,
+                        splitIds: $splitIds,
+                        gecIds: $gecIds,
+                        preferredPatterns: $preferredPatterns,
+                    ),
+                ];
+            }
+
+            $result = $this->yearLevelGenerator->preview($sections->all(), $configsBySectionId);
+        } catch (InvalidArgumentException|RuntimeException $exception) {
+            return response()->json(['message' => $exception->getMessage()], 422);
+        }
+
+        return response()->json([
+            'message' => 'Year-level schedule recommendations generated successfully.',
+            'year_level' => (int) $validated['year_level'],
+            'sections' => $sections->map(fn (Sections $section): array => [
+                'id' => (int) $section->id,
+                'name' => (string) $section->section_name,
+            ])->values(),
+            'score' => $result['score'],
+            'quality_score' => $result['quality_score'],
+            'penalty_score' => $result['penalty_score'],
+            'resource_usage_score' => $result['resource_usage_score'],
+            'fair_distribution_score' => $result['fair_distribution_score'],
+            'resource_fairness_score' => $result['resource_fairness_score'],
+            'schedule_compactness_score' => $result['schedule_compactness_score'],
+            'configuration_compliance_score' => $result['configuration_compliance_score'],
+            'quality_breakdown' => $result['quality_breakdown'],
+            'score_breakdown' => $result['score_breakdown'],
+            'section_summaries' => $result['section_summaries'],
+            'schedules' => $result['schedules'],
         ]);
     }
 
@@ -346,7 +460,7 @@ class ScheduleRecommendationController extends Controller
         /** @var Sections $section */
         $section = Sections::query()->findOrFail($validated['section_id']);
 
-        if (!$this->canManageDepartment($request, (int) $section->department_id)) {
+        if (! $this->canManageDepartment($request, (int) $section->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -356,8 +470,12 @@ class ScheduleRecommendationController extends Controller
 
         try {
             $solverInput['course_ids'] = $this->resolveCourseIds($section, $solverInput['course_ids'] ?? null);
-            $solutions = $this->cspSolver->solveRankedFromSchema($solverInput);
-        } catch (InvalidArgumentException | RuntimeException $exception) {
+            $solutions = $this->candidateOptimizer->rankForSection(
+                $this->cspSolver->solveRankedFromSchema($solverInput),
+                $section,
+                $solverInput,
+            );
+        } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);
         }
 
@@ -408,7 +526,7 @@ class ScheduleRecommendationController extends Controller
 
     public function show(ScheduleRecommendation $scheduleRecommendation): JsonResponse
     {
-        if (!$this->canManageDepartment(request(), (int) $scheduleRecommendation->department_id)) {
+        if (! $this->canManageDepartment(request(), (int) $scheduleRecommendation->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -424,7 +542,7 @@ class ScheduleRecommendationController extends Controller
 
     public function review(Request $request, ScheduleRecommendation $scheduleRecommendation): JsonResponse
     {
-        if (!$this->canManageDepartment($request, (int) $scheduleRecommendation->department_id)) {
+        if (! $this->canManageDepartment($request, (int) $scheduleRecommendation->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -464,7 +582,7 @@ class ScheduleRecommendationController extends Controller
 
     public function accept(Request $request, ScheduleRecommendation $scheduleRecommendation): JsonResponse
     {
-        if (!$this->canManageDepartment($request, (int) $scheduleRecommendation->department_id)) {
+        if (! $this->canManageDepartment($request, (int) $scheduleRecommendation->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -546,7 +664,7 @@ class ScheduleRecommendationController extends Controller
                 'message' => 'Recommendation conflicts with existing or pending schedule entries.',
                 'violations' => $exception->violations,
             ], 422);
-        } catch (InvalidArgumentException | RuntimeException $exception) {
+        } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json([
                 'message' => $exception->getMessage(),
             ], 422);
@@ -561,7 +679,7 @@ class ScheduleRecommendationController extends Controller
 
     public function reject(Request $request, ScheduleRecommendation $scheduleRecommendation): JsonResponse
     {
-        if (!$this->canManageDepartment($request, (int) $scheduleRecommendation->department_id)) {
+        if (! $this->canManageDepartment($request, (int) $scheduleRecommendation->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -623,7 +741,7 @@ class ScheduleRecommendationController extends Controller
     {
         $rows = $recommendation->recommended_schedules;
 
-        if (!is_array($rows) || $rows === []) {
+        if (! is_array($rows) || $rows === []) {
             throw new RuntimeException('Recommendation does not contain schedule rows.');
         }
 
@@ -631,28 +749,28 @@ class ScheduleRecommendationController extends Controller
             $courseId = (int) ($row['course_id'] ?? $row['subject_id']);
 
             return [
-                'term_id'           => (int) ($row['term_id'] ?? $recommendation->term_id),
-                'section_id'        => (int) ($row['section_id'] ?? $recommendation->section_id),
-                'course_id'         => $courseId,
-                'faculty_id'        => isset($row['faculty_id']) ? (int) $row['faculty_id'] : null,
-                'room_id'           => isset($row['room_id']) && $row['room_id'] !== null ? (int) $row['room_id'] : null,
-                'department_id'     => (int) ($row['department_id'] ?? $recommendation->department_id),
-                'day'               => (string) $row['day'],
-                'start_time'        => SchedulingPolicy::normalizeTime((string) $row['start_time']),
-                'end_time'          => SchedulingPolicy::normalizeTime((string) $row['end_time']),
-                'mode'              => (string) ($row['mode'] ?? 'on-site'),
-                'is_hybrid'         => (bool) ($row['is_hybrid'] ?? false),
+                'term_id' => (int) ($row['term_id'] ?? $recommendation->term_id),
+                'section_id' => (int) ($row['section_id'] ?? $recommendation->section_id),
+                'course_id' => $courseId,
+                'faculty_id' => isset($row['faculty_id']) ? (int) $row['faculty_id'] : null,
+                'room_id' => isset($row['room_id']) && $row['room_id'] !== null ? (int) $row['room_id'] : null,
+                'department_id' => (int) ($row['department_id'] ?? $recommendation->department_id),
+                'day' => (string) $row['day'],
+                'start_time' => SchedulingPolicy::normalizeTime((string) $row['start_time']),
+                'end_time' => SchedulingPolicy::normalizeTime((string) $row['end_time']),
+                'mode' => (string) ($row['mode'] ?? 'on-site'),
+                'is_hybrid' => (bool) ($row['is_hybrid'] ?? false),
                 'preferred_pattern' => $row['preferred_pattern'] ?? null,
-                'status'            => (string) ($row['status'] ?? 'draft'),
-                'split_group_id'    => $row['split_group_id'] ?? null,
-                'meeting_type'      => $row['meeting_type'] ?? null,
-                'meeting_index'     => isset($row['meeting_index']) ? (int) $row['meeting_index'] : null,
+                'status' => (string) ($row['status'] ?? 'draft'),
+                'split_group_id' => $row['split_group_id'] ?? null,
+                'meeting_type' => $row['meeting_type'] ?? null,
+                'meeting_index' => isset($row['meeting_index']) ? (int) $row['meeting_index'] : null,
             ];
         }, $rows);
 
     }
 
-        /**
+    /**
      * Resolve which courses to schedule for a section. If the caller
      * explicitly supplied course_ids, use those (manual override still
      * allowed). Otherwise, derive the list from the section's department's
@@ -661,7 +779,7 @@ class ScheduleRecommendationController extends Controller
      */
     private function resolveCourseIds(Sections $section, ?array $providedCourseIds): array
     {
-        if (!empty($providedCourseIds)) {
+        if (! empty($providedCourseIds)) {
             $curriculum = Curriculum::where('department_id', $section->department_id)
                 ->where('status', 'active')
                 ->first();
@@ -674,12 +792,12 @@ class ScheduleRecommendationController extends Controller
                     ->pluck('courses.id')
                     ->toArray();
 
-                if (!empty($validPivotIds)) {
+                if (! empty($validPivotIds)) {
                     return $validPivotIds;
                 }
             }
 
-            $validProvidedIds = \App\Models\Course::query()
+            $validProvidedIds = Course::query()
                 ->whereIn('id', $providedCourseIds)
                 ->where('status', 'active')
                 ->where('year_level', (string) $section->year_level)
@@ -687,7 +805,7 @@ class ScheduleRecommendationController extends Controller
                 ->pluck('id')
                 ->toArray();
 
-            if (!empty($validProvidedIds)) {
+            if (! empty($validProvidedIds)) {
                 return $validProvidedIds;
             }
         }
@@ -703,28 +821,28 @@ class ScheduleRecommendationController extends Controller
                 ->pluck('courses.id')
                 ->toArray();
 
-            if (!empty($courseIds)) {
+            if (! empty($courseIds)) {
                 return $courseIds;
             }
         }
 
         // Fallback: search courses table directly for courses matching section department/year_level/semester
-        $fallbackCourseIds = \App\Models\Course::query()
+        $fallbackCourseIds = Course::query()
             ->where('status', 'active')
             ->where(function ($q) use ($section) {
                 $q->whereNull('department_id')
-                  ->orWhere('department_id', $section->department_id);
+                    ->orWhere('department_id', $section->department_id);
             })
             ->where('year_level', (string) $section->year_level)
             ->where('semester', (string) $section->semester)
             ->pluck('id')
             ->toArray();
 
-        if (!empty($fallbackCourseIds)) {
+        if (! empty($fallbackCourseIds)) {
             return $fallbackCourseIds;
         }
 
-        if (!$curriculum) {
+        if (! $curriculum) {
             throw new InvalidArgumentException(
                 'No active curriculum found for this department. Activate a curriculum before generating a schedule.'
             );
@@ -748,17 +866,43 @@ class ScheduleRecommendationController extends Controller
     private function mergeSelectedSplitPatterns(array $preferredPatterns, array $selectedCourseIds, array $validCourseIds): array
     {
         $validCourseIds = array_flip(array_map('intval', $validCourseIds));
+        $selectedCourseIds = array_flip(array_map('intval', $selectedCourseIds));
+        $merged = [];
 
-        foreach ($selectedCourseIds as $courseId) {
+        foreach ($preferredPatterns as $courseId => $preferredPattern) {
             $courseId = (int) $courseId;
-            if ($courseId <= 0 || !isset($validCourseIds[$courseId])) {
+            if ($courseId <= 0 || ! isset($validCourseIds[$courseId]) || ! isset($selectedCourseIds[$courseId])) {
                 continue;
             }
 
-            $preferredPatterns[$courseId] ??= 'MW';
+            $merged[$courseId] = $preferredPattern;
         }
 
-        return $preferredPatterns;
+        return $merged;
+    }
+
+    private function yearLevelConfigSeed(
+        int $termId,
+        int $departmentId,
+        int $yearLevel,
+        int $sectionId,
+        array $courseIds,
+        array $splitIds,
+        array $gecIds,
+        array $preferredPatterns = [],
+    ): int {
+        $payload = implode('|', [
+            $termId,
+            $departmentId,
+            $yearLevel,
+            $sectionId,
+            implode(',', array_map('intval', $courseIds)),
+            implode(',', array_map('intval', $splitIds)),
+            implode(',', array_map('intval', $gecIds)),
+            json_encode($preferredPatterns),
+        ]);
+
+        return (abs((int) crc32($payload)) % 1000000) + 1;
     }
 
     private function validateBatchConflicts(array $rows): void
@@ -789,7 +933,7 @@ class ScheduleRecommendationController extends Controller
                     continue;
                 }
 
-                if (!$this->timesOverlap($left['start_time'], $left['end_time'], $right['start_time'], $right['end_time'])) {
+                if (! $this->timesOverlap($left['start_time'], $left['end_time'], $right['start_time'], $right['end_time'])) {
                     continue;
                 }
 
@@ -809,8 +953,8 @@ class ScheduleRecommendationController extends Controller
                 }
 
                 if (
-                    !empty($left['faculty_id'])
-                    && !empty($right['faculty_id'])
+                    ! empty($left['faculty_id'])
+                    && ! empty($right['faculty_id'])
                     && $left['faculty_id'] === $right['faculty_id']
                 ) {
                     $violations[] = $this->batchViolation('faculty_conflict', $leftIndex, $rightIndex);
@@ -923,8 +1067,7 @@ class ScheduleRecommendationController extends Controller
 
             usort(
                 $events,
-                static fn (array $left, array $right): int =>
-                    ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
+                static fn (array $left, array $right): int => ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
             );
 
             $active = [];
@@ -934,6 +1077,7 @@ class ScheduleRecommendationController extends Controller
                 $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
                 if ($event['delta'] < 0) {
                     unset($active[$activeKey]);
+
                     continue;
                 }
 
@@ -1022,8 +1166,7 @@ class ScheduleRecommendationController extends Controller
 
             usort(
                 $events,
-                static fn (array $left, array $right): int =>
-                    ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
+                static fn (array $left, array $right): int => ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
             );
 
             $active = [];
@@ -1033,6 +1176,7 @@ class ScheduleRecommendationController extends Controller
                 $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
                 if ($event['delta'] < 0) {
                     unset($active[$activeKey]);
+
                     continue;
                 }
 
@@ -1092,7 +1236,7 @@ class ScheduleRecommendationController extends Controller
         /** @var Sections $section */
         $section = Sections::query()->findOrFail($validated['section_id']);
 
-        if (!$this->canManageDepartment($request, (int) $section->department_id)) {
+        if (! $this->canManageDepartment($request, (int) $section->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -1109,10 +1253,14 @@ class ScheduleRecommendationController extends Controller
         try {
             $resolvedCourseIds = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
             $validated['course_ids'] = $resolvedCourseIds;
-            $validated['max_solutions'] = 1;
+            $validated['max_solutions'] = 5;
 
-            $solutions = $this->cspSolver->solveRankedFromSchema($validated);
-        } catch (InvalidArgumentException | RuntimeException $exception) {
+            $solutions = $this->candidateOptimizer->rankForSection(
+                $this->cspSolver->solveRankedFromSchema($validated),
+                $section,
+                $validated,
+            );
+        } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json([
                 'message' => $exception->getMessage(),
             ], 422);
@@ -1226,7 +1374,7 @@ class ScheduleRecommendationController extends Controller
     {
         $user = $request->user();
 
-        if (!$user || $user->isVpaa() || $user->department_id === null) {
+        if (! $user || $user->isVpaa() || $user->department_id === null) {
             return null;
         }
 

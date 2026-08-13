@@ -19,6 +19,67 @@ class RuleEngineSplitValidationTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_minor_course_is_valid_on_saturday_but_not_sunday(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+        $department = Departments::create([
+            'department_name' => 'Department 1',
+            'department_code' => 'DEPT1',
+        ]);
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+        $course = Course::create([
+            'course_code' => 'GEC 1',
+            'course_name' => 'Understanding the Self',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'minor',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => null,
+            'status' => 'active',
+        ]);
+        $room = Rooms::create([
+            'room_code' => 'IT 101',
+            'room_name' => 'IT Room 101',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+        $attempt = [
+            'term_id' => $term->id,
+            'section_id' => $section->id,
+            'course_id' => $course->id,
+            'room_id' => $room->id,
+            'start_time' => '08:00',
+            'end_time' => '11:00',
+            'mode' => 'on-site',
+        ];
+
+        $saturdayRules = collect(app(RuleEngine::class)->validate(array_merge($attempt, [
+            'day' => 'Saturday',
+        ])))->pluck('rule')->all();
+        $sundayRules = collect(app(RuleEngine::class)->validate(array_merge($attempt, [
+            'day' => 'Sunday',
+        ])))->pluck('rule')->all();
+
+        $this->assertNotContains('minor_day_constraint', $saturdayRules);
+        $this->assertContains('minor_day_constraint', $sundayRules);
+    }
+
     public function test_split_schedule_validates_relational_integrity_and_conflicts()
     {
         // 1. Setup Active Term

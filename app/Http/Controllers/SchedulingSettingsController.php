@@ -199,7 +199,8 @@ class SchedulingSettingsController extends Controller
         $query = $activeCurriculum->courses()
             ->where('status', 'active')
             ->when($section, fn ($query) => $query
-                ->where('curriculum_course.semester', $this->mapSemesterToPivotValue((string) $section->semester)))
+                ->where('curriculum_course.semester', $this->mapSemesterToPivotValue((string) $section->semester))
+                ->where('curriculum_course.year_level', (int) $section->year_level))
             ->orderBy('course_code');
 
         return $query
@@ -240,7 +241,8 @@ class SchedulingSettingsController extends Controller
         $query = $activeCurriculum->courses()
             ->where('courses.status', 'active')
             ->when($section, fn ($query) => $query
-                ->where('curriculum_course.semester', $this->mapSemesterToPivotValue((string) $section->semester)))
+                ->where('curriculum_course.semester', $this->mapSemesterToPivotValue((string) $section->semester))
+                ->where('curriculum_course.year_level', (int) $section->year_level))
             ->orderBy('course_code');
 
         return $query

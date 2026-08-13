@@ -19,17 +19,13 @@ class GenerateScheduleService
     public function __construct(
         private readonly CSPSolver $solver,
         private readonly RuleEngine $ruleEngine,
+        private readonly ScheduleCandidateOptimizer $candidateOptimizer,
     ) {}
 
     /**
      * Generate up to $maxSolutions ranked, conflict-free schedule options
      * for the given section, and persist each as a row in
      * schedule_recommendations so the choice is auditable later.
-     *
-     * @param  int    $sectionId
-     * @param  int    $requestedByUserId
-     * @param  int    $maxSolutions
-     * @return array
      */
     public function generate(
         int $sectionId,
@@ -40,19 +36,27 @@ class GenerateScheduleService
 
         $courseIds = $this->resolveCourseIdsFromActiveCurriculum($section);
 
-        $solutions = $this->solver->solveRanked(
-            $sectionId,
-            $courseIds,
-            $maxSolutions,
+        $solverInput = [
+            'course_ids' => $courseIds,
+            'mode' => 'on-site',
+        ];
+        $solutions = $this->candidateOptimizer->rankForSection(
+            $this->solver->solveRanked(
+                $sectionId,
+                $courseIds,
+                $maxSolutions,
+            ),
+            $section,
+            $solverInput,
         );
 
         if (empty($solutions)) {
             return [
-                'batch_id'              => null,
-                'solutions'             => [],
-                'solution_count'        => 0,
-                'iterations'            => $this->solver->iterationsUsed(),
-                'search_limit_reached'  => $this->solver->searchLimitReached(),
+                'batch_id' => null,
+                'solutions' => [],
+                'solution_count' => 0,
+                'iterations' => $this->solver->iterationsUsed(),
+                'search_limit_reached' => $this->solver->searchLimitReached(),
             ];
         }
 
@@ -76,31 +80,31 @@ class GenerateScheduleService
             $meetings = $this->applyMode($solution['schedules'], $coursesById);
 
             $recommendation = ScheduleRecommendation::create([
-                'batch_id'              => $batchId,
-                'term_id'               => $section->term_id,
-                'section_id'            => $sectionId,
-                'department_id'         => $section->department_id,
-                'requested_by'          => $requestedByUserId,
-                'rank'                  => $rank + 1,
-                'score'                 => $solution['score'] ?? 0,
-                'status'                => 'pending',
-                'input_payload'         => json_encode(['course_ids' => $courseIds]),
+                'batch_id' => $batchId,
+                'term_id' => $section->term_id,
+                'section_id' => $sectionId,
+                'department_id' => $section->department_id,
+                'requested_by' => $requestedByUserId,
+                'rank' => $rank + 1,
+                'score' => $solution['score'] ?? 0,
+                'status' => 'pending',
+                'input_payload' => json_encode(['course_ids' => $courseIds]),
                 'recommended_schedules' => json_encode($meetings),
             ]);
 
             $storedSolutions[] = [
                 'recommendation_id' => $recommendation->id,
-                'rank'              => $recommendation->rank,
-                'score'             => $recommendation->score,
-                'schedules'         => $meetings,
+                'rank' => $recommendation->rank,
+                'score' => $recommendation->score,
+                'schedules' => $meetings,
             ];
         }
 
         return [
-            'batch_id'             => $batchId,
-            'solutions'            => $storedSolutions,
-            'solution_count'       => count($storedSolutions),
-            'iterations'           => $this->solver->iterationsUsed(),
+            'batch_id' => $batchId,
+            'solutions' => $storedSolutions,
+            'solution_count' => count($storedSolutions),
+            'iterations' => $this->solver->iterationsUsed(),
             'search_limit_reached' => $this->solver->searchLimitReached(),
         ];
     }
@@ -110,8 +114,7 @@ class GenerateScheduleService
      * linked to it for this section's year_level and the active term's
      * semester.
      *
-     * @param  Sections  $section
-     * @return array<int>  course IDs
+     * @return array<int> course IDs
      */
     private function resolveCourseIdsFromActiveCurriculum(Sections $section): array
     {
@@ -119,16 +122,16 @@ class GenerateScheduleService
             ->where('status', 'active')
             ->first();
 
-        if (!$curriculum) {
+        if (! $curriculum) {
             abort(response()->json([
                 'message' => 'No active curriculum found for this department. '
-                           . 'Activate a curriculum before generating a schedule.',
+                           .'Activate a curriculum before generating a schedule.',
             ], 422));
         }
 
         $semester = $section->term?->semester;
 
-        if (!$semester) {
+        if (! $semester) {
             abort(response()->json([
                 'message' => 'This section\'s term has no semester set - cannot resolve curriculum courses.',
             ], 422));
@@ -146,7 +149,7 @@ class GenerateScheduleService
         if (empty($courseIds)) {
             abort(response()->json([
                 'message' => "The active curriculum ({$curriculum->name}) has no courses defined "
-                           . "for Year {$section->year_level}, {$semester} semester.",
+                           ."for Year {$section->year_level}, {$semester} semester.",
             ], 422));
         }
 
@@ -170,9 +173,6 @@ class GenerateScheduleService
      * rows (status: draft), mark it accepted, and mark its sibling
      * options (same batch_id) as rejected since only one gets chosen.
      *
-     * @param  int    $recommendationId
-     * @param  int    $userId
-     * @param  array  $overrides
      * @return array{message: string, schedules: array}
      */
     public function accept(int $recommendationId, int $userId, array $overrides = []): array
@@ -181,7 +181,7 @@ class GenerateScheduleService
 
         if ($recommendation->status !== 'pending') {
             abort(response()->json([
-                'message' => 'This recommendation has already been ' . $recommendation->status . '.',
+                'message' => 'This recommendation has already been '.$recommendation->status.'.',
             ], 422));
         }
 
@@ -195,11 +195,11 @@ class GenerateScheduleService
             $recommendation->department_id
         );
 
-        if (!empty($violations)) {
+        if (! empty($violations)) {
             return [
-                'message'    => 'The refined schedule conflicts with existing entries. Nothing was saved.',
+                'message' => 'The refined schedule conflicts with existing entries. Nothing was saved.',
                 'violations' => $violations,
-                'schedules'  => [],
+                'schedules' => [],
             ];
         }
 
@@ -213,27 +213,27 @@ class GenerateScheduleService
             $created = [];
             foreach ($meetings as $meeting) {
                 $created[] = Schedule::create([
-                    'term_id'       => $recommendation->term_id,
-                    'section_id'    => $recommendation->section_id,
+                    'term_id' => $recommendation->term_id,
+                    'section_id' => $recommendation->section_id,
                     'department_id' => $recommendation->department_id,
-                    'course_id'     => $meeting['course_id'],
-                    'faculty_id'    => null, // assigned later, Phase 2
-                    'room_id'       => $meeting['room_id'],
-                    'day'           => $meeting['day'],
-                    'start_time'    => $meeting['start_time'],
-                    'end_time'      => $meeting['end_time'],
-                    'mode'          => $meeting['mode'],
-                    'status'        => 'draft',
-                    'split_group_id'=> $meeting['split_group_id'] ?? null,
-                    'meeting_type'  => $meeting['meeting_type'] ?? null,
+                    'course_id' => $meeting['course_id'],
+                    'faculty_id' => null, // assigned later, Phase 2
+                    'room_id' => $meeting['room_id'],
+                    'day' => $meeting['day'],
+                    'start_time' => $meeting['start_time'],
+                    'end_time' => $meeting['end_time'],
+                    'mode' => $meeting['mode'],
+                    'status' => 'draft',
+                    'split_group_id' => $meeting['split_group_id'] ?? null,
+                    'meeting_type' => $meeting['meeting_type'] ?? null,
                     'meeting_index' => isset($meeting['meeting_index']) ? (int) $meeting['meeting_index'] : null,
                 ]);
             }
 
             $recommendation->update([
-                'status'                => 'accepted',
-                'accepted_by'           => $userId,
-                'accepted_at'           => now(),
+                'status' => 'accepted',
+                'accepted_by' => $userId,
+                'accepted_at' => now(),
                 'recommended_schedules' => json_encode($meetings),
             ]);
 
@@ -242,14 +242,14 @@ class GenerateScheduleService
                 ->where('id', '!=', $recommendation->id)
                 ->where('status', 'pending')
                 ->update([
-                    'status'           => 'rejected',
-                    'rejected_by'      => $userId,
-                    'rejected_at'      => now(),
+                    'status' => 'rejected',
+                    'rejected_by' => $userId,
+                    'rejected_at' => now(),
                     'rejection_reason' => 'Another option from the same batch was accepted.',
                 ]);
 
             return [
-                'message'   => 'Schedule option accepted and saved as draft.',
+                'message' => 'Schedule option accepted and saved as draft.',
                 'schedules' => $created,
             ];
         });
@@ -262,7 +262,7 @@ class GenerateScheduleService
     private function applyOverrides(array $meetings, array $overrides): array
     {
         foreach ($overrides as $index => $fields) {
-            if (!isset($meetings[$index])) {
+            if (! isset($meetings[$index])) {
                 continue;
             }
             $meetings[$index] = array_merge($meetings[$index], $fields);
@@ -281,21 +281,21 @@ class GenerateScheduleService
 
         foreach ($meetings as $index => $meeting) {
             $result = $this->ruleEngine->validate([
-                'term_id'           => $termId,
-                'section_id'        => $sectionId,
-                'course_id'         => $meeting['course_id'],
-                'faculty_id'        => null,
-                'room_id'           => $meeting['room_id'],
-                'department_id'     => $meeting['department_id'] ?? $departmentId,
-                'day'               => $meeting['day'],
-                'start_time'        => $meeting['start_time'],
-                'end_time'          => $meeting['end_time'],
-                'mode'              => $meeting['mode'],
-                'is_hybrid'         => $meeting['is_hybrid'] ?? false,
+                'term_id' => $termId,
+                'section_id' => $sectionId,
+                'course_id' => $meeting['course_id'],
+                'faculty_id' => null,
+                'room_id' => $meeting['room_id'],
+                'department_id' => $meeting['department_id'] ?? $departmentId,
+                'day' => $meeting['day'],
+                'start_time' => $meeting['start_time'],
+                'end_time' => $meeting['end_time'],
+                'mode' => $meeting['mode'],
+                'is_hybrid' => $meeting['is_hybrid'] ?? false,
                 'preferred_pattern' => $meeting['preferred_pattern'] ?? null,
-                'split_group_id'    => $meeting['split_group_id'] ?? null,
-                'meeting_type'      => $meeting['meeting_type'] ?? null,
-                'meeting_index'     => isset($meeting['meeting_index']) ? (int) $meeting['meeting_index'] : null,
+                'split_group_id' => $meeting['split_group_id'] ?? null,
+                'meeting_type' => $meeting['meeting_type'] ?? null,
+                'meeting_index' => isset($meeting['meeting_index']) ? (int) $meeting['meeting_index'] : null,
             ]);
 
             foreach ($result as $violation) {
@@ -315,9 +315,9 @@ class GenerateScheduleService
         $recommendation = ScheduleRecommendation::findOrFail($recommendationId);
 
         $recommendation->update([
-            'status'           => 'rejected',
-            'rejected_by'      => $userId,
-            'rejected_at'      => now(),
+            'status' => 'rejected',
+            'rejected_by' => $userId,
+            'rejected_at' => now(),
             'rejection_reason' => $reason,
         ]);
 

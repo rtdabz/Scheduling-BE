@@ -42,7 +42,7 @@ final class SchedulingPolicy
         'Sunday',
     ];
 
-    /** Mon–Fri only. Used for minor and PATHFIT course day constraints. */
+    /** Mon-Fri only. Used for PATHFIT and other non-NSTP field courses. */
     public const WEEKDAYS = [
         'Monday',
         'Tuesday',
@@ -51,7 +51,7 @@ final class SchedulingPolicy
         'Friday',
     ];
 
-    /** Mon–Sat. Used for major course day constraints (Sunday is online-only). */
+    /** Mon-Sat. Used for major and non-field minor course day constraints. */
     public const WEEKDAYS_AND_SATURDAY = [
         'Monday',
         'Tuesday',
@@ -105,9 +105,11 @@ final class SchedulingPolicy
     public const SOFT_SATURDAY_PENALTY = 8;
     public const SOFT_LATE_START_AFTER_SLOT = 22;
     public const SOFT_LATE_SLOT_PENALTY = 2;
-    public const SOFT_GAP_SLOT_PENALTY = 3;
-    public const SOFT_ROOM_IDLE_GAP_SLOT_PENALTY = 8;
-    public const SOFT_FILLABLE_ROOM_GAP_BONUS_PENALTY = 20;
+    public const SOFT_GAP_SLOT_PENALTY = 1200;
+    public const SOFT_UNUSABLE_GAP_PENALTY = 5000;
+    public const SOFT_ROOM_IDLE_GAP_SLOT_PENALTY = 90;
+    public const SOFT_UNUSABLE_ROOM_GAP_PENALTY = 900;
+    public const SOFT_FILLABLE_ROOM_GAP_BONUS_PENALTY = 450;
     public const SOFT_ROOM_CHANGE_PENALTY = 1;
     /**
      * Applied when a major course that prefers a laboratory room is assigned
@@ -118,6 +120,10 @@ final class SchedulingPolicy
      * Applied when an on-site course is scheduled online as a fallback.
      */
     public const SOFT_ONLINE_FALLBACK_PENALTY = 1000;
+    /** Prefer a feasible weekday physical placement over a weekend placement. */
+    public const SOFT_WEEKDAY_PHYSICAL_MIGRATION_PENALTY = 6000;
+    /** Prefer a feasible weekday physical placement over online delivery. */
+    public const SOFT_WEEKDAY_ONLINE_MIGRATION_PENALTY = 12000;
 
     /**
      * Canonical constraint catalog shared by RuleEngine, CSP, and request validation.
@@ -327,13 +333,13 @@ final class SchedulingPolicy
         ],
         'gap_penalty' => [
             'severity' => 'soft',
-            'category' => 'preference',
+            'category' => 'schedule_compactness',
             'description' => 'Prefer compact daily section schedules with fewer gaps.',
             'enforced_by' => ['csp'],
         ],
         'facility_utilization_gap_penalty' => [
             'severity' => 'soft',
-            'category' => 'facility_utilization',
+            'category' => 'resource_fairness',
             'description' => 'Prefer schedules that reduce fillable idle gaps in physical rooms during operating hours.',
             'enforced_by' => ['csp'],
         ],

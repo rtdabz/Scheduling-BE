@@ -817,7 +817,7 @@ class RuleEngine
      *
      *  - NSTP (ROTC/CWTS/LTS)       : Monday-Sunday.
      *  - PATHFIT / other field (non-NSTP): Monday–Friday only.
-     *  - Minor non-field (GEC, GEE): Monday–Friday only.
+     *  - Minor non-field (GEC, GEE): Monday-Saturday.
      *  - Major on Sunday            : online mode only (no room assignment).
      */
     private function checkDayCategoryConstraint(
@@ -850,11 +850,10 @@ class RuleEngine
         $category = strtolower((string) ($course->course_category ?? 'major'));
 
         if ($category === 'minor') {
-            // Minor courses (GEC, GEE, …): Mon–Fri only.
-            if (!in_array($day, SchedulingPolicy::WEEKDAYS, true)) {
+            if (!in_array($day, SchedulingPolicy::WEEKDAYS_AND_SATURDAY, true)) {
                 return [
                     'rule'    => 'minor_day_constraint',
-                    'message' => 'Minor courses (GEC, GEE, and similar) must be scheduled Monday through Friday.',
+                    'message' => 'Minor courses (GEC, GEE, and similar) must be scheduled Monday through Saturday.',
                 ];
             }
             return null;

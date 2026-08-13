@@ -83,6 +83,138 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertSame('Saturday', $solutions[0]['schedules'][0]['day']);
     }
 
+    public function test_minor_course_can_be_forced_to_saturday(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+        ]);
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+        $course = Course::create([
+            'course_code' => 'GEE 1',
+            'course_name' => 'General Education Elective',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'minor',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => null,
+            'status' => 'active',
+        ]);
+        Rooms::create([
+            'room_code' => 'IT 101',
+            'building' => 'IT Building',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+        DB::table('department_forced_course_days')->insert([
+            'department_id' => $department->id,
+            'course_id' => $course->id,
+            'day' => 'Saturday',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            seed: 4321,
+        );
+
+        $this->assertNotEmpty($solutions);
+        $this->assertSame('Saturday', $solutions[0]['schedules'][0]['day']);
+    }
+
+    public function test_generation_reconsiders_valid_candidates_to_remove_same_day_gaps(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+        ]);
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+        $room = Rooms::create([
+            'room_code' => 'IT 101',
+            'building' => 'IT Building',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $courseIds = [];
+        foreach ([1, 2] as $index) {
+            $course = Course::create([
+                'course_code' => "IT 10{$index}",
+                'course_name' => "Lecture Course {$index}",
+                'lecture_hours' => 3,
+                'lab_hours' => 0,
+                'units' => 3,
+                'course_category' => 'major',
+                'room_type_required' => 'lecture',
+                'year_level' => '1',
+                'semester' => '1st',
+                'department_id' => $department->id,
+                'status' => 'active',
+            ]);
+            $courseIds[] = (int) $course->id;
+            DB::table('department_forced_course_days')->insert([
+                'department_id' => $department->id,
+                'course_id' => $course->id,
+                'day' => 'Monday',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: $courseIds,
+            maxSolutions: 1,
+            deliveryModesByCourseId: array_fill_keys($courseIds, 'on-site'),
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+        $rows = collect($solutions[0]['schedules'])
+            ->sortBy('start_time')
+            ->values();
+
+        $this->assertCount(2, $rows);
+        $this->assertSame('Monday', $rows[0]['day']);
+        $this->assertSame($rows[0]['end_time'], $rows[1]['start_time']);
+        $this->assertSame($room->id, $rows[0]['room_id']);
+        $this->assertSame($room->id, $rows[1]['room_id']);
+    }
+
     public function test_major_course_with_lecture_and_lab_stays_single_block_when_override_is_disabled(): void
     {
         $term = Terms::create([
@@ -204,7 +336,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertSame('on-site', $solutions[0]['schedules'][0]['mode']);
     }
 
-    public function test_lecture_only_subjects_are_balanced_between_online_and_physical_rooms(): void
+    public function test_csp_does_not_force_lecture_subjects_online_when_rooms_are_available(): void
     {
         $term = Terms::create([
             'academic_year' => '2026-2027',
@@ -291,11 +423,99 @@ class DefaultLectureLabGenerationTest extends TestCase
             ->pluck('mode');
 
         $this->assertSame(4, $modes->count());
-        $this->assertSame(2, $modes->filter(fn (string $mode): bool => $mode === 'online')->count());
-        $this->assertSame(2, $modes->filter(fn (string $mode): bool => $mode === 'on-site')->count());
+        $this->assertSame(0, $modes->filter(fn (string $mode): bool => $mode === 'online')->count());
+        $this->assertSame(4, $modes->filter(fn (string $mode): bool => $mode === 'on-site')->count());
     }
 
-    public function test_later_section_is_not_made_fully_online_when_rooms_are_still_available(): void
+    public function test_minor_lecture_courses_can_use_available_classrooms(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 2A',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        foreach (['IT 2B', 'IT 2C', 'IT 2D'] as $sectionName) {
+            Sections::create([
+                'section_name' => $sectionName,
+                'year_level' => '2',
+                'semester' => '1st',
+                'department_id' => $department->id,
+                'term_id' => $term->id,
+                'status' => 'active',
+            ]);
+        }
+
+        foreach (['IT 211', 'IT 212'] as $roomCode) {
+            Rooms::create([
+                'room_code' => $roomCode,
+                'building' => 'IT Building',
+                'room_type' => 'lecture',
+                'status' => 'available',
+                'department_id' => $department->id,
+            ]);
+        }
+
+        $curriculum = Curriculum::create([
+            'name' => 'IT Minor Curriculum',
+            'department_id' => $department->id,
+            'code' => 'IT-GEC-2026',
+            'effective_school_year' => '2026-2027',
+            'status' => 'active',
+        ]);
+
+        $courseIds = [];
+        for ($index = 1; $index <= 4; $index++) {
+            $course = Course::create([
+                'course_code' => "GEC 20{$index}",
+                'course_name' => "Minor Course {$index}",
+                'lecture_hours' => 3,
+                'lab_hours' => 0,
+                'units' => 3,
+                'course_category' => 'minor',
+                'room_type_required' => 'lecture',
+                'year_level' => '2',
+                'semester' => '1st',
+                'department_id' => null,
+                'status' => 'active',
+            ]);
+            $courseIds[] = $course->id;
+            $curriculum->courses()->attach($course->id, [
+                'year_level' => 2,
+                'semester' => 1,
+            ]);
+        }
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: $courseIds,
+            maxSolutions: 1,
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+        $modes = collect($solutions[0]['schedules'])->pluck('mode');
+
+        $this->assertSame(0, $modes->filter(fn (string $mode): bool => $mode === 'online')->count());
+        $this->assertSame(4, $modes->filter(fn (string $mode): bool => $mode === 'on-site')->count());
+    }
+
+    public function test_csp_keeps_valid_physical_candidates_for_later_sections(): void
     {
         $term = Terms::create([
             'academic_year' => '2026-2027',
@@ -391,8 +611,8 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNotEmpty($solutions);
         $modes = collect($solutions[0]['schedules'])->pluck('mode');
 
-        $this->assertGreaterThanOrEqual(3, $modes->filter(fn (string $mode): bool => $mode === 'on-site')->count());
-        $this->assertLessThanOrEqual(1, $modes->filter(fn (string $mode): bool => $mode === 'online')->count());
+        $this->assertSame(4, $modes->filter(fn (string $mode): bool => $mode === 'on-site')->count());
+        $this->assertSame(0, $modes->filter(fn (string $mode): bool => $mode === 'online')->count());
     }
 
     public function test_major_course_with_lecture_and_lab_generates_separate_components_when_override_is_enabled(): void
@@ -468,8 +688,8 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNotNull($lecture);
         $this->assertNotNull($laboratory);
         $this->assertSame($lecture['split_group_id'], $laboratory['split_group_id']);
-        $this->assertSame('online', $lecture['mode']);
-        $this->assertNull($lecture['room_id']);
+        $this->assertSame('on-site', $lecture['mode']);
+        $this->assertSame($lectureRoom->id, $lecture['room_id']);
         $this->assertSame($labRoom->id, $laboratory['room_id']);
         $this->assertSame('on-site', $laboratory['mode']);
         $this->assertSame(120, $this->durationMinutes($lecture));

@@ -140,6 +140,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::post('schedule-recommendations/auto-generate', [ScheduleRecommendationController::class, 'autoGenerateAndApply']);
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
+        Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview']);
         Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
         Route::post('schedule-recommendations/recommend-split', [ScheduleRecommendationController::class, 'recommendSplit']);
         Route::get('schedule-recommendations', [ScheduleRecommendationController::class, 'index']);

@@ -69,6 +69,7 @@ final class SplitScheduleService
 
         $course  = Course::findOrFail($courseId);
         $section = Sections::with('term')->findOrFail($sectionId);
+        $meetingType ??= $this->inferMeetingType($course, $durationSlots);
 
         $targetRoomType = match (true) {
             $mode === 'online' => 'online',
@@ -109,6 +110,10 @@ final class SplitScheduleService
                 break;
             }
 
+            if ($this->candidateHasPersistedConflict($candidate, $termId, $sectionId, $ignoreIds)) {
+                continue;
+            }
+
             $data = [
                 'term_id'             => $termId,
                 'section_id'          => $sectionId,
@@ -137,6 +142,18 @@ final class SplitScheduleService
             return ['status' => 'no_solution', 'recommendations' => []];
         }
 
+        if ($preferredStartTime !== null) {
+            $sameTimeCandidates = array_values(array_filter(
+                $validCandidates,
+                static fn (array $candidate): bool =>
+                    substr((string) $candidate['start_time'], 0, 5) === substr($preferredStartTime, 0, 5),
+            ));
+
+            if ($sameTimeCandidates !== []) {
+                $validCandidates = $sameTimeCandidates;
+            }
+        }
+
         // Sort by score descending and pick top N.
         usort($validCandidates, static fn ($a, $b): int => $b['score'] <=> $a['score']);
 
@@ -157,6 +174,50 @@ final class SplitScheduleService
         }
 
         return ['status' => 'ok', 'recommendations' => $ranked];
+    }
+
+    private function candidateHasPersistedConflict(array $candidate, int $termId, int $sectionId, array $ignoreIds): bool
+    {
+        $schedules = Schedule::query()
+            ->where('term_id', $termId)
+            ->where('day', $candidate['day'])
+            ->where(function ($query) use ($candidate, $sectionId): void {
+                $query
+                    ->where('room_id', (int) $candidate['room_id'])
+                    ->orWhere('section_id', $sectionId);
+            })
+            ->when($ignoreIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreIds))
+            ->get(['start_time', 'end_time']);
+
+        $candidateStart = $this->timeToMinutes((string) $candidate['start_time']);
+        $candidateEnd = $this->timeToMinutes((string) $candidate['end_time']);
+
+        foreach ($schedules as $schedule) {
+            if (
+                $candidateStart < $this->timeToMinutes((string) $schedule->end_time)
+                && $this->timeToMinutes((string) $schedule->start_time) < $candidateEnd
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function inferMeetingType(Course $course, int $durationSlots): ?string
+    {
+        $lectureSlots = max(0, (int) ($course->lecture_hours ?? 0) * 2);
+        $labSlots = max(0, (int) ($course->lab_hours ?? 0) * 6);
+
+        if ($lectureSlots > 0 && $durationSlots === $lectureSlots) {
+            return 'lecture';
+        }
+
+        if ($labSlots > 0 && $durationSlots === $labSlots) {
+            return 'laboratory';
+        }
+
+        return null;
     }
 
     /**
@@ -188,34 +249,6 @@ final class SplitScheduleService
             ->orderBy('room_code');
 
         $rooms = $query->get();
-
-        // For lab courses, also include lecture rooms as fallback.
-        if ($targetRoomType === 'laboratory') {
-            $lectureRooms = Rooms::query()
-                ->where('status', 'available')
-                ->where('room_type', 'lecture')
-                ->where(static function ($q) use ($departmentId): void {
-                    $q->whereNull('department_id')
-                      ->orWhere('department_id', $departmentId);
-                })
-                ->orderBy('room_code')
-                ->get();
-            $rooms = $rooms->merge($lectureRooms);
-        }
-
-        // For lecture courses, also include lab rooms as fallback.
-        if ($targetRoomType === 'lecture') {
-            $labRooms = Rooms::query()
-                ->where('status', 'available')
-                ->where('room_type', 'laboratory')
-                ->where(static function ($q) use ($departmentId): void {
-                    $q->whereNull('department_id')
-                      ->orWhere('department_id', $departmentId);
-                })
-                ->orderBy('room_code')
-                ->get();
-            $rooms = $rooms->merge($labRooms);
-        }
 
         // Promote the preferred room to the front.
         if ($preferredRoomId !== null) {
@@ -253,8 +286,8 @@ final class SplitScheduleService
         foreach ($days as $day) {
             foreach ($startSlots as $startSlot) {
                 $endSlot   = $startSlot + $durationSlots;
-                $startTime = $this->slotToTime($startSlot);
-                $endTime   = $this->slotToTime($endSlot);
+                $startTime = substr($this->slotToTime($startSlot), 0, 5);
+                $endTime   = substr($this->slotToTime($endSlot), 0, 5);
 
                 foreach ($rooms as $room) {
                     $candidateMode     = $mode;
@@ -314,7 +347,7 @@ final class SplitScheduleService
 
         // Prefer the originally requested room.
         if ($preferredRoomId !== null && $candidate['room_id'] === $preferredRoomId) {
-            $score += 10;
+            $score += 5;
         }
 
         // Prefer the preferred room type.
@@ -329,11 +362,14 @@ final class SplitScheduleService
 
         // Prefer the originally requested day.
         if ($preferredDay !== null && $candidate['day'] === $preferredDay) {
-            $score += 20;
+            $score += 40;
         }
 
-        if ($preferredStartTime !== null && $candidate['start_time'] === $preferredStartTime) {
-            $score += 6;
+        if (
+            $preferredStartTime !== null
+            && substr((string) $candidate['start_time'], 0, 5) === substr($preferredStartTime, 0, 5)
+        ) {
+            $score += 20;
         }
 
         return $score;
