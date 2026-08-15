@@ -19,6 +19,7 @@ class UserController extends Controller
             'password'      => 'required|string|min:6',
             'role'          => 'required|string|in:dean,program_head,secretary',
             'department_id' => 'required|exists:departments,id',
+            'profile_picture' => 'nullable|string',
             'program_id'    => [
                 'nullable',
                 Rule::requiredIf(fn () => $request->input('role') === 'program_head'),
@@ -32,6 +33,7 @@ class UserController extends Controller
             'password'      => Hash::make($validated['password']),
             'role'          => $validated['role'],
             'department_id' => $validated['department_id'],
+            'profile_picture' => $validated['profile_picture'] ?? null,
             'program_id'    => $validated['role'] === 'program_head' ? $validated['program_id'] : null,
         ]);
 
@@ -47,6 +49,7 @@ class UserController extends Controller
             'name'          => 'required|string|max:255',
             'role'          => 'required|string|in:dean,program_head,secretary',
             'department_id' => 'required|exists:departments,id',
+            'profile_picture' => 'nullable|string',
             'program_id'    => [
                 'nullable',
                 Rule::requiredIf(fn () => $request->input('role') === 'program_head'),
@@ -58,6 +61,7 @@ class UserController extends Controller
             'name'          => $validated['name'],
             'role'          => $validated['role'],
             'department_id' => $validated['department_id'],
+            'profile_picture' => array_key_exists('profile_picture', $validated) ? $validated['profile_picture'] : $user->profile_picture,
             'program_id'    => $validated['role'] === 'program_head' ? $validated['program_id'] : null,
         ]);
 

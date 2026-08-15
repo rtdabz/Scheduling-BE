@@ -8,13 +8,14 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class Departments extends Model
 {
     use SoftDeletes;
-
+    
     protected $table = 'departments';
 
     protected $fillable = [
         'department_name',
         'department_code',
         'scheduling_profile',
+        'logo',
         'lecture_lab_schedule_override_enabled',
         'split_units_schedule_override_enabled',
         'custom_lab_duration_override_enabled',
@@ -31,7 +32,6 @@ class Departments extends Model
     ];
 
     protected $casts = [
-        'scheduling_profile' => 'string',
         'lecture_lab_schedule_override_enabled' => 'boolean',
         'split_units_schedule_override_enabled' => 'boolean',
         'custom_lab_duration_override_enabled' => 'boolean',
@@ -45,6 +45,7 @@ class Departments extends Model
         'sunday_online_only_enabled' => 'boolean',
         'online_slot_limit' => 'integer',
         'field_slot_limit' => 'integer',
+        'scheduling_profile' => 'string',
     ];
 
     public function users()

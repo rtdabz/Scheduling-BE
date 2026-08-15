@@ -20,7 +20,7 @@ class DepartmentsController extends Controller
             ->withCount(['rooms', 'sections', 'faculties'])
             ->with(['users' => fn ($query) => $query
                 ->where('role', 'dean')
-                ->select('id', 'name', 'department_id'),
+                ->select('id', 'name', 'department_id')
             ])
             ->latest()
             ->get());
@@ -37,6 +37,7 @@ class DepartmentsController extends Controller
             'department_name' => 'required|string|max:255|unique:departments,department_name',
             'department_code' => 'required|string|max:20|unique:departments,department_code',
             'scheduling_profile' => 'sometimes|in:standard,laboratory_enabled',
+            'logo' => 'nullable|string',
         ]);
 
         $department = Departments::create($validated);
@@ -67,9 +68,10 @@ class DepartmentsController extends Controller
     public function update(Request $request, Departments $department)
     {
         $validated = $request->validate([
-            'department_name' => 'required|string|max:255|unique:departments,department_name,'.$department->id,
-            'department_code' => 'required|string|max:20|unique:departments,department_code,'.$department->id,
+            'department_name' => 'sometimes|required|string|max:255|unique:departments,department_name,' . $department->id,
+            'department_code' => 'sometimes|required|string|max:20|unique:departments,department_code,' . $department->id,
             'scheduling_profile' => 'sometimes|in:standard,laboratory_enabled',
+            'logo' => 'nullable|string',
         ]);
 
         if (($validated['scheduling_profile'] ?? null) === 'standard' && $this->hasLaboratoryCourses($department)) {
@@ -97,7 +99,6 @@ class DepartmentsController extends Controller
     {
         $department->delete();
         ApiCache::forgetGroup('departments.index');
-
         return response()->json(['message' => 'Department deleted successfully']);
     }
 
@@ -107,7 +108,6 @@ class DepartmentsController extends Controller
     public function trash()
     {
         $departments = Departments::onlyTrashed()->latest()->paginate(10);
-
         return view('departments.trash', compact('departments'));
     }
 
