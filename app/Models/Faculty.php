@@ -18,6 +18,7 @@ class Faculty extends Model
         'probono_units',
         'department_id',
         'status',
+        'profile_picture',
     ];
 
     public function department()

@@ -36,6 +36,7 @@ class FacultyController extends Controller
             'probono_units' => 'nullable|integer|min:0',
             'department_id' => 'required|exists:departments,id',
             'status' => 'nullable|in:active,inactive',
+            'profile_picture' => 'nullable|string',
         ]);
 
         if ($validator->fails()) {
@@ -132,6 +133,7 @@ class FacultyController extends Controller
             'probono_units' => 'sometimes|nullable|integer|min:0',
             'department_id' => 'sometimes|required|exists:departments,id',
             'status' => 'sometimes|required|in:active,inactive',
+            'profile_picture' => 'sometimes|nullable|string',
         ]);
 
         if ($validator->fails()) {

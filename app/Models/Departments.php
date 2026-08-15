@@ -14,6 +14,7 @@ class Departments extends Model
     protected $fillable = [
         'department_name',
         'department_code',
+        'logo',
         'lecture_lab_schedule_override_enabled',
         'split_units_schedule_override_enabled',
         'custom_lab_duration_override_enabled',

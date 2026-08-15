@@ -18,6 +18,7 @@ class UserController extends Controller
             'password'      => 'required|string|min:6',
             'role'          => 'required|string|in:dean,program_head,secretary',
             'department_id' => 'required|exists:departments,id',
+            'profile_picture' => 'nullable|string',
         ]);
 
         $user = User::create([
@@ -26,6 +27,7 @@ class UserController extends Controller
             'password'      => Hash::make($validated['password']),
             'role'          => $validated['role'],
             'department_id' => $validated['department_id'],
+            'profile_picture' => $validated['profile_picture'] ?? null,
         ]);
 
         return response()->json([
@@ -40,12 +42,14 @@ class UserController extends Controller
             'name'          => 'required|string|max:255',
             'role'          => 'required|string|in:dean,program_head,secretary',
             'department_id' => 'required|exists:departments,id',
+            'profile_picture' => 'nullable|string',
         ]);
 
         $user->update([
             'name'          => $validated['name'],
             'role'          => $validated['role'],
             'department_id' => $validated['department_id'],
+            'profile_picture' => array_key_exists('profile_picture', $validated) ? $validated['profile_picture'] : $user->profile_picture,
         ]);
 
         return response()->json([
