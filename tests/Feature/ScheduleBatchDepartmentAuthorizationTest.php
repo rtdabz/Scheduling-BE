@@ -122,6 +122,39 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
         $this->assertSame('Monday', $schedule->day);
     }
 
+    public function test_batch_normalizes_online_room_assignment_to_online_mode(): void
+    {
+        [$deptA, , $term, , , $courseA, , $sectionA] = $this->fixture();
+        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $onlineRoom = Rooms::create([
+            'room_code' => 'ONLINE',
+            'room_type' => 'online',
+            'status' => 'available',
+            'department_id' => null,
+        ]);
+
+        $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
+            'operations' => [[
+                'term_id' => $term->id,
+                'section_id' => $sectionA->id,
+                'course_id' => $courseA->id,
+                'room_id' => $onlineRoom->id,
+                'department_id' => $deptA->id,
+                'day' => 'Tuesday',
+                'start_time' => '10:00',
+                'end_time' => '11:00',
+                'mode' => 'on-site',
+                'status' => 'draft',
+            ]],
+        ]);
+
+        $response->assertOk();
+        $schedule = Schedule::query()->where('course_id', $courseA->id)->firstOrFail();
+
+        $this->assertSame('online', $schedule->mode);
+        $this->assertNull($schedule->room_id);
+    }
+
     public function test_split_validation_delete_ids_use_persisted_schedule_department_for_authorization(): void
     {
         [$deptA, $deptB, $term, $roomA, $roomB, $courseA, $courseB, $sectionA, $sectionB] = $this->fixture();

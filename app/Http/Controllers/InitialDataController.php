@@ -15,6 +15,7 @@ use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Schema;
 
 class InitialDataController extends Controller
 {
@@ -30,6 +31,8 @@ class InitialDataController extends Controller
             : (int) $user->department_id;
         $activeTerm = Terms::query()->where('is_active', true)->first();
         $activeTermId = $activeTerm?->id;
+        $hasCourseCategories = Schema::hasTable('course_categories')
+            && Schema::hasTable('course_category_mapping');
 
         $rooms = Rooms::query()
             ->with('department')
@@ -48,7 +51,12 @@ class InitialDataController extends Controller
 
         if ($activeCurricula->isNotEmpty()) {
             $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
-            $courses = Course::with('department')
+            $courseRelations = ['department', 'teachingAssignment.department'];
+            if ($hasCourseCategories) {
+                $courseRelations[] = 'categories';
+            }
+
+            $courses = Course::with($courseRelations)
                 ->whereHas('curricula', function ($q) use ($activeCurricula) {
                     $q->whereIn('curricula.id', $activeCurricula->pluck('id'));
                 })
@@ -115,7 +123,14 @@ class InitialDataController extends Controller
             ->get();
 
         $schedules = Schedule::query()
-            ->with(['term', 'section', 'course', 'faculty', 'room', 'department'])
+            ->with(array_filter([
+                'term',
+                'section',
+                $hasCourseCategories ? 'course.categories' : 'course',
+                'faculty',
+                'room',
+                'department',
+            ]))
             ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
             ->when($activeTermId !== null, fn (Builder $query) => $query->where('term_id', $activeTermId))
             ->latest()

@@ -26,6 +26,12 @@ final class SchedulingPolicy
     /** @var array<string, true>|null */
     private static ?array $cachedFieldCourseCodeMap = null;
 
+    /** @var array<int, int>|null */
+    private static ?array $cachedCourseTeachingAssignmentMap = null;
+
+    /** @var array<int, array<string, true>>|null */
+    private static ?array $cachedCourseCategoryMap = null;
+
     public const DAYS = [
         'Monday',
         'Tuesday',
@@ -36,7 +42,7 @@ final class SchedulingPolicy
         'Sunday',
     ];
 
-    /** Mon–Fri only. Used for minor and PATHFIT course day constraints. */
+    /** Mon-Fri only. Used for PATHFIT and other non-NSTP field courses. */
     public const WEEKDAYS = [
         'Monday',
         'Tuesday',
@@ -45,7 +51,7 @@ final class SchedulingPolicy
         'Friday',
     ];
 
-    /** Mon–Sat. Used for major course day constraints (Sunday is online-only). */
+    /** Mon-Sat. Used for major and non-field minor course day constraints. */
     public const WEEKDAYS_AND_SATURDAY = [
         'Monday',
         'Tuesday',
@@ -99,9 +105,11 @@ final class SchedulingPolicy
     public const SOFT_SATURDAY_PENALTY = 8;
     public const SOFT_LATE_START_AFTER_SLOT = 22;
     public const SOFT_LATE_SLOT_PENALTY = 2;
-    public const SOFT_GAP_SLOT_PENALTY = 3;
-    public const SOFT_ROOM_IDLE_GAP_SLOT_PENALTY = 8;
-    public const SOFT_FILLABLE_ROOM_GAP_BONUS_PENALTY = 20;
+    public const SOFT_GAP_SLOT_PENALTY = 1200;
+    public const SOFT_UNUSABLE_GAP_PENALTY = 5000;
+    public const SOFT_ROOM_IDLE_GAP_SLOT_PENALTY = 90;
+    public const SOFT_UNUSABLE_ROOM_GAP_PENALTY = 900;
+    public const SOFT_FILLABLE_ROOM_GAP_BONUS_PENALTY = 450;
     public const SOFT_ROOM_CHANGE_PENALTY = 1;
     /**
      * Applied when a major course that prefers a laboratory room is assigned
@@ -112,6 +120,10 @@ final class SchedulingPolicy
      * Applied when an on-site course is scheduled online as a fallback.
      */
     public const SOFT_ONLINE_FALLBACK_PENALTY = 1000;
+    /** Prefer a feasible weekday physical placement over a weekend placement. */
+    public const SOFT_WEEKDAY_PHYSICAL_MIGRATION_PENALTY = 6000;
+    /** Prefer a feasible weekday physical placement over online delivery. */
+    public const SOFT_WEEKDAY_ONLINE_MIGRATION_PENALTY = 12000;
 
     /**
      * Canonical constraint catalog shared by RuleEngine, CSP, and request validation.
@@ -250,7 +262,7 @@ final class SchedulingPolicy
         'service_subject_faculty_department_alignment' => [
             'severity'    => 'hard',
             'category'    => 'faculty',
-            'description' => 'Minor (service) subjects that belong to a specific department must be assigned to a faculty member from that owning department.',
+            'description' => 'GEC service subjects that belong to CAS must be assigned to a faculty member from that owning department.',
             'enforced_by' => ['rule_engine'],
         ],
         'part_time_faculty_availability' => [
@@ -321,13 +333,13 @@ final class SchedulingPolicy
         ],
         'gap_penalty' => [
             'severity' => 'soft',
-            'category' => 'preference',
+            'category' => 'schedule_compactness',
             'description' => 'Prefer compact daily section schedules with fewer gaps.',
             'enforced_by' => ['csp'],
         ],
         'facility_utilization_gap_penalty' => [
             'severity' => 'soft',
-            'category' => 'facility_utilization',
+            'category' => 'resource_fairness',
             'description' => 'Prefer schedules that reduce fillable idle gaps in physical rooms during operating hours.',
             'enforced_by' => ['csp'],
         ],
@@ -649,6 +661,10 @@ final class SchedulingPolicy
      */
     public static function isFieldCourse(Course $course): bool
     {
+        if (self::courseHasCategory($course, 'Field')) {
+            return true;
+        }
+
         if ($course->room_type_required === 'field') {
             return true;
         }
@@ -660,6 +676,74 @@ final class SchedulingPolicy
         $code = self::normalizeCourseCode((string) ($course->course_code ?? $course->subject_code ?? ''));
 
         return isset(self::fieldCourseCodeMap()[$code]);
+    }
+
+    public static function isCasServiceCourse(Course $course): bool
+    {
+        if (self::courseHasCategory($course, 'GEC')) {
+            return true;
+        }
+
+        $code = strtoupper(trim((string) $course->course_code));
+        $normalized = preg_replace('/[^A-Z0-9]/', '', $code) ?? $code;
+
+        return str_starts_with($normalized, 'GEC');
+    }
+
+    public static function isLaboratoryCourse(Course $course): bool
+    {
+        return self::courseHasCategory($course, 'Laboratory')
+            || (int) ($course->lab_hours ?? 0) > 0
+            || (string) ($course->room_type_required ?? '') === 'laboratory';
+    }
+
+    public static function courseHasCategory(Course $course, string $categoryName): bool
+    {
+        $normalized = self::normalizeCategoryName($categoryName);
+
+        if ($course->relationLoaded('categories')) {
+            return $course->categories->contains(
+                static fn ($category): bool => self::normalizeCategoryName((string) $category->name) === $normalized,
+            );
+        }
+
+        return isset(self::courseCategoryMap()[(int) $course->id][$normalized]);
+    }
+
+    public static function assignedTeachingDepartmentId(Course $course): ?int
+    {
+        $assignmentDepartmentId = self::courseTeachingAssignmentMap()[(int) $course->id] ?? null;
+        if ($assignmentDepartmentId !== null) {
+            return $assignmentDepartmentId;
+        }
+
+        if (
+            self::isCasServiceCourse($course)
+            && $course->department_id !== null
+        ) {
+            return (int) $course->department_id;
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<int>
+     */
+    public static function assignedCourseIds(): array
+    {
+        return array_keys(self::courseTeachingAssignmentMap());
+    }
+
+    /**
+     * @return list<int>
+     */
+    public static function courseIdsAssignedToTeachingDepartment(int $departmentId): array
+    {
+        return array_values(array_keys(array_filter(
+            self::courseTeachingAssignmentMap(),
+            static fn (int $assignedDepartmentId): bool => $assignedDepartmentId === $departmentId,
+        )));
     }
 
     public static function fieldCourseSettingEnabled(): bool
@@ -710,10 +794,89 @@ final class SchedulingPolicy
         self::$cachedFieldCourseCodeMap = null;
     }
 
+    public static function clearCourseTeachingAssignmentCache(): void
+    {
+        self::$cachedCourseTeachingAssignmentMap = null;
+    }
+
+    public static function clearCourseCategoryCache(): void
+    {
+        self::$cachedCourseCategoryMap = null;
+    }
+
+    /**
+     * @return array<int, int>
+     */
+    private static function courseTeachingAssignmentMap(): array
+    {
+        if (self::$cachedCourseTeachingAssignmentMap !== null) {
+            return self::$cachedCourseTeachingAssignmentMap;
+        }
+
+        if (!self::courseTeachingAssignmentsTableExists()) {
+            return self::$cachedCourseTeachingAssignmentMap = [];
+        }
+
+        return self::$cachedCourseTeachingAssignmentMap = DB::table('course_teaching_assignments')
+            ->pluck('department_id', 'course_id')
+            ->mapWithKeys(static fn ($departmentId, $courseId): array => [(int) $courseId => (int) $departmentId])
+            ->all();
+    }
+
+    /**
+     * @return array<int, array<string, true>>
+     */
+    private static function courseCategoryMap(): array
+    {
+        if (self::$cachedCourseCategoryMap !== null) {
+            return self::$cachedCourseCategoryMap;
+        }
+
+        if (!self::courseCategoriesTableExists()) {
+            return self::$cachedCourseCategoryMap = [];
+        }
+
+        $map = [];
+        DB::table('course_category_mapping')
+            ->join('course_categories', 'course_categories.id', '=', 'course_category_mapping.category_id')
+            ->get(['course_category_mapping.course_id', 'course_categories.name'])
+            ->each(static function ($row) use (&$map): void {
+                $courseId = (int) $row->course_id;
+                $map[$courseId] ??= [];
+                $map[$courseId][self::normalizeCategoryName((string) $row->name)] = true;
+            });
+
+        return self::$cachedCourseCategoryMap = $map;
+    }
+
+    private static function normalizeCategoryName(string $categoryName): string
+    {
+        return strtolower(trim($categoryName));
+    }
+
+    private static function courseCategoriesTableExists(): bool
+    {
+        try {
+            return DB::getSchemaBuilder()->hasTable('course_categories')
+                && DB::getSchemaBuilder()->hasTable('course_category_mapping');
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
     private static function fieldCourseSettingsTableExists(): bool
     {
         try {
             return DB::getSchemaBuilder()->hasTable('field_course_settings');
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private static function courseTeachingAssignmentsTableExists(): bool
+    {
+        try {
+            return DB::getSchemaBuilder()->hasTable('course_teaching_assignments');
         } catch (\Throwable) {
             return false;
         }

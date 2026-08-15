@@ -27,11 +27,17 @@ class User extends Authenticatable
         'role',
         'department_id',
         'profile_picture',
+        'program_id',
     ];
 
     public function department()
     {
         return $this->belongsTo(Departments::class, 'department_id');
+    }
+
+    public function program()
+    {
+        return $this->belongsTo(Program::class, 'program_id');
     }
 
     /**

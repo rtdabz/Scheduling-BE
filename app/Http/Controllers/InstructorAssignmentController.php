@@ -7,6 +7,7 @@ use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
 use App\Models\Terms;
 use App\Services\Scheduling\RuleEngine;
+use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
@@ -51,13 +52,25 @@ class InstructorAssignmentController extends Controller
                 ];
             }
 
+            $assignedCourseIds = SchedulingPolicy::courseIdsAssignedToTeachingDepartment($departmentId);
+            $allAssignedCourseIds = SchedulingPolicy::assignedCourseIds();
+
             $schedules = Schedule::query()
                 ->with(['section', 'course.department', 'faculty', 'room', 'department'])
                 ->where('term_id', $activeTerm->id)
                 ->whereIn('status', self::VISIBLE_STATUSES)
-                ->whereHas('course', function ($query) use ($departmentId) {
-                    $query->where('department_id', $departmentId)
-                        ->where('status', 'active');
+                ->whereHas('course', fn ($query) => $query->where('status', 'active'))
+                ->where(function ($scheduleQuery) use ($departmentId, $assignedCourseIds, $allAssignedCourseIds) {
+                    if ($assignedCourseIds !== []) {
+                        $scheduleQuery->whereIn('course_id', $assignedCourseIds);
+                    }
+
+                    $scheduleQuery->orWhere(function ($fallbackQuery) use ($departmentId, $allAssignedCourseIds) {
+                        $fallbackQuery->where('department_id', $departmentId);
+                        if ($allAssignedCourseIds !== []) {
+                            $fallbackQuery->whereNotIn('course_id', $allAssignedCourseIds);
+                        }
+                    });
                 })
                 ->orderBy('department_id')
                 ->orderBy('day')
@@ -96,13 +109,16 @@ class InstructorAssignmentController extends Controller
 
         $schedule->loadMissing('course');
         $departmentId = (int) ($request->user()?->department_id ?? 0);
+        $teachingDepartmentId = $schedule->course
+            ? SchedulingPolicy::assignedTeachingDepartmentId($schedule->course) ?? (int) $schedule->department_id
+            : null;
 
         if (
             !$schedule->course
-            || (int) $schedule->course->department_id !== $departmentId
+            || (int) $teachingDepartmentId !== $departmentId
         ) {
             return response()->json([
-                'message' => 'Only the department that owns this subject can assign its instructor.',
+                'message' => 'Only the VPAA-assigned teaching department can assign this course instructor.',
             ], 403);
         }
 
@@ -117,7 +133,7 @@ class InstructorAssignmentController extends Controller
         $faculty = Faculty::query()->findOrFail($validated['faculty_id']);
         if ((int) $faculty->department_id !== $departmentId || $faculty->status !== 'active') {
             return response()->json([
-                'message' => 'The selected instructor must be active and belong to the subject-owning department.',
+                'message' => 'The selected instructor must be active and belong to the VPAA-assigned teaching department.',
             ], 422);
         }
 

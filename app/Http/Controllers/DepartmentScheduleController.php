@@ -360,6 +360,98 @@ class DepartmentScheduleController extends Controller
         ]);
     }
 
+    public function withdrawSubmission(int $id, Request $request): JsonResponse
+    {
+        if ($forbidden = $this->ensureRoleCanActOnDepartment($request, $id, ['secretary', 'program_head'])) {
+            return $forbidden;
+        }
+
+        $department = Departments::findOrFail($id);
+        $user = $request->user();
+        $validated = $request->validate([
+            'section_ids' => ['required', 'array', 'min:1'],
+            'section_ids.*' => ['integer'],
+        ]);
+        $sectionIds = array_values(array_unique(array_map('intval', $validated['section_ids'])));
+        $allowedSectionIds = $this->departmentSectionIds($id);
+        $invalidSectionIds = array_diff($sectionIds, $allowedSectionIds);
+        if (!empty($invalidSectionIds)) {
+            return response()->json([
+                'message' => 'One or more selected sections do not belong to this department.',
+            ], 422);
+        }
+
+        $query = $this->departmentScheduleQuery($id);
+
+        $hasDeanReviewedRows = (clone $query)
+            ->whereIn('status', ['approved_by_dean', 'approved', 'faculty_assignment', 'finalized', 'rejected_by_dean', 'rejected'])
+            ->exists();
+
+        if ($hasDeanReviewedRows) {
+            return response()->json([
+                'message' => 'This submission can no longer be withdrawn because it has already been reviewed.',
+            ], 422);
+        }
+
+        $updated = DB::transaction(function () use ($id, $sectionIds) {
+            $completed = $this->departmentScheduleQuery($id)
+                ->where('status', 'submitted')
+                ->update([
+                    'status' => 'completed',
+                    'reviewed_by_dean' => null,
+                    'reviewed_at_dean' => null,
+                    'rejection_reason' => null,
+                    'updated_at' => now(),
+                ]);
+
+            $revision = $this->departmentScheduleQuery($id)
+                ->whereIn('section_id', $sectionIds)
+                ->where('status', 'completed')
+                ->update([
+                    'status' => 'revision',
+                    'updated_at' => now(),
+                ]);
+
+            return ['completed' => $completed, 'revision' => $revision];
+        });
+
+        if ($updated['completed'] === 0 || $updated['revision'] === 0) {
+            return response()->json([
+                'message' => 'No pending submission is available to withdraw.',
+            ], 422);
+        }
+
+        $term = Terms::query()->find($this->activeTermId());
+        $this->notifications->notifyRoles(
+            ['dean', 'secretary', 'program_head'],
+            'schedule_withdrawn',
+            'Schedule submission withdrawn',
+            $this->notifications->departmentWorkflowMessage(
+                'withdrew',
+                $department,
+                $term,
+                $user,
+                $updated['revision'],
+            ),
+            $user,
+            $department->id,
+            $term?->id,
+            null,
+            [
+                'schedules_updated' => $updated['revision'],
+                'sections_unlocked' => count($sectionIds),
+                'selected_section_ids' => $sectionIds,
+            ],
+        );
+
+        return response()->json([
+            'message' => 'Selected section schedules withdrawn for revision.',
+            'department_name' => $department->department_name,
+            'schedules_updated' => $updated['revision'],
+            'sections_unlocked' => count($sectionIds),
+        ]);
+    }
+
     public function approveByVpaa(int $id, Request $request): JsonResponse
     {
         if ($forbidden = $this->ensureRoleCanActOnDepartment($request, $id, ['vpaa'])) {

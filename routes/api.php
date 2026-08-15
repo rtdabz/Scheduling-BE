@@ -7,6 +7,7 @@ use App\Http\Controllers\DepartmentsController;
 use App\Http\Controllers\DepartmentScheduleController;
 use App\Http\Controllers\RoomsController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\ProgramController;
 
 use App\Http\Controllers\FacultyController;
 
@@ -23,6 +24,7 @@ use App\Http\Controllers\TermsController;
 use App\Http\Controllers\InitialDataController;
 use App\Http\Controllers\CurriculumController;
 use App\Http\Controllers\SchedulingSettingsController;
+use App\Http\Controllers\CourseTeachingAssignmentController;
 use App\Http\Controllers\TimeslotController;
 
 Route::post('/login', [AuthController::class, 'login']);
@@ -50,6 +52,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/departments/{id}/force-delete', [DepartmentsController::class, 'forceDelete'])->name('departments.forceDelete');
         Route::apiResource('terms', TermsController::class)->except(['index', 'show']);
         Route::patch('terms/{id}/activate', [TermsController::class, 'activate']);
+        Route::get('programs', [ProgramController::class, 'index']);
+        Route::post('programs', [ProgramController::class, 'store']);
+        Route::get('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'index']);
+        Route::post('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'store']);
+        Route::delete('course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'destroy']);
     });
 
     // Common readable & scheduling administration routes across all roles.
@@ -60,6 +67,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // Department schedule-status (read: all 4 roles; write: owner dept only, enforced in controller)
         Route::get('departments/{id}/schedule-status', [DepartmentScheduleController::class, 'scheduleStatus']);
         Route::post('departments/{id}/submit-schedules', [DepartmentScheduleController::class, 'submitSchedules']);
+        Route::post('departments/{id}/withdraw-submission', [DepartmentScheduleController::class, 'withdrawSubmission']);
         Route::post('departments/{id}/approve-by-dean', [DepartmentScheduleController::class, 'approveByDean']);
         Route::post('departments/{id}/return-by-dean', [DepartmentScheduleController::class, 'returnByDean']);
         Route::post('departments/{id}/approve-by-vpaa', [DepartmentScheduleController::class, 'approveByVpaa']);
@@ -132,6 +140,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::post('schedule-recommendations/auto-generate', [ScheduleRecommendationController::class, 'autoGenerateAndApply']);
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
+        Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview']);
         Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
         Route::post('schedule-recommendations/recommend-split', [ScheduleRecommendationController::class, 'recommendSplit']);
         Route::get('schedule-recommendations', [ScheduleRecommendationController::class, 'index']);

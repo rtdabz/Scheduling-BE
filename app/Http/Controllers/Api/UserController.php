@@ -7,6 +7,7 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
 
 class UserController extends Controller
 {
@@ -19,6 +20,11 @@ class UserController extends Controller
             'role'          => 'required|string|in:dean,program_head,secretary',
             'department_id' => 'required|exists:departments,id',
             'profile_picture' => 'nullable|string',
+            'program_id'    => [
+                'nullable',
+                Rule::requiredIf(fn () => $request->input('role') === 'program_head'),
+                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id'))),
+            ],
         ]);
 
         $user = User::create([
@@ -28,11 +34,12 @@ class UserController extends Controller
             'role'          => $validated['role'],
             'department_id' => $validated['department_id'],
             'profile_picture' => $validated['profile_picture'] ?? null,
+            'program_id'    => $validated['role'] === 'program_head' ? $validated['program_id'] : null,
         ]);
 
         return response()->json([
             'message' => 'User created successfully.',
-            'data'    => $user->load('department'),
+            'data'    => $user->load(['department', 'program']),
         ], 201);
     }
 
@@ -43,6 +50,11 @@ class UserController extends Controller
             'role'          => 'required|string|in:dean,program_head,secretary',
             'department_id' => 'required|exists:departments,id',
             'profile_picture' => 'nullable|string',
+            'program_id'    => [
+                'nullable',
+                Rule::requiredIf(fn () => $request->input('role') === 'program_head'),
+                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id'))),
+            ],
         ]);
 
         $user->update([
@@ -50,11 +62,12 @@ class UserController extends Controller
             'role'          => $validated['role'],
             'department_id' => $validated['department_id'],
             'profile_picture' => array_key_exists('profile_picture', $validated) ? $validated['profile_picture'] : $user->profile_picture,
+            'program_id'    => $validated['role'] === 'program_head' ? $validated['program_id'] : null,
         ]);
 
         return response()->json([
             'message' => 'User updated successfully.',
-            'data'    => $user->fresh()->load('department'),
+            'data'    => $user->fresh()->load(['department', 'program']),
         ]);
     }
 
@@ -66,7 +79,7 @@ class UserController extends Controller
 
     public function index(): JsonResponse
     {
-        $users = User::with(['department'])
+        $users = User::with(['department', 'program'])
             ->where('role', '!=', 'vpaa')
             ->get();
 
