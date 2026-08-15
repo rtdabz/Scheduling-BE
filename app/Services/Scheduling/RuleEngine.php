@@ -2,18 +2,26 @@
 
 namespace App\Services\Scheduling;
 
-use App\Models\Faculty;
+use App\Models\Course;
+use App\Models\Curriculum;
 use App\Models\Departments;
+use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Course;
 use App\Models\Terms;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
 class RuleEngine
 {
-    private const ONLINE_MAX_CONCURRENT_CLASSES = 3;
+    private DepartmentResourceSlotLimitService $resourceLimits;
+
+    public function __construct(?DepartmentResourceSlotLimitService $resourceLimits = null)
+    {
+        $this->resourceLimits = $resourceLimits ?? new DepartmentResourceSlotLimitService;
+    }
 
     public function checkRoomConflict(
         int $roomId,
@@ -26,7 +34,7 @@ class RuleEngine
     ): ?array {
         $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
         $room = Rooms::query()->find($roomId);
-        $capacity = $this->effectiveRoomCapacity($room);
+        $capacity = $this->effectiveRoomCapacity($room, $departmentId);
 
         if (($room?->room_type ?? null) === 'field' && $capacity > 1) {
             $overlaps = Schedule::where('room_id', $roomId)
@@ -62,7 +70,7 @@ class RuleEngine
             ->with(['course', 'section'])
             ->first();
 
-        if (!$conflict) {
+        if (! $conflict) {
             return null;
         }
 
@@ -75,7 +83,7 @@ class RuleEngine
     }
 
     private function exceedsRoomCapacity(
-        \Illuminate\Support\Collection $overlaps,
+        Collection $overlaps,
         string $startTime,
         string $endTime,
         int $capacity,
@@ -92,8 +100,7 @@ class RuleEngine
 
         usort(
             $events,
-            static fn (array $left, array $right): int =>
-                ($left[0] <=> $right[0]) ?: ($left[1] <=> $right[1]),
+            static fn (array $left, array $right): int => ($left[0] <=> $right[0]) ?: ($left[1] <=> $right[1]),
         );
 
         $active = 0;
@@ -111,10 +118,16 @@ class RuleEngine
         return false;
     }
 
-    private function effectiveRoomCapacity(?Rooms $room): int
+    private function effectiveRoomCapacity(?Rooms $room, ?int $departmentId = null): int
     {
         if (($room?->room_type ?? null) === 'field') {
-            return 3;
+            return $departmentId !== null
+                ? $this->resourceLimits->field($departmentId)
+                : (int) ($room?->max_concurrent_classes ?? 1);
+        }
+
+        if (($room?->room_type ?? null) === 'online' && $departmentId !== null) {
+            return $this->resourceLimits->online($departmentId);
         }
 
         return max(1, (int) ($room?->max_concurrent_classes ?? 1));
@@ -139,7 +152,7 @@ class RuleEngine
             ->with(['course', 'section'])
             ->first();
 
-        if (!$conflict) {
+        if (! $conflict) {
             return null;
         }
 
@@ -170,7 +183,7 @@ class RuleEngine
             ->with('course')
             ->first();
 
-        if (!$conflict) {
+        if (! $conflict) {
             return null;
         }
 
@@ -197,7 +210,7 @@ class RuleEngine
             ];
         }
 
-        if ($allowedDays !== null && !in_array($day, $allowedDays, true)) {
+        if ($allowedDays !== null && ! in_array($day, $allowedDays, true)) {
             return [
                 'rule' => 'preferred_pattern',
                 'message' => "Preferred pattern conflict: '{$preferredPattern}' courses can only be scheduled on "
@@ -217,7 +230,7 @@ class RuleEngine
             return [
                 'rule' => 'operating_hours',
                 'message' => "Schedule starts at {$startTime}, which is before operating hours begin ("
-                    .date('g:i A', strtotime(SchedulingPolicy::openingTime())).").",
+                    .date('g:i A', strtotime(SchedulingPolicy::openingTime())).').',
             ];
         }
 
@@ -225,7 +238,7 @@ class RuleEngine
             return [
                 'rule' => 'operating_hours',
                 'message' => "Schedule ends at {$endTime}, which exceeds operating hours ("
-                    .date('g:i A', strtotime(SchedulingPolicy::closingTime()))." cutoff).",
+                    .date('g:i A', strtotime(SchedulingPolicy::closingTime())).' cutoff).',
             ];
         }
 
@@ -240,7 +253,7 @@ class RuleEngine
     ): ?array {
         $course = Course::find($courseId);
 
-        if (!$course) {
+        if (! $course) {
             return [
                 'rule' => 'room_type_match',
                 'message' => 'Course not found for room-type validation.',
@@ -253,7 +266,7 @@ class RuleEngine
 
         $room = $roomId !== null ? Rooms::find($roomId) : null;
 
-        if (!$room) {
+        if (! $room) {
             return [
                 'rule' => 'room_type_match',
                 'message' => 'A physical room is required for this schedule.',
@@ -289,10 +302,25 @@ class RuleEngine
             ];
         }
 
-        // If both the required type and the actual room type are physical (lecture or laboratory), they match.
-        $isPhysicalRequired = in_array($requiredRoomType, ['lecture', 'laboratory'], true);
-        $isPhysicalRoom = in_array($room->room_type, ['lecture', 'laboratory'], true);
-        if ($isPhysicalRequired && $isPhysicalRoom) {
+        if (
+            $requiredRoomType === 'lecture'
+            && $room->room_type === 'laboratory'
+            && ! $this->canUseLaboratoryForLecture($course, $room)
+        ) {
+            return [
+                'rule' => 'room_type_match',
+                'message' => "Course {$course->course_code} can only use lecture-capable laboratory rooms as a fallback.",
+            ];
+        }
+
+        if (
+            $requiredRoomType === 'lecture'
+            && in_array($room->room_type, ['lecture', 'laboratory'], true)
+        ) {
+            return null;
+        }
+
+        if ($requiredRoomType === 'laboratory' && $room->room_type === 'laboratory') {
             return null;
         }
 
@@ -305,6 +333,18 @@ class RuleEngine
         }
 
         return null;
+    }
+
+    private function canUseLaboratoryForLecture(Course $course, Rooms $room): bool
+    {
+        $courseCategory = $course->course_category ?? $course->subject_category ?? 'major';
+
+        return $courseCategory === 'major'
+            && (int) ($course->lecture_hours ?? 0) > 0
+            && (int) ($course->lab_hours ?? 0) === 0
+            && (string) ($course->room_type_required ?? 'lecture') === 'lecture'
+            && $room->room_type === 'laboratory'
+            && (bool) $room->allow_lecture_usage;
     }
 
     public function checkTimeSlotGrid(string $startTime, string $endTime): ?array
@@ -350,56 +390,56 @@ class RuleEngine
         $mode = (string) ($attempt['mode'] ?? 'on-site');
         $roomId = $attempt['room_id'] ?? null;
         $room = $roomId !== null ? Rooms::find($roomId) : null;
-        $faculty = !empty($attempt['faculty_id'])
+        $faculty = ! empty($attempt['faculty_id'])
             ? Faculty::find($attempt['faculty_id'])
             : null;
 
-        if (!$term) {
+        if (! $term) {
             $violations[] = [
                 'rule' => 'term_exists',
                 'message' => 'Selected academic term does not exist.',
             ];
         }
 
-        if (!$section) {
+        if (! $section) {
             $violations[] = [
                 'rule' => 'section_exists',
                 'message' => 'Selected section does not exist.',
             ];
         }
 
-        if (!$course) {
+        if (! $course) {
             $violations[] = [
                 'rule' => 'subject_exists',
                 'message' => 'Selected course does not exist.',
             ];
         }
 
-        if (!$room && $mode !== 'online') {
+        if (! $room && $mode !== 'online') {
             $violations[] = [
                 'rule' => 'room_exists',
                 'message' => 'Selected room does not exist.',
             ];
         }
 
-        if (!empty($attempt['faculty_id']) && !$faculty) {
+        if (! empty($attempt['faculty_id']) && ! $faculty) {
             $violations[] = [
                 'rule' => 'faculty_exists',
                 'message' => 'Selected faculty member does not exist.',
             ];
         }
 
-        if (!$term || !$section || !$course || (!$room && $mode !== 'online') || (!empty($attempt['faculty_id']) && !$faculty)) {
+        if (! $term || ! $section || ! $course || (! $room && $mode !== 'online') || (! empty($attempt['faculty_id']) && ! $faculty)) {
             return $violations;
         }
 
-        $activeCurriculum = \App\Models\Curriculum::query()
+        $activeCurriculum = Curriculum::query()
             ->where('department_id', $section->department_id)
             ->where('status', 'active')
             ->first();
 
         if ($activeCurriculum) {
-            $pivot = \DB::table('curriculum_course')
+            $pivot = DB::table('curriculum_course')
                 ->where('curriculum_id', $activeCurriculum->id)
                 ->where('course_id', $course->id)
                 ->first();
@@ -410,7 +450,7 @@ class RuleEngine
             }
         }
 
-        if (!(bool) ($term->is_enabled ?? true)) {
+        if (! (bool) ($term->is_enabled ?? true)) {
             $violations[] = [
                 'rule' => 'term_enabled',
                 'message' => 'Selected academic term is disabled for scheduling.',
@@ -520,7 +560,7 @@ class RuleEngine
                 $dayAvailabilities = $faculty->availabilities()
                     ->where('day_index', $attemptDayIndex)
                     ->get();
-                
+
                 $attemptStart = SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00'));
                 $attemptEnd = SchedulingPolicy::normalizeTime((string) ($attempt['end_time'] ?? '00:00'));
 
@@ -535,10 +575,10 @@ class RuleEngine
                     }
                 }
 
-                if (!$fits) {
+                if (! $fits) {
                     $violations[] = [
                         'rule' => 'part_time_faculty_availability',
-                        'message' => 'The selected assignment falls outside the instructor\'s availability window for ' . $attemptDay . '.',
+                        'message' => 'The selected assignment falls outside the instructor\'s availability window for '.$attemptDay.'.',
                     ];
                 }
             }
@@ -562,14 +602,14 @@ class RuleEngine
         $mode = (string) ($attempt['mode'] ?? 'on-site');
         if ($mode === 'field' && $room?->room_type !== 'field') {
             $violations[] = [
-                'rule'    => 'delivery_room_alignment',
+                'rule' => 'delivery_room_alignment',
                 'message' => 'Field schedules must use a field room assignment.',
             ];
         }
 
-        if ($mode === 'on-site' && (!$room || in_array($room->room_type, ['online', 'field'], true))) {
+        if ($mode === 'on-site' && (! $room || in_array($room->room_type, ['online', 'field'], true))) {
             $violations[] = [
-                'rule'    => 'delivery_room_alignment',
+                'rule' => 'delivery_room_alignment',
                 'message' => 'On-site schedules must use a lecture or laboratory room assignment.',
             ];
         }
@@ -594,7 +634,7 @@ class RuleEngine
         $ignoreId = $attempt['ignore_schedule_id'] ?? null;
 
         foreach (['term_id', 'section_id', 'day', 'start_time', 'end_time'] as $field) {
-            if (!array_key_exists($field, $attempt) || $attempt[$field] === null || $attempt[$field] === '') {
+            if (! array_key_exists($field, $attempt) || $attempt[$field] === null || $attempt[$field] === '') {
                 $violations[] = [
                     'rule' => 'required_field',
                     'message' => "Schedule attempt is missing required field '{$field}'.",
@@ -602,7 +642,7 @@ class RuleEngine
             }
         }
 
-        if (!isset($attempt['course_id']) && !isset($attempt['subject_id'])) {
+        if (! isset($attempt['course_id']) && ! isset($attempt['subject_id'])) {
             $violations[] = [
                 'rule' => 'required_field',
                 'message' => "Schedule attempt is missing required field 'course_id'.",
@@ -613,7 +653,7 @@ class RuleEngine
             return $violations;
         }
 
-        if (!in_array($attempt['day'], SchedulingPolicy::PERSISTABLE_DAYS, true)) {
+        if (! in_array($attempt['day'], SchedulingPolicy::PERSISTABLE_DAYS, true)) {
             $violations[] = [
                 'rule' => 'valid_day',
                 'message' => "Unsupported schedule day '{$attempt['day']}'.",
@@ -622,7 +662,7 @@ class RuleEngine
 
         if (
             isset($attempt['mode'])
-            && !SchedulingPolicy::isValidDeliveryMode((string) $attempt['mode'])
+            && ! SchedulingPolicy::isValidDeliveryMode((string) $attempt['mode'])
         ) {
             $violations[] = [
                 'rule' => 'delivery_mode',
@@ -630,7 +670,7 @@ class RuleEngine
             ];
         }
 
-        if (($attempt['mode'] ?? null) === 'field' && !empty($attempt['is_hybrid'])) {
+        if (($attempt['mode'] ?? null) === 'field' && ! empty($attempt['is_hybrid'])) {
             $violations[] = [
                 'rule' => 'hybrid_mode',
                 'message' => 'Field schedules cannot be marked as hybrid.',
@@ -669,7 +709,7 @@ class RuleEngine
             }
         }
 
-        if (!empty($attempt['faculty_id'])) {
+        if (! empty($attempt['faculty_id'])) {
             $facultyConflict = $this->checkFacultyConflict(
                 $attempt['faculty_id'],
                 $attempt['term_id'],
@@ -744,6 +784,7 @@ class RuleEngine
                 $violations[] = $onlineLimitViolation;
             }
         }
+
         return $violations;
     }
 
@@ -766,10 +807,14 @@ class RuleEngine
             ->where('end_time', '>', $startTime)
             ->count();
 
-        if ($overlapCount >= self::ONLINE_MAX_CONCURRENT_CLASSES) {
+        $onlineLimit = $departmentId !== null
+            ? $this->resourceLimits->online($departmentId)
+            : 1;
+
+        if ($overlapCount >= $onlineLimit) {
             return [
                 'rule' => 'online_capacity_conflict',
-                'message' => "Online capacity is full for this department on {$day} from {$startTime} to {$endTime}. Maximum concurrent online classes: ".self::ONLINE_MAX_CONCURRENT_CLASSES.'.',
+                'message' => "Online capacity is full for this department on {$day} from {$startTime} to {$endTime}. Configured concurrent online classes: {$onlineLimit}.",
             ];
         }
 
@@ -784,7 +829,7 @@ class RuleEngine
             return null;
         }
 
-        if (!ctype_digit($parts[0]) || !ctype_digit($parts[1])) {
+        if (! ctype_digit($parts[0]) || ! ctype_digit($parts[1])) {
             return null;
         }
 
@@ -827,35 +872,38 @@ class RuleEngine
         Sections $section,
     ): ?array {
         if ($this->isNstpCourse($course)) {
-            if (!in_array($day, SchedulingPolicy::DAYS, true)) {
+            if (! in_array($day, SchedulingPolicy::DAYS, true)) {
                 return [
-                    'rule'    => 'nstp_day_constraint',
+                    'rule' => 'nstp_day_constraint',
                     'message' => 'NSTP/ROTC/CWTS/LTS courses must be scheduled Monday through Sunday.',
                 ];
             }
+
             return null;
         }
 
         if ($this->isFieldCourse($course)) {
             // Non-NSTP field courses (PATHFIT, etc.): Mon–Fri only.
-            if (!in_array($day, SchedulingPolicy::WEEKDAYS, true)) {
+            if (! in_array($day, SchedulingPolicy::WEEKDAYS, true)) {
                 return [
-                    'rule'    => 'field_day_constraint',
+                    'rule' => 'field_day_constraint',
                     'message' => 'PATHFIT and other field courses must be scheduled Monday through Friday.',
                 ];
             }
+
             return null;
         }
 
         $category = strtolower((string) ($course->course_category ?? 'major'));
 
         if ($category === 'minor') {
-            if (!in_array($day, SchedulingPolicy::WEEKDAYS_AND_SATURDAY, true)) {
+            if (! in_array($day, SchedulingPolicy::WEEKDAYS_AND_SATURDAY, true)) {
                 return [
-                    'rule'    => 'minor_day_constraint',
+                    'rule' => 'minor_day_constraint',
                     'message' => 'Minor courses (GEC, GEE, and similar) must be scheduled Monday through Saturday.',
                 ];
             }
+
             return null;
         }
 
@@ -869,7 +917,7 @@ class RuleEngine
 
         if ($sundayOnlineOnlyEnabled && $day === 'Sunday' && $mode !== 'online') {
             return [
-                'rule'    => 'major_sunday_mode_constraint',
+                'rule' => 'major_sunday_mode_constraint',
                 'message' => 'Major courses scheduled on Sunday must use online delivery mode.',
             ];
         }
@@ -897,7 +945,7 @@ class RuleEngine
 
         // If updating an existing schedule that is ALREADY online in the database,
         // it is not adding a new online class to the section.
-        if (!empty($ignoreIds)) {
+        if (! empty($ignoreIds)) {
             $alreadyOnline = Schedule::whereIn('id', $ignoreIds)
                 ->where('mode', 'online')
                 ->exists();
@@ -910,13 +958,13 @@ class RuleEngine
             ->where('term_id', $termId)
             ->where('mode', 'online');
 
-        if (!empty($ignoreIds)) {
+        if (! empty($ignoreIds)) {
             $query->whereNotIn('id', $ignoreIds);
         }
 
         if ($query->distinct('course_id')->count('course_id') >= 5) {
             return [
-                'rule'    => 'section_online_limit',
+                'rule' => 'section_online_limit',
                 'message' => 'A section cannot have more than 5 online classes.',
             ];
         }

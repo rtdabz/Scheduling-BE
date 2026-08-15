@@ -11,9 +11,15 @@ class Rooms extends Model
         'room_code',
         'building',
         'room_type',
+        'allow_lecture_usage',
         'status',
         'max_concurrent_classes',
         'department_id',
+    ];
+
+    protected $casts = [
+        'allow_lecture_usage' => 'boolean',
+        'max_concurrent_classes' => 'integer',
     ];
 
     public function department()

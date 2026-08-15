@@ -333,6 +333,9 @@ class GenerateScheduleService
      * to the real field-type room from the database, so the RuleEngine does
      * not reject the schedule at accept-time for a room-type mismatch.
      */
+    /**
+     * @param  \Illuminate\Support\Collection<int, Course>  $coursesById
+     */
     private function applyMode(array $meetings, $coursesById): array
     {
         // Lazy-load the canonical field room ID once so we don't query per-meeting.

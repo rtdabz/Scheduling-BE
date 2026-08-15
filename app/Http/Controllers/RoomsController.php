@@ -17,6 +17,7 @@ class RoomsController extends Controller
     public function index()
     {
         $rooms = Cache::remember(ApiCache::key('rooms.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Rooms::with('department')->get());
+
         return response()->json($rooms);
     }
 
@@ -29,6 +30,7 @@ class RoomsController extends Controller
             'room_code' => 'required|string|max:255|unique:rooms,room_code',
             'building' => 'nullable|string|in:NEE Building,Building 1,Building 2,Building 3,Building 4,Building 5,Building 6',
             'room_type' => SchedulingPolicy::allowedRoomTypesRule('required|string'),
+            'allow_lecture_usage' => 'sometimes|boolean',
             'status' => SchedulingPolicy::allowedRoomStatusesRule('nullable|string'),
             'department_id' => 'nullable|exists:departments,id',
             'max_concurrent_classes' => 'sometimes|integer|min:1|max:20',
@@ -37,6 +39,8 @@ class RoomsController extends Controller
         $validated['max_concurrent_classes'] = (int) ($validated['max_concurrent_classes'] ?? (
             in_array(($validated['room_type'] ?? null), ['field', 'online'], true) ? 3 : 1
         ));
+        $validated['allow_lecture_usage'] = ($validated['room_type'] ?? null) === 'laboratory'
+            && (bool) ($validated['allow_lecture_usage'] ?? false);
 
         $room = Rooms::create($validated);
         ApiCache::forgetGroups([
@@ -46,7 +50,7 @@ class RoomsController extends Controller
 
         return response()->json([
             'message' => 'Room created successfully.',
-            'room' => $room->load('department')
+            'room' => $room->load('department'),
         ], 201);
     }
 
@@ -56,6 +60,7 @@ class RoomsController extends Controller
     public function show($id)
     {
         $room = Rooms::with('department')->findOrFail($id);
+
         return response()->json($room);
     }
 
@@ -70,13 +75,17 @@ class RoomsController extends Controller
             'room_code' => ['sometimes', 'required', 'string', 'max:255', Rule::unique('rooms')->ignore($room->id)],
             'building' => 'nullable|string|in:NEE Building,Building 1,Building 2,Building 3,Building 4,Building 5,Building 6',
             'room_type' => SchedulingPolicy::allowedRoomTypesRule('sometimes|required|string'),
+            'allow_lecture_usage' => 'sometimes|boolean',
             'status' => SchedulingPolicy::allowedRoomStatusesRule('sometimes|nullable|string'),
             'department_id' => 'nullable|exists:departments,id',
             'max_concurrent_classes' => 'sometimes|integer|min:1|max:20',
         ]);
 
-        if (!in_array(($validated['room_type'] ?? $room->room_type), ['field', 'online'], true) && array_key_exists('max_concurrent_classes', $validated)) {
+        if (! in_array(($validated['room_type'] ?? $room->room_type), ['field', 'online'], true) && array_key_exists('max_concurrent_classes', $validated)) {
             $validated['max_concurrent_classes'] = 1;
+        }
+        if (($validated['room_type'] ?? $room->room_type) !== 'laboratory') {
+            $validated['allow_lecture_usage'] = false;
         }
 
         $room->update($validated);
@@ -87,7 +96,7 @@ class RoomsController extends Controller
 
         return response()->json([
             'message' => 'Room updated successfully.',
-            'room' => $room->load('department')
+            'room' => $room->load('department'),
         ]);
     }
 
@@ -104,7 +113,7 @@ class RoomsController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Room deleted successfully.'
+            'message' => 'Room deleted successfully.',
         ]);
     }
 
@@ -120,7 +129,7 @@ class RoomsController extends Controller
         ]);
 
         $room->update([
-            'department_id' => $validated['department_id']
+            'department_id' => $validated['department_id'],
         ]);
         ApiCache::forgetGroups([
             'rooms.index',
@@ -129,7 +138,7 @@ class RoomsController extends Controller
 
         return response()->json([
             'message' => 'Room assignment updated successfully.',
-            'room' => $room->load('department')
+            'room' => $room->load('department'),
         ]);
     }
 }

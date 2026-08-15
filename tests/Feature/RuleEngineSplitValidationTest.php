@@ -249,7 +249,7 @@ class RuleEngineSplitValidationTest extends TestCase
         $this->assertNotContains('delivery_room_alignment', $rules);
     }
 
-    public function test_online_capacity_allows_three_classes_per_department_only(): void
+    public function test_online_capacity_uses_department_configured_limit(): void
     {
         $term = Terms::create([
             'academic_year' => '2026-2027',
@@ -261,6 +261,7 @@ class RuleEngineSplitValidationTest extends TestCase
         $dept = Departments::create([
             'department_name' => 'Department 1',
             'department_code' => 'DEPT1',
+            'online_slot_limit' => 2,
         ]);
         $otherDept = Departments::create([
             'department_name' => 'Department 2',
@@ -299,7 +300,7 @@ class RuleEngineSplitValidationTest extends TestCase
             'status' => 'active',
         ]);
 
-        foreach ($sections->take(2) as $section) {
+        foreach ($sections->take(1) as $section) {
             Schedule::create([
                 'term_id' => $term->id,
                 'section_id' => $section->id,
@@ -327,9 +328,9 @@ class RuleEngineSplitValidationTest extends TestCase
             'status' => 'draft',
         ]);
 
-        $thirdAttempt = [
+        $secondAttempt = [
             'term_id' => $term->id,
-            'section_id' => $sections[2]->id,
+            'section_id' => $sections[1]->id,
             'course_id' => $course->id,
             'room_id' => null,
             'department_id' => $dept->id,
@@ -339,21 +340,21 @@ class RuleEngineSplitValidationTest extends TestCase
             'mode' => 'online',
         ];
 
-        $thirdRules = collect(app(RuleEngine::class)->validate($thirdAttempt))->pluck('rule')->all();
-        $this->assertNotContains('online_capacity_conflict', $thirdRules);
+        $secondRules = collect(app(RuleEngine::class)->validate($secondAttempt))->pluck('rule')->all();
+        $this->assertNotContains('online_capacity_conflict', $secondRules);
 
-        Schedule::create(array_merge($thirdAttempt, [
+        Schedule::create(array_merge($secondAttempt, [
             'status' => 'draft',
         ]));
 
-        $fourthRules = collect(app(RuleEngine::class)->validate(array_merge($thirdAttempt, [
-            'section_id' => $sections[3]->id,
+        $thirdRules = collect(app(RuleEngine::class)->validate(array_merge($secondAttempt, [
+            'section_id' => $sections[2]->id,
         ])))->pluck('rule')->all();
 
-        $this->assertContains('online_capacity_conflict', $fourthRules);
+        $this->assertContains('online_capacity_conflict', $thirdRules);
     }
 
-    public function test_field_capacity_allows_three_classes_per_department_only(): void
+    public function test_field_capacity_uses_department_configured_limit(): void
     {
         $term = Terms::create([
             'academic_year' => '2026-2027',
@@ -365,6 +366,7 @@ class RuleEngineSplitValidationTest extends TestCase
         $dept = Departments::create([
             'department_name' => 'Department 1',
             'department_code' => 'DEPT1',
+            'field_slot_limit' => 2,
         ]);
         $otherDept = Departments::create([
             'department_name' => 'Department 2',
@@ -412,7 +414,7 @@ class RuleEngineSplitValidationTest extends TestCase
             'status' => 'active',
         ]);
 
-        foreach ($sections->take(2) as $section) {
+        foreach ($sections->take(1) as $section) {
             Schedule::create([
                 'term_id' => $term->id,
                 'section_id' => $section->id,
@@ -440,9 +442,9 @@ class RuleEngineSplitValidationTest extends TestCase
             'status' => 'draft',
         ]);
 
-        $thirdAttempt = [
+        $secondAttempt = [
             'term_id' => $term->id,
-            'section_id' => $sections[2]->id,
+            'section_id' => $sections[1]->id,
             'course_id' => $course->id,
             'room_id' => $fieldRoom->id,
             'department_id' => $dept->id,
@@ -452,18 +454,18 @@ class RuleEngineSplitValidationTest extends TestCase
             'mode' => 'field',
         ];
 
-        $thirdRules = collect(app(RuleEngine::class)->validate($thirdAttempt))->pluck('rule')->all();
-        $this->assertNotContains('room_capacity_conflict', $thirdRules);
+        $secondRules = collect(app(RuleEngine::class)->validate($secondAttempt))->pluck('rule')->all();
+        $this->assertNotContains('room_capacity_conflict', $secondRules);
 
-        Schedule::create(array_merge($thirdAttempt, [
+        Schedule::create(array_merge($secondAttempt, [
             'status' => 'draft',
         ]));
 
-        $fourthRules = collect(app(RuleEngine::class)->validate(array_merge($thirdAttempt, [
-            'section_id' => $sections[3]->id,
+        $thirdRules = collect(app(RuleEngine::class)->validate(array_merge($secondAttempt, [
+            'section_id' => $sections[2]->id,
         ])))->pluck('rule')->all();
 
-        $this->assertContains('room_capacity_conflict', $fourthRules);
+        $this->assertContains('room_capacity_conflict', $thirdRules);
     }
 
     public function test_only_gec_service_subjects_require_cas_faculty(): void

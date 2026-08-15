@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Curriculum;
 use App\Models\Departments;
+use App\Services\Scheduling\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -18,7 +20,7 @@ class DepartmentsController extends Controller
             ->withCount(['rooms', 'sections', 'faculties'])
             ->with(['users' => fn ($query) => $query
                 ->where('role', 'dean')
-                ->select('id', 'name', 'department_id')
+                ->select('id', 'name', 'department_id'),
             ])
             ->latest()
             ->get());
@@ -34,6 +36,7 @@ class DepartmentsController extends Controller
         $validated = $request->validate([
             'department_name' => 'required|string|max:255|unique:departments,department_name',
             'department_code' => 'required|string|max:20|unique:departments,department_code',
+            'scheduling_profile' => 'sometimes|in:standard,laboratory_enabled',
         ]);
 
         $department = Departments::create($validated);
@@ -64,9 +67,18 @@ class DepartmentsController extends Controller
     public function update(Request $request, Departments $department)
     {
         $validated = $request->validate([
-            'department_name' => 'required|string|max:255|unique:departments,department_name,' . $department->id,
-            'department_code' => 'required|string|max:20|unique:departments,department_code,' . $department->id,
+            'department_name' => 'required|string|max:255|unique:departments,department_name,'.$department->id,
+            'department_code' => 'required|string|max:20|unique:departments,department_code,'.$department->id,
+            'scheduling_profile' => 'sometimes|in:standard,laboratory_enabled',
         ]);
+
+        if (($validated['scheduling_profile'] ?? null) === 'standard' && $this->hasLaboratoryCourses($department)) {
+            return response()->json([
+                'error_code' => 'department_profile_mismatch',
+                'department_profile' => 'standard',
+                'message' => 'This department has laboratory courses in its active curriculum and cannot use the standard profile.',
+            ], 422);
+        }
 
         $department->update($validated);
         ApiCache::forgetGroup('departments.index');
@@ -85,6 +97,7 @@ class DepartmentsController extends Controller
     {
         $department->delete();
         ApiCache::forgetGroup('departments.index');
+
         return response()->json(['message' => 'Department deleted successfully']);
     }
 
@@ -94,6 +107,7 @@ class DepartmentsController extends Controller
     public function trash()
     {
         $departments = Departments::onlyTrashed()->latest()->paginate(10);
+
         return view('departments.trash', compact('departments'));
     }
 
@@ -119,5 +133,18 @@ class DepartmentsController extends Controller
 
         return redirect()->route('departments.trash')
             ->with('success', 'Department permanently deleted.');
+    }
+
+    private function hasLaboratoryCourses(Departments $department): bool
+    {
+        $curriculum = Curriculum::query()
+            ->where('department_id', $department->id)
+            ->where('status', 'active')
+            ->first();
+
+        return $curriculum?->courses()
+            ->with('categories')
+            ->get()
+            ->contains(fn ($course): bool => SchedulingPolicy::isLaboratoryCourse($course)) ?? false;
     }
 }

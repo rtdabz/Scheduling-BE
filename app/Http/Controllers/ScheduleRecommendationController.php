@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Schedule;
@@ -9,13 +10,17 @@ use App\Models\ScheduleRecommendation;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Services\Scheduling\CSPSolver;
+use App\Services\Scheduling\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\ScheduleCandidateOptimizer;
+use App\Services\Scheduling\ScheduleGenerationPreflightService;
+use App\Services\Scheduling\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\Scheduling\SplitScheduleService;
 use App\Services\Scheduling\YearLevelScheduleGenerationService;
 use App\Services\SystemNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use RuntimeException;
@@ -24,13 +29,16 @@ class ScheduleRecommendationController extends Controller
 {
     private const REPLACEABLE_SCHEDULE_STATUSES = ['draft', 'completed', 'revision'];
 
-    private const ONLINE_MAX_CONCURRENT_CLASSES = 3;
+    private const YEAR_LEVEL_PREVIEW_EXECUTION_SECONDS = 150;
 
     public function __construct(
         private readonly CSPSolver $cspSolver,
         private readonly ScheduleCandidateOptimizer $candidateOptimizer,
         private readonly SplitScheduleService $splitScheduleService,
         private readonly YearLevelScheduleGenerationService $yearLevelGenerator,
+        private readonly ScheduleGenerationPreflightService $preflight,
+        private readonly ScheduleRequirementBuilderResolver $requirementBuilders,
+        private readonly DepartmentResourceSlotLimitService $resourceLimits,
         private readonly SystemNotificationService $notifications,
     ) {}
 
@@ -165,27 +173,32 @@ class ScheduleRecommendationController extends Controller
             return $this->departmentForbiddenResponse();
         }
 
-        // Clear previous generated schedules and cached solutions
-        Schedule::where('section_id', $section->id)
-            ->where('term_id', $section->term_id)
-            ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
-            ->delete();
-
-        ScheduleRecommendation::where('section_id', $section->id)
-            ->where('term_id', $section->term_id)
-            ->delete();
-
         try {
             $validated['course_ids'] = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
+            $profile = $this->preflight->validate($section, $validated['course_ids'], $validated);
+            $validated['requirements_by_course_id'] = $this->requirementBuilders->build($section, $validated['course_ids'], $validated);
             $solutions = $this->candidateOptimizer->rankForSection(
                 $this->cspSolver->solveRankedFromSchema($validated),
                 $section,
                 $validated,
             );
+        } catch (ScheduleGenerationPreflightException $exception) {
+            return response()->json($exception->payload(), 422);
         } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json([
                 'message' => $exception->getMessage(),
             ], 422);
+        }
+
+        if ($solutions !== []) {
+            Schedule::where('section_id', $section->id)
+                ->where('term_id', $section->term_id)
+                ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
+                ->delete();
+
+            ScheduleRecommendation::where('section_id', $section->id)
+                ->where('term_id', $section->term_id)
+                ->delete();
         }
 
         $user = $request->user();
@@ -253,6 +266,7 @@ class ScheduleRecommendationController extends Controller
             'message' => $recommendations === []
                 ? 'No recommendations found that satisfy the scheduling constraints.'
                 : 'Schedule recommendations generated successfully.',
+            'department_profile' => $profile->value,
             'search_limit_reached' => $this->cspSolver->searchLimitReached(),
             'iterations_used' => $this->cspSolver->iterationsUsed(),
             'recommendations' => $recommendations,
@@ -317,11 +331,15 @@ class ScheduleRecommendationController extends Controller
                 $validated['course_ids'],
             );
             $validated['balanced_split_course_ids'] = $selectedGecSplitCourseIds;
+            $profile = $this->preflight->validate($section, $validated['course_ids'], $validated);
+            $validated['requirements_by_course_id'] = $this->requirementBuilders->build($section, $validated['course_ids'], $validated);
             $solutions = $this->candidateOptimizer->rankForSection(
                 $this->cspSolver->solveRankedFromSchema($validated),
                 $section,
                 $validated,
             );
+        } catch (ScheduleGenerationPreflightException $exception) {
+            return response()->json($exception->payload(), 422);
         } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json([
                 'message' => $exception->getMessage(),
@@ -332,6 +350,7 @@ class ScheduleRecommendationController extends Controller
             'message' => $solutions === []
                 ? 'No recommendations found that satisfy the scheduling constraints.'
                 : 'Schedule recommendations generated successfully.',
+            'department_profile' => $profile->value,
             'search_limit_reached' => $this->cspSolver->searchLimitReached(),
             'iterations_used' => $this->cspSolver->iterationsUsed(),
             'recommendations' => $solutions,
@@ -340,6 +359,8 @@ class ScheduleRecommendationController extends Controller
 
     public function yearLevelPreview(Request $request): JsonResponse
     {
+        $this->allowLongRunningGeneration(self::YEAR_LEVEL_PREVIEW_EXECUTION_SECONDS);
+
         $validated = $request->validate([
             'term_id' => 'required|integer|exists:terms,id',
             'department_id' => 'required|integer|exists:departments,id',
@@ -391,8 +412,7 @@ class ScheduleRecommendationController extends Controller
                 $splitIds = array_values(array_intersect(array_map('intval', $config['selected_split_session_course_ids'] ?? []), $courseIds));
                 $gecIds = array_values(array_intersect(array_map('intval', $config['selected_gec_course_ids'] ?? []), $courseIds));
                 $preferredPatterns = $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $gecIds, $courseIds);
-
-                $configsBySectionId[(int) $section->id] = [
+                $sectionConfig = [
                     'course_ids' => $courseIds,
                     'mode' => (string) ($config['mode'] ?? 'on-site'),
                     'is_hybrid' => (bool) ($config['is_hybrid'] ?? false),
@@ -411,15 +431,22 @@ class ScheduleRecommendationController extends Controller
                         preferredPatterns: $preferredPatterns,
                     ),
                 ];
+                $profile = $this->preflight->validate($section, $courseIds, $sectionConfig);
+                $sectionConfig['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $sectionConfig);
+                $sectionConfig['department_profile'] = $profile->value;
+                $configsBySectionId[(int) $section->id] = $sectionConfig;
             }
 
             $result = $this->yearLevelGenerator->preview($sections->all(), $configsBySectionId);
+        } catch (ScheduleGenerationPreflightException $exception) {
+            return response()->json($exception->payload(), 422);
         } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);
         }
 
         return response()->json([
             'message' => 'Year-level schedule recommendations generated successfully.',
+            'department_profile' => $profile->value,
             'year_level' => (int) $validated['year_level'],
             'sections' => $sections->map(fn (Sections $section): array => [
                 'id' => (int) $section->id,
@@ -429,6 +456,7 @@ class ScheduleRecommendationController extends Controller
             'quality_score' => $result['quality_score'],
             'penalty_score' => $result['penalty_score'],
             'resource_usage_score' => $result['resource_usage_score'],
+            'weekday_utilization_score' => $result['weekday_utilization_score'],
             'fair_distribution_score' => $result['fair_distribution_score'],
             'resource_fairness_score' => $result['resource_fairness_score'],
             'schedule_compactness_score' => $result['schedule_compactness_score'],
@@ -470,11 +498,15 @@ class ScheduleRecommendationController extends Controller
 
         try {
             $solverInput['course_ids'] = $this->resolveCourseIds($section, $solverInput['course_ids'] ?? null);
+            $profile = $this->preflight->validate($section, $solverInput['course_ids'], $solverInput);
+            $solverInput['requirements_by_course_id'] = $this->requirementBuilders->build($section, $solverInput['course_ids'], $solverInput);
             $solutions = $this->candidateOptimizer->rankForSection(
                 $this->cspSolver->solveRankedFromSchema($solverInput),
                 $section,
                 $solverInput,
             );
+        } catch (ScheduleGenerationPreflightException $exception) {
+            return response()->json($exception->payload(), 422);
         } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);
         }
@@ -520,6 +552,7 @@ class ScheduleRecommendationController extends Controller
 
         return response()->json([
             'message' => 'Schedule recommendation selected successfully.',
+            'department_profile' => $profile->value,
             'recommendation' => $recommendation,
         ], 201);
     }
@@ -912,15 +945,16 @@ class ScheduleRecommendationController extends Controller
             static fn (array $row): int => (int) ($row['room_id'] ?? 0),
             $rows,
         ))));
+        $roomTypeMap = $roomIds === []
+            ? collect()
+            : DB::table('rooms')->whereIn('id', $roomIds)->pluck('room_type', 'id');
         $roomCapacityMap = $roomIds === []
             ? collect()
             : DB::table('rooms')
                 ->whereIn('id', $roomIds)
                 ->get(['id', 'room_type', 'max_concurrent_classes'])
                 ->mapWithKeys(static fn ($room): array => [
-                    (int) $room->id => in_array($room->room_type, ['field', 'online'], true)
-                        ? 3
-                        : max(1, (int) ($room->max_concurrent_classes ?? 1)),
+                    (int) $room->id => max(1, (int) ($room->max_concurrent_classes ?? 1)),
                 ]);
 
         foreach ($rows as $leftIndex => $left) {
@@ -947,7 +981,11 @@ class ScheduleRecommendationController extends Controller
                     $left['room_id'] === $right['room_id'] &&
                     ($left['mode'] ?? 'on-site') !== 'online' &&
                     ($right['mode'] ?? 'on-site') !== 'online' &&
-                    (int) ($roomCapacityMap->get((int) $left['room_id']) ?? 1) <= 1
+                    ($roomTypeMap->get((int) $left['room_id']) !== 'field'
+                        || (int) $left['department_id'] === (int) $right['department_id']) &&
+                    ($roomTypeMap->get((int) $left['room_id']) === 'field'
+                        ? $this->resourceLimits->field((int) $left['department_id'])
+                        : (int) ($roomCapacityMap->get((int) $left['room_id']) ?? 1)) <= 1
                 ) {
                     $violations[] = $this->batchViolation('room_conflict', $leftIndex, $rightIndex);
                 }
@@ -990,16 +1028,27 @@ class ScheduleRecommendationController extends Controller
         }
     }
 
+    /**
+     * @param  Collection<int, int>  $roomCapacityMap
+     */
     private function batchRoomCapacityViolations(array $rows, $roomCapacityMap): array
     {
         $violations = [];
         $groups = [];
+        $fieldRoomIds = DB::table('rooms')
+            ->whereIn('id', $roomCapacityMap->keys()->all())
+            ->where('room_type', 'field')
+            ->pluck('id')
+            ->mapWithKeys(static fn ($id): array => [(int) $id => true])
+            ->all();
 
         foreach ($rows as $index => $row) {
             $roomId = (int) ($row['room_id'] ?? 0);
-            $capacity = (int) ($roomCapacityMap->get($roomId) ?? 1);
             $termId = (int) ($row['term_id'] ?? 0);
             $departmentId = (int) ($row['department_id'] ?? 0);
+            $capacity = isset($fieldRoomIds[$roomId])
+                ? $this->resourceLimits->field($departmentId)
+                : (int) ($roomCapacityMap->get($roomId) ?? 1);
             $day = (string) ($row['day'] ?? '');
 
             if ($roomId <= 0 || $capacity <= 1 || $termId <= 0 || $departmentId <= 0 || $day === '') {
@@ -1041,7 +1090,9 @@ class ScheduleRecommendationController extends Controller
 
             foreach ($existingSchedules as $schedule) {
                 $roomId = (int) $schedule->room_id;
-                $capacity = (int) ($roomCapacityMap->get($roomId) ?? 1);
+                $capacity = isset($fieldRoomIds[$roomId])
+                    ? $this->resourceLimits->field((int) $schedule->department_id)
+                    : (int) ($roomCapacityMap->get($roomId) ?? 1);
                 if ($capacity <= 1) {
                     continue;
                 }
@@ -1151,6 +1202,7 @@ class ScheduleRecommendationController extends Controller
             $groups["{$schedule->term_id}:{$schedule->department_id}:{$schedule->day}"][] = [
                 'index' => null,
                 'schedule_id' => (int) $schedule->id,
+                'department_id' => (int) $schedule->department_id,
                 'day' => (string) $schedule->day,
                 'start' => $this->timeToMinutes((string) $schedule->start_time),
                 'end' => $this->timeToMinutes((string) $schedule->end_time),
@@ -1181,13 +1233,14 @@ class ScheduleRecommendationController extends Controller
                 }
 
                 $active[$activeKey] = $item;
-                if ($item['index'] === null || count($active) <= self::ONLINE_MAX_CONCURRENT_CLASSES || isset($reported[$item['index']])) {
+                $onlineLimit = $this->resourceLimits->online((int) ($item['department_id'] ?? 0));
+                if ($item['index'] === null || count($active) <= $onlineLimit || isset($reported[$item['index']])) {
                     continue;
                 }
 
                 $violations[] = [
                     'rule' => 'online_capacity_conflict',
-                    'message' => "Recommended row {$item['index']} exceeds online capacity. Online allows only ".self::ONLINE_MAX_CONCURRENT_CLASSES." concurrent classes per department on {$item['day']}.",
+                    'message' => "Recommended row {$item['index']} exceeds the configured online slot limit of {$onlineLimit} for this department on {$item['day']}.",
                     'recommendation_row' => $item['index'],
                 ];
                 $reported[$item['index']] = true;
@@ -1240,26 +1293,20 @@ class ScheduleRecommendationController extends Controller
             return $this->departmentForbiddenResponse();
         }
 
-        // Clear previous generated schedules and cached solutions
-        Schedule::where('section_id', $section->id)
-            ->where('term_id', $section->term_id)
-            ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
-            ->delete();
-
-        ScheduleRecommendation::where('section_id', $section->id)
-            ->where('term_id', $section->term_id)
-            ->delete();
-
         try {
             $resolvedCourseIds = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
             $validated['course_ids'] = $resolvedCourseIds;
             $validated['max_solutions'] = 5;
+            $profile = $this->preflight->validate($section, $resolvedCourseIds, $validated);
+            $validated['requirements_by_course_id'] = $this->requirementBuilders->build($section, $resolvedCourseIds, $validated);
 
             $solutions = $this->candidateOptimizer->rankForSection(
                 $this->cspSolver->solveRankedFromSchema($validated),
                 $section,
                 $validated,
             );
+        } catch (ScheduleGenerationPreflightException $exception) {
+            return response()->json($exception->payload(), 422);
         } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json([
                 'message' => $exception->getMessage(),
@@ -1271,6 +1318,15 @@ class ScheduleRecommendationController extends Controller
                 'message' => 'No valid schedule could be generated that satisfies all constraints for this section.',
             ], 422);
         }
+
+        Schedule::where('section_id', $section->id)
+            ->where('term_id', $section->term_id)
+            ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
+            ->delete();
+
+        ScheduleRecommendation::where('section_id', $section->id)
+            ->where('term_id', $section->term_id)
+            ->delete();
 
         $bestSolution = $solutions[0];
         $user = $request->user();
@@ -1348,6 +1404,7 @@ class ScheduleRecommendationController extends Controller
 
         return response()->json([
             'message' => 'Schedule generated and placed into Timetable Grid successfully.',
+            'department_profile' => $profile->value,
             'schedules' => $createdSchedules,
         ]);
     }
@@ -1391,6 +1448,14 @@ class ScheduleRecommendationController extends Controller
     private function departmentForbiddenResponse(): JsonResponse
     {
         return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+    }
+
+    private function allowLongRunningGeneration(int $seconds): void
+    {
+        @ini_set('max_execution_time', (string) $seconds);
+        if (function_exists('set_time_limit')) {
+            @set_time_limit($seconds);
+        }
     }
 }
 

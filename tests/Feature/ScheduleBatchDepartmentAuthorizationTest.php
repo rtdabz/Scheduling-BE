@@ -99,6 +99,77 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
         ]);
     }
 
+    public function test_batch_can_replace_editable_schedules_for_selected_sections(): void
+    {
+        [$deptA, , $term, $roomA, , $courseA, , $sectionA] = $this->fixture();
+        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $oldDraft = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, ['status' => 'draft']);
+        $oldRevision = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, [
+            'day' => 'Tuesday',
+            'status' => 'revision',
+        ]);
+        $finalized = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, [
+            'day' => 'Wednesday',
+            'status' => 'finalized',
+        ]);
+
+        $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
+            'operations' => [[
+                'term_id' => $term->id,
+                'section_id' => $sectionA->id,
+                'course_id' => $courseA->id,
+                'room_id' => $roomA->id,
+                'department_id' => $deptA->id,
+                'day' => 'Thursday',
+                'start_time' => '10:00',
+                'end_time' => '11:00',
+                'mode' => 'on-site',
+                'status' => 'draft',
+            ]],
+            'replace_section_ids' => [$sectionA->id],
+            'replace_term_id' => $term->id,
+        ]);
+
+        $response->assertOk();
+        $this->assertDatabaseMissing('schedules', ['id' => $oldDraft->id]);
+        $this->assertDatabaseMissing('schedules', ['id' => $oldRevision->id]);
+        $this->assertDatabaseHas('schedules', ['id' => $finalized->id]);
+        $this->assertDatabaseHas('schedules', [
+            'section_id' => $sectionA->id,
+            'course_id' => $courseA->id,
+            'day' => 'Thursday',
+            'start_time' => '10:00',
+            'end_time' => '11:00',
+            'status' => 'draft',
+        ]);
+    }
+
+    public function test_batch_replace_section_ids_use_section_department_for_authorization(): void
+    {
+        [$deptA, $deptB, $term, $roomA, , $courseA, , $sectionA, $sectionB] = $this->fixture();
+        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+
+        $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
+            'operations' => [[
+                'term_id' => $term->id,
+                'section_id' => $sectionA->id,
+                'course_id' => $courseA->id,
+                'room_id' => $roomA->id,
+                'department_id' => $deptA->id,
+                'day' => 'Thursday',
+                'start_time' => '10:00',
+                'end_time' => '11:00',
+                'mode' => 'on-site',
+                'status' => 'draft',
+            ]],
+            'replace_section_ids' => [$sectionB->id],
+            'replace_term_id' => $term->id,
+        ]);
+
+        $response->assertForbidden();
+        $this->assertSame($deptB->id, $sectionB->department_id);
+    }
+
     public function test_batch_can_update_existing_schedule_with_partial_operation(): void
     {
         [$deptA, , $term, $roomA, , $courseA, , $sectionA] = $this->fixture();
@@ -153,6 +224,62 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
 
         $this->assertSame('online', $schedule->mode);
         $this->assertNull($schedule->room_id);
+    }
+
+    public function test_batch_field_capacity_uses_department_limit_instead_of_room_legacy_capacity(): void
+    {
+        [$deptA, , $term, , , , , ,] = $this->fixture();
+        $deptA->update(['field_slot_limit' => 5]);
+        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $fieldRoom = Rooms::create([
+            'room_code' => 'FIELD',
+            'room_name' => 'Shared Field',
+            'room_type' => 'field',
+            'status' => 'available',
+            'department_id' => null,
+            'max_concurrent_classes' => 3,
+        ]);
+        $course = Course::create([
+            'course_code' => 'PATHFIT',
+            'course_name' => 'Physical Activity',
+            'lecture_hours' => 2,
+            'lab_hours' => 0,
+            'units' => 2,
+            'course_category' => 'minor',
+            'room_type_required' => 'field',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $deptA->id,
+            'status' => 'active',
+        ]);
+        $sections = collect(range(1, 4))->map(fn (int $number) => Sections::create([
+            'section_name' => "A{$number}",
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $deptA->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]));
+
+        $operations = $sections->map(fn (Sections $section) => [
+            'term_id' => $term->id,
+            'section_id' => $section->id,
+            'course_id' => $course->id,
+            'room_id' => $fieldRoom->id,
+            'department_id' => $deptA->id,
+            'day' => 'Monday',
+            'start_time' => '07:00',
+            'end_time' => '10:00',
+            'mode' => 'field',
+            'status' => 'draft',
+        ])->all();
+
+        $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
+            'operations' => $operations,
+        ]);
+
+        $response->assertOk();
+        $this->assertSame(4, Schedule::query()->where('term_id', $term->id)->count());
     }
 
     public function test_split_validation_delete_ids_use_persisted_schedule_department_for_authorization(): void

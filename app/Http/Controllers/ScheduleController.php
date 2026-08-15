@@ -2,36 +2,38 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Schedule;
 use App\Models\Course;
 use App\Models\Rooms;
+use App\Models\Schedule;
+use App\Services\Scheduling\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Services\TimeslotService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class ScheduleController extends Controller
 {
-    private const ONLINE_MAX_CONCURRENT_CLASSES = 3;
+    private const REPLACEABLE_BATCH_STATUSES = ['draft', 'completed', 'revision'];
 
     protected RuleEngine $ruleEngine;
 
     public function __construct(
         RuleEngine $ruleEngine,
+        private readonly DepartmentResourceSlotLimitService $resourceLimits,
         private readonly SystemNotificationService $notifications,
         private readonly TimeslotService $timeslotService,
-    )
-    {
+    ) {
         $this->ruleEngine = $ruleEngine;
     }
 
     public function index(Request $request)
     {
         $query = Schedule::with([
-            'term', 'section', 'course', 'faculty', 'room', 'department'
+            'term', 'section', 'course', 'faculty', 'room', 'department',
         ]);
 
         if ($request->has('term_id') && $request->term_id) {
@@ -67,39 +69,39 @@ class ScheduleController extends Controller
     public function store(Request $request)
     {
         // Support course_id or subject_id
-        if (!$request->has('course_id') && $request->has('subject_id')) {
+        if (! $request->has('course_id') && $request->has('subject_id')) {
             $request->merge(['course_id' => $request->input('subject_id')]);
         }
 
         $validated = $request->validate([
-            'term_id'           => 'required|exists:terms,id',
-            'section_id'        => 'required|exists:sections,id',
-            'course_id'         => 'required|exists:courses,id',
-            'faculty_id'        => 'nullable|exists:faculties,id',
-            'room_id'           => 'nullable|exists:rooms,id',
-            'department_id'     => 'required|exists:departments,id',
-            'day'               => SchedulingPolicy::allowedDaysRule('required'),
-            'start_time'        => 'required|date_format:H:i',
-            'end_time'          => 'required|date_format:H:i|after:start_time',
-            'mode'              => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
-            'is_hybrid'         => 'sometimes|boolean',
+            'term_id' => 'required|exists:terms,id',
+            'section_id' => 'required|exists:sections,id',
+            'course_id' => 'required|exists:courses,id',
+            'faculty_id' => 'nullable|exists:faculties,id',
+            'room_id' => 'nullable|exists:rooms,id',
+            'department_id' => 'required|exists:departments,id',
+            'day' => SchedulingPolicy::allowedDaysRule('required'),
+            'start_time' => 'required|date_format:H:i',
+            'end_time' => 'required|date_format:H:i|after:start_time',
+            'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'is_hybrid' => 'sometimes|boolean',
             'preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
-            'split_group_id'    => 'nullable|string|max:36',
-            'meeting_type'      => 'nullable|in:lecture,laboratory',
-            'meeting_index'     => 'nullable|integer|min:1',
-            'status'            => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
+            'split_group_id' => 'nullable|string|max:36',
+            'meeting_type' => 'nullable|in:lecture,laboratory',
+            'meeting_index' => 'nullable|integer|min:1',
+            'status' => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
         ]);
         $validated = $this->clearOnlineRoomId($validated);
 
-        if (!$this->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
+        if (! $this->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
 
         $violations = $this->ruleEngine->validate($validated);
 
-        if (!empty($violations)) {
+        if (! empty($violations)) {
             return response()->json([
-                'message'    => 'Schedule conflicts with existing entries.',
+                'message' => 'Schedule conflicts with existing entries.',
                 'violations' => $violations,
             ], 422);
         }
@@ -135,9 +137,14 @@ class ScheduleController extends Controller
             'operations.*.status' => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
             'delete_ids' => 'sometimes|array',
             'delete_ids.*' => 'integer|exists:schedules,id',
+            'replace_section_ids' => 'sometimes|array',
+            'replace_section_ids.*' => 'integer|exists:sections,id',
+            'replace_term_id' => 'nullable|integer|exists:terms,id',
         ]);
 
         $deleteIds = $validated['delete_ids'] ?? [];
+        $replaceSectionIds = array_values(array_unique(array_map('intval', $validated['replace_section_ids'] ?? [])));
+        $replaceTermId = isset($validated['replace_term_id']) ? (int) $validated['replace_term_id'] : null;
         $validated['operations'] = $validated['operations'] ?? [];
         $validated['operations'] = array_map(
             fn (array $operation): array => $this->hydrateExistingScheduleOperation(
@@ -146,6 +153,40 @@ class ScheduleController extends Controller
             $validated['operations']
         );
 
+        if ($replaceSectionIds !== []) {
+            $operationTermIds = collect($validated['operations'])
+                ->pluck('term_id')
+                ->filter()
+                ->map('intval')
+                ->unique()
+                ->values()
+                ->all();
+
+            if ($replaceTermId === null && count($operationTermIds) === 1) {
+                $replaceTermId = (int) $operationTermIds[0];
+            }
+
+            if ($replaceTermId === null) {
+                return response()->json([
+                    'message' => 'Replacement term is required when replacing section schedules.',
+                ], 422);
+            }
+
+            if (! $this->sectionIdsBelongToDepartment($request, $replaceSectionIds)) {
+                return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+            }
+
+            $replaceScheduleIds = Schedule::query()
+                ->where('term_id', $replaceTermId)
+                ->whereIn('section_id', $replaceSectionIds)
+                ->whereIn('status', self::REPLACEABLE_BATCH_STATUSES)
+                ->pluck('id')
+                ->map('intval')
+                ->all();
+
+            $deleteIds = array_values(array_unique(array_merge(array_map('intval', $deleteIds), $replaceScheduleIds)));
+        }
+
         $missingCreateFields = [];
         foreach ($validated['operations'] as $index => $operation) {
             if (isset($operation['id'])) {
@@ -153,7 +194,7 @@ class ScheduleController extends Controller
             }
 
             foreach (['term_id', 'section_id', 'course_id', 'department_id', 'day', 'start_time', 'end_time'] as $field) {
-                if (!array_key_exists($field, $operation) || $operation[$field] === null || $operation[$field] === '') {
+                if (! array_key_exists($field, $operation) || $operation[$field] === null || $operation[$field] === '') {
                     $missingCreateFields[] = "operations.{$index}.{$field}";
                 }
             }
@@ -168,9 +209,9 @@ class ScheduleController extends Controller
 
         foreach ($validated['operations'] as $operation) {
             if (
-                !isset($operation['id'])
+                ! isset($operation['id'])
                 && isset($operation['department_id'])
-                && !$this->payloadBelongsToDepartment($request, (int) $operation['department_id'])
+                && ! $this->payloadBelongsToDepartment($request, (int) $operation['department_id'])
             ) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
             }
@@ -182,12 +223,12 @@ class ScheduleController extends Controller
             ->map('intval')
             ->all();
 
-        if (!$this->scheduleIdsBelongToDepartment($request, $operationIds)) {
+        if (! $this->scheduleIdsBelongToDepartment($request, $operationIds)) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
 
-        if (!empty($deleteIds)) {
-            if (!$this->scheduleIdsBelongToDepartment($request, $deleteIds)) {
+        if (! empty($deleteIds)) {
+            if (! $this->scheduleIdsBelongToDepartment($request, $deleteIds)) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
             }
         }
@@ -201,14 +242,14 @@ class ScheduleController extends Controller
             $index = (int) $orderedOperation['index'];
             $op = $orderedOperation['operation'];
             $attemptData = $op;
-            if (isset($attemptData['subject_id']) && !isset($attemptData['course_id'])) {
+            if (isset($attemptData['subject_id']) && ! isset($attemptData['course_id'])) {
                 $attemptData['course_id'] = $attemptData['subject_id'];
             }
 
             $attemptData['ignore_schedule_id'] = $mergedIgnoreIds;
 
             $violations = $this->ruleEngine->validate($attemptData);
-            if (!empty($violations)) {
+            if (! empty($violations)) {
                 foreach ($violations as $violation) {
                     $allViolations[] = array_merge($violation, [
                         'operation_index' => $index,
@@ -217,7 +258,7 @@ class ScheduleController extends Controller
             }
         }
 
-        if (!empty($allViolations)) {
+        if (! empty($allViolations)) {
             return response()->json([
                 'message' => 'Schedule operation conflicts with existing entries or intra-batch schedules.',
                 'violations' => $allViolations,
@@ -228,13 +269,13 @@ class ScheduleController extends Controller
         $deletedScheduleIds = [];
 
         DB::transaction(function () use ($validated, $deleteIds, &$savedSchedules, &$deletedScheduleIds) {
-            if (!empty($deleteIds)) {
+            if (! empty($deleteIds)) {
                 Schedule::whereIn('id', $deleteIds)->delete();
                 $deletedScheduleIds = array_map('intval', $deleteIds);
             }
 
             foreach ($validated['operations'] as $op) {
-                if (isset($op['subject_id']) && !isset($op['course_id'])) {
+                if (isset($op['subject_id']) && ! isset($op['course_id'])) {
                     $op['course_id'] = $op['subject_id'];
                 }
 
@@ -266,45 +307,45 @@ class ScheduleController extends Controller
     public function validateSplits(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'operations'                          => 'required|array',
-            'operations.*.id'                     => 'nullable|integer|exists:schedules,id',
-            'operations.*.term_id'                => 'required|integer|exists:terms,id',
-            'operations.*.section_id'             => 'required|integer|exists:sections,id',
-            'operations.*.course_id'              => 'sometimes|integer|exists:courses,id',
-            'operations.*.subject_id'             => 'sometimes|integer|exists:courses,id',
-            'operations.*.faculty_id'             => 'nullable|integer|exists:faculties,id',
-            'operations.*.room_id'                => 'nullable|integer|exists:rooms,id',
-            'operations.*.department_id'          => 'required|integer|exists:departments,id',
-            'operations.*.day'                    => SchedulingPolicy::allowedDaysRule('required'),
-            'operations.*.start_time'             => 'required|date_format:H:i',
-            'operations.*.end_time'               => 'required|date_format:H:i|after:operations.*.start_time',
-            'operations.*.mode'                   => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
-            'operations.*.is_hybrid'              => 'sometimes|boolean',
-            'operations.*.preferred_pattern'      => ['nullable', 'string', 'max:20'],
-            'operations.*.split_group_id'         => 'nullable|string|max:36',
-            'operations.*.meeting_type'           => 'nullable|in:lecture,laboratory',
-            'operations.*.meeting_index'          => 'nullable|integer|min:1',
-            'operations.*.status'                 => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
-            'delete_ids'                          => 'sometimes|array',
-            'delete_ids.*'                        => 'integer|exists:schedules,id',
+            'operations' => 'required|array',
+            'operations.*.id' => 'nullable|integer|exists:schedules,id',
+            'operations.*.term_id' => 'required|integer|exists:terms,id',
+            'operations.*.section_id' => 'required|integer|exists:sections,id',
+            'operations.*.course_id' => 'sometimes|integer|exists:courses,id',
+            'operations.*.subject_id' => 'sometimes|integer|exists:courses,id',
+            'operations.*.faculty_id' => 'nullable|integer|exists:faculties,id',
+            'operations.*.room_id' => 'nullable|integer|exists:rooms,id',
+            'operations.*.department_id' => 'required|integer|exists:departments,id',
+            'operations.*.day' => SchedulingPolicy::allowedDaysRule('required'),
+            'operations.*.start_time' => 'required|date_format:H:i',
+            'operations.*.end_time' => 'required|date_format:H:i|after:operations.*.start_time',
+            'operations.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'operations.*.is_hybrid' => 'sometimes|boolean',
+            'operations.*.preferred_pattern' => ['nullable', 'string', 'max:20'],
+            'operations.*.split_group_id' => 'nullable|string|max:36',
+            'operations.*.meeting_type' => 'nullable|in:lecture,laboratory',
+            'operations.*.meeting_index' => 'nullable|integer|min:1',
+            'operations.*.status' => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
+            'delete_ids' => 'sometimes|array',
+            'delete_ids.*' => 'integer|exists:schedules,id',
         ]);
 
-        $deleteIds     = $validated['delete_ids'] ?? [];
+        $deleteIds = $validated['delete_ids'] ?? [];
         $validated['operations'] = array_map(
             fn (array $operation): array => $this->hydrateExistingScheduleOperation(
                 $this->clearOnlineRoomId($operation)
             ),
             $validated['operations']
         );
-        $resolvedOps   = [];
+        $resolvedOps = [];
         $resolvedOpsByOriginalIndex = [];
         $allViolations = [];
 
         foreach ($validated['operations'] as $operation) {
             if (
-                !isset($operation['id'])
+                ! isset($operation['id'])
                 && isset($operation['department_id'])
-                && !$this->payloadBelongsToDepartment($request, (int) $operation['department_id'])
+                && ! $this->payloadBelongsToDepartment($request, (int) $operation['department_id'])
             ) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
             }
@@ -316,8 +357,8 @@ class ScheduleController extends Controller
             ->map('intval')
             ->all();
 
-        if (!$this->scheduleIdsBelongToDepartment($request, $operationIds)
-            || !$this->scheduleIdsBelongToDepartment($request, $deleteIds)) {
+        if (! $this->scheduleIdsBelongToDepartment($request, $operationIds)
+            || ! $this->scheduleIdsBelongToDepartment($request, $deleteIds)) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
 
@@ -328,7 +369,7 @@ class ScheduleController extends Controller
         foreach ($orderedOperations as $orderedOperation) {
             $index = (int) $orderedOperation['index'];
             $op = $orderedOperation['operation'];
-            if (isset($op['subject_id']) && !isset($op['course_id'])) {
+            if (isset($op['subject_id']) && ! isset($op['course_id'])) {
                 $op['course_id'] = $op['subject_id'];
             }
 
@@ -341,17 +382,18 @@ class ScheduleController extends Controller
                 unset($op['ignore_schedule_id']);
                 $resolvedOps[] = $op;
                 $resolvedOpsByOriginalIndex[$index] = $op;
+
                 continue;
             }
 
             // Determine whether the violation is a time-based conflict that a
             // slot-shift can fix (section, room, or faculty conflict).
             $timeConflictRules = ['section_conflict', 'room_conflict', 'faculty_conflict', 'split_group_day_separation'];
-            $hasTimeConflict   = collect($violations)->contains(
+            $hasTimeConflict = collect($violations)->contains(
                 fn ($v) => in_array($v['rule'] ?? '', $timeConflictRules, true)
             );
 
-            if (!$hasTimeConflict) {
+            if (! $hasTimeConflict) {
                 // Non-time violations — check if it's a room type mismatch that
                 // can be fixed by swapping to a compatible room automatically.
                 $hasRoomAssignmentIssue = collect($violations)->contains(
@@ -364,6 +406,7 @@ class ScheduleController extends Controller
                         unset($swappedOp['ignore_schedule_id']);
                         $resolvedOps[] = $swappedOp;
                         $resolvedOpsByOriginalIndex[$index] = $swappedOp;
+
                         continue;
                     }
                 }
@@ -373,12 +416,13 @@ class ScheduleController extends Controller
                 foreach ($violations as $v) {
                     $allViolations[] = array_merge($v, [
                         'operation_index' => $index,
-                        'course_code'     => $courseCode,
-                        'day'             => $op['day'],
-                        'start_time'      => $op['start_time'],
-                        'end_time'        => $op['end_time'],
+                        'course_code' => $courseCode,
+                        'day' => $op['day'],
+                        'start_time' => $op['start_time'],
+                        'end_time' => $op['end_time'],
                     ]);
                 }
+
                 continue;
             }
 
@@ -396,30 +440,30 @@ class ScheduleController extends Controller
                 // Could not find a valid slot within operating hours.
                 $courseCode = Course::find($op['course_id'] ?? 0)?->course_code ?? 'Course';
                 $allViolations[] = [
-                    'rule'            => 'split_unresolvable',
+                    'rule' => 'split_unresolvable',
                     'operation_index' => $index,
-                    'course_code'     => $courseCode,
-                    'day'             => $op['day'],
-                    'start_time'      => $op['start_time'],
-                    'end_time'        => $op['end_time'],
-                    'message'         => "Could not find a conflict-free time slot for {$courseCode} on {$op['day']} "
-                        . "starting at {$op['start_time']}. All slots within operating hours are occupied. "
-                        . "Please resolve the conflict manually or change the split day.",
+                    'course_code' => $courseCode,
+                    'day' => $op['day'],
+                    'start_time' => $op['start_time'],
+                    'end_time' => $op['end_time'],
+                    'message' => "Could not find a conflict-free time slot for {$courseCode} on {$op['day']} "
+                        ."starting at {$op['start_time']}. All slots within operating hours are occupied. "
+                        .'Please resolve the conflict manually or change the split day.',
                 ];
             }
         }
 
-        if (!empty($allViolations)) {
+        if (! empty($allViolations)) {
             return response()->json([
-                'status'       => 'conflict',
-                'message'      => 'One or more split sessions could not be scheduled conflict-free.',
-                'violations'   => $allViolations,
+                'status' => 'conflict',
+                'message' => 'One or more split sessions could not be scheduled conflict-free.',
+                'violations' => $allViolations,
             ], 422);
         }
 
         return response()->json([
-            'status'     => 'ok',
-            'message'    => 'All split sessions validated successfully.',
+            'status' => 'ok',
+            'message' => 'All split sessions validated successfully.',
             'operations' => $this->restoreOriginalOperationOrder($resolvedOpsByOriginalIndex),
         ]);
     }
@@ -430,7 +474,7 @@ class ScheduleController extends Controller
             ->map(fn (array $operation, int $index): array => [
                 'index' => $index,
                 'operation' => $operation,
-                'priority' => !empty($operation['split_group_id']) && (int) ($operation['meeting_index'] ?? 1) === 1 ? 0 : 1,
+                'priority' => ! empty($operation['split_group_id']) && (int) ($operation['meeting_index'] ?? 1) === 1 ? 0 : 1,
             ])
             ->sortBy([
                 ['priority', 'asc'],
@@ -505,8 +549,8 @@ class ScheduleController extends Controller
         array $resolvedOps
     ): ?array {
         $origStartMins = $this->timeToMinutesLocal($op['start_time']);
-        $origEndMins   = $this->timeToMinutesLocal($op['end_time']);
-        $durationMins  = $origEndMins - $origStartMins;
+        $origEndMins = $this->timeToMinutesLocal($op['end_time']);
+        $durationMins = $origEndMins - $origStartMins;
         $candidateStartMinutes = $this->generatedStartMinutesByCloseness($durationMins, $origStartMins);
 
         foreach ($candidateStartMinutes as $newStartMins) {
@@ -525,19 +569,19 @@ class ScheduleController extends Controller
 
         // Pattern-day swap search: try alternate days (MW: Mon <-> Wed, TTh: Tue <-> Thu, etc.)
         $daySwaps = [
-            'Monday'    => ['Wednesday', 'Friday', 'Tuesday', 'Thursday', 'Saturday'],
-            'Tuesday'   => ['Thursday', 'Wednesday', 'Monday', 'Friday', 'Saturday'],
+            'Monday' => ['Wednesday', 'Friday', 'Tuesday', 'Thursday', 'Saturday'],
+            'Tuesday' => ['Thursday', 'Wednesday', 'Monday', 'Friday', 'Saturday'],
             'Wednesday' => ['Monday', 'Friday', 'Thursday', 'Tuesday', 'Saturday'],
-            'Thursday'  => ['Tuesday', 'Friday', 'Wednesday', 'Monday', 'Saturday'],
-            'Friday'    => ['Wednesday', 'Monday', 'Thursday', 'Tuesday', 'Saturday'],
-            'Saturday'  => ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
-            'Sunday'    => ['Saturday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+            'Thursday' => ['Tuesday', 'Friday', 'Wednesday', 'Monday', 'Saturday'],
+            'Friday' => ['Wednesday', 'Monday', 'Thursday', 'Tuesday', 'Saturday'],
+            'Saturday' => ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+            'Sunday' => ['Saturday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
         ];
 
         $alternateDays = $daySwaps[$op['day']] ?? [];
         foreach ($alternateDays as $altDay) {
             // Try original start time on alternate day
-            $candidate        = $op;
+            $candidate = $op;
             $candidate['day'] = $altDay;
             $res = $this->testAndResolveCandidate($candidate, $resolvedOps);
             if ($res !== null) {
@@ -575,8 +619,7 @@ class ScheduleController extends Controller
 
         usort(
             $minutes,
-            static fn (int $left, int $right): int =>
-                abs($left - $originalStartMinutes) <=> abs($right - $originalStartMinutes)
+            static fn (int $left, int $right): int => abs($left - $originalStartMinutes) <=> abs($right - $originalStartMinutes)
         );
 
         return array_values(array_unique($minutes));
@@ -590,19 +633,19 @@ class ScheduleController extends Controller
      */
     private function attemptRoomSwapResolution(array $op, array $resolvedOps = []): ?array
     {
-        $courseId    = (int) ($op['course_id'] ?? 0);
+        $courseId = (int) ($op['course_id'] ?? 0);
         $meetingType = $op['meeting_type'] ?? null;
-        $mode        = $op['mode'] ?? 'on-site';
-        $deptId      = (int) ($op['department_id'] ?? 0);
+        $mode = $op['mode'] ?? 'on-site';
+        $deptId = (int) ($op['department_id'] ?? 0);
 
         // Determine the required room type for this operation.
         $requiredRoomType = match (true) {
             $mode === 'online' => 'online',
-            $mode === 'field'  => 'field',
-            $meetingType === 'lecture'    => 'lecture',
+            $mode === 'field' => 'field',
+            $meetingType === 'lecture' => 'lecture',
             $meetingType === 'laboratory' => 'laboratory',
             $courseId > 0 => Course::find($courseId)?->room_type_required ?? 'lecture',
-            default       => 'lecture',
+            default => 'lecture',
         };
 
         // Fetch all available rooms of the required type visible to the department.
@@ -611,7 +654,7 @@ class ScheduleController extends Controller
             ->where('room_type', $requiredRoomType)
             ->where(static function ($q) use ($deptId): void {
                 $q->whereNull('department_id')
-                  ->orWhere('department_id', $deptId);
+                    ->orWhere('department_id', $deptId);
             })
             ->orderBy('room_code')
             ->get();
@@ -623,7 +666,7 @@ class ScheduleController extends Controller
                 ->where('room_type', 'lecture')
                 ->where(static function ($q) use ($deptId): void {
                     $q->whereNull('department_id')
-                      ->orWhere('department_id', $deptId);
+                        ->orWhere('department_id', $deptId);
                 })
                 ->orderBy('room_code')
                 ->get();
@@ -636,7 +679,7 @@ class ScheduleController extends Controller
                 continue;
             }
 
-            $candidate            = $op;
+            $candidate = $op;
             $candidate['room_id'] = (int) $room->id;
 
             if (empty($this->validateCandidate($candidate, $resolvedOps))) {
@@ -650,6 +693,7 @@ class ScheduleController extends Controller
     private function timeToMinutesLocal(string $time): int
     {
         [$h, $m] = array_map('intval', explode(':', $time));
+
         return ($h * 60) + $m;
     }
 
@@ -657,6 +701,7 @@ class ScheduleController extends Controller
     {
         $h = intdiv($minutes, 60);
         $m = $minutes % 60;
+
         return sprintf('%02d:%02d', $h, $m);
     }
 
@@ -673,29 +718,31 @@ class ScheduleController extends Controller
             $operations
         ))));
 
-        $coursesMap = !empty($courseIds)
+        $coursesMap = ! empty($courseIds)
             ? Course::whereIn('id', $courseIds)->get()->keyBy('id')
             : collect();
         $roomIds = array_values(array_unique(array_filter(array_map(
             fn ($op) => (int) ($op['room_id'] ?? 0),
             $operations,
         ))));
-        $roomCapacityMap = !empty($roomIds)
+        $roomTypeMap = ! empty($roomIds)
+            ? Rooms::whereIn('id', $roomIds)->pluck('room_type', 'id')
+            : collect();
+        $roomCapacityMap = ! empty($roomIds)
             ? Rooms::whereIn('id', $roomIds)
                 ->get(['id', 'room_type', 'max_concurrent_classes'])
                 ->mapWithKeys(fn (Rooms $room): array => [
-                    (int) $room->id => in_array($room->room_type, ['field', 'online'], true)
-                        ? 3
-                        : max(1, (int) ($room->max_concurrent_classes ?? 1)),
+                    (int) $room->id => max(1, (int) ($room->max_concurrent_classes ?? 1)),
                 ])
             : collect();
 
         for ($i = 0; $i < $count; $i++) {
             $op1 = $operations[$i];
             $termId1 = (int) ($op1['term_id'] ?? 0);
+            $departmentId1 = (int) ($op1['department_id'] ?? 0);
             $sectionId1 = (int) ($op1['section_id'] ?? 0);
             $roomId1 = (int) ($op1['room_id'] ?? 0);
-            $facultyId1 = !empty($op1['faculty_id']) ? (int) $op1['faculty_id'] : null;
+            $facultyId1 = ! empty($op1['faculty_id']) ? (int) $op1['faculty_id'] : null;
             $day1 = (string) ($op1['day'] ?? '');
             $startMins1 = $this->timeToMinutesLocal((string) ($op1['start_time'] ?? '00:00'));
             $endMins1 = $this->timeToMinutesLocal((string) ($op1['end_time'] ?? '00:00'));
@@ -706,9 +753,10 @@ class ScheduleController extends Controller
             for ($j = $i + 1; $j < $count; $j++) {
                 $op2 = $operations[$j];
                 $termId2 = (int) ($op2['term_id'] ?? 0);
+                $departmentId2 = (int) ($op2['department_id'] ?? 0);
                 $sectionId2 = (int) ($op2['section_id'] ?? 0);
                 $roomId2 = (int) ($op2['room_id'] ?? 0);
-                $facultyId2 = !empty($op2['faculty_id']) ? (int) $op2['faculty_id'] : null;
+                $facultyId2 = ! empty($op2['faculty_id']) ? (int) $op2['faculty_id'] : null;
                 $day2 = (string) ($op2['day'] ?? '');
                 $startMins2 = $this->timeToMinutesLocal((string) ($op2['start_time'] ?? '00:00'));
                 $endMins2 = $this->timeToMinutesLocal((string) ($op2['end_time'] ?? '00:00'));
@@ -731,8 +779,12 @@ class ScheduleController extends Controller
                             ];
                         }
 
-                        $roomCapacity = (int) ($roomCapacityMap->get($roomId1) ?? 1);
-                        if ($roomId1 === $roomId2 && $mode1 !== 'online' && $mode2 !== 'online' && $roomCapacity <= 1) {
+                        $roomCapacity = $roomTypeMap->get($roomId1) === 'field'
+                            ? $this->resourceLimits->field($departmentId1)
+                            : (int) ($roomCapacityMap->get($roomId1) ?? 1);
+                        $sameRoomScope = $roomTypeMap->get($roomId1) !== 'field'
+                            || $departmentId1 === $departmentId2;
+                        if ($roomId1 === $roomId2 && $sameRoomScope && $mode1 !== 'online' && $mode2 !== 'online' && $roomCapacity <= 1) {
                             $violations[] = [
                                 'rule' => 'room_conflict',
                                 'operation_index' => $j,
@@ -765,6 +817,9 @@ class ScheduleController extends Controller
         return $violations;
     }
 
+    /**
+     * @param  Collection<int, Course>  $coursesMap
+     */
     private function checkIntraBatchOnlineCapacityConflicts(array $operations, $coursesMap, array $ignoreScheduleIds): array
     {
         $violations = [];
@@ -820,6 +875,7 @@ class ScheduleController extends Controller
             $groups["{$schedule->term_id}:{$schedule->department_id}:{$schedule->day}"][] = [
                 'index' => null,
                 'schedule_id' => (int) $schedule->id,
+                'department_id' => (int) $schedule->department_id,
                 'day' => (string) $schedule->day,
                 'start' => $this->timeToMinutesLocal((string) $schedule->start_time),
                 'end' => $this->timeToMinutesLocal((string) $schedule->end_time),
@@ -836,8 +892,7 @@ class ScheduleController extends Controller
 
             usort(
                 $events,
-                static fn (array $left, array $right): int =>
-                    ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
+                static fn (array $left, array $right): int => ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
             );
 
             $active = [];
@@ -847,11 +902,13 @@ class ScheduleController extends Controller
                 $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
                 if ($event['delta'] < 0) {
                     unset($active[$activeKey]);
+
                     continue;
                 }
 
                 $active[$activeKey] = $item;
-                if ($item['index'] === null || count($active) <= self::ONLINE_MAX_CONCURRENT_CLASSES || isset($reported[$item['index']])) {
+                $onlineLimit = $this->resourceLimits->online((int) ($item['department_id'] ?? 0));
+                if ($item['index'] === null || count($active) <= $onlineLimit || isset($reported[$item['index']])) {
                     continue;
                 }
 
@@ -861,7 +918,7 @@ class ScheduleController extends Controller
                     'operation_index' => $item['index'],
                     'course_code' => $courseCode,
                     'day' => $item['day'],
-                    'message' => "Intra-batch Online Capacity Conflict: Online allows only ".self::ONLINE_MAX_CONCURRENT_CLASSES." concurrent classes per department on {$item['day']}.",
+                    'message' => "Intra-batch Online Capacity Conflict: configured limit is {$onlineLimit} concurrent classes per department on {$item['day']}.",
                 ];
                 $reported[$item['index']] = true;
             }
@@ -870,10 +927,20 @@ class ScheduleController extends Controller
         return $violations;
     }
 
+    /**
+     * @param  Collection<int, Course>  $coursesMap
+     * @param  Collection<int, int>  $roomCapacityMap
+     */
     private function checkIntraBatchRoomCapacityConflicts(array $operations, $coursesMap, $roomCapacityMap, array $ignoreScheduleIds): array
     {
         $violations = [];
         $groups = [];
+        $fieldRoomIds = Rooms::whereIn('id', array_values(array_unique(array_filter(array_map(
+            static fn (array $operation): int => (int) ($operation['room_id'] ?? 0),
+            $operations,
+        )))))->where('room_type', 'field')->pluck('id')->mapWithKeys(
+            static fn ($id): array => [(int) $id => true],
+        )->all();
 
         foreach ($operations as $index => $operation) {
             $roomId = (int) ($operation['room_id'] ?? 0);
@@ -881,7 +948,9 @@ class ScheduleController extends Controller
             $departmentId = (int) ($operation['department_id'] ?? 0);
             $day = (string) ($operation['day'] ?? '');
             $mode = (string) ($operation['mode'] ?? 'on-site');
-            $capacity = (int) ($roomCapacityMap->get($roomId) ?? 1);
+            $capacity = isset($fieldRoomIds[$roomId])
+                ? $this->resourceLimits->field($departmentId)
+                : (int) ($roomCapacityMap->get($roomId) ?? 1);
 
             if ($roomId <= 0 || $termId <= 0 || $departmentId <= 0 || $day === '' || $mode === 'online' || $capacity <= 1) {
                 continue;
@@ -936,7 +1005,9 @@ class ScheduleController extends Controller
                 $roomId = (int) $schedule->room_id;
                 $termId = (int) $schedule->term_id;
                 $day = (string) $schedule->day;
-                $capacity = (int) ($roomCapacityMap->get($roomId) ?? 1);
+                $capacity = isset($fieldRoomIds[$roomId])
+                    ? $this->resourceLimits->field((int) $schedule->department_id)
+                    : (int) ($roomCapacityMap->get($roomId) ?? 1);
                 if ($capacity <= 1) {
                     continue;
                 }
@@ -964,8 +1035,7 @@ class ScheduleController extends Controller
 
             usort(
                 $events,
-                static fn (array $left, array $right): int =>
-                    ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
+                static fn (array $left, array $right): int => ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
             );
 
             $active = [];
@@ -975,6 +1045,7 @@ class ScheduleController extends Controller
                 $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
                 if ($event['delta'] < 0) {
                     unset($active[$activeKey]);
+
                     continue;
                 }
 
@@ -1003,7 +1074,7 @@ class ScheduleController extends Controller
 
     private function hydrateExistingScheduleOperation(array $operation): array
     {
-        if (!isset($operation['id'])) {
+        if (! isset($operation['id'])) {
             return $operation;
         }
 
@@ -1040,7 +1111,7 @@ class ScheduleController extends Controller
         return response()->json($schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department']));
     }
 
-    public function byTerm($termId)
+    public function byTerm(int|string $termId)
     {
         $schedules = Schedule::with(['term', 'section', 'course', 'faculty', 'room', 'department'])
             ->where('term_id', $termId)
@@ -1050,7 +1121,7 @@ class ScheduleController extends Controller
         return response()->json($schedules);
     }
 
-    public function bySection($sectionId)
+    public function bySection(int|string $sectionId)
     {
         $schedules = Schedule::with(['term', 'section', 'course', 'faculty', 'room', 'department'])
             ->where('section_id', $sectionId)
@@ -1062,37 +1133,37 @@ class ScheduleController extends Controller
 
     public function update(Request $request, Schedule $schedule)
     {
-        if (!$request->has('course_id') && $request->has('subject_id')) {
+        if (! $request->has('course_id') && $request->has('subject_id')) {
             $request->merge(['course_id' => $request->input('subject_id')]);
         }
 
         $validated = $request->validate([
-            'term_id'           => 'sometimes|required|exists:terms,id',
-            'section_id'        => 'sometimes|required|exists:sections,id',
-            'course_id'         => 'sometimes|required|exists:courses,id',
-            'faculty_id'        => 'nullable|exists:faculties,id',
-            'room_id'           => 'sometimes|nullable|exists:rooms,id',
-            'department_id'     => 'sometimes|required|exists:departments,id',
-            'day'               => SchedulingPolicy::allowedDaysRule('sometimes'),
-            'start_time'        => 'sometimes|required|date_format:H:i',
-            'end_time'          => 'sometimes|required|date_format:H:i|after:start_time',
-            'mode'              => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
-            'is_hybrid'         => 'sometimes|boolean',
+            'term_id' => 'sometimes|required|exists:terms,id',
+            'section_id' => 'sometimes|required|exists:sections,id',
+            'course_id' => 'sometimes|required|exists:courses,id',
+            'faculty_id' => 'nullable|exists:faculties,id',
+            'room_id' => 'sometimes|nullable|exists:rooms,id',
+            'department_id' => 'sometimes|required|exists:departments,id',
+            'day' => SchedulingPolicy::allowedDaysRule('sometimes'),
+            'start_time' => 'sometimes|required|date_format:H:i',
+            'end_time' => 'sometimes|required|date_format:H:i|after:start_time',
+            'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'is_hybrid' => 'sometimes|boolean',
             'preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
-            'split_group_id'    => 'nullable|string|max:36',
-            'meeting_type'      => 'nullable|in:lecture,laboratory',
-            'meeting_index'     => 'nullable|integer|min:1',
-            'status'            => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
+            'split_group_id' => 'nullable|string|max:36',
+            'meeting_type' => 'nullable|in:lecture,laboratory',
+            'meeting_index' => 'nullable|integer|min:1',
+            'status' => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
         ]);
         $validated = $this->clearOnlineRoomId($validated);
 
-        if (!$this->scheduleBelongsToDepartment($request, $schedule)) {
+        if (! $this->scheduleBelongsToDepartment($request, $schedule)) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
 
         if (
             isset($validated['department_id'])
-            && !$this->payloadBelongsToDepartment($request, (int) $validated['department_id'])
+            && ! $this->payloadBelongsToDepartment($request, (int) $validated['department_id'])
         ) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
@@ -1101,9 +1172,9 @@ class ScheduleController extends Controller
 
         $violations = $this->ruleEngine->validate($attemptData);
 
-        if (!empty($violations)) {
+        if (! empty($violations)) {
             return response()->json([
-                'message'    => 'Schedule update conflicts with existing entries.',
+                'message' => 'Schedule update conflicts with existing entries.',
                 'violations' => $violations,
             ], 422);
         }
@@ -1117,7 +1188,7 @@ class ScheduleController extends Controller
 
     public function destroy(Request $request, Schedule $schedule)
     {
-        if (!$this->scheduleBelongsToDepartment($request, $schedule)) {
+        if (! $this->scheduleBelongsToDepartment($request, $schedule)) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
 
@@ -1131,7 +1202,7 @@ class ScheduleController extends Controller
                 $q->where('split_group_id', $splitGroupId);
             })->get();
 
-            if (!$this->scheduleIdsBelongToDepartment($request, $schedules->pluck('id')->all())) {
+            if (! $this->scheduleIdsBelongToDepartment($request, $schedules->pluck('id')->all())) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
             }
 
@@ -1180,6 +1251,7 @@ class ScheduleController extends Controller
     private function payloadBelongsToDepartment(Request $request, int $targetDeptId): bool
     {
         $scope = $this->departmentScope($request);
+
         return $scope === null || $scope === $targetDeptId;
     }
 
@@ -1195,8 +1267,21 @@ class ScheduleController extends Controller
             return true;
         }
 
-        return !Schedule::query()
+        return ! Schedule::query()
             ->whereIn('id', array_values(array_unique(array_map('intval', $scheduleIds))))
+            ->where('department_id', '!=', $scope)
+            ->exists();
+    }
+
+    private function sectionIdsBelongToDepartment(Request $request, array $sectionIds): bool
+    {
+        $scope = $this->departmentScope($request);
+        if ($scope === null || $sectionIds === []) {
+            return true;
+        }
+
+        return ! DB::table('sections')
+            ->whereIn('id', array_values(array_unique(array_map('intval', $sectionIds))))
             ->where('department_id', '!=', $scope)
             ->exists();
     }
@@ -1204,7 +1289,9 @@ class ScheduleController extends Controller
     private function notifyScheduleSaved(Request $request, Schedule $schedule, string $action): void
     {
         $actor = $request->user();
-        if (!$actor) return;
+        if (! $actor) {
+            return;
+        }
 
         $courseCode = $schedule->course?->course_code ?? 'Course';
         $sectionName = $schedule->section?->section_name ?? 'Section';
@@ -1212,7 +1299,7 @@ class ScheduleController extends Controller
         $this->notifications->notifyRoles(
             ['vpaa', 'dean'],
             'schedule_activity',
-            "Schedule " . ucfirst($action),
+            'Schedule '.ucfirst($action),
             "{$actor->name} {$action} schedule for {$courseCode} ({$sectionName}).",
             $actor,
             $schedule->department_id,
@@ -1228,7 +1315,7 @@ class ScheduleController extends Controller
             'status' => SchedulingPolicy::allowedScheduleStatusesRule('required'),
         ]);
 
-        if (!$this->scheduleIdsBelongToDepartment($request, $validated['ids'])) {
+        if (! $this->scheduleIdsBelongToDepartment($request, $validated['ids'])) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
 

@@ -23,7 +23,18 @@ class CSPSolver
 
     private const SOFT_FIELD_EVENING_PENALTY = 6;
 
-    private const SPLIT_LECTURE_LAB_START_PAIR_LIMIT = 10;
+    private const SPLIT_LECTURE_LAB_START_PAIR_LIMIT = 6;
+
+    /** @var list<int> */
+    private const CLASSROOM_SCHEDULABLE_BLOCK_SLOTS = [3, 4, 6];
+
+    private const CLASSROOM_GAP_SCHEDULABLE_SLOT_SOFT_PENALTY = 1800;
+
+    private const CLASSROOM_GAP_LEFTOVER_SLOT_SOFT_PENALTY = 7000;
+
+    private const CLASSROOM_FIVE_SLOT_GAP_SOFT_PENALTY = 20000;
+
+    private const CLASSROOM_SIX_SLOT_GAP_SOFT_PENALTY = 14000;
 
     /** @var array<string, bool> */
     private array $databaseValidityCache = [];
@@ -56,6 +67,12 @@ class CSPSolver
         'section_online_targets' => [],
     ];
 
+    /** @var array<int, string> */
+    private array $generationForcedDaysByCourseId = [];
+
+    /** @var array<int, list<array<string, mixed>>> */
+    private array $requirementsByCourseId = [];
+
     /**
      * Exposes the prepared department-level fairness targets to coordinators
      * that rank complete multi-section candidates. The returned snapshot is
@@ -76,6 +93,12 @@ class CSPSolver
         return $this->departmentRoomFairness;
     }
 
+    /** @return array<int, string> */
+    public function generationForcedDaysByCourseId(): array
+    {
+        return $this->generationForcedDaysByCourseId;
+    }
+
     /** @var array<int, int> */
     private array $roomCapacities = [];
 
@@ -92,7 +115,12 @@ class CSPSolver
 
     private bool $searchLimitReached = false;
 
-    public function __construct() {}
+    private DepartmentResourceSlotLimitService $resourceLimits;
+
+    public function __construct(?DepartmentResourceSlotLimitService $resourceLimits = null)
+    {
+        $this->resourceLimits = $resourceLimits ?? new DepartmentResourceSlotLimitService;
+    }
 
     /**
      * @param array{
@@ -161,6 +189,7 @@ class CSPSolver
             balancedSplitCourseIds: $schema['balanced_split_course_ids'],
             anchoredSchedulesByCourseId: $schema['anchored_schedules'],
             deliveryModesByCourseId: $schema['delivery_modes_by_course_id'],
+            requirementsByCourseId: $schema['requirements_by_course_id'],
             seed: $schema['seed'] ?? null,
         );
     }
@@ -182,6 +211,7 @@ class CSPSolver
         array $balancedSplitCourseIds = [],
         array $anchoredSchedulesByCourseId = [],
         array $deliveryModesByCourseId = [],
+        array $requirementsByCourseId = [],
         ?int $seed = null,
     ): array {
         $rankedSolutions = $this->solveRanked(
@@ -197,6 +227,7 @@ class CSPSolver
             balancedSplitCourseIds: $balancedSplitCourseIds,
             anchoredSchedulesByCourseId: $anchoredSchedulesByCourseId,
             deliveryModesByCourseId: $deliveryModesByCourseId,
+            requirementsByCourseId: $requirementsByCourseId,
             seed: $seed,
         );
 
@@ -223,6 +254,7 @@ class CSPSolver
         array $balancedSplitCourseIds = [],
         array $anchoredSchedulesByCourseId = [],
         array $deliveryModesByCourseId = [],
+        array $requirementsByCourseId = [],
         ?int $seed = null,
     ): array {
         $this->validateArguments(
@@ -244,6 +276,8 @@ class CSPSolver
             maxIterations: $maxIterations,
             timeoutSeconds: $timeoutSeconds,
         );
+        $this->generationForcedDaysByCourseId = [];
+        $this->requirementsByCourseId = $this->normalizeRequirements($requirementsByCourseId, $courseIds);
 
         $courseIds = $this->normalizeCourseIds($courseIds);
 
@@ -255,6 +289,7 @@ class CSPSolver
         $section = Sections::query()
             ->with('term')
             ->findOrFail($sectionId);
+        $resourceLimits = $this->resourceLimits->forDepartment((int) $section->department_id);
 
         $this->validateSectionForScheduling($section);
 
@@ -274,7 +309,7 @@ class CSPSolver
             ->first();
 
         if ($activeCurriculum) {
-            $pivotMap = \DB::table('curriculum_course')
+            $pivotMap = DB::table('curriculum_course')
                 ->where('curriculum_id', $activeCurriculum->id)
                 ->whereIn('course_id', $courseIds)
                 ->get()
@@ -347,7 +382,9 @@ class CSPSolver
                     'room_type' => $rt,
                     'status' => 'available',
                     'department_id' => null,
-                    'max_concurrent_classes' => in_array($rt, ['field', 'online'], true) ? 3 : 1,
+                    'max_concurrent_classes' => $rt === 'online'
+                        ? $resourceLimits['online']
+                        : $resourceLimits['field'],
                 ]);
                 $virtualRoom->id = $existingVirtual ? $existingVirtual->id : ($rt === 'field' ? 99999 : 99998);
                 $rooms->push($virtualRoom);
@@ -356,9 +393,10 @@ class CSPSolver
 
         $this->roomCapacities = $rooms
             ->mapWithKeys(static fn (Rooms $room): array => [
-                (int) $room->id => in_array((string) $room->room_type, ['field', 'online'], true)
-                    ? 3
-                    : max(1, (int) ($room->max_concurrent_classes ?? 1)),
+                // For online/field rooms use their actual max_concurrent_classes
+                // (which now reflects the active-section-count scaling for virtual
+                // rooms, and the DB-configured value for real rooms).
+                (int) $room->id => max(1, (int) ($room->max_concurrent_classes ?? 1)),
             ])
             ->all();
         $this->roomTypes = $rooms
@@ -366,12 +404,6 @@ class CSPSolver
                 (int) $room->id => (string) $room->room_type,
             ])
             ->all();
-
-        $this->ensureRoomDomainsExist(
-            courses: $courses,
-            rooms: $rooms,
-            deliveryMode: $deliveryMode,
-        );
 
         $this->prepareDepartmentRoomFairness(
             section: $section,
@@ -392,6 +424,7 @@ class CSPSolver
         $fieldEveningScheduleEnabled = (bool) ($department?->field_evening_schedule_enabled ?? false);
         $sundayOnlineOnlyEnabled = (bool) ($department?->sunday_online_only_enabled ?? true);
         $forcedDaysByCourseId = $this->forcedDaysByCourseId((int) $section->department_id, $courseIds);
+        $this->generationForcedDaysByCourseId = $forcedDaysByCourseId;
 
         $variables = $this->buildVariables(
             courses: $courses,
@@ -409,6 +442,7 @@ class CSPSolver
             forcedDaysByCourseId: $forcedDaysByCourseId,
             anchoredSchedulesByCourseId: $anchoredSchedulesByCourseId,
             deliveryModesByCourseId: $deliveryModesByCourseId,
+            requirementsByCourseId: $this->requirementsByCourseId,
         );
 
         $variables = $this->prunePersistedConflictingCandidates(
@@ -417,9 +451,39 @@ class CSPSolver
             departmentId: (int) $section->department_id,
         );
 
+        if ($this->requirementsByCourseId !== []) {
+            $coursesById = $courses->keyBy(static fn (Course $course): int => (int) $course->id);
+            foreach ($variables as $variable) {
+                if (($variable['domain'] ?? []) !== []) {
+                    continue;
+                }
+
+                $course = $coursesById->get((int) $variable['course_id']);
+                throw new RuntimeException(sprintf(
+                    '%s / %s has no eligible room candidates after existing schedule conflicts were applied.',
+                    (string) $section->section_name,
+                    (string) ($course?->course_code ?? ('Course '.$variable['course_id'])),
+                ));
+            }
+        }
+
         usort(
             $variables,
             static function (array $left, array $right): int {
+                // Fixed pattern / forced day courses are the most constrained (MRV heuristic)
+                $leftConstrained = ! empty($left['preferred_pattern']) || ! empty($left['forced_day']);
+                $rightConstrained = ! empty($right['preferred_pattern']) || ! empty($right['forced_day']);
+                if ($leftConstrained !== $rightConstrained) {
+                    return $leftConstrained ? -1 : 1;
+                }
+
+                $priorityComparison = ($left['scheduling_priority'] ?? 2)
+                    <=> ($right['scheduling_priority'] ?? 2);
+
+                if ($priorityComparison !== 0) {
+                    return $priorityComparison;
+                }
+
                 $domainComparison = count($left['domain'])
                     <=> count($right['domain']);
 
@@ -443,8 +507,8 @@ class CSPSolver
         // (capped at 200) to maximise the variety of distinct scheduling choices
         // before applying diversity-aware selection.
         $candidatePoolLimit = min(
-            max($maxSolutions * 20, 50),
-            100,
+            max($maxSolutions * 3, 8),
+            18,
         );
         $onlineCapableAssignments = $this->onlineCapableVariableCount($variables);
         $balancedOnlineAssignments = min($onlineCapableAssignments, max(
@@ -471,7 +535,15 @@ class CSPSolver
             minimumOnlineAssignments: 0,
         );
 
-        if ($balancedOnlineAssignments > 0 && ! $this->hasExceededSearchLimits()) {
+        if (
+            $balancedOnlineAssignments > 0
+            && ! $this->hasEnoughOnlineBalancedSolutions(
+                solutions: $rawSolutions,
+                minimumOnlineAssignments: $balancedOnlineAssignments,
+                requiredSolutions: $maxSolutions,
+            )
+            && ! $this->hasExceededSearchLimits()
+        ) {
             $this->backtrack(
                 variableIndex: 0,
                 variables: $variables,
@@ -509,6 +581,28 @@ class CSPSolver
         unset($solution);
 
         return $ranked;
+    }
+
+    private function hasEnoughOnlineBalancedSolutions(
+        array $solutions,
+        int $minimumOnlineAssignments,
+        int $requiredSolutions,
+    ): bool {
+        if ($minimumOnlineAssignments <= 0 || $requiredSolutions <= 0) {
+            return true;
+        }
+
+        $balancedCount = 0;
+        foreach ($solutions as $solution) {
+            if ($this->onlineLectureAssignmentCount($solution) >= $minimumOnlineAssignments) {
+                $balancedCount++;
+                if ($balancedCount >= $requiredSolutions) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     public function searchLimitReached(): bool
@@ -630,13 +724,22 @@ class CSPSolver
             return $domain;
         }
 
+        $ranked = [];
+        foreach ($domain as $index => $candidate) {
+            $ranked[] = [
+                'candidate' => $candidate,
+                'penalty' => $this->candidateTentativeGapPenalty($candidate, $assignments),
+                'index' => $index,
+            ];
+        }
+
         usort(
-            $domain,
-            fn (array $left, array $right): int => $this->candidateTentativeGapPenalty($left, $assignments)
-                    <=> $this->candidateTentativeGapPenalty($right, $assignments),
+            $ranked,
+            static fn (array $left, array $right): int => $left['penalty'] <=> $right['penalty']
+                ?: $left['index'] <=> $right['index'],
         );
 
-        return $domain;
+        return array_column($ranked, 'candidate');
     }
 
     /**
@@ -696,6 +799,9 @@ class CSPSolver
                 if ($bestRoomGap > 0 && $bestRoomGap <= 2) {
                     $penalty += 3000;
                 }
+                if ($this->isClassroomCandidateBlock($candidate, $candidateBlock)) {
+                    $penalty += $this->classroomAwkwardGapPenalty($bestRoomGap);
+                }
             }
 
             if ($bestSectionGap !== null) {
@@ -727,6 +833,63 @@ class CSPSolver
         return null;
     }
 
+    private function isClassroomCandidateBlock(array $candidate, array $block): bool
+    {
+        $roomId = $this->nullableRoomId(
+            array_key_exists('room_id', $block)
+                ? $block['room_id']
+                : ($candidate['room_id'] ?? null)
+        );
+
+        if ($roomId === null || $this->isVirtualCandidateBlock($candidate, $block)) {
+            return false;
+        }
+
+        $roomType = (string) ($block['room_type'] ?? $candidate['room_type'] ?? ($this->roomTypes[$roomId] ?? ''));
+
+        return $roomType !== 'laboratory'
+            && ($this->roomTypes[$roomId] ?? null) !== 'laboratory'
+            && ($block['meeting_type'] ?? null) !== 'laboratory';
+    }
+
+    private function classroomAwkwardGapPenalty(int $gapSlots): int
+    {
+        if ($gapSlots <= 0) {
+            return 0;
+        }
+
+        $bestRemainder = $this->classroomBestRemainderAfterSchedulableBlocks($gapSlots);
+        $filledSlots = $gapSlots - $bestRemainder;
+
+        return ($gapSlots === 5 ? self::CLASSROOM_FIVE_SLOT_GAP_SOFT_PENALTY : 0)
+            + ($gapSlots === 6 ? self::CLASSROOM_SIX_SLOT_GAP_SOFT_PENALTY : 0)
+            + ($filledSlots * self::CLASSROOM_GAP_SCHEDULABLE_SLOT_SOFT_PENALTY)
+            + ($bestRemainder * self::CLASSROOM_GAP_LEFTOVER_SLOT_SOFT_PENALTY);
+    }
+
+    private function classroomBestRemainderAfterSchedulableBlocks(int $gapSlots): int
+    {
+        $reachable = array_fill(0, $gapSlots + 1, false);
+        $reachable[0] = true;
+
+        for ($slots = 1; $slots <= $gapSlots; $slots++) {
+            foreach (self::CLASSROOM_SCHEDULABLE_BLOCK_SLOTS as $blockSlots) {
+                if ($slots >= $blockSlots && $reachable[$slots - $blockSlots]) {
+                    $reachable[$slots] = true;
+                    break;
+                }
+            }
+        }
+
+        for ($usedSlots = $gapSlots; $usedSlots >= 0; $usedSlots--) {
+            if ($reachable[$usedSlots]) {
+                return $gapSlots - $usedSlots;
+            }
+        }
+
+        return $gapSlots;
+    }
+
     private function buildVariables(
         Collection $courses,
         Collection $rooms,
@@ -743,11 +906,16 @@ class CSPSolver
         array $forcedDaysByCourseId = [],
         array $anchoredSchedulesByCourseId = [],
         array $deliveryModesByCourseId = [],
+        array $requirementsByCourseId = [],
     ): array {
         $variables = [];
 
         foreach ($courses as $course) {
             $courseDeliveryMode = $deliveryModesByCourseId[(int) $course->id] ?? $deliveryMode;
+            $requirements = $requirementsByCourseId[(int) $course->id] ?? [];
+            if ($this->requirementsRequireFieldDelivery($requirements)) {
+                $courseDeliveryMode = 'field';
+            }
             $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
             $lecHours = (int) ($course->lecture_hours ?? 0);
             $labHours = (int) ($course->lab_hours ?? 0);
@@ -769,6 +937,14 @@ class CSPSolver
             }
 
             $domain = match (true) {
+                $hasBothComponents && $preferredPattern === null => $this->buildDefaultLectureLabDomain(
+                    course: $course,
+                    matchingRooms: $rooms,
+                    deliveryMode: $courseDeliveryMode,
+                    isHybrid: $isHybrid,
+                    anchoredSchedule: $anchoredSchedulesByCourseId[(int) $course->id] ?? null,
+                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
+                ),
                 $courseDeliveryMode === 'online' && $preferredPattern === null => $this->buildSingleDayDomain(
                     course: $course,
                     matchingRooms: $rooms,
@@ -776,14 +952,6 @@ class CSPSolver
                     deliveryMode: $courseDeliveryMode,
                     isHybrid: $isHybrid,
                     fieldEveningScheduleEnabled: $fieldEveningScheduleEnabled,
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
-                ),
-                $hasBothComponents && $preferredPattern === null => $this->buildDefaultLectureLabDomain(
-                    course: $course,
-                    matchingRooms: $rooms,
-                    deliveryMode: $courseDeliveryMode,
-                    isHybrid: $isHybrid,
-                    anchoredSchedule: $anchoredSchedulesByCourseId[(int) $course->id] ?? null,
                     sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
                 $requiresBalancedSplit && $preferredPattern === null => $this->buildFlexibleBalancedSplitDomain(
@@ -804,7 +972,7 @@ class CSPSolver
                     fieldEveningScheduleEnabled: $fieldEveningScheduleEnabled,
                     sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
-                default => $this->buildPatternDomain(
+                default => $this->buildPatternDomainWithFallbacks(
                     course: $course,
                     matchingRooms: $rooms,
                     durationSlots: $durationSlots,
@@ -817,7 +985,7 @@ class CSPSolver
                 ),
             };
 
-            if (array_key_exists((int) $course->id, $deliveryModesByCourseId)) {
+            if (array_key_exists((int) $course->id, $deliveryModesByCourseId) && ! $hasBothComponents) {
                 $domain = array_values(array_filter($domain, static function (array $candidate) use ($courseDeliveryMode): bool {
                     foreach ($candidate['blocks'] ?? [] as $block) {
                         if ((string) ($block['mode'] ?? $candidate['mode'] ?? 'on-site') !== $courseDeliveryMode) {
@@ -827,6 +995,21 @@ class CSPSolver
 
                     return true;
                 }));
+            }
+
+            if (isset($requirementsByCourseId[(int) $course->id])) {
+                $domain = $this->filterDomainByRequirements(
+                    $domain,
+                    $requirementsByCourseId[(int) $course->id],
+                );
+            }
+
+            if ($domain === [] && isset($requirementsByCourseId[(int) $course->id])) {
+                throw new RuntimeException(sprintf(
+                    '%s / %s has no eligible scheduling candidates for the configured department profile.',
+                    (string) ($sectionId > 0 ? (Sections::query()->find($sectionId)?->section_name ?? 'Section') : 'Section'),
+                    (string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id)),
+                ));
             }
 
             $forcedDay = $forcedDaysByCourseId[(int) $course->id] ?? null;
@@ -854,8 +1037,12 @@ class CSPSolver
                         return $slotDiff;
                     }
 
-                    $leftOnlineLectureRank = $this->hasOnlineLectureBlock($left) ? 1 : 0;
-                    $rightOnlineLectureRank = $this->hasOnlineLectureBlock($right) ? 1 : 0;
+                    $leftOnlineLectureRank = ($left['_split_lecture_online_default'] ?? false)
+                        ? ($this->hasOnlineLectureBlock($left) ? 0 : 1)
+                        : ($this->hasOnlineLectureBlock($left) ? 1 : 0);
+                    $rightOnlineLectureRank = ($right['_split_lecture_online_default'] ?? false)
+                        ? ($this->hasOnlineLectureBlock($right) ? 0 : 1)
+                        : ($this->hasOnlineLectureBlock($right) ? 1 : 0);
                     $onlineLectureDiff = $leftOnlineLectureRank <=> $rightOnlineLectureRank;
                     if ($onlineLectureDiff !== 0) {
                         return $onlineLectureDiff;
@@ -906,9 +1093,11 @@ class CSPSolver
 
             $variables[] = [
                 'course_id' => (int) $course->id,
+                'scheduling_priority' => $this->courseSchedulingPriority($course),
                 'is_field' => $this->isFieldCourse($course),
                 'duration_slots' => $durationSlots,
                 'preferred_pattern' => $preferredPattern,
+                'forced_day' => $forcedDay,
                 'delivery_mode' => $courseDeliveryMode,
                 'is_hybrid' => $isHybrid,
                 'domain' => $domain,
@@ -1078,6 +1267,7 @@ class CSPSolver
         $domain = [];
         $isLabCourse = $this->isMajorLabCourse($course);
         $hasLectureAndLab = $this->hasLectureAndLabHours($course);
+        $allowLectureInVacantLab = $this->isMajorFullLectureCourse($course);
         $singleBlockMeetingType = $this->singleBlockMeetingTypeForCourse($course);
 
         foreach ($this->allowedDayModePairsForCourse($course, $sundayOnlineOnlyEnabled) as [$day, $mode]) {
@@ -1097,9 +1287,11 @@ class CSPSolver
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
-                    $roomTypes = ['laboratory'];
+                    $roomTypes = ['laboratory', 'lecture'];
                 } elseif ($targetRoomType === 'lecture') {
-                    $roomTypes = ['lecture'];
+                    $roomTypes = $allowLectureInVacantLab
+                        ? ['lecture', 'laboratory']
+                        : ['lecture'];
                 }
             }
 
@@ -1135,7 +1327,8 @@ class CSPSolver
 
                 foreach ($roomTypes as $roomType) {
                     $roomsForType = $matchingRooms->filter(
-                        static fn (Rooms $room): bool => $room->room_type === $roomType,
+                        fn (Rooms $room): bool => $room->room_type === $roomType
+                            && ($roomType !== 'laboratory' || ! $allowLectureInVacantLab || (bool) $room->allow_lecture_usage),
                     );
 
                     foreach ($roomsForType as $room) {
@@ -1146,7 +1339,8 @@ class CSPSolver
                             'preferred_pattern' => null,
                             'mode' => $mode,
                             'is_hybrid' => $mode === 'field' ? false : $isHybrid,
-                            '_lab_fallback' => ($isLabCourse && $roomType === 'lecture') || (! $isLabCourse && $roomType === 'laboratory'),
+                            '_lab_fallback' => $isLabCourse && $roomType === 'lecture',
+                            '_lecture_lab_room_fallback' => ! $isLabCourse && $roomType === 'laboratory',
                             'blocks' => [
                                 array_merge($this->makeBlock(
                                     day: $day,
@@ -1237,24 +1431,7 @@ class CSPSolver
             static fn (Rooms $room): bool => $room->room_type === 'laboratory',
         );
 
-        $lectureRooms = $matchingRooms->filter(
-            static fn (Rooms $room): bool => $room->room_type === 'lecture',
-        );
-
-        $lectureOptions = $lectureRooms
-            ->map(static fn (Rooms $room): array => [
-                'room_id' => (int) $room->id,
-                'room_type' => 'lecture',
-                'mode' => 'on-site',
-            ])
-            ->values()
-            ->all();
-
-        $lectureOptions[] = [
-            'room_id' => null,
-            'room_type' => 'online',
-            'mode' => 'online',
-        ];
+        $lectureOptions = $this->splitLectureOptions();
 
         $labOptions = $labRooms
             ->map(static fn (Rooms $room): array => [
@@ -1291,7 +1468,19 @@ class CSPSolver
                 $firstOptions = $firstComponent['type'] === 'laboratory' ? $labOptions : $lectureOptions;
                 $secondOptions = $secondComponent['type'] === 'laboratory' ? $labOptions : $lectureOptions;
 
-                foreach ($this->rankedSplitStartPairs($day1StartSlots, $day2StartSlots) as [$day1Start, $day2Start]) {
+                $isSaturdayPair = $day1 === 'Saturday' || $day2 === 'Saturday';
+                if ($isSaturdayPair) {
+                    $startPairs = [];
+                    foreach ($day1StartSlots as $d1) {
+                        foreach ($day2StartSlots as $d2) {
+                            $startPairs[] = [(int) $d1, (int) $d2];
+                        }
+                    }
+                } else {
+                    $startPairs = $this->rankedSplitStartPairs($day1StartSlots, $day2StartSlots);
+                }
+
+                foreach ($startPairs as [$day1Start, $day2Start]) {
                     $day1End = $day1Start + $firstComponent['slots'];
                     $day2End = $day2Start + $secondComponent['slots'];
 
@@ -1304,6 +1493,7 @@ class CSPSolver
                                 'preferred_pattern' => null,
                                 'mode' => $option1['mode'],
                                 'is_hybrid' => $isHybrid,
+                                '_split_lecture_online_default' => true,
                                 '_lab_fallback' => false,
                                 'blocks' => [
                                     array_merge($this->makeBlock(
@@ -1370,9 +1560,11 @@ class CSPSolver
             ['Wednesday', 'Friday'],
             ['Thursday', 'Friday'],
             ['Monday', 'Friday'],
+            ['Monday', 'Saturday'],
+            ['Tuesday', 'Saturday'],
+            ['Wednesday', 'Saturday'],
             ['Thursday', 'Saturday'],
             ['Friday', 'Saturday'],
-            ['Tuesday', 'Saturday'],
         ];
 
         foreach ($fallbackPairs as $days) {
@@ -1387,6 +1579,15 @@ class CSPSolver
         }
 
         return array_values($unique);
+    }
+
+    private function splitLectureOptions(): array
+    {
+        return [[
+            'room_id' => null,
+            'room_type' => 'online',
+            'mode' => 'online',
+        ]];
     }
 
     private function filterLectureLabDomainByAnchor(array $domain, array $anchoredSchedule): array
@@ -1472,14 +1673,6 @@ class CSPSolver
         $preferredPairs = [
             ['Monday', 'Wednesday'],
             ['Tuesday', 'Thursday'],
-            ['Monday', 'Tuesday'],
-            ['Monday', 'Thursday'],
-            ['Tuesday', 'Wednesday'],
-            ['Tuesday', 'Friday'],
-            ['Wednesday', 'Thursday'],
-            ['Wednesday', 'Friday'],
-            ['Thursday', 'Friday'],
-            ['Monday', 'Friday'],
         ];
 
         $pairs = [];
@@ -1495,6 +1688,70 @@ class CSPSolver
         }
 
         return array_values($unique);
+    }
+
+    private function buildPatternDomainWithFallbacks(
+        Course $course,
+        Collection $matchingRooms,
+        int $durationSlots,
+        string $preferredPattern,
+        string $deliveryMode,
+        bool $isHybrid,
+        bool $requireBalancedDurations = false,
+        bool $fieldEveningScheduleEnabled = false,
+        bool $sundayOnlineOnlyEnabled = true,
+    ): array {
+        $primaryDomain = $this->buildPatternDomain(
+            course: $course,
+            matchingRooms: $matchingRooms,
+            durationSlots: $durationSlots,
+            preferredPattern: $preferredPattern,
+            deliveryMode: $deliveryMode,
+            isHybrid: $isHybrid,
+            requireBalancedDurations: $requireBalancedDurations,
+            fieldEveningScheduleEnabled: $fieldEveningScheduleEnabled,
+            sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
+        );
+
+        // Alternative recommendations when preferred pattern is occupied:
+        // 1. Alternative vacant split day/time pattern with the same required duration
+        $alternativePatternDomain = [];
+        if ($durationSlots >= 2) {
+            $flexibleSplitDomain = $this->buildFlexibleBalancedSplitDomain(
+                course: $course,
+                matchingRooms: $matchingRooms,
+                durationSlots: $durationSlots,
+                deliveryMode: $deliveryMode,
+                isHybrid: $isHybrid,
+                fieldEveningScheduleEnabled: $fieldEveningScheduleEnabled,
+                sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
+            );
+
+            foreach ($flexibleSplitDomain as $candidate) {
+                if (($candidate['preferred_pattern'] ?? null) !== $preferredPattern) {
+                    $candidate['_pattern_fallback'] = true;
+                    $alternativePatternDomain[] = $candidate;
+                }
+            }
+        }
+
+        // 2. Single 3-hour / full-duration session on an available day
+        $singleSessionDomain = $this->buildSingleDayDomain(
+            course: $course,
+            matchingRooms: $matchingRooms,
+            durationSlots: $durationSlots,
+            deliveryMode: $deliveryMode,
+            isHybrid: $isHybrid,
+            fieldEveningScheduleEnabled: $fieldEveningScheduleEnabled,
+            sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
+        );
+
+        foreach ($singleSessionDomain as &$candidate) {
+            $candidate['_single_session_fallback'] = true;
+        }
+        unset($candidate);
+
+        return array_merge($primaryDomain, $alternativePatternDomain, $singleSessionDomain);
     }
 
     private function buildPatternDomain(
@@ -1525,7 +1782,15 @@ class CSPSolver
         $domain = [];
         $isField = $this->isFieldCourse($course);
         $isLabCourse = $this->isMajorLabCourse($course);
-        $modes = $isField ? ['field'] : ['on-site', 'online'];
+        $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
+        $lecHours = (int) ($course->lecture_hours ?? 0);
+        $labHours = (int) ($course->lab_hours ?? 0);
+        $hasBothComponents = $isMajor && $lecHours > 0 && $labHours > 0;
+        $modes = match (true) {
+            $isField => ['field'],
+            $hasBothComponents => ['on-site'],
+            default => ['on-site', 'online'],
+        };
 
         foreach ($modes as $mode) {
             $targetRoomType = match (true) {
@@ -1539,21 +1804,19 @@ class CSPSolver
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
-                    $roomTypes = ['laboratory'];
+                    $roomTypes = ['laboratory', 'lecture'];
                 } elseif ($targetRoomType === 'lecture') {
-                    $roomTypes = ['lecture'];
+                    $roomTypes = $this->isMajorFullLectureCourse($course)
+                        ? ['lecture', 'laboratory']
+                        : ['lecture'];
                 }
             }
 
-            $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
-            $lecHours = (int) ($course->lecture_hours ?? 0);
-            $labHours = (int) ($course->lab_hours ?? 0);
-            $hasBothComponents = $isMajor && $lecHours > 0 && $labHours > 0;
+            $lectureSlots = $lecHours * 2;
+            $labSlots = $labHours * 6;
 
             $durations = [];
             if ($hasBothComponents) {
-                $lectureSlots = $lecHours * 2;
-                $labSlots = $labHours * 6;
                 $durations[] = [$labSlots, $lectureSlots];
                 $durations[] = [$lectureSlots, $labSlots];
             } elseif ($requireBalancedDurations) {
@@ -1598,20 +1861,7 @@ class CSPSolver
                             ])
                             ->values()
                             ->all();
-                        $lectureOptions = $matchingRooms
-                            ->filter(static fn (Rooms $room): bool => $room->room_type === 'lecture')
-                            ->map(static fn (Rooms $room): array => [
-                                'room_id' => (int) $room->id,
-                                'room_type' => 'lecture',
-                                'mode' => 'on-site',
-                            ])
-                            ->values()
-                            ->all();
-                        $lectureOptions[] = [
-                            'room_id' => null,
-                            'room_type' => 'online',
-                            'mode' => 'online',
-                        ];
+                        $lectureOptions = $this->splitLectureOptions();
                         $day1IsLab = ($day1Duration === $labSlots);
                         $firstOptions = $day1IsLab ? $labOptions : $lectureOptions;
                         $secondOptions = $day1IsLab ? $lectureOptions : $labOptions;
@@ -1625,6 +1875,7 @@ class CSPSolver
                                     'preferred_pattern' => $preferredPattern,
                                     'mode' => $option1['mode'],
                                     'is_hybrid' => $isHybrid,
+                                    '_split_lecture_online_default' => true,
                                     '_lab_fallback' => false,
                                     'blocks' => [
                                         array_merge($this->makeBlock(
@@ -1679,8 +1930,10 @@ class CSPSolver
                         }
 
                         foreach ($roomTypes as $roomType) {
+                            $allowLectureInVacantLab = $this->isMajorFullLectureCourse($course);
                             $roomsForType = $matchingRooms->filter(
-                                static fn (Rooms $room): bool => $room->room_type === $roomType,
+                                static fn (Rooms $room): bool => $room->room_type === $roomType
+                                    && ($roomType !== 'laboratory' || ! $allowLectureInVacantLab || (bool) $room->allow_lecture_usage),
                             );
 
                             foreach ($roomsForType as $room) {
@@ -1691,7 +1944,8 @@ class CSPSolver
                                     'preferred_pattern' => $preferredPattern,
                                     'mode' => $mode,
                                     'is_hybrid' => $mode === 'field' ? false : $isHybrid,
-                                    '_lab_fallback' => ($isLabCourse && $roomType === 'lecture') || (! $isLabCourse && $roomType === 'laboratory'),
+                                    '_lab_fallback' => $isLabCourse && $roomType === 'lecture',
+                                    '_lecture_lab_room_fallback' => ! $isLabCourse && $roomType === 'laboratory',
                                     'blocks' => [
                                         $this->makeBlock(
                                             day: $day1,
@@ -2240,6 +2494,10 @@ class CSPSolver
                     && ! $isOnlineBlock
                     && $blockMode !== 'field'
                     && ! in_array($blockRoomType, ['field'], true);
+                $isClassroomRoomBlock = $isPhysicalRoomBlock
+                    && ($block['meeting_type'] ?? null) !== 'laboratory'
+                    && $blockRoomType !== 'laboratory'
+                    && ($this->roomTypes[$blockRoomId] ?? null) !== 'laboratory';
 
                 if ($assignmentSectionId > 0) {
                     $generatedDeliveryCountsBySection[$assignmentSectionId] ??= [
@@ -2293,6 +2551,7 @@ class CSPSolver
                     $physicalRoomBlocksByRoomDay["{$blockRoomId}:{$block['day']}"][] = [
                         'start_slot' => $block['start_slot'],
                         'end_slot' => $block['end_slot'],
+                        'is_classroom' => $isClassroomRoomBlock,
                     ];
                     $physicalRoomBlockTotal++;
 
@@ -2374,6 +2633,10 @@ class CSPSolver
                         if ($gapSlots >= 2) {
                             $score += SchedulingPolicy::SOFT_FILLABLE_ROOM_GAP_BONUS_PENALTY;
                         }
+
+                        if (($previous['is_classroom'] ?? false) && ($roomDayBlock['is_classroom'] ?? false)) {
+                            $score += $this->classroomAwkwardGapPenalty($gapSlots);
+                        }
                     }
                 }
 
@@ -2438,8 +2701,24 @@ class CSPSolver
 
         // Soft penalty for online delivery mode when physical rooms are preferred.
         foreach ($assignments as $assignment) {
-            if ($this->candidateContainsLaboratoryBlock($assignment) && ! $this->hasOnlineLectureBlock($assignment)) {
+            if ($assignment['_pattern_fallback'] ?? false) {
+                $score += 1500;
+            }
+
+            if ($assignment['_single_session_fallback'] ?? false) {
+                $score += 3000;
+            }
+
+            if (
+                ($assignment['_split_lecture_online_default'] ?? false)
+                && $this->candidateContainsLaboratoryBlock($assignment)
+                && ! $this->hasOnlineLectureBlock($assignment)
+            ) {
                 $score += 10000;
+            }
+
+            if ($assignment['_lecture_lab_room_fallback'] ?? false) {
+                $score += 250;
             }
 
             foreach ($assignment['blocks'] as $block) {
@@ -2730,6 +3009,9 @@ class CSPSolver
             'delivery_modes_by_course_id' => $input['delivery_modes_by_course_id']
                 ?? $input['deliveryModesByCourseId']
                 ?? [],
+            'requirements_by_course_id' => $input['requirements_by_course_id']
+                ?? $input['requirementsByCourseId']
+                ?? [],
             'max_solutions' => (int) ($input['max_solutions'] ?? $input['maxSolutions'] ?? 2),
             'max_iterations' => (int) ($input['max_iterations'] ?? $input['maxIterations'] ?? 250_000),
             'timeout_seconds' => (float) ($input['timeout_seconds'] ?? $input['timeoutSeconds'] ?? 8.0),
@@ -2798,6 +3080,30 @@ class CSPSolver
                 throw new InvalidArgumentException('Invalid per-course delivery mode configuration.');
             }
             $normalized[$courseId] = $mode;
+        }
+
+        return $normalized;
+    }
+
+    /** @return array<int, list<array<string, mixed>>> */
+    private function normalizeRequirements(array $requirementsByCourseId, array $validCourseIds): array
+    {
+        $valid = array_fill_keys(array_map('intval', $validCourseIds), true);
+        $normalized = [];
+
+        foreach ($requirementsByCourseId as $courseId => $requirements) {
+            $courseId = (int) $courseId;
+            if (! isset($valid[$courseId]) || ! is_array($requirements)) {
+                continue;
+            }
+
+            $rows = array_values(array_filter(
+                $requirements,
+                static fn (mixed $requirement): bool => is_array($requirement),
+            ));
+            if ($rows !== []) {
+                $normalized[$courseId] = $rows;
+            }
         }
 
         return $normalized;
@@ -2985,114 +3291,6 @@ class CSPSolver
         }
     }
 
-    private function ensureRoomDomainsExist(
-        Collection $courses,
-        Collection &$rooms,
-        string $deliveryMode = 'on-site',
-    ): void {
-        // Missing physical rooms are handled by online fallback candidates in
-        // the domain builders, so generation should not fail up-front here.
-        return;
-
-        // Collect all missing physical room types up-front so the error message
-        // names every missing type in a single, actionable response — rather than
-        // silently returning "no recommendations" and forcing the user to retry.
-        // Virtual rooms (online/field) are always injected before this runs.
-        $missingTypes = [];
-
-        foreach ($courses as $course) {
-            foreach ($this->requiredPhysicalRoomTypesForCourse($course, $deliveryMode) as $roomType) {
-                $hasMatchingRoom = $rooms->contains(
-                    static fn (Rooms $room): bool => $room->room_type === $roomType,
-                );
-
-                if (! $hasMatchingRoom && ! in_array($roomType, $missingTypes, true)) {
-                    $missingTypes[] = $roomType;
-                }
-            }
-        }
-
-        foreach ($courses as $course) {
-            $targetRoomType = $this->targetRoomTypeForCourse(
-                course: $course,
-                deliveryMode: $deliveryMode,
-            );
-
-            // Virtual rooms are handled before this method — skip them here.
-            if (in_array($targetRoomType, ['online', 'field'], true)) {
-                continue;
-            }
-
-            // For major lab courses a lecture room is a valid fallback.
-            $hasLectureFallback = $this->isMajorLabCourse($course)
-                && $rooms->contains(
-                    static fn (Rooms $room): bool => $room->room_type === 'lecture',
-                );
-
-            $hasMatchingRoom = $hasLectureFallback || $rooms->contains(
-                static fn (Rooms $room): bool => $room->room_type === $targetRoomType,
-            );
-
-            if (! $hasMatchingRoom && ! in_array($targetRoomType, $missingTypes, true)) {
-                $missingTypes[] = $targetRoomType;
-            }
-        }
-
-        if (! empty($missingTypes)) {
-            $labels = array_map(static function (string $type): string {
-                return match ($type) {
-                    'laboratory' => 'laboratory room',
-                    'lecture' => 'classroom (lecture room)',
-                    default => "{$type} room",
-                };
-            }, $missingTypes);
-
-            $list = implode(' and ', $labels);
-
-            throw new InvalidArgumentException(
-                "No {$list} found for this department. "
-                .'Please add the required room(s) under Room Management before generating a schedule.'
-            );
-        }
-    }
-
-    /**
-     * Return the physical room types that must exist before generation can be
-     * attempted. Online fallback is only useful when a physical room type exists
-     * but is occupied; missing room inventory should be reported directly.
-     *
-     * @return list<string>
-     */
-    private function requiredPhysicalRoomTypesForCourse(Course $course, string $deliveryMode): array
-    {
-        if ($deliveryMode === 'online' || $deliveryMode === 'field' || $this->isFieldCourse($course)) {
-            return [];
-        }
-
-        $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
-        $lectureHours = (int) ($course->lecture_hours ?? 0);
-        $labHours = (int) ($course->lab_hours ?? 0);
-
-        $types = [];
-
-        if ($lectureHours > 0) {
-            $types[] = 'lecture';
-        }
-
-        if ($types === []) {
-            $targetRoomType = $this->targetRoomTypeForCourse(
-                course: $course,
-                deliveryMode: $deliveryMode,
-            );
-
-            if (in_array($targetRoomType, ['lecture', 'laboratory'], true)) {
-                $types[] = $targetRoomType;
-            }
-        }
-
-        return array_values(array_unique($types));
-    }
-
     private function requiredRoomTypesForDeliveryMode(
         Collection $courses,
         string $deliveryMode,
@@ -3103,6 +3301,24 @@ class CSPSolver
 
         if ($deliveryMode === 'field') {
             return ['field'];
+        }
+
+        if ($this->requirementsByCourseId !== []) {
+            $types = [];
+            foreach ($courses as $course) {
+                foreach ($this->requirementsByCourseId[(int) $course->id] ?? [] as $requirement) {
+                    foreach ((array) ($requirement['eligible_room_types'] ?? []) as $roomType) {
+                        if (! in_array($roomType, $types, true)) {
+                            $types[] = (string) $roomType;
+                        }
+                    }
+                }
+            }
+            if (! in_array('online', $types, true)) {
+                $types[] = 'online';
+            }
+
+            return $types;
         }
 
         $types = $courses
@@ -3122,11 +3338,59 @@ class CSPSolver
             $types[] = 'lecture';
         }
 
+        $hasMajorFullLectureCourse = $courses->contains(
+            fn (Course $course): bool => $this->isMajorFullLectureCourse($course),
+        );
+        if ($hasMajorFullLectureCourse && ! in_array('laboratory', $types, true)) {
+            $types[] = 'laboratory';
+        }
+
         if (! in_array('online', $types, true)) {
             $types[] = 'online';
         }
 
         return $types;
+    }
+
+    /** @param list<array<string, mixed>> $requirements */
+    private function filterDomainByRequirements(array $domain, array $requirements): array
+    {
+        $eligible = [];
+        $allowLectureLabFallback = false;
+        foreach ($requirements as $requirement) {
+            foreach ((array) ($requirement['eligible_room_types'] ?? []) as $type) {
+                $eligible[(string) $type] = true;
+            }
+            $allowLectureLabFallback = $allowLectureLabFallback
+                || (bool) ($requirement['allow_lecture_laboratory_fallback'] ?? false);
+        }
+
+        return array_values(array_filter($domain, function (array $candidate) use ($eligible, $allowLectureLabFallback): bool {
+            foreach ($candidate['blocks'] ?? [] as $block) {
+                $roomType = (string) ($block['room_type'] ?? $candidate['room_type'] ?? '');
+                if (isset($eligible[$roomType])) {
+                    continue;
+                }
+                if ($allowLectureLabFallback && $roomType === 'laboratory' && isset($eligible['lecture'])) {
+                    continue;
+                }
+
+                return false;
+            }
+
+            return true;
+        }));
+    }
+
+    /** @param list<array<string, mixed>> $requirements */
+    private function requirementsRequireFieldDelivery(array $requirements): bool
+    {
+        if (count($requirements) !== 1) {
+            return false;
+        }
+
+        return ($requirements[0]['component_type'] ?? null) === 'field'
+            && in_array('field', (array) ($requirements[0]['allowed_delivery_modes'] ?? []), true);
     }
 
     private function targetRoomTypeForCourse(
@@ -3179,6 +3443,29 @@ class CSPSolver
             && (int) ($course->lab_hours ?? 0) > 0;
     }
 
+    private function isMajorFullLectureCourse(Course $course): bool
+    {
+        if ($this->isFieldCourse($course) || $this->isNstpCourse($course)) {
+            return false;
+        }
+
+        $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
+
+        return $isMajor
+            && (int) ($course->lecture_hours ?? 0) > 0
+            && (int) ($course->lab_hours ?? 0) === 0
+            && (string) ($course->room_type_required ?? 'lecture') === 'lecture';
+    }
+
+    private function courseSchedulingPriority(Course $course): int
+    {
+        if ($this->isMajorLabCourse($course)) {
+            return 0;
+        }
+
+        return $this->isMajorFullLectureCourse($course) ? 1 : 2;
+    }
+
     private function courseCategoryTablesExist(): bool
     {
         try {
@@ -3222,32 +3509,65 @@ class CSPSolver
             return 1;
         }
 
+        if ($candidate['_lecture_lab_room_fallback'] ?? false) {
+            return 2;
+        }
+
         return 0;
     }
 
     private function candidateAllocationPriority(array $candidate, int $sectionId): int
     {
+        $isPatternFallback = (bool) ($candidate['_pattern_fallback'] ?? false);
+        $isSingleSessionFallback = (bool) ($candidate['_single_session_fallback'] ?? false);
+
         $mode = (string) ($candidate['mode'] ?? 'on-site');
 
         if ($mode === 'field' || $this->candidateContainsFieldBlock($candidate)) {
             return 0;
         }
 
+        if (($candidate['_split_lecture_online_default'] ?? false) && $this->candidateContainsLaboratoryBlock($candidate)) {
+            if ($this->hasOnlineLectureBlock($candidate)) {
+                return $this->candidateContainsWeekendBlock($candidate) ? 2 : 0;
+            }
+
+            return $this->candidateContainsWeekendBlock($candidate) ? 3 : 1;
+        }
+
+        if ($candidate['_lecture_lab_room_fallback'] ?? false) {
+            return $this->candidateContainsWeekendBlock($candidate) ? 5 : 3;
+        }
+
         if ($this->candidateContainsLaboratoryBlock($candidate)) {
             return $mode === 'online'
-                ? 6
+                ? 8
                 : ($this->candidateContainsWeekendBlock($candidate) ? 3 : 0);
         }
 
         if ($mode === 'online') {
-            return $this->candidateContainsWeekendBlock($candidate) ? 5 : 4;
+            $onlineTier = 10;
+            if ($isPatternFallback) {
+                $onlineTier = 12;
+            } elseif ($isSingleSessionFallback) {
+                $onlineTier = 14;
+            }
+
+            return $this->candidateContainsWeekendBlock($candidate) ? $onlineTier + 1 : $onlineTier;
         }
 
         if ($candidate['_lab_fallback'] ?? false) {
             return 5;
         }
 
-        return $this->candidateContainsWeekendBlock($candidate) ? 2 : 1;
+        $physicalTier = 0;
+        if ($isPatternFallback) {
+            $physicalTier = 1;
+        } elseif ($isSingleSessionFallback) {
+            $physicalTier = 2;
+        }
+
+        return $this->candidateContainsWeekendBlock($candidate) ? $physicalTier + 3 : $physicalTier;
     }
 
     private function hasWeekdayPhysicalCandidate(array $domain): bool
@@ -3883,7 +4203,8 @@ class CSPSolver
         int $departmentId = 0,
     ): bool {
         if ($mode === 'online') {
-            $onlineCapacity = 3;
+            $onlineRoomId = 99998;
+            $onlineCapacity = $this->resourceLimits->online($departmentId);
             $overlapCount = 0;
             foreach ($this->existingScheduleIndex["online:{$departmentId}:{$day}"] ?? [] as $existing) {
                 if ($startTime < $existing['end_time'] && $existing['start_time'] < $endTime) {
@@ -3896,10 +4217,12 @@ class CSPSolver
         }
 
         if (! $skipRoomConflictCheck && $roomId !== null) {
-            $capacity = $this->roomCapacities[$roomId] ?? 1;
+            $roomType = $this->roomTypes[$roomId] ?? null;
+            $capacity = $roomType === 'field'
+                ? $this->resourceLimits->field($departmentId)
+                : ($this->roomCapacities[$roomId] ?? 1);
             $overlapCount = 0;
 
-            $roomType = $this->roomTypes[$roomId] ?? null;
             $roomKey = in_array($roomType, ['field', 'online'], true)
                 ? "r:{$roomId}:{$departmentId}:{$day}"
                 : "r:{$roomId}:{$day}";

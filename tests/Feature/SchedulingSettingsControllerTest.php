@@ -42,7 +42,18 @@ class SchedulingSettingsControllerTest extends TestCase
         $response = $this->actingAs($user)->getJson('/api/scheduling-settings?section_id='.$section->id);
 
         $response->assertOk();
+        $response->assertJsonPath('online_slot_limit', 3)
+            ->assertJsonPath('field_slot_limit', 3);
         $this->assertSame(['IT 101'], collect($response->json('forced_day_courses'))->pluck('code')->all());
         $this->assertSame(['IT 101'], collect($response->json('field_course_options'))->pluck('code')->all());
+
+        $update = $this->actingAs($user)->patchJson('/api/scheduling-settings', [
+            'online_slot_limit' => 8,
+            'field_slot_limit' => 5,
+        ]);
+
+        $update->assertOk()
+            ->assertJsonPath('online_slot_limit', 8)
+            ->assertJsonPath('field_slot_limit', 5);
     }
 }

@@ -669,6 +669,10 @@ final class SchedulingPolicy
             return true;
         }
 
+        if (self::isNstpCourse($course)) {
+            return true;
+        }
+
         if (!self::fieldCourseSettingEnabled()) {
             return false;
         }

@@ -2,14 +2,14 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Departments;
-use App\Models\Curriculum;
 use App\Models\Course;
+use App\Models\Curriculum;
+use App\Models\Departments;
 use App\Models\Sections;
 use App\Services\Scheduling\SchedulingPolicy;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class SchedulingSettingsController extends Controller
 {
@@ -36,6 +36,8 @@ class SchedulingSettingsController extends Controller
             'force_schedule_reuse_enabled' => 'sometimes|required|boolean',
             'field_evening_schedule_enabled' => 'sometimes|required|boolean',
             'sunday_online_only_enabled' => 'sometimes|required|boolean',
+            'online_slot_limit' => 'sometimes|required|integer|min:1|max:100',
+            'field_slot_limit' => 'sometimes|required|integer|min:1|max:100',
             'forced_day_rules' => 'sometimes|array',
             'forced_day_rules.*.course_id' => 'required|integer|exists:courses,id',
             'forced_day_rules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
@@ -46,8 +48,24 @@ class SchedulingSettingsController extends Controller
 
         $department = $this->resolveDepartment($request);
         $section = $this->resolveSection($request, $department);
+        $laboratorySettingKeys = [
+            'lecture_lab_schedule_override_enabled',
+            'custom_lab_duration_override_enabled',
+            'custom_lab_duration_6_hours_enabled',
+            'custom_lab_duration_5_hours_enabled',
+            'custom_lab_duration_other_enabled',
+        ];
+        $enablingLaboratorySetting = collect($laboratorySettingKeys)
+            ->contains(fn (string $key): bool => array_key_exists($key, $validated) && (bool) $validated[$key]);
+        if (($department->scheduling_profile ?? 'standard') === 'standard' && $enablingLaboratorySetting) {
+            return response()->json([
+                'error_code' => 'invalid_department_setting',
+                'department_profile' => 'standard',
+                'message' => 'Laboratory scheduling settings cannot be enabled for a standard department.',
+            ], 422);
+        }
         if (array_key_exists('lecture_lab_schedule_override_enabled', $validated)) {
-            if ((bool) $validated['lecture_lab_schedule_override_enabled'] && !$this->hasLectureLabCourses($department)) {
+            if ((bool) $validated['lecture_lab_schedule_override_enabled'] && ! $this->hasLectureLabCourses($department)) {
                 return response()->json([
                     'message' => 'Lecture + Laboratory override is only available for departments with courses that have both lecture and laboratory units.',
                 ], 422);
@@ -90,6 +108,12 @@ class SchedulingSettingsController extends Controller
         if (array_key_exists('sunday_online_only_enabled', $validated)) {
             $department->sunday_online_only_enabled = (bool) $validated['sunday_online_only_enabled'];
         }
+        if (array_key_exists('online_slot_limit', $validated)) {
+            $department->online_slot_limit = (int) $validated['online_slot_limit'];
+        }
+        if (array_key_exists('field_slot_limit', $validated)) {
+            $department->field_slot_limit = (int) $validated['field_slot_limit'];
+        }
         $department->save();
 
         if (array_key_exists('forced_day_rules', $validated)) {
@@ -112,9 +136,11 @@ class SchedulingSettingsController extends Controller
     private function settingsPayload(Departments $department, ?Sections $section, bool $lectureLabAvailable): array
     {
         $fieldCourseOptions = $this->fieldCourseOptions($department, $section);
+        $courseOptions = $this->forcedDayCourses($department, $section);
 
         return [
             'department_id' => $department->id,
+            'scheduling_profile' => (string) ($department->scheduling_profile ?? 'standard'),
             'lecture_lab_schedule_override_enabled' => (bool) $department->lecture_lab_schedule_override_enabled,
             'split_units_schedule_override_enabled' => (bool) $department->split_units_schedule_override_enabled,
             'custom_lab_duration_override_enabled' => (bool) $department->custom_lab_duration_override_enabled,
@@ -126,6 +152,8 @@ class SchedulingSettingsController extends Controller
             'force_schedule_reuse_enabled' => (bool) $department->force_schedule_reuse_enabled,
             'field_evening_schedule_enabled' => (bool) $department->field_evening_schedule_enabled,
             'sunday_online_only_enabled' => (bool) ($department->sunday_online_only_enabled ?? true),
+            'online_slot_limit' => max(1, (int) ($department->online_slot_limit ?? 3)),
+            'field_slot_limit' => max(1, (int) ($department->field_slot_limit ?? 3)),
             'lecture_lab_available' => $lectureLabAvailable,
             'generation_period' => $section ? [
                 'section_id' => (int) $section->id,
@@ -133,7 +161,7 @@ class SchedulingSettingsController extends Controller
                 'year_level' => (int) $section->year_level,
                 'term_id' => (int) $section->term_id,
             ] : null,
-            'forced_day_courses' => $this->forcedDayCourses($department, $section),
+            'forced_day_courses' => $courseOptions,
             'forced_day_rules' => $this->forcedDayRules($department, $section),
             'field_course_assignment_enabled' => $this->fieldCourseAssignmentEnabled(),
             'field_course_options' => $fieldCourseOptions,
@@ -145,7 +173,7 @@ class SchedulingSettingsController extends Controller
     {
         $user = $request->user();
 
-        abort_if(!$user || $user->department_id === null, 422, 'Your account is not assigned to a department.');
+        abort_if(! $user || $user->department_id === null, 422, 'Your account is not assigned to a department.');
 
         return Departments::query()->findOrFail((int) $user->department_id);
     }
@@ -169,7 +197,7 @@ class SchedulingSettingsController extends Controller
             ->where('status', 'active')
             ->first();
 
-        if (!$activeCurriculum) {
+        if (! $activeCurriculum) {
             return false;
         }
 
@@ -192,7 +220,7 @@ class SchedulingSettingsController extends Controller
     {
         $activeCurriculum = $this->activeCurriculum($department);
 
-        if (!$activeCurriculum) {
+        if (! $activeCurriculum) {
             return [];
         }
 
@@ -234,7 +262,7 @@ class SchedulingSettingsController extends Controller
     {
         $activeCurriculum = $this->activeCurriculum($department);
 
-        if (!$activeCurriculum) {
+        if (! $activeCurriculum) {
             return [];
         }
 
@@ -295,7 +323,7 @@ class SchedulingSettingsController extends Controller
             $rows = [];
             foreach ($courseCodes as $courseCode) {
                 $courseCode = SchedulingPolicy::normalizeCourseCode((string) $courseCode);
-                if ($courseCode === '' || !isset($allowedCodeMap[$courseCode])) {
+                if ($courseCode === '' || ! isset($allowedCodeMap[$courseCode])) {
                     continue;
                 }
 
@@ -355,7 +383,7 @@ class SchedulingSettingsController extends Controller
             $rows = [];
             foreach ($rules as $rule) {
                 $courseId = (int) $rule['course_id'];
-                if (!isset($allowedCourseIdMap[$courseId])) {
+                if (! isset($allowedCourseIdMap[$courseId])) {
                     continue;
                 }
 

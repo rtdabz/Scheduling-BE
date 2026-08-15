@@ -46,12 +46,14 @@ class YearLevelScheduleGenerationTest extends TestCase
                 'quality_score',
                 'penalty_score',
                 'resource_usage_score',
+                'weekday_utilization_score',
                 'fair_distribution_score',
                 'resource_fairness_score',
                 'schedule_compactness_score',
                 'configuration_compliance_score',
                 'quality_breakdown' => [
                     'resource_usage',
+                    'weekday_utilization',
                     'fair_distribution',
                     'schedule_compactness',
                     'configuration_compliance',
@@ -60,6 +62,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                     'fully_online_sections',
                     'weekend_usage',
                     'weekday_capacity_migration',
+                    'late_weekday_starts',
                     'unnecessary_online',
                     'unused_rooms_with_online_classes',
                     'laboratory_room_mismatch',
@@ -73,7 +76,11 @@ class YearLevelScheduleGenerationTest extends TestCase
                     'dominant_physical_share',
                     'room_concentration',
                     'room_idle_gaps',
+                    'room_optimization',
+                    'classroom_fragment_gaps',
                     'section_idle_gaps',
+                    'section_awkward_gaps',
+                    'section_day_spread',
                     'configuration_violations',
                 ],
             ]);
@@ -90,6 +97,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
+            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
         $sectionA = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active']);
@@ -127,6 +135,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
+            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
@@ -211,6 +220,7 @@ class YearLevelScheduleGenerationTest extends TestCase
             $department = Departments::create([
                 'department_name' => "Information Technology {$yearLevel}",
                 'department_code' => "IT{$yearLevel}",
+                'scheduling_profile' => 'laboratory_enabled',
                 'lecture_lab_schedule_override_enabled' => true,
                 'gec_split_schedule_override_enabled' => true,
             ]);
@@ -301,6 +311,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
+            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
             'gec_split_schedule_override_enabled' => true,
         ]);

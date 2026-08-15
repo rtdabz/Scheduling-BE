@@ -11,6 +11,7 @@ use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
 use App\Services\FacultyLoadService;
+use App\Services\Scheduling\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -19,9 +20,10 @@ use Illuminate\Support\Facades\Schema;
 
 class InitialDataController extends Controller
 {
-    public function __construct(private readonly FacultyLoadService $facultyLoad)
-    {
-    }
+    public function __construct(
+        private readonly FacultyLoadService $facultyLoad,
+        private readonly DepartmentResourceSlotLimitService $resourceLimits,
+    ) {}
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -155,6 +157,9 @@ class InitialDataController extends Controller
             'departments' => $departments,
             'field_course_assignment_enabled' => SchedulingPolicy::fieldCourseSettingEnabled(),
             'field_course_codes' => array_keys(SchedulingPolicy::fieldCourseCodeMap()),
+            'resource_slot_limits' => $departmentId !== null
+                ? $this->resourceLimits->forDepartment($departmentId)
+                : null,
             'users' => User::query()
                 ->with('department')
                 ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))

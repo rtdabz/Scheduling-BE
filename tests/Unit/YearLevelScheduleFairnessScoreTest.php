@@ -109,6 +109,35 @@ class YearLevelScheduleFairnessScoreTest extends TestCase
         $this->assertGreaterThan($withGap['score'], $compact['score']);
     }
 
+    public function test_year_level_generation_orders_resource_heavy_sections_first(): void
+    {
+        $service = $this->service();
+        $sections = [$this->section(1), $this->section(2), $this->section(3)];
+        $configs = [
+            1 => [
+                'course_ids' => [101, 102, 103],
+                'selected_split_session_course_ids' => [],
+                'delivery_modes_by_course_id' => [],
+            ],
+            2 => [
+                'course_ids' => [201, 202, 203],
+                'selected_split_session_course_ids' => [201, 202],
+                'delivery_modes_by_course_id' => [201 => 'on-site', 202 => 'on-site'],
+            ],
+            3 => [
+                'course_ids' => [301, 302, 303, 304],
+                'selected_split_session_course_ids' => [],
+                'delivery_modes_by_course_id' => [301 => 'online'],
+            ],
+        ];
+
+        $method = new ReflectionMethod($service, 'candidateOrders');
+        $orders = $method->invoke($service, $sections, $configs);
+        $firstOrderSectionIds = array_map(static fn (Sections $section): int => (int) $section->id, $orders[0]);
+
+        $this->assertSame([2, 3, 1], $firstOrderSectionIds);
+    }
+
     public function test_section_compactness_is_scored_separately_from_resource_fairness(): void
     {
         $service = $this->service();

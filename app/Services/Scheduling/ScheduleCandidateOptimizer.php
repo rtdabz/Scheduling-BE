@@ -43,6 +43,8 @@ class ScheduleCandidateOptimizer
 
     public function rankForSection(array $candidates, Sections $section, array $config = []): array
     {
+        $config['forced_days_by_course_id'] = $this->solver->generationForcedDaysByCourseId();
+
         return $this->rank($candidates, [$section], [(int) $section->id => $config]);
     }
 }

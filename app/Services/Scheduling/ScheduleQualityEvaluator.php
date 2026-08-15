@@ -16,9 +16,15 @@ class ScheduleQualityEvaluator
 
     private const FULLY_ONLINE_SECTION_WEIGHT = 100000;
 
-    private const SUNDAY_BLOCK_WEIGHT = 50000;
+    private const SUNDAY_BLOCK_WEIGHT = 20000;
 
-    private const SATURDAY_BLOCK_WEIGHT = 10000;
+    private const SATURDAY_BLOCK_WEIGHT = 3000;
+
+    private const LATE_WEEKDAY_START_AFTER_MINUTES = 13 * 60;
+
+    private const LATE_WEEKDAY_SLOT_WEIGHT = 150;
+
+    private const SECTION_EXTRA_DAY_WEIGHT = 30000;
 
     private const UNNECESSARY_ONLINE_WEIGHT = 1400;
 
@@ -54,11 +60,64 @@ class ScheduleQualityEvaluator
 
     private const FILLABLE_ROOM_IDLE_GAP_WEIGHT = 5000;
 
-    private const LAB_ROOM_MISMATCH_WEIGHT = 12000;
+    private const ROOM_OPTIMIZATION_IDLE_GAP_SLOT_WEIGHT = 3000;
 
-    private const SECTION_IDLE_GAP_OCCURRENCE_WEIGHT = 8000;
+    private const ROOM_OPTIMIZATION_SHORT_IDLE_GAP_WEIGHT = 20000;
 
-    private const SECTION_IDLE_GAP_SLOT_WEIGHT = 2500;
+    private const ROOM_OPTIMIZATION_FILLABLE_IDLE_GAP_WEIGHT = 12000;
+
+    private const ROOM_OPTIMIZATION_THIRTY_MINUTE_GAP_WEIGHT = 30000;
+
+    private const ROOM_OPTIMIZATION_ONE_HOUR_GAP_WEIGHT = 25000;
+
+    private const ROOM_OPTIMIZATION_EXCESS_IDLE_GAP_WEIGHT = 8000;
+
+    private const ROOM_OPTIMIZATION_CONSECUTIVE_STANDARD_BLOCK_BONUS = 6000;
+
+    private const CLASSROOM_MIN_SCHEDULABLE_GAP_SLOTS = 3;
+
+    /** @var list<int> */
+    private const CLASSROOM_SCHEDULABLE_BLOCK_SLOTS = [3, 4, 6];
+
+    private const CLASSROOM_FRAGMENT_GAP_SLOT_WEIGHT = 45000;
+
+    private const CLASSROOM_MERGEABLE_FRAGMENT_WEIGHT = 50000;
+
+    private const CLASSROOM_AWKWARD_REMAINDER_SLOT_WEIGHT = 80000;
+
+    private const CLASSROOM_EMPTY_SCHEDULABLE_BLOCK_WEIGHT = 10000;
+
+    private const CLASSROOM_FIVE_SLOT_GAP_WEIGHT = 250000;
+
+    private const CLASSROOM_SIX_SLOT_GAP_WEIGHT = 60000;
+
+    private const LAB_ROOM_MISMATCH_WEIGHT = 220000;
+
+    private const LAB_ROOM_IDLE_GAP_SLOT_WEIGHT = 18000;
+
+    private const LAB_ROOM_SHORT_IDLE_GAP_WEIGHT = 70000;
+
+    private const LAB_ROOM_FILLABLE_IDLE_GAP_WEIGHT = 20000;
+
+    private const LAB_ROOM_THIRTY_MINUTE_GAP_WEIGHT = 60000;
+
+    private const LAB_ROOM_ONE_HOUR_GAP_WEIGHT = 50000;
+
+    private const LAB_ROOM_CONSECUTIVE_STANDARD_BLOCK_BONUS = 15000;
+
+    private const SECTION_IDLE_GAP_OCCURRENCE_WEIGHT = 65000;
+
+    private const SECTION_IDLE_GAP_SLOT_WEIGHT = 25000;
+
+    private const SECTION_FILLABLE_IDLE_GAP_WEIGHT = 25000;
+
+    private const SECTION_THIRTY_MINUTE_GAP_WEIGHT = 45000;
+
+    private const SECTION_ONE_HOUR_GAP_WEIGHT = 35000;
+
+    private const SECTION_AWKWARD_GAP_SLOT_WEIGHT = 70000;
+
+    private const SECTION_EMPTY_SCHEDULABLE_GAP_WEIGHT = 45000;
 
     private const CONFIGURATION_VIOLATION_WEIGHT = 100000;
 
@@ -76,6 +135,7 @@ class ScheduleQualityEvaluator
         array $configsBySectionId = [],
         array $fairness = [],
         array $roomTypesById = [],
+        bool $includeCompleteTimetableRefinements = true,
     ): array {
         $summary = $this->buildSectionSummary($schedules, $sections);
 
@@ -83,10 +143,23 @@ class ScheduleQualityEvaluator
             'unnecessary_online' => $this->unnecessaryOnlinePenalty($summary, $fairness),
             'unused_rooms_with_online_classes' => $this->unusedRoomsWithOnlinePenalty($schedules, $summary, $fairness),
             'laboratory_room_mismatch' => $this->laboratoryRoomMismatchPenalty($schedules, $roomTypesById),
+            'laboratory_room_compactness' => $this->laboratoryRoomCompactnessPenalty($schedules, $roomTypesById),
             'room_concentration' => $this->roomConcentrationPenalty($schedules, $fairness),
-            'room_idle_gaps' => $this->roomIdleGapPenalty($schedules),
-            'weekend_usage' => $this->weekendPenalty($schedules),
-            'weekday_capacity_migration' => $this->weekdayCapacityMigrationPenalty($summary, $fairness),
+            'room_idle_gaps' => $this->roomIdleGapPenalty($schedules, $roomTypesById),
+            'room_optimization' => $this->roomOptimizationPenalty($schedules, $roomTypesById),
+            'classroom_fragment_gaps' => $this->classroomFragmentGapPenalty($schedules, $roomTypesById),
+        ];
+        $weekdayPenalties = [
+            'weekend_usage' => $this->weekendPenalty($schedules, $configsBySectionId),
+            'weekday_capacity_migration' => $this->weekdayCapacityMigrationPenalty(
+                $summary,
+                $fairness,
+                $schedules,
+                $configsBySectionId,
+            ),
+            'late_weekday_starts' => $includeCompleteTimetableRefinements
+                ? $this->lateWeekdayStartPenalty($schedules, $configsBySectionId)
+                : 0,
         ];
         $fairnessPenalties = [
             'fully_online_sections' => $this->fullyOnlineSectionPenalty($summary),
@@ -128,7 +201,15 @@ class ScheduleQualityEvaluator
             'dominant_physical_share' => $this->dominantPhysicalSharePenalty($summary),
         ];
         $compactnessPenalties = [
-            'section_idle_gaps' => $this->sectionIdleGapPenalty($schedules),
+            'section_idle_gaps' => $includeCompleteTimetableRefinements
+                ? $this->sectionIdleGapPenalty($schedules)
+                : 0,
+            'section_awkward_gaps' => $includeCompleteTimetableRefinements
+                ? $this->sectionAwkwardGapPenalty($schedules)
+                : 0,
+            'section_day_spread' => $includeCompleteTimetableRefinements
+                ? $this->sectionDaySpreadPenalty($schedules)
+                : 0,
         ];
         $configurationPenalties = [
             'configuration_violations' => $this->configurationCompliancePenalty(
@@ -138,13 +219,15 @@ class ScheduleQualityEvaluator
         ];
 
         $resourcePenalty = array_sum($resourcePenalties);
+        $weekdayPenalty = array_sum($weekdayPenalties);
         $fairnessPenalty = array_sum($fairnessPenalties);
         $compactnessPenalty = array_sum($compactnessPenalties);
         $configurationPenalty = array_sum($configurationPenalties);
-        $totalPenalty = $resourcePenalty + $fairnessPenalty + $compactnessPenalty + $configurationPenalty;
+        $totalPenalty = $resourcePenalty + $weekdayPenalty + $fairnessPenalty + $compactnessPenalty + $configurationPenalty;
 
         $componentScores = [
             'resource_usage' => self::COMPONENT_BASE - $resourcePenalty,
+            'weekday_utilization' => self::COMPONENT_BASE - $weekdayPenalty,
             'fair_distribution' => self::COMPONENT_BASE - $fairnessPenalty,
             'schedule_compactness' => self::COMPONENT_BASE - $compactnessPenalty,
             'configuration_compliance' => self::COMPONENT_BASE - $configurationPenalty,
@@ -156,6 +239,7 @@ class ScheduleQualityEvaluator
             'quality_score' => $qualityScore,
             'penalty_score' => $totalPenalty,
             'resource_usage_score' => $componentScores['resource_usage'],
+            'weekday_utilization_score' => $componentScores['weekday_utilization'],
             'fair_distribution_score' => $componentScores['fair_distribution'],
             'schedule_compactness_score' => $componentScores['schedule_compactness'],
             'configuration_compliance_score' => $componentScores['configuration_compliance'],
@@ -165,6 +249,7 @@ class ScheduleQualityEvaluator
             'quality_breakdown' => $componentScores,
             'score_breakdown' => array_merge(
                 $resourcePenalties,
+                $weekdayPenalties,
                 $fairnessPenalties,
                 $compactnessPenalties,
                 $configurationPenalties,
@@ -185,12 +270,14 @@ class ScheduleQualityEvaluator
         array $configsBySectionId = [],
         array $fairness = [],
         array $roomTypesById = [],
+        bool $includeCompleteTimetableRefinements = true,
     ): array {
         $evaluated = array_map(function (array $candidate) use (
             $sections,
             $configsBySectionId,
             $fairness,
             $roomTypesById,
+            $includeCompleteTimetableRefinements,
         ): array {
             $evaluation = $this->evaluate(
                 $candidate['schedules'] ?? [],
@@ -198,6 +285,7 @@ class ScheduleQualityEvaluator
                 $configsBySectionId,
                 $fairness,
                 $roomTypesById,
+                $includeCompleteTimetableRefinements,
             );
 
             $evaluation['csp_score'] = (int) ($candidate['score'] ?? 0);
@@ -291,29 +379,82 @@ class ScheduleQualityEvaluator
         )) * self::FULLY_ONLINE_SECTION_WEIGHT;
     }
 
-    private function weekendPenalty(array $schedules): int
+    private function weekendPenalty(array $schedules, array $configsBySectionId): int
     {
-        $saturday = count(array_filter($schedules, static fn (array $row): bool => ($row['day'] ?? null) === 'Saturday'));
-        $sunday = count(array_filter($schedules, static fn (array $row): bool => ($row['day'] ?? null) === 'Sunday'));
+        $saturday = 0;
+        $sunday = 0;
+
+        foreach ($schedules as $row) {
+            $day = (string) ($row['day'] ?? '');
+            if (! in_array($day, ['Saturday', 'Sunday'], true)) {
+                continue;
+            }
+            if ($this->isRequiredDayPlacement($row, $configsBySectionId)) {
+                continue;
+            }
+
+            $day === 'Saturday' ? $saturday++ : $sunday++;
+        }
 
         return ($sunday * self::SUNDAY_BLOCK_WEIGHT) + ($saturday * self::SATURDAY_BLOCK_WEIGHT);
     }
 
-    private function weekdayCapacityMigrationPenalty(array $summary, array $fairness): int
-    {
+    private function weekdayCapacityMigrationPenalty(
+        array $summary,
+        array $fairness,
+        array $schedules,
+        array $configsBySectionId,
+    ): int {
         $regularTargets = $fairness['section_regular_physical_targets'] ?? [];
         $labTargets = $fairness['section_lab_physical_targets'] ?? [];
+        $requiredWeekendPhysical = [];
+        foreach ($schedules as $row) {
+            $sectionId = (int) ($row['section_id'] ?? 0);
+            $isPhysical = ! in_array($row['mode'] ?? null, ['online', 'field'], true)
+                && ($row['room_id'] ?? null) !== null;
+            if (
+                $isPhysical
+                && in_array($row['day'] ?? null, ['Saturday', 'Sunday'], true)
+                && $this->isRequiredDayPlacement($row, $configsBySectionId)
+            ) {
+                $requiredWeekendPhysical[$sectionId] = ($requiredWeekendPhysical[$sectionId] ?? 0) + 1;
+            }
+        }
         $penalty = 0;
 
         foreach ($summary as $sectionId => $counts) {
             $target = max(0, (int) ($regularTargets[$sectionId] ?? 0))
                 + max(0, (int) ($labTargets[$sectionId] ?? 0));
             $deficit = max(0, $target - (int) $counts['weekday_physical']);
-            $weekendMigration = min($deficit, (int) $counts['weekend_physical']);
+            $optionalWeekendPhysical = max(
+                0,
+                (int) $counts['weekend_physical'] - (int) ($requiredWeekendPhysical[$sectionId] ?? 0),
+            );
+            $weekendMigration = min($deficit, $optionalWeekendPhysical);
             $onlineMigration = min(max(0, $deficit - $weekendMigration), (int) $counts['online']);
 
             $penalty += $weekendMigration * self::WEEKDAY_TO_WEEKEND_MIGRATION_WEIGHT;
             $penalty += $onlineMigration * self::WEEKDAY_PHYSICAL_TO_ONLINE_MIGRATION_WEIGHT;
+        }
+
+        return $penalty;
+    }
+
+    private function lateWeekdayStartPenalty(array $schedules, array $configsBySectionId): int
+    {
+        $penalty = 0;
+
+        foreach ($schedules as $row) {
+            if (
+                ! in_array($row['day'] ?? null, ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'], true)
+                || $this->isAnchoredPlacement($row, $configsBySectionId)
+            ) {
+                continue;
+            }
+
+            $start = $this->timeToMinutes((string) ($row['start_time'] ?? '00:00'));
+            $lateMinutes = max(0, $start - self::LATE_WEEKDAY_START_AFTER_MINUTES);
+            $penalty += (int) ceil($lateMinutes / SchedulingPolicy::SLOT_MINUTES) * self::LATE_WEEKDAY_SLOT_WEIGHT;
         }
 
         return $penalty;
@@ -372,6 +513,82 @@ class ScheduleQualityEvaluator
         }
 
         return $mismatches * self::LAB_ROOM_MISMATCH_WEIGHT;
+    }
+
+    private function laboratoryRoomCompactnessPenalty(array $schedules, array $roomTypesById): int
+    {
+        $blocks = [];
+
+        foreach ($schedules as $row) {
+            $roomId = isset($row['room_id']) ? (int) $row['room_id'] : 0;
+            $day = (string) ($row['day'] ?? '');
+            if (
+                $roomId <= 0
+                || $day === ''
+                || in_array($row['mode'] ?? null, ['online', 'field'], true)
+                || ! $this->isLaboratoryRoomRow($row, $roomTypesById)
+            ) {
+                continue;
+            }
+
+            $blocks[$roomId.':'.$day][] = array_merge($this->minuteBlock($row), [
+                'duration' => $this->timeToMinutes((string) ($row['end_time'] ?? '00:00'))
+                    - $this->timeToMinutes((string) ($row['start_time'] ?? '00:00')),
+            ]);
+        }
+
+        return $this->idleGapPenalty(
+            $blocks,
+            self::LAB_ROOM_IDLE_GAP_SLOT_WEIGHT,
+            self::LAB_ROOM_SHORT_IDLE_GAP_WEIGHT,
+            self::LAB_ROOM_FILLABLE_IDLE_GAP_WEIGHT,
+            self::LAB_ROOM_THIRTY_MINUTE_GAP_WEIGHT,
+            self::LAB_ROOM_ONE_HOUR_GAP_WEIGHT,
+            self::ROOM_OPTIMIZATION_EXCESS_IDLE_GAP_WEIGHT,
+        ) - $this->consecutiveStandardBlockBonus($blocks, self::LAB_ROOM_CONSECUTIVE_STANDARD_BLOCK_BONUS, true);
+    }
+
+    private function isLaboratoryRoomRow(array $row, array $roomTypesById): bool
+    {
+        $roomId = isset($row['room_id']) ? (int) $row['room_id'] : 0;
+
+        return ($roomTypesById[$roomId] ?? null) === 'laboratory'
+            || ($row['room_type'] ?? null) === 'laboratory';
+    }
+
+    private function isClassroomRoomRow(array $row, array $roomTypesById): bool
+    {
+        $roomId = isset($row['room_id']) ? (int) $row['room_id'] : 0;
+        $roomType = $roomTypesById[$roomId] ?? ($row['room_type'] ?? null);
+
+        return $roomType !== 'laboratory';
+    }
+
+    private function consecutiveStandardBlockBonus(array $blocksByRoomDay, int $weight, bool $requireThreeHourBlocks): int
+    {
+        $bonus = 0;
+        foreach ($blocksByRoomDay as $blocks) {
+            if (count($blocks) < 2) {
+                continue;
+            }
+
+            usort($blocks, static fn (array $left, array $right): int => $left['start'] <=> $right['start']);
+            $previous = null;
+            foreach ($blocks as $block) {
+                if (
+                    $previous !== null
+                    && (int) $block['start'] === (int) $previous['end']
+                    && (! $requireThreeHourBlocks || (int) ($block['duration'] ?? 0) === 180)
+                    && (! $requireThreeHourBlocks || (int) ($previous['duration'] ?? 0) === 180)
+                ) {
+                    $bonus += $weight;
+                }
+
+                $previous = $block;
+            }
+        }
+
+        return $bonus;
     }
 
     private function targetDeviationPenalty(array $summary, string $countKey, array $targets, int $weight): int
@@ -503,11 +720,15 @@ class ScheduleQualityEvaluator
         return (int) round($deviation * self::ROOM_CONCENTRATION_WEIGHT);
     }
 
-    private function roomIdleGapPenalty(array $schedules): int
+    private function roomIdleGapPenalty(array $schedules, array $roomTypesById): int
     {
         $blocks = [];
         foreach ($schedules as $row) {
-            if (($row['room_id'] ?? null) === null || in_array($row['mode'] ?? null, ['online', 'field'], true)) {
+            if (
+                ($row['room_id'] ?? null) === null
+                || in_array($row['mode'] ?? null, ['online', 'field'], true)
+                || ! $this->isClassroomRoomRow($row, $roomTypesById)
+            ) {
                 continue;
             }
             $blocks[(int) $row['room_id'].':'.($row['day'] ?? '')][] = $this->minuteBlock($row);
@@ -518,10 +739,178 @@ class ScheduleQualityEvaluator
             self::ROOM_IDLE_GAP_SLOT_WEIGHT,
             self::SHORT_ROOM_IDLE_GAP_WEIGHT,
             self::FILLABLE_ROOM_IDLE_GAP_WEIGHT,
+            0,
+            0,
+            0,
+            self::CLASSROOM_MIN_SCHEDULABLE_GAP_SLOTS,
         );
     }
 
+    private function roomOptimizationPenalty(array $schedules, array $roomTypesById): int
+    {
+        $blocks = [];
+
+        foreach ($schedules as $row) {
+            $roomId = isset($row['room_id']) ? (int) $row['room_id'] : 0;
+            $day = (string) ($row['day'] ?? '');
+            if (
+                $roomId <= 0
+                || $day === ''
+                || in_array($row['mode'] ?? null, ['online', 'field'], true)
+                || ! $this->isClassroomRoomRow($row, $roomTypesById)
+            ) {
+                continue;
+            }
+
+            $duration = $this->timeToMinutes((string) ($row['end_time'] ?? '00:00'))
+                - $this->timeToMinutes((string) ($row['start_time'] ?? '00:00'));
+
+            $blocks[$roomId.':'.$day][] = array_merge($this->minuteBlock($row), [
+                'duration' => $duration,
+            ]);
+        }
+
+        return $this->idleGapPenalty(
+            $blocks,
+            self::ROOM_OPTIMIZATION_IDLE_GAP_SLOT_WEIGHT,
+            self::ROOM_OPTIMIZATION_SHORT_IDLE_GAP_WEIGHT,
+            self::ROOM_OPTIMIZATION_FILLABLE_IDLE_GAP_WEIGHT,
+            self::ROOM_OPTIMIZATION_THIRTY_MINUTE_GAP_WEIGHT,
+            self::ROOM_OPTIMIZATION_ONE_HOUR_GAP_WEIGHT,
+            self::ROOM_OPTIMIZATION_EXCESS_IDLE_GAP_WEIGHT,
+            self::CLASSROOM_MIN_SCHEDULABLE_GAP_SLOTS,
+        ) - $this->consecutiveStandardBlockBonus(
+            $blocks,
+            self::ROOM_OPTIMIZATION_CONSECUTIVE_STANDARD_BLOCK_BONUS,
+            false,
+        );
+    }
+
+    private function classroomFragmentGapPenalty(array $schedules, array $roomTypesById): int
+    {
+        $blocks = [];
+
+        foreach ($schedules as $row) {
+            $roomId = isset($row['room_id']) ? (int) $row['room_id'] : 0;
+            $day = (string) ($row['day'] ?? '');
+            if (
+                $roomId <= 0
+                || $day === ''
+                || in_array($row['mode'] ?? null, ['online', 'field'], true)
+                || ! $this->isClassroomRoomRow($row, $roomTypesById)
+            ) {
+                continue;
+            }
+
+            $blocks[$roomId.':'.$day][] = $this->minuteBlock($row);
+        }
+
+        $penalty = 0;
+        foreach ($blocks as $roomDayBlocks) {
+            if (count($roomDayBlocks) < 2) {
+                continue;
+            }
+
+            usort($roomDayBlocks, static fn (array $left, array $right): int => $left['start'] <=> $right['start']);
+
+            $fragmentSlots = 0;
+            $fragmentGapCount = 0;
+            $occupiedUntil = (int) $roomDayBlocks[0]['end'];
+            foreach (array_slice($roomDayBlocks, 1) as $block) {
+                $gapMinutes = max(0, (int) $block['start'] - $occupiedUntil);
+                if ($gapMinutes > 0) {
+                    $gapSlots = (int) ceil($gapMinutes / SchedulingPolicy::SLOT_MINUTES);
+                    if ($gapSlots < self::CLASSROOM_MIN_SCHEDULABLE_GAP_SLOTS) {
+                        $fragmentSlots += $gapSlots;
+                        $fragmentGapCount++;
+                        $penalty += $gapSlots * self::CLASSROOM_FRAGMENT_GAP_SLOT_WEIGHT;
+                    } else {
+                        $penalty += $this->classroomSchedulableGapWastePenalty($gapSlots);
+                    }
+                }
+
+                $occupiedUntil = max($occupiedUntil, (int) $block['end']);
+            }
+
+            if ($fragmentGapCount > 1 && $fragmentSlots >= self::CLASSROOM_MIN_SCHEDULABLE_GAP_SLOTS) {
+                $penalty += intdiv($fragmentSlots, self::CLASSROOM_MIN_SCHEDULABLE_GAP_SLOTS)
+                    * self::CLASSROOM_MERGEABLE_FRAGMENT_WEIGHT;
+            }
+        }
+
+        return $penalty;
+    }
+
+    private function classroomSchedulableGapWastePenalty(int $gapSlots): int
+    {
+        $bestRemainder = $this->classroomBestRemainderAfterSchedulableBlocks($gapSlots);
+        $filledSlots = $gapSlots - $bestRemainder;
+
+        return ($gapSlots === 5 ? self::CLASSROOM_FIVE_SLOT_GAP_WEIGHT : 0)
+            + ($gapSlots === 6 ? self::CLASSROOM_SIX_SLOT_GAP_WEIGHT : 0)
+            + ($filledSlots * self::CLASSROOM_EMPTY_SCHEDULABLE_BLOCK_WEIGHT)
+            + ($bestRemainder * self::CLASSROOM_AWKWARD_REMAINDER_SLOT_WEIGHT);
+    }
+
+    private function classroomBestRemainderAfterSchedulableBlocks(int $gapSlots): int
+    {
+        $reachable = array_fill(0, $gapSlots + 1, false);
+        $reachable[0] = true;
+
+        for ($slots = 1; $slots <= $gapSlots; $slots++) {
+            foreach (self::CLASSROOM_SCHEDULABLE_BLOCK_SLOTS as $blockSlots) {
+                if ($slots >= $blockSlots && $reachable[$slots - $blockSlots]) {
+                    $reachable[$slots] = true;
+                    break;
+                }
+            }
+        }
+
+        for ($usedSlots = $gapSlots; $usedSlots >= 0; $usedSlots--) {
+            if ($reachable[$usedSlots]) {
+                return $gapSlots - $usedSlots;
+            }
+        }
+
+        return $gapSlots;
+    }
+
+    private function sectionSchedulableGapWastePenalty(int $gapSlots): int
+    {
+        $bestRemainder = $this->classroomBestRemainderAfterSchedulableBlocks($gapSlots);
+        $filledSlots = $gapSlots - $bestRemainder;
+
+        return ($filledSlots * self::SECTION_EMPTY_SCHEDULABLE_GAP_WEIGHT)
+            + ($bestRemainder * self::SECTION_AWKWARD_GAP_SLOT_WEIGHT);
+    }
+
     private function sectionIdleGapPenalty(array $schedules): int
+    {
+        $blocks = [];
+        foreach ($schedules as $row) {
+            $sectionId = (int) ($row['section_id'] ?? 0);
+            $day = (string) ($row['day'] ?? '');
+            if (
+                $sectionId > 0
+                && $day !== ''
+                && ($row['meeting_type'] ?? null) !== 'laboratory'
+                && ! in_array($row['mode'] ?? null, ['online', 'field'], true)
+            ) {
+                $blocks[$sectionId.':'.$day][] = $this->minuteBlock($row);
+            }
+        }
+
+        return $this->idleGapPenalty(
+            $blocks,
+            self::SECTION_IDLE_GAP_SLOT_WEIGHT,
+            self::SECTION_IDLE_GAP_OCCURRENCE_WEIGHT,
+            self::SECTION_FILLABLE_IDLE_GAP_WEIGHT,
+            self::SECTION_THIRTY_MINUTE_GAP_WEIGHT,
+            self::SECTION_ONE_HOUR_GAP_WEIGHT,
+        );
+    }
+
+    private function sectionAwkwardGapPenalty(array $schedules): int
     {
         $blocks = [];
         foreach ($schedules as $row) {
@@ -532,15 +921,70 @@ class ScheduleQualityEvaluator
             }
         }
 
-        return $this->idleGapPenalty(
-            $blocks,
-            self::SECTION_IDLE_GAP_SLOT_WEIGHT,
-            self::SECTION_IDLE_GAP_OCCURRENCE_WEIGHT,
-            0,
-        );
+        $penalty = 0;
+        foreach ($blocks as $sectionDayBlocks) {
+            if (count($sectionDayBlocks) < 2) {
+                continue;
+            }
+
+            usort($sectionDayBlocks, static fn (array $left, array $right): int => $left['start'] <=> $right['start']);
+
+            $occupiedUntil = (int) $sectionDayBlocks[0]['end'];
+            foreach (array_slice($sectionDayBlocks, 1) as $block) {
+                $gapMinutes = max(0, (int) $block['start'] - $occupiedUntil);
+                if ($gapMinutes > 0) {
+                    $gapSlots = (int) ceil($gapMinutes / SchedulingPolicy::SLOT_MINUTES);
+                    $penalty += $gapSlots < self::CLASSROOM_MIN_SCHEDULABLE_GAP_SLOTS
+                        ? $gapSlots * self::SECTION_AWKWARD_GAP_SLOT_WEIGHT
+                        : $this->sectionSchedulableGapWastePenalty($gapSlots);
+                }
+
+                $occupiedUntil = max($occupiedUntil, (int) $block['end']);
+            }
+        }
+
+        return $penalty;
     }
 
-    private function idleGapPenalty(array $blocksByOwnerDay, int $slotWeight, int $shortWeight, int $fillableWeight): int
+    private function sectionDaySpreadPenalty(array $schedules): int
+    {
+        $daysBySection = [];
+        $meetingsBySection = [];
+
+        foreach ($schedules as $row) {
+            $sectionId = (int) ($row['section_id'] ?? 0);
+            $day = (string) ($row['day'] ?? '');
+            if ($sectionId <= 0 || $day === '') {
+                continue;
+            }
+
+            $daysBySection[$sectionId][$day] = true;
+            $meetingsBySection[$sectionId] = ($meetingsBySection[$sectionId] ?? 0) + 1;
+        }
+
+        $penalty = 0;
+        foreach ($daysBySection as $sectionId => $days) {
+            $minimumDays = (int) ceil(
+                (int) ($meetingsBySection[$sectionId] ?? 0) / SchedulingPolicy::MAX_CLASSES_PER_DAY,
+            );
+            $extraDays = max(0, count($days) - max(1, $minimumDays));
+            $penalty += $extraDays * self::SECTION_EXTRA_DAY_WEIGHT;
+        }
+
+        return $penalty;
+    }
+
+    private function idleGapPenalty(
+        array $blocksByOwnerDay,
+        int $slotWeight,
+        int $shortWeight,
+        int $fillableWeight,
+        int $thirtyMinuteGapWeight = 0,
+        int $oneHourGapWeight = 0,
+        int $excessGapWeight = 0,
+        int $minFillableGapSlots = 2,
+        int $maxPreferredGapSlots = 2,
+    ): int
     {
         $penalty = 0;
         foreach ($blocksByOwnerDay as $blocks) {
@@ -557,8 +1001,17 @@ class ScheduleQualityEvaluator
                     if ($gapSlots <= 2) {
                         $penalty += $shortWeight;
                     }
-                    if ($gapSlots >= 2) {
+                    if ($gapSlots >= $minFillableGapSlots) {
                         $penalty += $fillableWeight;
+                    }
+                    if ($gapSlots === 1) {
+                        $penalty += $thirtyMinuteGapWeight;
+                    }
+                    if ($gapSlots === 2) {
+                        $penalty += $oneHourGapWeight;
+                    }
+                    if ($gapSlots > $maxPreferredGapSlots) {
+                        $penalty += ($gapSlots - $maxPreferredGapSlots) * $excessGapWeight;
                     }
                 }
                 $occupiedUntil = max($occupiedUntil, (int) $block['end']);
@@ -643,6 +1096,47 @@ class ScheduleQualityEvaluator
         sort($expected);
 
         return $expected === [] || $days === $expected;
+    }
+
+    private function isRequiredDayPlacement(array $row, array $configsBySectionId): bool
+    {
+        $sectionId = (int) ($row['section_id'] ?? 0);
+        $courseId = (int) ($row['course_id'] ?? 0);
+        $day = (string) ($row['day'] ?? '');
+        $config = $configsBySectionId[$sectionId] ?? [];
+        $forcedDay = $config['forced_days_by_course_id'][$courseId]
+            ?? $config['forced_days_by_course_id'][(string) $courseId]
+            ?? null;
+
+        if ($forcedDay === $day) {
+            return true;
+        }
+
+        foreach ($config['anchored_schedules'] ?? [] as $anchor) {
+            if ((int) ($anchor['course_id'] ?? 0) === $courseId && ($anchor['day'] ?? null) === $day) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isAnchoredPlacement(array $row, array $configsBySectionId): bool
+    {
+        $sectionId = (int) ($row['section_id'] ?? 0);
+        $courseId = (int) ($row['course_id'] ?? 0);
+
+        foreach (($configsBySectionId[$sectionId]['anchored_schedules'] ?? []) as $anchor) {
+            if (
+                (int) ($anchor['course_id'] ?? 0) === $courseId
+                && ($anchor['day'] ?? null) === ($row['day'] ?? null)
+                && substr((string) ($anchor['start_time'] ?? ''), 0, 5) === substr((string) ($row['start_time'] ?? ''), 0, 5)
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function minuteBlock(array $row): array

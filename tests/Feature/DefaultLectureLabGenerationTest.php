@@ -653,14 +653,6 @@ class DefaultLectureLabGenerationTest extends TestCase
             'status' => 'active',
         ]);
 
-        $lectureRoom = Rooms::create([
-            'room_code' => 'IT 105',
-            'building' => 'Building 4',
-            'room_type' => 'lecture',
-            'status' => 'available',
-            'department_id' => $department->id,
-        ]);
-
         $labRoom = Rooms::create([
             'room_code' => 'CompLab1',
             'building' => 'Building 4',
@@ -688,12 +680,87 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNotNull($lecture);
         $this->assertNotNull($laboratory);
         $this->assertSame($lecture['split_group_id'], $laboratory['split_group_id']);
-        $this->assertSame('on-site', $lecture['mode']);
-        $this->assertSame($lectureRoom->id, $lecture['room_id']);
+        $this->assertSame('online', $lecture['mode']);
+        $this->assertNull($lecture['room_id']);
         $this->assertSame($labRoom->id, $laboratory['room_id']);
         $this->assertSame('on-site', $laboratory['mode']);
         $this->assertSame(120, $this->durationMinutes($lecture));
         $this->assertSame(180, $this->durationMinutes($laboratory));
+    }
+
+    public function test_split_session_places_lecture_online_by_default(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+            'lecture_lab_schedule_override_enabled' => true,
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'IT 101',
+            'course_name' => 'Programming 1',
+            'lecture_hours' => 2,
+            'lab_hours' => 1,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+
+        Rooms::create([
+            'room_code' => 'IT 105',
+            'building' => 'Building 4',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $labRoom = Rooms::create([
+            'room_code' => 'CompLab1',
+            'building' => 'Building 4',
+            'room_type' => 'laboratory',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            selectedLectureLabCourseIds: [$course->id],
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+
+        $lecture = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'lecture');
+        $laboratory = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'laboratory');
+
+        $this->assertNotNull($lecture);
+        $this->assertNotNull($laboratory);
+        $this->assertSame('online', $lecture['mode']);
+        $this->assertNull($lecture['room_id']);
+        $this->assertSame('on-site', $laboratory['mode']);
+        $this->assertSame($labRoom->id, $laboratory['room_id']);
     }
 
     public function test_default_lecture_lab_generation_places_lecture_online_when_no_classroom_exists(): void
@@ -1209,6 +1276,74 @@ class DefaultLectureLabGenerationTest extends TestCase
                 SchedulingPolicy::generatedStartSlotsForDuration(3),
             ),
         );
+    }
+
+    public function test_selected_split_lab_stays_face_to_face_when_course_mode_is_online(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+            'lecture_lab_schedule_override_enabled' => true,
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 2B',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'IT 110',
+            'course_name' => 'Object Oriented Programming',
+            'lecture_hours' => 2,
+            'lab_hours' => 1,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+
+        $labRoom = Rooms::create([
+            'room_code' => 'CompLab1',
+            'building' => 'Building 4',
+            'room_type' => 'laboratory',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            selectedLectureLabCourseIds: [$course->id],
+            deliveryModesByCourseId: [$course->id => 'online'],
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+
+        $lecture = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'lecture');
+        $laboratory = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'laboratory');
+
+        $this->assertNotNull($lecture);
+        $this->assertNotNull($laboratory);
+        $this->assertSame('online', $lecture['mode']);
+        $this->assertNull($lecture['room_id']);
+        $this->assertSame('on-site', $laboratory['mode']);
+        $this->assertSame($labRoom->id, $laboratory['room_id']);
     }
 
     private function durationMinutes(array $row): int

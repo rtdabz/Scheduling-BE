@@ -48,7 +48,11 @@ class CspWeekdayFirstPriorityTest extends TestCase
         ]);
 
         $this->assertLessThan($oneHourGap, $compact);
-        $this->assertLessThan($fillableGap, $oneHourGap);
+        // A 3-slot gap is cheaper than a 2-slot gap because the classroom
+        // gap penalty accounts for schedulable blocks: a 3-slot gap can be
+        // exactly filled by a 3-slot class block, reducing the penalty,
+        // while a 2-slot gap cannot be filled by any standard block size (3, 4, 6).
+        $this->assertLessThan($oneHourGap, $fillableGap);
     }
 
     private function candidate(string $day, string $mode, ?int $roomId, string $roomType): array
