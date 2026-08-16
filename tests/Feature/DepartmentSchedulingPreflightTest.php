@@ -45,6 +45,35 @@ class DepartmentSchedulingPreflightTest extends TestCase
         $this->assertSame('standard', $response->json('department_profile'));
     }
 
+    public function test_preflight_uses_the_active_curriculum_period_instead_of_global_course_metadata(): void
+    {
+        [$term, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        $course->update([
+            'year_level' => '2',
+            'semester' => '2nd',
+        ]);
+        $this->attachCourse($department, $course, $section);
+        Rooms::create([
+            'room_code' => 'BA 101',
+            'building' => 'Building 1',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $response = $this->actingAs(User::factory()->create([
+            'role' => 'secretary',
+            'department_id' => $department->id,
+        ]))->postJson('/api/schedule-recommendations/preview', [
+            'section_id' => $section->id,
+            'course_ids' => [$course->id],
+            'mode' => 'on-site',
+        ]);
+
+        $response->assertOk();
+        $this->assertSame('standard', $response->json('department_profile'));
+    }
+
     public function test_standard_department_does_not_use_an_available_laboratory_for_a_lecture_course(): void
     {
         [$term, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');

@@ -5,10 +5,12 @@ namespace App\Services\Scheduling;
 use App\Enums\DepartmentSchedulingProfile;
 use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Models\Course;
+use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 class ScheduleGenerationPreflightService
 {
@@ -52,6 +54,8 @@ class ScheduleGenerationPreflightService
     private function commonIssues(Sections $section, Collection $courses, array $courseIds): array
     {
         $issues = [];
+        $curriculumPeriods = $this->curriculumPeriods($section, $courses);
+        $sectionSemester = $this->semesterPivotValue((string) $section->semester);
 
         if ((string) $section->status !== 'active') {
             $issues[] = $this->issue(
@@ -92,7 +96,12 @@ class ScheduleGenerationPreflightService
                 $issues[] = $this->courseIssue('invalid_course_status', "Course {$course->course_code} is not active.", $section, $course, 'Activate the course or remove it from the generation request.');
             }
 
-            if ((string) $course->year_level !== (string) $section->year_level || (string) $course->semester !== (string) $section->semester) {
+            $curriculumPeriod = $curriculumPeriods->get((int) $course->id);
+            if (
+                $curriculumPeriod === null
+                || (int) $curriculumPeriod->year_level !== (int) $section->year_level
+                || (int) $curriculumPeriod->semester !== $sectionSemester
+            ) {
                 $issues[] = $this->courseIssue('invalid_curriculum_assignment', "Course {$course->course_code} does not match the section year level and semester.", $section, $course, 'Attach the course to the correct curriculum period.');
             }
 
@@ -111,6 +120,34 @@ class ScheduleGenerationPreflightService
         }
 
         return $issues;
+    }
+
+    private function curriculumPeriods(Sections $section, Collection $courses): Collection
+    {
+        $curriculumId = Curriculum::query()
+            ->where('department_id', (int) $section->department_id)
+            ->where('status', 'active')
+            ->value('id');
+
+        if ($curriculumId === null || $courses->isEmpty()) {
+            return collect();
+        }
+
+        return DB::table('curriculum_course')
+            ->where('curriculum_id', (int) $curriculumId)
+            ->whereIn('course_id', $courses->pluck('id')->map(static fn ($id): int => (int) $id)->all())
+            ->get(['course_id', 'year_level', 'semester'])
+            ->keyBy(static fn (object $period): int => (int) $period->course_id);
+    }
+
+    private function semesterPivotValue(string $semester): int
+    {
+        return match ($semester) {
+            '1st' => 1,
+            '2nd' => 2,
+            'summer' => 3,
+            default => 0,
+        };
     }
 
     /** @return list<array<string, mixed>> */

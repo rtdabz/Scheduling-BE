@@ -195,6 +195,50 @@ class RuleEngine
         ];
     }
 
+    /**
+     * Online sections taking the same subject must use different overlapping
+     * time windows in a term. Physical and field delivery remain governed by
+     * their room, capacity, section, and faculty constraints.
+     */
+    public function checkSubjectSectionConflict(
+        int $courseId,
+        int $sectionId,
+        int $termId,
+        string $day,
+        string $startTime,
+        string $endTime,
+        string $deliveryMode = 'on-site',
+        int|array|null $ignoreScheduleId = null,
+    ): ?array {
+        if ($deliveryMode !== 'online') {
+            return null;
+        }
+
+        $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
+
+        $conflict = Schedule::query()
+            ->where('course_id', $courseId)
+            ->where('section_id', '!=', $sectionId)
+            ->where('term_id', $termId)
+            ->where('mode', 'online')
+            ->where('day', $day)
+            ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
+            ->where('start_time', '<', $endTime)
+            ->where('end_time', '>', $startTime)
+            ->with(['course', 'section'])
+            ->first();
+
+        if (! $conflict) {
+            return null;
+        }
+
+        return [
+            'rule' => 'subject_section_time_conflict',
+            'message' => "{$conflict->course?->course_code} is already scheduled for another section ({$conflict->section?->section_name}) on {$day} from {$conflict->start_time} to {$conflict->end_time}.",
+            'conflicting_schedule_id' => $conflict->id,
+        ];
+    }
+
     public function checkPreferredPattern(string $day, ?string $preferredPattern): ?array
     {
         if (empty($preferredPattern)) {
@@ -733,6 +777,20 @@ class RuleEngine
         );
         if ($sectionConflict) {
             $violations[] = $sectionConflict;
+        }
+
+        $subjectSectionConflict = $this->checkSubjectSectionConflict(
+            (int) ($attempt['course_id'] ?? $attempt['subject_id'] ?? 0),
+            (int) $attempt['section_id'],
+            (int) $attempt['term_id'],
+            (string) $attempt['day'],
+            (string) $attempt['start_time'],
+            (string) $attempt['end_time'],
+            (string) ($attempt['mode'] ?? 'on-site'),
+            $ignoreId,
+        );
+        if ($subjectSectionConflict) {
+            $violations[] = $subjectSectionConflict;
         }
 
         $courseId = $attempt['course_id'] ?? $attempt['subject_id'] ?? 0;

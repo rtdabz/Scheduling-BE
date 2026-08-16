@@ -151,7 +151,8 @@ class InitialDataController extends Controller
             'rooms' => $rooms,
             'courses' => $courses,
             'subjects' => $courses, // Backwards compatible alias
-            'faculties' => $this->facultyLoad->get($departmentId, $activeTermId),
+            // Auto-Assign needs to offer department and external instructors in the same workflow.
+            'faculties' => $this->facultyLoad->get(null, $activeTermId),
             'sections' => $sections,
             'schedules' => $schedules,
             'departments' => $departments,

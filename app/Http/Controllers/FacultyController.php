@@ -3,19 +3,18 @@
 namespace App\Http\Controllers;
 
 use App\Models\Faculty;
+use App\Models\Terms;
+use App\Services\FacultyLoadService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
-use App\Services\FacultyLoadService;
 
 class FacultyController extends Controller
 {
-    public function __construct(private readonly FacultyLoadService $facultyLoad)
-    {
-    }
+    public function __construct(private readonly FacultyLoadService $facultyLoad) {}
 
     public function index(Request $request)
     {
-        $activeTerm = \App\Models\Terms::where('is_active', true)->first();
+        $activeTerm = Terms::where('is_active', true)->first();
         $activeTermId = $activeTerm ? $activeTerm->id : null;
         $departmentId = $this->resolveDepartmentId($request);
 
@@ -60,7 +59,7 @@ class FacultyController extends Controller
             return response()->json(['message' => 'Faculty member not found in your department.'], 404);
         }
 
-        $activeTerm = \App\Models\Terms::where('is_active', true)->first();
+        $activeTerm = Terms::where('is_active', true)->first();
         $activeTermId = $activeTerm ? $activeTerm->id : null;
 
         if ($activeTermId) {
@@ -157,19 +156,27 @@ class FacultyController extends Controller
             return response()->json(['message' => 'Faculty member not found in your department.'], 404);
         }
 
+        if ($faculty->user_id !== null) {
+            return response()->json([
+                'message' => 'Remove the linked user account first before deleting this faculty profile.',
+            ], 409);
+        }
+
         $faculty->delete();
+
         return response()->json(['message' => 'Faculty deleted successfully']);
     }
 
     private function resolveDepartmentId(Request $request): ?int
     {
         $user = $request->user();
-        if (!$user) {
+        if (! $user) {
             return null;
         }
 
         if ($user->isVpaa()) {
             $requestedDepartmentId = $request->query('department_id');
+
             return $requestedDepartmentId !== null && $requestedDepartmentId !== ''
                 ? (int) $requestedDepartmentId
                 : null;

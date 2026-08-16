@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Notifications\ResetPasswordNotification;
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -13,7 +14,7 @@ use Spatie\Permission\Traits\HasRoles;
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
-    use HasRoles, HasApiTokens, HasFactory, Notifiable;
+    use HasApiTokens, HasFactory, HasRoles, Notifiable;
 
     /**
      * The attributes that are mass assignable.
@@ -23,8 +24,15 @@ class User extends Authenticatable
     protected $fillable = [
         'name',
         'username',
+        'email',
         'password',
         'role',
+        'is_active',
+        'allow_google_login',
+        'google_id',
+        'google_email',
+        'google_linked_at',
+        'last_login_at',
         'department_id',
         'profile_picture',
         'program_id',
@@ -38,6 +46,11 @@ class User extends Authenticatable
     public function program()
     {
         return $this->belongsTo(Program::class, 'program_id');
+    }
+
+    public function facultyProfile()
+    {
+        return $this->hasOne(Faculty::class);
     }
 
     /**
@@ -59,6 +72,10 @@ class User extends Authenticatable
     {
         return [
             'password' => 'hashed',
+            'is_active' => 'boolean',
+            'allow_google_login' => 'boolean',
+            'google_linked_at' => 'datetime',
+            'last_login_at' => 'datetime',
         ];
     }
 
@@ -75,5 +92,10 @@ class User extends Authenticatable
     public function isSecretary(): bool
     {
         return $this->role === 'secretary';
+    }
+
+    public function sendPasswordResetNotification($token): void
+    {
+        $this->notify(new ResetPasswordNotification($token));
     }
 }

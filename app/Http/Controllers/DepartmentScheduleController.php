@@ -382,24 +382,53 @@ class DepartmentScheduleController extends Controller
         }
 
         $query = $this->departmentScheduleQuery($id);
+        $withdrawableStatuses = ['submitted', 'approved_by_dean', 'approved', 'faculty_assignment'];
 
-        $hasDeanReviewedRows = (clone $query)
-            ->whereIn('status', ['approved_by_dean', 'approved', 'faculty_assignment', 'finalized', 'rejected_by_dean', 'rejected'])
-            ->exists();
-
-        if ($hasDeanReviewedRows) {
+        if ((clone $query)->where('status', 'finalized')->exists()) {
             return response()->json([
-                'message' => 'This submission can no longer be withdrawn because it has already been reviewed.',
+                'message' => 'Finalized schedules cannot be withdrawn. Reopen the finalized workflow first.',
             ], 422);
         }
 
-        $updated = DB::transaction(function () use ($id, $sectionIds) {
+        $currentStatuses = (clone $query)
+            ->whereIn('status', $withdrawableStatuses)
+            ->pluck('status')
+            ->unique()
+            ->values();
+
+        if ($currentStatuses->isEmpty()) {
+            return response()->json([
+                'message' => 'No submitted or VPAA-approved schedule is available to withdraw.',
+            ], 422);
+        }
+
+        $withdrawableSelectedSectionIds = (clone $query)
+            ->whereIn('section_id', $sectionIds)
+            ->whereIn('status', $withdrawableStatuses)
+            ->distinct()
+            ->pluck('section_id')
+            ->map(static fn ($sectionId): int => (int) $sectionId)
+            ->all();
+
+        if (array_diff($sectionIds, $withdrawableSelectedSectionIds) !== []) {
+            return response()->json([
+                'message' => 'One or more selected sections are not currently eligible for withdrawal.',
+            ], 422);
+        }
+
+        $withdrawalStage = $currentStatuses->contains(fn (string $status): bool => in_array($status, ['approved', 'faculty_assignment'], true))
+            ? 'vpaa_approved'
+            : ($currentStatuses->contains('approved_by_dean') ? 'vpaa_review' : 'dean_review');
+
+        $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses) {
             $completed = $this->departmentScheduleQuery($id)
-                ->where('status', 'submitted')
+                ->whereIn('status', $withdrawableStatuses)
                 ->update([
                     'status' => 'completed',
                     'reviewed_by_dean' => null,
                     'reviewed_at_dean' => null,
+                    'approved_by_vpaa' => null,
+                    'approved_at_vpaa' => null,
                     'rejection_reason' => null,
                     'updated_at' => now(),
                 ]);
@@ -415,15 +444,9 @@ class DepartmentScheduleController extends Controller
             return ['completed' => $completed, 'revision' => $revision];
         });
 
-        if ($updated['completed'] === 0 || $updated['revision'] === 0) {
-            return response()->json([
-                'message' => 'No pending submission is available to withdraw.',
-            ], 422);
-        }
-
         $term = Terms::query()->find($this->activeTermId());
         $this->notifications->notifyRoles(
-            ['dean', 'secretary', 'program_head'],
+            ['vpaa', 'dean', 'secretary', 'program_head'],
             'schedule_withdrawn',
             'Schedule submission withdrawn',
             $this->notifications->departmentWorkflowMessage(
@@ -441,6 +464,7 @@ class DepartmentScheduleController extends Controller
                 'schedules_updated' => $updated['revision'],
                 'sections_unlocked' => count($sectionIds),
                 'selected_section_ids' => $sectionIds,
+                'withdrawal_stage' => $withdrawalStage,
             ],
         );
 
@@ -449,6 +473,7 @@ class DepartmentScheduleController extends Controller
             'department_name' => $department->department_name,
             'schedules_updated' => $updated['revision'],
             'sections_unlocked' => count($sectionIds),
+            'withdrawal_stage' => $withdrawalStage,
         ]);
     }
 

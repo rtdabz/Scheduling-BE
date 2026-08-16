@@ -27,13 +27,13 @@ class UserFactory extends Factory
         return [
             'name' => fake()->name(),
             'username' => fake()->unique()->userName(),
+            'email' => fake()->unique()->safeEmail(),
             'password' => static::$password ??= Hash::make('password'),
             'role' => 'secretary', // Default role
+            'is_active' => true,
+            'allow_google_login' => false,
             'remember_token' => Str::random(10),
         ];
     }
 
-    /**
-     * Terminate the model's email address (Removed as it doesn't exist)
-     */
 }

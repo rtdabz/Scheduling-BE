@@ -27,9 +27,14 @@ use App\Http\Controllers\SchedulingSettingsController;
 use App\Http\Controllers\CourseTeachingAssignmentController;
 use App\Http\Controllers\TimeslotController;
 
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
+Route::post('/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
+Route::post('/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:5,1');
+Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect'])->middleware('throttle:20,1');
+Route::get('/auth/google/callback', [AuthController::class, 'googleCallback'])->middleware('throttle:20,1');
+Route::post('/auth/google/exchange', [AuthController::class, 'googleExchange'])->middleware('throttle:20,1');
 
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
     // Logout and user info routes
     Route::post('/logout', [AuthController::class, 'logout']);
@@ -45,6 +50,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/user', [UserController::class, 'store']);
         Route::put('/user/{user}', [UserController::class, 'update']);
         Route::delete('/user/{user}', [UserController::class, 'destroy']);
+        Route::delete('/user/{user}/google-link', [UserController::class, 'unlinkGoogle']);
 
         Route::apiResource('departments', DepartmentsController::class)->except(['index', 'show']);
         Route::get('/departments/trash', [DepartmentsController::class, 'trash'])->name('departments.trash');

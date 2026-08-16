@@ -41,7 +41,8 @@ class CSPSolver
 
     /**
      * Existing persisted schedules indexed for O(1) conflict lookup.
-     * Keyed as "r:{roomId}:{day}" and "s:{sectionId}:{day}".
+     * Keyed by room, section, faculty, online department capacity, and online
+     * subject/day so different sections of one online subject cannot overlap.
      *
      * @var array<string, list<array{start_time: string, end_time: string}>>
      */
@@ -1148,6 +1149,7 @@ class CSPSolver
             if ($this->hasExistingScheduleConflict(
                 roomId: $blockRoomId,
                 sectionId: $sectionId,
+                courseId: (int) $candidate['course_id'],
                 day: $block['day'],
                 startTime: $block['start_time'],
                 endTime: $block['end_time'],
@@ -2142,6 +2144,7 @@ class CSPSolver
             $isValid = ! $this->hasExistingScheduleConflict(
                 roomId: $blockRoomId,
                 sectionId: (int) $section->id,
+                courseId: (int) $candidate['course_id'],
                 day: $block['day'],
                 startTime: $block['start_time'],
                 endTime: $block['end_time'],
@@ -4074,10 +4077,11 @@ class CSPSolver
 
     /**
      * Pre-fetches all persisted schedules for the given term into memory and
-     * builds three lookup indexes:
+     * builds lookup indexes including:
      *   "r:{roomId}:{day}"     → time ranges already booked for that room on that day
      *   "s:{sectionId}:{day}" → time ranges already booked for that section on that day
      *   "f:{facultyId}:{day}" → time ranges already booked for that instructor on that day
+     *   "c:{courseId}:{day}"  → online time ranges already used by other sections
      *
      * This single query replaces the repeated per-candidate DB queries that were
      * previously issued inside the backtracking loop.
@@ -4103,7 +4107,7 @@ class CSPSolver
                         ->orWhereNotIn('status', ['draft', 'completed', 'revision']);
                 });
             })
-            ->get(['room_id', 'section_id', 'faculty_id', 'department_id', 'day', 'start_time', 'end_time', 'mode']);
+            ->get(['room_id', 'section_id', 'course_id', 'faculty_id', 'department_id', 'day', 'start_time', 'end_time', 'mode']);
 
         $knownRoomTypeIds = array_fill_keys(array_keys($this->roomTypes), true);
         $missingRoomTypeIds = $schedules
@@ -4171,6 +4175,11 @@ class CSPSolver
             }
 
             $this->existingScheduleIndex["s:{$schedule->section_id}:{$schedule->day}"][] = $timeRange;
+            if (($schedule->mode ?? null) === 'online') {
+                $this->existingScheduleIndex["c:{$schedule->course_id}:{$schedule->day}"][] = $timeRange + [
+                    'section_id' => (int) $schedule->section_id,
+                ];
+            }
 
             // Index instructor availability so the CSP can avoid recommending
             // slots that conflict with an already-assigned faculty member.
@@ -4182,7 +4191,7 @@ class CSPSolver
 
     /**
      * Returns true if any persisted schedule conflicts with the given time window
-     * for either the candidate room, the target section, or an assigned instructor.
+     * for the candidate room, target section, online subject, or assigned instructor.
      *
      * @param  bool  $skipRoomConflictCheck  When true, the room-level index check is skipped.
      *                                       The section-level check is always applied to prevent a single section from
@@ -4194,6 +4203,7 @@ class CSPSolver
     private function hasExistingScheduleConflict(
         ?int $roomId,
         int $sectionId,
+        int $courseId,
         string $day,
         string $startTime,
         string $endTime,
@@ -4240,6 +4250,18 @@ class CSPSolver
         foreach ($this->existingScheduleIndex["s:{$sectionId}:{$day}"] ?? [] as $existing) {
             if ($startTime < $existing['end_time'] && $existing['start_time'] < $endTime) {
                 return true;
+            }
+        }
+
+        if ($mode === 'online') {
+            foreach ($this->existingScheduleIndex["c:{$courseId}:{$day}"] ?? [] as $existing) {
+                if (
+                    (int) ($existing['section_id'] ?? 0) !== $sectionId
+                    && $startTime < $existing['end_time']
+                    && $existing['start_time'] < $endTime
+                ) {
+                    return true;
+                }
             }
         }
 

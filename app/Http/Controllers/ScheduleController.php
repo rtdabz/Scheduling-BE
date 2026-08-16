@@ -388,7 +388,7 @@ class ScheduleController extends Controller
 
             // Determine whether the violation is a time-based conflict that a
             // slot-shift can fix (section, room, or faculty conflict).
-            $timeConflictRules = ['section_conflict', 'room_conflict', 'faculty_conflict', 'split_group_day_separation'];
+            $timeConflictRules = ['section_conflict', 'subject_section_time_conflict', 'room_conflict', 'faculty_conflict', 'split_group_day_separation'];
             $hasTimeConflict = collect($violations)->contains(
                 fn ($v) => in_array($v['rule'] ?? '', $timeConflictRules, true)
             );
@@ -776,6 +776,22 @@ class ScheduleController extends Controller
                                 'course_code' => $courseCode2,
                                 'day' => $day2,
                                 'message' => "Intra-batch Section Conflict: {$courseCode1} and {$courseCode2} overlap for section on {$day1} from {$overlapStart} to {$overlapEnd}.",
+                            ];
+                        }
+
+                        if (
+                            $termId1 === $termId2
+                            && $courseId1 === $courseId2
+                            && $sectionId1 !== $sectionId2
+                            && $mode1 === 'online'
+                            && $mode2 === 'online'
+                        ) {
+                            $violations[] = [
+                                'rule' => 'subject_section_time_conflict',
+                                'operation_index' => $j,
+                                'course_code' => $courseCode2,
+                                'day' => $day2,
+                                'message' => "Intra-batch Subject/Section Conflict: {$courseCode1} is assigned to multiple sections at overlapping time {$overlapStart}-{$overlapEnd} on {$day1}.",
                             ];
                         }
 

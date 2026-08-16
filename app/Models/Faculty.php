@@ -7,7 +7,10 @@ use Illuminate\Database\Eloquent\Model;
 class Faculty extends Model
 {
     protected $table = 'faculties';
+
     protected $fillable = [
+        'user_id',
+        'administrative_role',
         'first_name',
         'last_name',
         'middle_name',
@@ -24,6 +27,11 @@ class Faculty extends Model
     public function department()
     {
         return $this->belongsTo(Departments::class, 'department_id');
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
     }
 
     public function availabilities()

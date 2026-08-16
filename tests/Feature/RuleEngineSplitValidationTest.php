@@ -19,6 +19,85 @@ class RuleEngineSplitValidationTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_same_subject_for_different_sections_cannot_overlap_online(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+        $department = Departments::create([
+            'department_name' => 'Information Technology',
+            'department_code' => 'IT',
+            'online_slot_limit' => 3,
+        ]);
+        $firstSection = Sections::create([
+            'section_name' => 'BSIT 2B',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+        $secondSection = Sections::create([
+            'section_name' => 'BSIT 2C',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+        $course = Course::create([
+            'course_code' => 'IT 108',
+            'course_name' => 'Web Systems and Technologies',
+            'lecture_hours' => 2,
+            'lab_hours' => 0,
+            'units' => 2,
+            'course_category' => 'major',
+            'room_type_required' => 'lecture',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+
+        Schedule::create([
+            'term_id' => $term->id,
+            'section_id' => $firstSection->id,
+            'course_id' => $course->id,
+            'room_id' => null,
+            'department_id' => $department->id,
+            'day' => 'Wednesday',
+            'start_time' => '17:00',
+            'end_time' => '19:00',
+            'mode' => 'online',
+            'status' => 'draft',
+        ]);
+
+        $attempt = [
+            'term_id' => $term->id,
+            'section_id' => $secondSection->id,
+            'course_id' => $course->id,
+            'room_id' => null,
+            'department_id' => $department->id,
+            'day' => 'Wednesday',
+            'start_time' => '17:00',
+            'end_time' => '19:00',
+            'mode' => 'online',
+        ];
+
+        $overlappingRules = collect(app(RuleEngine::class)->validate($attempt))->pluck('rule')->all();
+        $nextSlotRules = collect(app(RuleEngine::class)->validate(array_merge($attempt, [
+            'start_time' => '15:00',
+            'end_time' => '17:00',
+        ])))->pluck('rule')->all();
+
+        $this->assertContains('subject_section_time_conflict', $overlappingRules);
+        $this->assertNotContains('room_conflict', $overlappingRules);
+        $this->assertNotContains('subject_section_time_conflict', $nextSlotRules);
+    }
+
     public function test_minor_course_is_valid_on_saturday_but_not_sunday(): void
     {
         $term = Terms::create([

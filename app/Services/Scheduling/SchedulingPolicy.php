@@ -181,6 +181,12 @@ final class SchedulingPolicy
             'description' => 'A section cannot attend overlapping classes in the same term.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
+        'subject_section_time_conflict' => [
+            'severity' => 'hard',
+            'category' => 'resource_conflict',
+            'description' => 'Different online sections taking the same subject cannot overlap in the same term and time slot.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
         'room_conflict' => [
             'severity' => 'hard',
             'category' => 'resource_conflict',
