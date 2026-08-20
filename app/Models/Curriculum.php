@@ -6,9 +6,9 @@ use Illuminate\Database\Eloquent\Model;
 
 class Curriculum extends Model
 {
-    protected $table = 'curricula';
+    protected $table = 'curriculum';
 
-    protected $fillable = ['name', 'department_id', 'program_id', 'code', 'curriculum_version', 'academic_year', 'effective_school_year', 'status', 'description'];
+    protected $fillable = ['name', 'department_id', 'program_id', 'code', 'effective_school_year', 'status', 'description'];
 
     protected static function boot()
     {

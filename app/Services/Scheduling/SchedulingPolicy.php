@@ -21,10 +21,10 @@ final class SchedulingPolicy
     /** @var array<int, list<int>> */
     private static array $cachedStartSlotsByDuration = [];
 
-    private static ?bool $cachedFieldCourseSettingEnabled = null;
 
     /** @var array<string, true>|null */
-    private static ?array $cachedFieldCourseCodeMap = null;
+    /** @var array<string, array<string, true>> */
+    private static array $cachedFieldCourseCodeMap = [];
 
     /** @var array<int, int>|null */
     private static ?array $cachedCourseTeachingAssignmentMap = null;
@@ -91,6 +91,41 @@ final class SchedulingPolicy
         'rejected',
         'revision',
     ];
+
+    /**
+     * Statuses at which a schedule may be given an instructor. Instructor
+     * assignment is a post-VPAA-approval step, so anything earlier in the
+     * workflow — and `finalized`, which is locked — is refused.
+     */
+    /**
+     * The bands an instructor's load climbs through. Assignment is allowed in
+     * every one of them: the bands decide what the user is asked to confirm and
+     * what the load is called, not whether the save is permitted.
+     */
+    public const LOAD_TIER_BASIC = 'basic';
+
+    public const LOAD_TIER_OVERLOAD = 'overload';
+
+    public const LOAD_TIER_PROBONO = 'probono';
+
+    public const LOAD_TIER_BEYOND_CEILING = 'beyond_ceiling';
+
+    public const LOAD_TIER_LABELS = [
+        self::LOAD_TIER_BASIC => 'Basic Load',
+        self::LOAD_TIER_OVERLOAD => 'Overload',
+        self::LOAD_TIER_PROBONO => 'Pro-bono',
+        self::LOAD_TIER_BEYOND_CEILING => 'Beyond ceiling',
+    ];
+
+    public const INSTRUCTOR_ASSIGNABLE_STATUSES = ['approved', 'faculty_assignment'];
+
+    /**
+     * Statuses at which an existing instructor assignment counts as real: it is
+     * listed in the assignment workspace and included in teaching load. A row
+     * that fell back to `draft`, `completed` or `revision` is no longer an
+     * approved assignment, so it must not inflate anyone's load.
+     */
+    public const INSTRUCTOR_ASSIGNED_STATUSES = ['approved', 'faculty_assignment', 'finalized'];
 
     /** @var array<string, array{0: string, 1: string}> */
     public const FIXED_MEETING_PATTERNS = [
@@ -259,16 +294,22 @@ final class SchedulingPolicy
             'description' => 'Inactive faculty members cannot be assigned to schedules.',
             'enforced_by' => ['rule_engine'],
         ],
-        'faculty_department_alignment' => [
+        'major_faculty_department_alignment' => [
             'severity'    => 'hard',
             'category'    => 'faculty',
-            'description' => 'The assigned faculty member must belong to the same department as the scheduled section (applies to major subjects).',
+            'description' => 'A major subject must be assigned to an instructor from the department that offers it, and cannot be delegated to another department.',
+            'enforced_by' => ['rule_engine'],
+        ],
+        'major_faculty_program_alignment' => [
+            'severity'    => 'hard',
+            'category'    => 'faculty',
+            'description' => 'A major subject tied to a program must be assigned to an instructor belonging to that program.',
             'enforced_by' => ['rule_engine'],
         ],
         'service_subject_faculty_department_alignment' => [
             'severity'    => 'hard',
             'category'    => 'faculty',
-            'description' => 'GEC service subjects that belong to CAS must be assigned to a faculty member from that owning department.',
+            'description' => 'A course with a VPAA-assigned teaching department (including GEC service subjects owned by CAS) must be assigned to an instructor from that department. A minor with no assigned department may be taught by an instructor from any department.',
             'enforced_by' => ['rule_engine'],
         ],
         'part_time_faculty_availability' => [
@@ -367,6 +408,12 @@ final class SchedulingPolicy
             'description' => 'Prefer on-site physical room assignments over online delivery when physical rooms are available.',
             'enforced_by' => ['csp'],
         ],
+        'faculty_unit_ceiling' => [
+            'severity' => 'soft',
+            'category' => 'workload',
+            'description' => 'Prefer keeping an instructor at or below their unit ceiling (maximum units, less deload, plus overload and pro bono allowances). Reported as a warning so a deliberate overload is still possible.',
+            'enforced_by' => ['instructor_assignment'],
+        ],
     ];
 
     public static function catalog(): array
@@ -430,6 +477,73 @@ final class SchedulingPolicy
     public static function allowedActiveStatusesRule(string $prefix): string
     {
         return $prefix.'|in:'.implode(',', self::ACTIVE_STATUSES);
+    }
+
+    /**
+     * The units an instructor is expected to carry: their maximum less whatever
+     * has been deloaded for administrative or other duties.
+     */
+    public static function facultyRequiredUnits(mixed $faculty): int
+    {
+        $max = (int) ($faculty->max_units ?? 0);
+        $deload = (int) ($faculty->deload_units ?? 0);
+
+        return max(0, $max - $deload);
+    }
+
+    /**
+     * The highest load an instructor may carry before the assignment counts as
+     * over-ceiling: the required load plus the overload and pro bono units that
+     * were explicitly granted to them. Kept soft on purpose — a chair may still
+     * need to overload someone, so the assignment warns instead of refusing.
+     */
+    public static function facultyUnitCeiling(mixed $faculty): int
+    {
+        return self::facultyRequiredUnits($faculty)
+            + (int) ($faculty->overload_units ?? 0)
+            + (int) ($faculty->probono_units ?? 0);
+    }
+
+    /**
+     * The instructor's Basic Load: the maximum units they were given, less any
+     * deload. A dean with a 21-unit maximum and 6 units of deload has a 15-unit
+     * Basic Load, and anything past that is an overload.
+     *
+     * Named alias of facultyRequiredUnits() so the tier code reads in the same
+     * vocabulary the scheduling staff use.
+     */
+    public static function facultyBasicLoad(mixed $faculty): int
+    {
+        return self::facultyRequiredUnits($faculty);
+    }
+
+    /**
+     * Which band a total load of $units falls in for this instructor. The bands
+     * stack in the order the allowances are granted: Basic Load first, then the
+     * overload allowance, then pro bono. A load past all three is beyond the
+     * ceiling — still assignable, since the ceiling is deliberately soft, but
+     * named so the confirmation can say as much.
+     */
+    public static function facultyLoadTier(mixed $faculty, int $units): string
+    {
+        $basic = self::facultyBasicLoad($faculty);
+
+        if ($units <= $basic) {
+            return self::LOAD_TIER_BASIC;
+        }
+
+        if ($units <= $basic + (int) ($faculty->overload_units ?? 0)) {
+            return self::LOAD_TIER_OVERLOAD;
+        }
+
+        return $units <= self::facultyUnitCeiling($faculty)
+            ? self::LOAD_TIER_PROBONO
+            : self::LOAD_TIER_BEYOND_CEILING;
+    }
+
+    public static function loadTierLabel(string $tier): string
+    {
+        return self::LOAD_TIER_LABELS[$tier] ?? $tier;
     }
 
     public static function openingTime(): string
@@ -679,13 +793,12 @@ final class SchedulingPolicy
             return true;
         }
 
-        if (!self::fieldCourseSettingEnabled()) {
-            return false;
-        }
-
+        // Configured field-course codes are per department. A course with no
+        // owning department is a shared minor, whose field-ness is global.
+        $departmentId = $course->department_id === null ? null : (int) $course->department_id;
         $code = self::normalizeCourseCode((string) ($course->course_code ?? $course->subject_code ?? ''));
 
-        return isset(self::fieldCourseCodeMap()[$code]);
+        return isset(self::fieldCourseCodeMap($departmentId)[$code]);
     }
 
     public static function isCasServiceCourse(Course $course): bool
@@ -738,6 +851,46 @@ final class SchedulingPolicy
     }
 
     /**
+     * A major course belongs to the department that offers it, so it is taught by
+     * that department's own instructors. Service courses are the delegated case —
+     * a major never is, which is why `courseTeachingAssignmentMap()` drops any
+     * assignment that would send one elsewhere.
+     */
+    public static function isMajorCourse(Course $course): bool
+    {
+        return self::normalizeCategoryName(
+            (string) ($course->course_category ?? $course->subject_category ?? 'major')
+        ) === 'major';
+    }
+
+    /**
+     * The department whose instructors may teach this major. Falls back to the
+     * section's department for a course with no owning department of its own.
+     */
+    public static function majorTeachingDepartmentId(Course $course, ?int $sectionDepartmentId = null): ?int
+    {
+        if ($course->department_id !== null) {
+            return (int) $course->department_id;
+        }
+
+        return $sectionDepartmentId;
+    }
+
+    /**
+     * The program an instructor must belong to in order to teach this course, or
+     * null when the course is not tied to one. Only majors carry the restriction:
+     * a service or minor course is taught across programs by design.
+     */
+    public static function requiredTeachingProgramId(Course $course): ?int
+    {
+        if (! self::isMajorCourse($course)) {
+            return null;
+        }
+
+        return $course->program_id === null ? null : (int) $course->program_id;
+    }
+
+    /**
      * @return list<int>
      */
     public static function assignedCourseIds(): array
@@ -756,36 +909,45 @@ final class SchedulingPolicy
         )));
     }
 
-    public static function fieldCourseSettingEnabled(): bool
+    /**
+     * Whether field-course assignment is in effect for a department.
+     *
+     * Derived from whether any codes are configured, rather than stored in a
+     * separate marker row. The stored flag could only ever be set to true — no
+     * caller cleared it — so a department that removed its last field course was
+     * left permanently 'enabled' with an empty list (audit finding #35).
+     */
+    public static function fieldCourseSettingEnabled(?int $departmentId = null): bool
     {
-        if (self::$cachedFieldCourseSettingEnabled !== null) {
-            return self::$cachedFieldCourseSettingEnabled;
-        }
-
-        if (!self::fieldCourseSettingsTableExists()) {
-            return self::$cachedFieldCourseSettingEnabled = false;
-        }
-
-        return self::$cachedFieldCourseSettingEnabled = (bool) DB::table('field_course_settings')
-            ->whereNull('course_code')
-            ->value('enabled');
+        return self::fieldCourseCodeMap($departmentId) !== [];
     }
 
     /**
+     * Configured field-course codes for a department, merged with the codes that
+     * apply institution-wide (rows with no department, i.e. shared minors).
+     *
      * @return array<string, true>
      */
-    public static function fieldCourseCodeMap(): array
+    public static function fieldCourseCodeMap(?int $departmentId = null): array
     {
-        if (self::$cachedFieldCourseCodeMap !== null) {
-            return self::$cachedFieldCourseCodeMap;
+        $bucket = $departmentId === null ? 'shared' : (string) $departmentId;
+
+        if (isset(self::$cachedFieldCourseCodeMap[$bucket])) {
+            return self::$cachedFieldCourseCodeMap[$bucket];
         }
 
         if (!self::fieldCourseSettingsTableExists()) {
-            return self::$cachedFieldCourseCodeMap = [];
+            return self::$cachedFieldCourseCodeMap[$bucket] = [];
         }
 
-        return self::$cachedFieldCourseCodeMap = DB::table('field_course_settings')
+        return self::$cachedFieldCourseCodeMap[$bucket] = DB::table('field_course_settings')
             ->whereNotNull('course_code')
+            ->where(function ($query) use ($departmentId) {
+                $query->whereNull('department_id');
+                if ($departmentId !== null) {
+                    $query->orWhere('department_id', $departmentId);
+                }
+            })
             ->pluck('course_code')
             ->map(static fn ($code): string => self::normalizeCourseCode((string) $code))
             ->filter()
@@ -800,8 +962,7 @@ final class SchedulingPolicy
 
     public static function clearFieldCourseCache(): void
     {
-        self::$cachedFieldCourseSettingEnabled = null;
-        self::$cachedFieldCourseCodeMap = null;
+        self::$cachedFieldCourseCodeMap = [];
     }
 
     public static function clearCourseTeachingAssignmentCache(): void
@@ -827,10 +988,33 @@ final class SchedulingPolicy
             return self::$cachedCourseTeachingAssignmentMap = [];
         }
 
-        return self::$cachedCourseTeachingAssignmentMap = DB::table('course_teaching_assignments')
-            ->pluck('department_id', 'course_id')
-            ->mapWithKeys(static fn ($departmentId, $courseId): array => [(int) $courseId => (int) $departmentId])
-            ->all();
+        // A major belongs to the department that offers it, so an assignment
+        // pointing one at another department is ignored rather than obeyed —
+        // dropping it here keeps every consumer (the rule engine, the assignment
+        // workspace listing, and the permission checks) on the same answer.
+        $rows = DB::table('course_teaching_assignments')
+            ->join('courses', 'courses.id', '=', 'course_teaching_assignments.course_id')
+            ->get([
+                'course_teaching_assignments.course_id',
+                'course_teaching_assignments.department_id',
+                'courses.course_category',
+                'courses.department_id as course_department_id',
+            ]);
+
+        $map = [];
+        foreach ($rows as $row) {
+            $isMajor = self::normalizeCategoryName((string) ($row->course_category ?? 'major')) === 'major';
+            $delegatesAway = $row->course_department_id !== null
+                && (int) $row->department_id !== (int) $row->course_department_id;
+
+            if ($isMajor && $delegatesAway) {
+                continue;
+            }
+
+            $map[(int) $row->course_id] = (int) $row->department_id;
+        }
+
+        return self::$cachedCourseTeachingAssignmentMap = $map;
     }
 
     /**

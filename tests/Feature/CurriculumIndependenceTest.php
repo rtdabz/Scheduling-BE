@@ -97,7 +97,7 @@ class CurriculumIndependenceTest extends TestCase
         ]);
 
         // Attach course to curriculum in year 2 semester 2
-        $response = $this->postJson("/api/curricula/{$curr->id}/courses", [
+        $response = $this->postJson("/api/curriculum/{$curr->id}/courses", [
             'course_id' => $course->id,
             'year_level' => 2,
             'semester' => 2,
@@ -220,7 +220,7 @@ class CurriculumIndependenceTest extends TestCase
             'status' => 'active',
         ]);
 
-        $response = $this->postJson("/api/curricula/{$itCurriculum->id}/courses", [
+        $response = $this->postJson("/api/curriculum/{$itCurriculum->id}/courses", [
             'course_id' => $baCourse->id,
             'year_level' => 1,
             'semester' => 1,
@@ -269,7 +269,7 @@ class CurriculumIndependenceTest extends TestCase
             'status' => 'active',
         ]);
 
-        $response = $this->postJson("/api/curricula/{$hmCurriculum->id}/courses", [
+        $response = $this->postJson("/api/curriculum/{$hmCurriculum->id}/courses", [
             'course_id' => $itOwnedMinor->id,
             'year_level' => 1,
             'semester' => 1,
@@ -352,7 +352,7 @@ class CurriculumIndependenceTest extends TestCase
             $minorCourse->id => ['year_level' => 1, 'semester' => 1],
         ]);
 
-        $response = $this->getJson("/api/curricula/{$hmCurriculum->id}/full");
+        $response = $this->getJson("/api/curriculum/{$hmCurriculum->id}/full");
 
         $response->assertOk();
         $courseCodes = collect($response->json('terms.0.courses'))->pluck('code')->all();
@@ -463,7 +463,7 @@ class CurriculumIndependenceTest extends TestCase
             'semester' => 3,
         ]);
 
-        $response = $this->postJson("/api/curricula/{$curriculum->id}/courses/batch-create", [
+        $response = $this->postJson("/api/curriculum/{$curriculum->id}/courses/batch-create", [
             'courses' => [
                 [
                     'row_id' => 'row-1',

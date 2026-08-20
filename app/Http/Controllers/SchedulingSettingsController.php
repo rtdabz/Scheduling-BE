@@ -26,14 +26,12 @@ class SchedulingSettingsController extends Controller
     {
         $validated = $request->validate([
             'lecture_lab_schedule_override_enabled' => 'sometimes|required|boolean',
-            'split_units_schedule_override_enabled' => 'sometimes|required|boolean',
             'custom_lab_duration_override_enabled' => 'sometimes|required|boolean',
             'custom_lab_duration_minutes' => 'nullable|integer|min:30|max:720',
             'custom_lab_duration_6_hours_enabled' => 'sometimes|required|boolean',
             'custom_lab_duration_5_hours_enabled' => 'sometimes|required|boolean',
             'custom_lab_duration_other_enabled' => 'sometimes|required|boolean',
             'gec_split_schedule_override_enabled' => 'sometimes|required|boolean',
-            'force_schedule_reuse_enabled' => 'sometimes|required|boolean',
             'field_evening_schedule_enabled' => 'sometimes|required|boolean',
             'sunday_online_only_enabled' => 'sometimes|required|boolean',
             'online_slot_limit' => 'sometimes|required|integer|min:1|max:100',
@@ -41,7 +39,6 @@ class SchedulingSettingsController extends Controller
             'forced_day_rules' => 'sometimes|array',
             'forced_day_rules.*.course_id' => 'required|integer|exists:courses,id',
             'forced_day_rules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
-            'field_course_assignment_enabled' => 'sometimes|required|boolean',
             'field_course_codes' => 'sometimes|array',
             'field_course_codes.*' => 'required|string|max:255',
         ]);
@@ -72,12 +69,6 @@ class SchedulingSettingsController extends Controller
             }
             $department->lecture_lab_schedule_override_enabled = (bool) $validated['lecture_lab_schedule_override_enabled'];
         }
-        if (array_key_exists('split_units_schedule_override_enabled', $validated)) {
-            $department->split_units_schedule_override_enabled = (bool) $validated['split_units_schedule_override_enabled'];
-            if ($department->split_units_schedule_override_enabled) {
-                $department->gec_split_schedule_override_enabled = false;
-            }
-        }
         if (array_key_exists('custom_lab_duration_override_enabled', $validated)) {
             $department->custom_lab_duration_override_enabled = (bool) $validated['custom_lab_duration_override_enabled'];
         }
@@ -95,12 +86,6 @@ class SchedulingSettingsController extends Controller
         }
         if (array_key_exists('gec_split_schedule_override_enabled', $validated)) {
             $department->gec_split_schedule_override_enabled = (bool) $validated['gec_split_schedule_override_enabled'];
-            if ($department->gec_split_schedule_override_enabled) {
-                $department->split_units_schedule_override_enabled = false;
-            }
-        }
-        if (array_key_exists('force_schedule_reuse_enabled', $validated)) {
-            $department->force_schedule_reuse_enabled = (bool) $validated['force_schedule_reuse_enabled'];
         }
         if (array_key_exists('field_evening_schedule_enabled', $validated)) {
             $department->field_evening_schedule_enabled = (bool) $validated['field_evening_schedule_enabled'];
@@ -118,9 +103,6 @@ class SchedulingSettingsController extends Controller
 
         if (array_key_exists('forced_day_rules', $validated)) {
             $this->syncForcedDayRules($department, $validated['forced_day_rules'], $section);
-        }
-        if (array_key_exists('field_course_assignment_enabled', $validated)) {
-            $this->syncFieldCourseAssignmentEnabled((bool) $validated['field_course_assignment_enabled']);
         }
         if (array_key_exists('field_course_codes', $validated)) {
             $this->syncFieldCourseCodes($department, $validated['field_course_codes'], $section);
@@ -142,14 +124,12 @@ class SchedulingSettingsController extends Controller
             'department_id' => $department->id,
             'scheduling_profile' => (string) ($department->scheduling_profile ?? 'standard'),
             'lecture_lab_schedule_override_enabled' => (bool) $department->lecture_lab_schedule_override_enabled,
-            'split_units_schedule_override_enabled' => (bool) $department->split_units_schedule_override_enabled,
             'custom_lab_duration_override_enabled' => (bool) $department->custom_lab_duration_override_enabled,
             'custom_lab_duration_minutes' => $department->custom_lab_duration_minutes,
             'custom_lab_duration_6_hours_enabled' => (bool) $department->custom_lab_duration_6_hours_enabled,
             'custom_lab_duration_5_hours_enabled' => (bool) $department->custom_lab_duration_5_hours_enabled,
             'custom_lab_duration_other_enabled' => (bool) $department->custom_lab_duration_other_enabled,
             'gec_split_schedule_override_enabled' => (bool) $department->gec_split_schedule_override_enabled,
-            'force_schedule_reuse_enabled' => (bool) $department->force_schedule_reuse_enabled,
             'field_evening_schedule_enabled' => (bool) $department->field_evening_schedule_enabled,
             'sunday_online_only_enabled' => (bool) ($department->sunday_online_only_enabled ?? true),
             'online_slot_limit' => max(1, (int) ($department->online_slot_limit ?? 3)),
@@ -163,9 +143,9 @@ class SchedulingSettingsController extends Controller
             ] : null,
             'forced_day_courses' => $courseOptions,
             'forced_day_rules' => $this->forcedDayRules($department, $section),
-            'field_course_assignment_enabled' => $this->fieldCourseAssignmentEnabled(),
+            'field_course_assignment_enabled' => $this->fieldCourseAssignmentEnabled($department),
             'field_course_options' => $fieldCourseOptions,
-            'field_course_codes' => $this->fieldCourseCodes($section ? $fieldCourseOptions : null),
+            'field_course_codes' => $this->fieldCourseCodes($department, $section ? $fieldCourseOptions : null),
         ];
     }
 
@@ -242,20 +222,14 @@ class SchedulingSettingsController extends Controller
             ->all();
     }
 
-    private function fieldCourseAssignmentEnabled(): bool
+    /**
+     * Derived from whether the department has any field courses configured, so
+     * removing the last one turns the behaviour off again. The stored flag it
+     * replaced could only ever be set to true (audit finding #35).
+     */
+    private function fieldCourseAssignmentEnabled(Departments $department): bool
     {
-        return (bool) DB::table('field_course_settings')
-            ->whereNull('course_code')
-            ->value('enabled');
-    }
-
-    private function syncFieldCourseAssignmentEnabled(bool $enabled): void
-    {
-        DB::table('field_course_settings')->updateOrInsert(
-            ['course_code' => null],
-            ['enabled' => $enabled, 'updated_at' => now(), 'created_at' => now()],
-        );
-        SchedulingPolicy::clearFieldCourseCache();
+        return SchedulingPolicy::fieldCourseSettingEnabled((int) $department->id);
     }
 
     private function fieldCourseOptions(Departments $department, ?Sections $section = null): array
@@ -285,10 +259,13 @@ class SchedulingSettingsController extends Controller
             ->all();
     }
 
-    private function fieldCourseCodes(?array $scopedOptions = null): array
+    private function fieldCourseCodes(Departments $department, ?array $scopedOptions = null): array
     {
         $query = DB::table('field_course_settings')
             ->whereNotNull('course_code')
+            ->where(fn ($scope) => $scope
+                ->whereNull('department_id')
+                ->orWhere('department_id', $department->id))
             ->orderBy('course_code');
 
         if ($scopedOptions !== null) {
@@ -314,8 +291,11 @@ class SchedulingSettingsController extends Controller
             ->all();
         $allowedCodeMap = array_fill_keys($allowedCodes, true);
 
-        DB::transaction(function () use ($courseCodes, $allowedCodeMap): void {
+        DB::transaction(function () use ($department, $courseCodes, $allowedCodeMap): void {
+            // Scoped to this department: the delete used to clear every
+            // department's row for the same code (audit finding #34).
             DB::table('field_course_settings')
+                ->where('department_id', $department->id)
                 ->whereNotNull('course_code')
                 ->whereIn('course_code', array_keys($allowedCodeMap))
                 ->delete();
@@ -328,6 +308,7 @@ class SchedulingSettingsController extends Controller
                 }
 
                 $rows[$courseCode] = [
+                    'department_id' => $department->id,
                     'enabled' => true,
                     'course_code' => $courseCode,
                     'created_at' => now(),

@@ -22,13 +22,9 @@ class CurriculumController extends Controller
             $query->where('status', $request->status);
         }
 
-        if ($request->has('academic_year') && $request->academic_year) {
-            $query->where('academic_year', $request->academic_year);
-        }
+        $curriculumList = $query->orderBy('created_at', 'desc')->get();
 
-        $curricula = $query->orderBy('created_at', 'desc')->get();
-
-        return response()->json($curricula);
+        return response()->json($curriculumList);
     }
 
     public function store(Request $request)
@@ -38,10 +34,8 @@ class CurriculumController extends Controller
 
         $rules = [
             'name' => 'required|string|max:255',
-            'code' => 'required|string|max:50|unique:curricula,code',
+            'code' => 'required|string|max:50|unique:curriculum,code',
             'program_id' => 'nullable|integer',
-            'curriculum_version' => 'nullable|string|max:50',
-            'academic_year' => 'nullable|string|max:20',
             'effective_school_year' => 'required|string|max:20',
             'status' => 'nullable|string|in:draft,active,archived',
             'description' => 'nullable|string',
@@ -69,7 +63,7 @@ class CurriculumController extends Controller
 
         $curriculum->loadCount('courses');
 
-        ApiCache::forgetGroups(['curricula.index']);
+        ApiCache::forgetGroups(['curriculum.index']);
 
         return response()->json($curriculum, 201);
     }
@@ -89,10 +83,8 @@ class CurriculumController extends Controller
 
         $rules = [
             'name' => 'sometimes|string|max:255',
-            'code' => 'sometimes|string|max:50|unique:curricula,code,' . $curriculum->id,
+            'code' => 'sometimes|string|max:50|unique:curriculum,code,' . $curriculum->id,
             'program_id' => 'nullable|integer',
-            'curriculum_version' => 'nullable|string|max:50',
-            'academic_year' => 'nullable|string|max:20',
             'effective_school_year' => 'sometimes|string|max:20',
             'status' => 'nullable|string|in:draft,active,archived',
             'description' => 'nullable|string',
@@ -124,7 +116,7 @@ class CurriculumController extends Controller
 
         $curriculum->loadCount('courses');
 
-        ApiCache::forgetGroups(['curricula.index']);
+        ApiCache::forgetGroups(['curriculum.index']);
 
         return response()->json($curriculum);
     }
@@ -133,7 +125,7 @@ class CurriculumController extends Controller
     {
         $curriculum->delete();
 
-        ApiCache::forgetGroups(['curricula.index']);
+        ApiCache::forgetGroups(['curriculum.index']);
 
         return response()->json(['message' => 'Curriculum deleted successfully']);
     }
@@ -144,8 +136,6 @@ class CurriculumController extends Controller
             'name' => $curriculum->name . ' (Copy)',
             'code' => $curriculum->code . '-COPY-' . time(),
             'department_id' => $curriculum->department_id,
-            'curriculum_version' => $curriculum->curriculum_version,
-            'academic_year' => $curriculum->academic_year,
             'effective_school_year' => $curriculum->effective_school_year,
             'status' => 'draft',
             'description' => $curriculum->description,
@@ -165,7 +155,7 @@ class CurriculumController extends Controller
 
         $newCurriculum->loadCount('courses');
 
-        ApiCache::forgetGroups(['curricula.index']);
+        ApiCache::forgetGroups(['curriculum.index']);
 
         return response()->json($newCurriculum, 201);
     }
@@ -195,7 +185,7 @@ class CurriculumController extends Controller
 
         $curriculum->loadCount('courses');
 
-        ApiCache::forgetGroups(['curricula.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
 
         return response()->json($curriculum);
     }
@@ -228,7 +218,7 @@ class CurriculumController extends Controller
             }
         });
 
-        ApiCache::forgetGroups(['curricula.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
 
         return response()->json(['message' => 'Course attached successfully']);
     }
@@ -255,7 +245,7 @@ class CurriculumController extends Controller
 
         $curriculum->courses()->syncWithoutDetaching($syncData);
 
-        ApiCache::forgetGroups(['curricula.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
 
         return response()->json(['message' => count($syncData) . ' course(s) attached successfully']);
     }
@@ -383,7 +373,7 @@ class CurriculumController extends Controller
             }
         }
 
-        ApiCache::forgetGroups(['curricula.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
 
         return response()->json([
             'results' => $results
@@ -394,7 +384,7 @@ class CurriculumController extends Controller
     {
         $curriculum->courses()->detach($course->id);
 
-        ApiCache::forgetGroups(['curricula.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
 
         return response()->json(['message' => 'Course removed successfully']);
     }
@@ -432,6 +422,9 @@ class CurriculumController extends Controller
                         'lec_units'  => $c->lecture_hours,
                         'lab_units'  => $c->lab_hours,
                         'total_units'=> $c->units,
+                        // Which program owns a major decides who may teach it, so
+                        // the course editor shows and edits it here.
+                        'program_id' => $c->program_id,
                     ])->values(),
                     'totals' => [
                         'lec' => $group->sum('lecture_hours'),
@@ -449,8 +442,6 @@ class CurriculumController extends Controller
                 'department_id' => $curriculum->department_id,
                 'department' => $curriculum->department,
                 'program_id' => $curriculum->program_id,
-                'curriculum_version' => $curriculum->curriculum_version,
-                'academic_year' => $curriculum->academic_year,
                 'effective_school_year' => $curriculum->effective_school_year,
                 'status' => $curriculum->status,
                 'description' => $curriculum->description,

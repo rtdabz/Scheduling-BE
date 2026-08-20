@@ -20,6 +20,7 @@ class Faculty extends Model
         'deload_units',
         'probono_units',
         'department_id',
+        'program_id',
         'status',
         'profile_picture',
     ];
@@ -27,6 +28,11 @@ class Faculty extends Model
     public function department()
     {
         return $this->belongsTo(Departments::class, 'department_id');
+    }
+
+    public function program()
+    {
+        return $this->belongsTo(Program::class, 'program_id');
     }
 
     public function user()

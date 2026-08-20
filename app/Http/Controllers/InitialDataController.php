@@ -20,6 +20,8 @@ use Illuminate\Support\Facades\Schema;
 
 class InitialDataController extends Controller
 {
+    private ?bool $hasCourseCategories = null;
+
     public function __construct(
         private readonly FacultyLoadService $facultyLoad,
         private readonly DepartmentResourceSlotLimitService $resourceLimits,
@@ -33,8 +35,9 @@ class InitialDataController extends Controller
             : (int) $user->department_id;
         $activeTerm = Terms::query()->where('is_active', true)->first();
         $activeTermId = $activeTerm?->id;
-        $hasCourseCategories = Schema::hasTable('course_categories')
-            && Schema::hasTable('course_category_mapping');
+        // Cached per request: these hit information_schema, and the schema cannot
+        // change between the two reads below (audit finding #10).
+        $hasCourseCategories = $this->hasCourseCategoryTables();
 
         $rooms = Rooms::query()
             ->with('department')
@@ -45,22 +48,22 @@ class InitialDataController extends Controller
             ))
             ->get();
 
-        $activeCurriculaQuery = Curriculum::query()->where('status', 'active');
+        $activeCurriculumQuery = Curriculum::query()->where('status', 'active');
         if ($departmentId !== null) {
-            $activeCurriculaQuery->where('department_id', $departmentId);
+            $activeCurriculumQuery->where('department_id', $departmentId);
         }
-        $activeCurricula = $activeCurriculaQuery->get();
+        $activeCurriculumList = $activeCurriculumQuery->get();
 
-        if ($activeCurricula->isNotEmpty()) {
+        if ($activeCurriculumList->isNotEmpty()) {
             $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
-            $courseRelations = ['department', 'teachingAssignment.department'];
+            $courseRelations = ['department', 'program', 'teachingAssignment.department'];
             if ($hasCourseCategories) {
                 $courseRelations[] = 'categories';
             }
 
             $courses = Course::with($courseRelations)
-                ->whereHas('curricula', function ($q) use ($activeCurricula) {
-                    $q->whereIn('curricula.id', $activeCurricula->pluck('id'));
+                ->whereHas('curriculum', function ($q) use ($activeCurriculumList) {
+                    $q->whereIn('curriculum.id', $activeCurriculumList->pluck('id'));
                 })
                 // Only include courses that belong to this department or are shared minors (null dept)
                 ->when($departmentId !== null, function ($q) use ($departmentId) {
@@ -72,7 +75,7 @@ class InitialDataController extends Controller
                 ->get();
 
             $pivotData = \DB::table('curriculum_course')
-                ->whereIn('curriculum_id', $activeCurricula->pluck('id'))
+                ->whereIn('curriculum_id', $activeCurriculumList->pluck('id'))
                 ->get();
 
             $pivotMap = [];
@@ -148,24 +151,46 @@ class InitialDataController extends Controller
 
         return response()->json([
             'active_term' => $activeTerm,
+            // The grid window is a stored setting (schedule_settings, PATCH
+            // /timeslots/settings). The client used to hardcode 07:00-19:00 in ~40
+            // places, so changing it desynchronised the whole builder (audit #33).
+            'time_grid' => [
+                'opening_time' => substr(SchedulingPolicy::openingTime(), 0, 5),
+                'closing_time' => substr(SchedulingPolicy::closingTime(), 0, 5),
+                'slot_minutes' => SchedulingPolicy::SLOT_MINUTES,
+                'slot_count' => SchedulingPolicy::totalSlots(),
+            ],
             'rooms' => $rooms,
             'courses' => $courses,
-            'subjects' => $courses, // Backwards compatible alias
             // Auto-Assign needs to offer department and external instructors in the same workflow.
             'faculties' => $this->facultyLoad->get(null, $activeTermId),
             'sections' => $sections,
             'schedules' => $schedules,
             'departments' => $departments,
-            'field_course_assignment_enabled' => SchedulingPolicy::fieldCourseSettingEnabled(),
-            'field_course_codes' => array_keys(SchedulingPolicy::fieldCourseCodeMap()),
+            'field_course_assignment_enabled' => SchedulingPolicy::fieldCourseSettingEnabled($departmentId),
+            'field_course_codes' => array_keys(SchedulingPolicy::fieldCourseCodeMap($departmentId)),
             'resource_slot_limits' => $departmentId !== null
                 ? $this->resourceLimits->forDepartment($departmentId)
                 : null,
+            // Only the signatory lookup in the teaching-load export reads this, and
+            // it needs four columns. Returning full models shipped every column of
+            // every user on every scheduler load.
             'users' => User::query()
-                ->with('department')
                 ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
                 ->latest()
-                ->get(),
+                ->get(['id', 'name', 'role', 'department_id']),
         ]);
+    }
+
+    /**
+     * Whether the optional course-category tables are present.
+     *
+     * Memoized for the request: two Schema::hasTable calls per request each hit
+     * information_schema, and the answer cannot change mid-request.
+     */
+    private function hasCourseCategoryTables(): bool
+    {
+        return $this->hasCourseCategories ??= Schema::hasTable('course_categories')
+            && Schema::hasTable('course_category_mapping');
     }
 }

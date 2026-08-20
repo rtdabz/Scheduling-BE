@@ -5,8 +5,10 @@ namespace App\Http\Controllers;
 use App\Models\Departments;
 use App\Models\Sections;
 use App\Models\Schedule;
+use App\Models\SchedulingAuditLog;
 use App\Models\Terms;
 use App\Services\SystemNotificationService;
+use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -420,7 +422,7 @@ class DepartmentScheduleController extends Controller
             ? 'vpaa_approved'
             : ($currentStatuses->contains('approved_by_dean') ? 'vpaa_review' : 'dean_review');
 
-        $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses) {
+        $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses, $request, $withdrawalStage) {
             $completed = $this->departmentScheduleQuery($id)
                 ->whereIn('status', $withdrawableStatuses)
                 ->update([
@@ -433,16 +435,64 @@ class DepartmentScheduleController extends Controller
                     'updated_at' => now(),
                 ]);
 
+            // Rows about to be unlocked for revision are no longer VPAA-approved,
+            // and instructor assignment is only valid after that approval. Leaving
+            // faculty_id behind would keep an assignment nobody can see or clear
+            // (the assignment workspace and the timetable's phase-2 controls both
+            // hide non-approved rows) while it still counted towards teaching load
+            // and still fired faculty rules against the very edits the withdrawal
+            // was requested for. So the assignment is released here — recorded,
+            // not silently dropped — and made again after re-approval.
+            $released = $this->departmentScheduleQuery($id)
+                ->whereIn('section_id', $sectionIds)
+                ->where('status', 'completed')
+                ->whereNotNull('faculty_id')
+                ->get(['id', 'term_id', 'section_id', 'course_id', 'faculty_id']);
+
             $revision = $this->departmentScheduleQuery($id)
                 ->whereIn('section_id', $sectionIds)
                 ->where('status', 'completed')
                 ->update([
                     'status' => 'revision',
+                    'faculty_id' => null,
                     'updated_at' => now(),
                 ]);
 
-            return ['completed' => $completed, 'revision' => $revision];
+            foreach ($released->groupBy('section_id') as $sectionId => $rows) {
+                SchedulingAuditLog::create([
+                    'user_id' => $request->user()?->id,
+                    'term_id' => (int) $rows->first()->term_id,
+                    'section_id' => (int) $sectionId,
+                    'department_id' => $id,
+                    'action' => 'instructor_assignment_released',
+                    'metadata' => [
+                        'reason' => 'schedule_withdrawn',
+                        'withdrawal_stage' => $withdrawalStage,
+                        'released_count' => $rows->count(),
+                        'schedule_ids' => $rows->pluck('id')->map('intval')->all(),
+                        'previous_faculty_ids' => $rows
+                            ->mapWithKeys(static fn ($row): array => [
+                                (string) $row->id => (int) $row->faculty_id,
+                            ])
+                            ->all(),
+                    ],
+                    'created_at' => now(),
+                ]);
+            }
+
+            return [
+                'completed' => $completed,
+                'revision' => $revision,
+                'instructors_released' => $released->count(),
+            ];
         });
+
+        // The assignment workspace caches its payload for five minutes and the
+        // withdrawn rows just left the statuses it lists, so serving the stale
+        // copy would still show instructors that were released above.
+        if ($updated['instructors_released'] > 0) {
+            ApiCache::forgetGroup('instructor_assignments.index');
+        }
 
         $term = Terms::query()->find($this->activeTermId());
         $this->notifications->notifyRoles(
@@ -465,6 +515,7 @@ class DepartmentScheduleController extends Controller
                 'sections_unlocked' => count($sectionIds),
                 'selected_section_ids' => $sectionIds,
                 'withdrawal_stage' => $withdrawalStage,
+                'instructors_released' => $updated['instructors_released'],
             ],
         );
 
@@ -474,6 +525,7 @@ class DepartmentScheduleController extends Controller
             'schedules_updated' => $updated['revision'],
             'sections_unlocked' => count($sectionIds),
             'withdrawal_stage' => $withdrawalStage,
+            'instructors_released' => $updated['instructors_released'],
         ]);
     }
 

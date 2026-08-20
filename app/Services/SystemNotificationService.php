@@ -7,6 +7,7 @@ use App\Models\Schedule;
 use App\Models\SystemNotification;
 use App\Models\Terms;
 use App\Models\User;
+use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
 class SystemNotificationService
@@ -126,7 +127,7 @@ class SystemNotificationService
 
         $query = Schedule::query()
             ->where('term_id', $termId)
-            ->whereIn('status', ['approved', 'faculty_assignment', 'finalized'])
+            ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
             ->whereHas('course', function ($courseQuery) use ($courseDepartmentId) {
                 $courseQuery->where('department_id', $courseDepartmentId);
             });

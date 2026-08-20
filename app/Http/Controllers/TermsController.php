@@ -68,6 +68,60 @@ class TermsController extends Controller
     }
 
     /**
+     * Update an existing term. Only the academic year and the enabled flag are
+     * editable -- changing the semester would collide with the sibling rows.
+     */
+    public function update(Request $request, $id)
+    {
+        $term = Terms::findOrFail($id);
+
+        $validated = $request->validate([
+            'academic_year' => ['sometimes', 'required', 'string', 'regex:/^\d{4}-\d{4}$/'],
+            'is_enabled' => ['sometimes', 'boolean'],
+        ]);
+
+        if (array_key_exists('academic_year', $validated)) {
+            [$start, $end] = array_map('intval', explode('-', $validated['academic_year']));
+
+            if ($end !== $start + 1) {
+                return response()->json([
+                    'message' => 'The academic year must span two consecutive years, e.g. 2026-2027.',
+                ], 422);
+            }
+
+            $duplicate = Terms::where('academic_year', $validated['academic_year'])
+                ->where('semester', $term->semester)
+                ->where('id', '!=', $term->id)
+                ->exists();
+
+            if ($duplicate) {
+                return response()->json([
+                    'message' => 'Another term already covers this academic year and semester.',
+                ], 422);
+            }
+
+            $term->academic_year = $validated['academic_year'];
+        }
+
+        if (array_key_exists('is_enabled', $validated)) {
+            $term->is_enabled = (bool) $validated['is_enabled'];
+        }
+
+        $term->save();
+        ApiCache::forgetGroups([
+            'terms.index',
+            'terms.active',
+            'sections.index',
+            'sections.by_term',
+        ]);
+
+        return response()->json([
+            'message' => 'Term updated successfully.',
+            'term' => $term,
+        ]);
+    }
+
+    /**
      * Display the specified resource.
      */
     public function show($id)

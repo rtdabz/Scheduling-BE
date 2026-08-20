@@ -58,7 +58,11 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
             $roomTypes = match ($componentType) {
                 'online' => ['online'],
                 'field' => ['field'],
-                'laboratory' => ['laboratory', 'lecture'],
+                // A laboratory component may only use a laboratory room.
+                // RuleEngine::checkRoomTypeMatch rejects a lecture room for it at
+                // save time, so offering one here would only produce previews
+                // that cannot be saved.
+                'laboratory' => ['laboratory'],
                 default => ['lecture', 'laboratory'],
             };
 

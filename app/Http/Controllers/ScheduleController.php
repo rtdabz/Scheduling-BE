@@ -2,30 +2,42 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\ScheduleConflictException;
+use App\Http\Controllers\Concerns\ConfirmsFacultyOverload;
 use App\Models\Course;
+use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
-use App\Services\Scheduling\DepartmentResourceSlotLimitService;
+use App\Models\Terms;
+use App\Services\FacultyLoadService;
+use App\Services\Scheduling\BatchConflict;
+use App\Services\Scheduling\BatchConflictValidator;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Services\TimeslotService;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class ScheduleController extends Controller
 {
+    use ConfirmsFacultyOverload;
+
     private const REPLACEABLE_BATCH_STATUSES = ['draft', 'completed', 'revision'];
+
+    /** Seconds to wait for a concurrent batch save on the same term before giving up. */
+    private const SCHEDULE_LOCK_TIMEOUT_SECONDS = 10;
 
     protected RuleEngine $ruleEngine;
 
     public function __construct(
         RuleEngine $ruleEngine,
-        private readonly DepartmentResourceSlotLimitService $resourceLimits,
         private readonly SystemNotificationService $notifications,
         private readonly TimeslotService $timeslotService,
+        private readonly BatchConflictValidator $batchConflicts,
+        private readonly FacultyLoadService $facultyLoad,
     ) {
         $this->ruleEngine = $ruleEngine;
     }
@@ -234,66 +246,184 @@ class ScheduleController extends Controller
         }
 
         $mergedIgnoreIds = array_values(array_unique(array_merge($operationIds, array_map('intval', $deleteIds))));
-        $allViolations = $this->checkIntraBatchConflicts($validated['operations'], $mergedIgnoreIds);
-
-        $orderedOperations = $this->prioritizeSplitAnchorMeetings($validated['operations']);
-
-        foreach ($orderedOperations as $orderedOperation) {
-            $index = (int) $orderedOperation['index'];
-            $op = $orderedOperation['operation'];
-            $attemptData = $op;
-            if (isset($attemptData['subject_id']) && ! isset($attemptData['course_id'])) {
-                $attemptData['course_id'] = $attemptData['subject_id'];
-            }
-
-            $attemptData['ignore_schedule_id'] = $mergedIgnoreIds;
-
-            $violations = $this->ruleEngine->validate($attemptData);
-            if (! empty($violations)) {
-                foreach ($violations as $violation) {
-                    $allViolations[] = array_merge($violation, [
-                        'operation_index' => $index,
-                    ]);
-                }
-            }
-        }
-
-        if (! empty($allViolations)) {
-            return response()->json([
-                'message' => 'Schedule operation conflicts with existing entries or intra-batch schedules.',
-                'violations' => $allViolations,
-            ], 422);
-        }
 
         $savedSchedules = [];
         $deletedScheduleIds = [];
 
-        DB::transaction(function () use ($validated, $deleteIds, &$savedSchedules, &$deletedScheduleIds) {
-            if (! empty($deleteIds)) {
-                Schedule::whereIn('id', $deleteIds)->delete();
-                $deletedScheduleIds = array_map('intval', $deleteIds);
-            }
+        // Conflict validation must observe the same snapshot the write commits
+        // against, so it runs inside the transaction rather than before it.
+        // The advisory lock serializes concurrent batch writes for the same
+        // term, which is what actually closes the check-then-write race.
+        try {
+            $this->withScheduleWriteLock($this->conflictScopeTermIds($validated['operations'], $deleteIds), function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds): void {
+                DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds): void {
+                    $allViolations = $this->checkIntraBatchConflicts($validated['operations'], $mergedIgnoreIds);
 
-            foreach ($validated['operations'] as $op) {
-                if (isset($op['subject_id']) && ! isset($op['course_id'])) {
-                    $op['course_id'] = $op['subject_id'];
-                }
+                    $orderedOperations = $this->prioritizeSplitAnchorMeetings($validated['operations']);
 
-                if (isset($op['id'])) {
-                    $schedule = Schedule::findOrFail($op['id']);
-                    $schedule->update($op);
-                } else {
-                    $schedule = Schedule::create($op);
-                }
-                $savedSchedules[] = $schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department']);
-            }
-        });
+                    foreach ($orderedOperations as $orderedOperation) {
+                        $index = (int) $orderedOperation['index'];
+                        $op = $orderedOperation['operation'];
+                        $attemptData = $op;
+                        if (isset($attemptData['subject_id']) && ! isset($attemptData['course_id'])) {
+                            $attemptData['course_id'] = $attemptData['subject_id'];
+                        }
+
+                        $attemptData['ignore_schedule_id'] = $mergedIgnoreIds;
+
+                        $violations = $this->ruleEngine->validate($attemptData);
+                        if (! empty($violations)) {
+                            foreach ($violations as $violation) {
+                                $allViolations[] = array_merge($violation, [
+                                    'operation_index' => $index,
+                                ]);
+                            }
+                        }
+                    }
+
+                    if (! empty($allViolations)) {
+                        throw new ScheduleConflictException($allViolations);
+                    }
+
+                    if (! empty($deleteIds)) {
+                        Schedule::whereIn('id', $deleteIds)->delete();
+                        $deletedScheduleIds = array_map('intval', $deleteIds);
+                    }
+
+                    // Ids only in the loop; the relations are eager-loaded once
+                    // after it. Calling ->load() per row cost six queries per
+                    // operation inside the transaction (audit finding #8).
+                    $savedIds = [];
+                    $updateIds = array_values(array_filter(array_map(
+                        static fn (array $op): int => (int) ($op['id'] ?? 0),
+                        $validated['operations'],
+                    )));
+                    $existing = $updateIds === []
+                        ? collect()
+                        : Schedule::query()->whereIn('id', $updateIds)->get()->keyBy('id');
+
+                    foreach ($validated['operations'] as $op) {
+                        if (isset($op['subject_id']) && ! isset($op['course_id'])) {
+                            $op['course_id'] = $op['subject_id'];
+                        }
+
+                        if (isset($op['id'])) {
+                            $schedule = $existing->get((int) $op['id']);
+                            if (! $schedule) {
+                                throw (new ModelNotFoundException)->setModel(Schedule::class, [$op['id']]);
+                            }
+                            $schedule->update($op);
+                        } else {
+                            $schedule = Schedule::create($op);
+                        }
+                        $savedIds[] = (int) $schedule->id;
+                    }
+
+                    $savedSchedules = Schedule::query()
+                        ->whereIn('id', $savedIds)
+                        ->with(['term', 'section', 'course', 'faculty', 'room', 'department'])
+                        ->get()
+                        ->sortBy(static fn (Schedule $schedule): int => array_search((int) $schedule->id, $savedIds, true))
+                        ->values()
+                        ->all();
+                });
+            });
+        } catch (ScheduleConflictException $exception) {
+            return response()->json($exception->payload(), 422);
+        }
 
         return response()->json([
             'message' => 'Batch schedule operation completed successfully.',
             'schedules' => $savedSchedules,
             'deleted_schedule_ids' => $deletedScheduleIds,
         ]);
+    }
+
+    /**
+     * Serialize schedule writes that touch the same terms.
+     *
+     * The check-then-write race cannot be closed by row locks alone: the
+     * colliding operation is usually an INSERT, and there is no existing row to
+     * lock. A named advisory lock per term gives predictable serialization
+     * without relying on InnoDB gap-lock behaviour, and without the deadlock
+     * risk of taking wide ranges of row locks in varying orders.
+     *
+     * Acquired before the transaction and released after it commits, so no
+     * window exists between validation and commit. Named locks are session
+     * scoped rather than transaction scoped, hence the explicit release.
+     *
+     * Locks are taken in sorted term order by every caller so two requests
+     * covering overlapping terms can never deadlock against each other.
+     *
+     * MySQL/MariaDB only. Other drivers (sqlite in tests) run the callback
+     * directly — there is no cross-connection contention to guard there.
+     *
+     * @param  list<int>  $termIds
+     */
+    private function withScheduleWriteLock(array $termIds, callable $callback): mixed
+    {
+        $connection = DB::connection();
+
+        if (! in_array($connection->getDriverName(), ['mysql', 'mariadb'], true) || $termIds === []) {
+            return $callback();
+        }
+
+        $acquired = [];
+
+        try {
+            foreach ($termIds as $termId) {
+                $lockName = sprintf('wicars:schedule-write:%d', $termId);
+                $granted = $connection->selectOne(
+                    'SELECT GET_LOCK(?, ?) AS granted',
+                    [$lockName, self::SCHEDULE_LOCK_TIMEOUT_SECONDS],
+                );
+
+                if ((int) ($granted->granted ?? 0) !== 1) {
+                    throw new ScheduleConflictException(
+                        [[
+                            'rule' => 'concurrent_write',
+                            'message' => 'Another schedule save for this term is still in progress. Please retry in a moment.',
+                        ]],
+                        'Another schedule save for this term is still in progress. Please retry in a moment.',
+                    );
+                }
+
+                $acquired[] = $lockName;
+            }
+
+            return $callback();
+        } finally {
+            foreach (array_reverse($acquired) as $lockName) {
+                $connection->statement('DO RELEASE_LOCK(?)', [$lockName]);
+            }
+        }
+    }
+
+    /**
+     * Terms whose schedules a batch operation could affect, sorted so that all
+     * callers acquire locks in a consistent order.
+     *
+     * @param  list<array<string, mixed>>  $operations
+     * @param  list<int|string>  $deleteIds
+     * @return list<int>
+     */
+    private function conflictScopeTermIds(array $operations, array $deleteIds): array
+    {
+        $termIds = collect($operations)
+            ->pluck('term_id')
+            ->filter()
+            ->map('intval');
+
+        if ($deleteIds !== []) {
+            $termIds = $termIds->merge(
+                Schedule::query()
+                    ->whereIn('id', array_map('intval', $deleteIds))
+                    ->pluck('term_id')
+                    ->map('intval'),
+            );
+        }
+
+        return $termIds->unique()->sort()->values()->all();
     }
 
     /**
@@ -705,387 +835,104 @@ class ScheduleController extends Controller
         return sprintf('%02d:%02d', $h, $m);
     }
 
+    /**
+     * Intra-batch and against-persisted conflict checks for a batch payload.
+     *
+     * Delegates the rules to BatchConflictValidator so the batch save and the
+     * recommendation-accept path cannot drift apart again; this method only
+     * renders the result into the `operation_index` violation shape that the
+     * batch endpoint's clients already parse.
+     *
+     * @param  list<array<string, mixed>>  $operations
+     * @param  list<int>  $ignoreScheduleIds
+     * @return list<array<string, mixed>>
+     */
     private function checkIntraBatchConflicts(array $operations, array $ignoreScheduleIds = []): array
     {
-        $violations = [];
-        $count = count($operations);
-        if ($count < 2) {
-            return $violations;
-        }
-
-        $courseIds = array_values(array_unique(array_filter(array_map(
-            fn ($op) => (int) ($op['course_id'] ?? $op['subject_id'] ?? 0),
-            $operations
-        ))));
-
-        $coursesMap = ! empty($courseIds)
-            ? Course::whereIn('id', $courseIds)->get()->keyBy('id')
-            : collect();
-        $roomIds = array_values(array_unique(array_filter(array_map(
-            fn ($op) => (int) ($op['room_id'] ?? 0),
-            $operations,
-        ))));
-        $roomTypeMap = ! empty($roomIds)
-            ? Rooms::whereIn('id', $roomIds)->pluck('room_type', 'id')
-            : collect();
-        $roomCapacityMap = ! empty($roomIds)
-            ? Rooms::whereIn('id', $roomIds)
-                ->get(['id', 'room_type', 'max_concurrent_classes'])
-                ->mapWithKeys(fn (Rooms $room): array => [
-                    (int) $room->id => max(1, (int) ($room->max_concurrent_classes ?? 1)),
-                ])
-            : collect();
-
-        for ($i = 0; $i < $count; $i++) {
-            $op1 = $operations[$i];
-            $termId1 = (int) ($op1['term_id'] ?? 0);
-            $departmentId1 = (int) ($op1['department_id'] ?? 0);
-            $sectionId1 = (int) ($op1['section_id'] ?? 0);
-            $roomId1 = (int) ($op1['room_id'] ?? 0);
-            $facultyId1 = ! empty($op1['faculty_id']) ? (int) $op1['faculty_id'] : null;
-            $day1 = (string) ($op1['day'] ?? '');
-            $startMins1 = $this->timeToMinutesLocal((string) ($op1['start_time'] ?? '00:00'));
-            $endMins1 = $this->timeToMinutesLocal((string) ($op1['end_time'] ?? '00:00'));
-            $mode1 = (string) ($op1['mode'] ?? 'on-site');
-            $courseId1 = (int) ($op1['course_id'] ?? $op1['subject_id'] ?? 0);
-            $courseCode1 = $coursesMap->get($courseId1)?->course_code ?? 'Course';
-
-            for ($j = $i + 1; $j < $count; $j++) {
-                $op2 = $operations[$j];
-                $termId2 = (int) ($op2['term_id'] ?? 0);
-                $departmentId2 = (int) ($op2['department_id'] ?? 0);
-                $sectionId2 = (int) ($op2['section_id'] ?? 0);
-                $roomId2 = (int) ($op2['room_id'] ?? 0);
-                $facultyId2 = ! empty($op2['faculty_id']) ? (int) $op2['faculty_id'] : null;
-                $day2 = (string) ($op2['day'] ?? '');
-                $startMins2 = $this->timeToMinutesLocal((string) ($op2['start_time'] ?? '00:00'));
-                $endMins2 = $this->timeToMinutesLocal((string) ($op2['end_time'] ?? '00:00'));
-                $mode2 = (string) ($op2['mode'] ?? 'on-site');
-                $courseId2 = (int) ($op2['course_id'] ?? $op2['subject_id'] ?? 0);
-                $courseCode2 = $coursesMap->get($courseId2)?->course_code ?? 'Course';
-
-                if ($termId1 === $termId2 && $day1 === $day2) {
-                    if ($startMins1 < $endMins2 && $startMins2 < $endMins1) {
-                        $overlapStart = $this->minutesToTimeString(max($startMins1, $startMins2));
-                        $overlapEnd = $this->minutesToTimeString(min($endMins1, $endMins2));
-
-                        if ($sectionId1 === $sectionId2) {
-                            $violations[] = [
-                                'rule' => 'section_conflict',
-                                'operation_index' => $j,
-                                'course_code' => $courseCode2,
-                                'day' => $day2,
-                                'message' => "Intra-batch Section Conflict: {$courseCode1} and {$courseCode2} overlap for section on {$day1} from {$overlapStart} to {$overlapEnd}.",
-                            ];
-                        }
-
-                        if (
-                            $termId1 === $termId2
-                            && $courseId1 === $courseId2
-                            && $sectionId1 !== $sectionId2
-                            && $mode1 === 'online'
-                            && $mode2 === 'online'
-                        ) {
-                            $violations[] = [
-                                'rule' => 'subject_section_time_conflict',
-                                'operation_index' => $j,
-                                'course_code' => $courseCode2,
-                                'day' => $day2,
-                                'message' => "Intra-batch Subject/Section Conflict: {$courseCode1} is assigned to multiple sections at overlapping time {$overlapStart}-{$overlapEnd} on {$day1}.",
-                            ];
-                        }
-
-                        $roomCapacity = $roomTypeMap->get($roomId1) === 'field'
-                            ? $this->resourceLimits->field($departmentId1)
-                            : (int) ($roomCapacityMap->get($roomId1) ?? 1);
-                        $sameRoomScope = $roomTypeMap->get($roomId1) !== 'field'
-                            || $departmentId1 === $departmentId2;
-                        if ($roomId1 === $roomId2 && $sameRoomScope && $mode1 !== 'online' && $mode2 !== 'online' && $roomCapacity <= 1) {
-                            $violations[] = [
-                                'rule' => 'room_conflict',
-                                'operation_index' => $j,
-                                'course_code' => $courseCode2,
-                                'day' => $day2,
-                                'message' => "Intra-batch Room Conflict: Room is assigned to both {$courseCode1} and {$courseCode2} at overlapping time {$overlapStart}-{$overlapEnd} on {$day1}.",
-                            ];
-                        }
-
-                        if ($facultyId1 !== null && $facultyId1 === $facultyId2) {
-                            $violations[] = [
-                                'rule' => 'faculty_conflict',
-                                'operation_index' => $j,
-                                'course_code' => $courseCode2,
-                                'day' => $day2,
-                                'message' => "Intra-batch Faculty Conflict: Instructor is assigned to teach both {$courseCode1} and {$courseCode2} at overlapping time {$overlapStart}-{$overlapEnd} on {$day1}.",
-                            ];
-                        }
-                    }
-                }
-            }
-        }
-
-        $violations = array_merge(
-            $violations,
-            $this->checkIntraBatchRoomCapacityConflicts($operations, $coursesMap, $roomCapacityMap, $ignoreScheduleIds),
-            $this->checkIntraBatchOnlineCapacityConflicts($operations, $coursesMap, $ignoreScheduleIds),
+        return array_map(
+            static fn (BatchConflict $conflict): array => [
+                'rule' => $conflict->rule,
+                'operation_index' => $conflict->index,
+                'course_code' => $conflict->courseCode ?? 'Course',
+                'day' => $conflict->day,
+                'message' => match ($conflict->rule) {
+                    BatchConflict::RULE_SECTION => sprintf(
+                        'Intra-batch Section Conflict: %s and %s overlap for section on %s from %s to %s.',
+                        $conflict->otherCourseCode,
+                        $conflict->courseCode,
+                        $conflict->day,
+                        $conflict->overlapStart,
+                        $conflict->overlapEnd,
+                    ),
+                    BatchConflict::RULE_SUBJECT_SECTION_TIME => sprintf(
+                        'Intra-batch Subject/Section Conflict: %s is assigned to multiple sections at overlapping time %s-%s on %s.',
+                        $conflict->otherCourseCode,
+                        $conflict->overlapStart,
+                        $conflict->overlapEnd,
+                        $conflict->day,
+                    ),
+                    BatchConflict::RULE_ROOM => sprintf(
+                        'Intra-batch Room Conflict: Room is assigned to both %s and %s at overlapping time %s-%s on %s.',
+                        $conflict->otherCourseCode,
+                        $conflict->courseCode,
+                        $conflict->overlapStart,
+                        $conflict->overlapEnd,
+                        $conflict->day,
+                    ),
+                    BatchConflict::RULE_FACULTY => sprintf(
+                        'Intra-batch Faculty Conflict: Instructor is assigned to teach both %s and %s at overlapping time %s-%s on %s.',
+                        $conflict->otherCourseCode,
+                        $conflict->courseCode,
+                        $conflict->overlapStart,
+                        $conflict->overlapEnd,
+                        $conflict->day,
+                    ),
+                    BatchConflict::RULE_ROOM_CAPACITY => sprintf(
+                        'Intra-batch Room Capacity Conflict: FIELD allows only %d concurrent classes per department on %s from %s to %s.',
+                        $conflict->capacity,
+                        $conflict->day,
+                        $conflict->overlapStart,
+                        $conflict->overlapEnd,
+                    ),
+                    BatchConflict::RULE_ONLINE_CAPACITY => sprintf(
+                        'Intra-batch Online Capacity Conflict: configured limit is %d concurrent classes per department on %s.',
+                        $conflict->capacity,
+                        $conflict->day,
+                    ),
+                    default => 'Intra-batch schedule conflict.',
+                },
+            ],
+            $this->batchConflicts->validate($operations, $ignoreScheduleIds),
         );
-
-        return $violations;
     }
 
     /**
-     * @param  Collection<int, Course>  $coursesMap
+     * Instructor assignment is a post-VPAA-approval step: `InstructorAssignment`
+     * only lists and writes rows in the assignable statuses, and withdrawal
+     * releases the assignment precisely because the row left them. That rule was
+     * enforced client-side only, so this is the server-side half.
+     *
+     * Only *introducing or changing* an instructor is gated. Clearing one stays
+     * allowed at any status, and re-sending the value a row already holds is a
+     * no-op — the plotting save carries `faculty_id` forward on relocate.
+     *
+     * @return string|null Error message when the write is not allowed at this stage.
      */
-    private function checkIntraBatchOnlineCapacityConflicts(array $operations, $coursesMap, array $ignoreScheduleIds): array
+    private function instructorAssignmentStageError(Schedule $schedule, ?int $requestedFacultyId): ?string
     {
-        $violations = [];
-        $groups = [];
+        $currentFacultyId = $schedule->faculty_id === null ? null : (int) $schedule->faculty_id;
 
-        foreach ($operations as $index => $operation) {
-            if (($operation['mode'] ?? 'on-site') !== 'online') {
-                continue;
-            }
-
-            $termId = (int) ($operation['term_id'] ?? 0);
-            $departmentId = (int) ($operation['department_id'] ?? 0);
-            $day = (string) ($operation['day'] ?? '');
-            if ($termId <= 0 || $departmentId <= 0 || $day === '') {
-                continue;
-            }
-
-            $groups["{$termId}:{$departmentId}:{$day}"][] = [
-                'index' => $index,
-                'term_id' => $termId,
-                'department_id' => $departmentId,
-                'day' => $day,
-                'start' => $this->timeToMinutesLocal((string) ($operation['start_time'] ?? '00:00')),
-                'end' => $this->timeToMinutesLocal((string) ($operation['end_time'] ?? '00:00')),
-                'course_id' => (int) ($operation['course_id'] ?? $operation['subject_id'] ?? 0),
-            ];
+        if ($requestedFacultyId === null || $requestedFacultyId === $currentFacultyId) {
+            return null;
         }
 
-        if ($groups === []) {
-            return [];
+        if (in_array($schedule->status, SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES, true)) {
+            return null;
         }
 
-        $termIds = [];
-        $departmentIds = [];
-        $days = [];
-        foreach ($groups as $items) {
-            foreach ($items as $item) {
-                $termIds[$item['term_id']] = $item['term_id'];
-                $departmentIds[$item['department_id']] = $item['department_id'];
-                $days[$item['day']] = $item['day'];
-            }
-        }
-
-        $existingSchedules = Schedule::query()
-            ->where('mode', 'online')
-            ->whereIn('term_id', array_values($termIds))
-            ->whereIn('department_id', array_values($departmentIds))
-            ->whereIn('day', array_values($days))
-            ->when($ignoreScheduleIds !== [], fn ($query) => $query->whereNotIn('id', $ignoreScheduleIds))
-            ->get(['id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
-
-        foreach ($existingSchedules as $schedule) {
-            $groups["{$schedule->term_id}:{$schedule->department_id}:{$schedule->day}"][] = [
-                'index' => null,
-                'schedule_id' => (int) $schedule->id,
-                'department_id' => (int) $schedule->department_id,
-                'day' => (string) $schedule->day,
-                'start' => $this->timeToMinutesLocal((string) $schedule->start_time),
-                'end' => $this->timeToMinutesLocal((string) $schedule->end_time),
-                'course_id' => 0,
-            ];
-        }
-
-        foreach ($groups as $items) {
-            $events = [];
-            foreach ($items as $item) {
-                $events[] = ['minute' => $item['start'], 'delta' => 1, 'item' => $item];
-                $events[] = ['minute' => $item['end'], 'delta' => -1, 'item' => $item];
-            }
-
-            usort(
-                $events,
-                static fn (array $left, array $right): int => ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
-            );
-
-            $active = [];
-            $reported = [];
-            foreach ($events as $event) {
-                $item = $event['item'];
-                $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
-                if ($event['delta'] < 0) {
-                    unset($active[$activeKey]);
-
-                    continue;
-                }
-
-                $active[$activeKey] = $item;
-                $onlineLimit = $this->resourceLimits->online((int) ($item['department_id'] ?? 0));
-                if ($item['index'] === null || count($active) <= $onlineLimit || isset($reported[$item['index']])) {
-                    continue;
-                }
-
-                $courseCode = $coursesMap->get($item['course_id'])?->course_code ?? 'Course';
-                $violations[] = [
-                    'rule' => 'online_capacity_conflict',
-                    'operation_index' => $item['index'],
-                    'course_code' => $courseCode,
-                    'day' => $item['day'],
-                    'message' => "Intra-batch Online Capacity Conflict: configured limit is {$onlineLimit} concurrent classes per department on {$item['day']}.",
-                ];
-                $reported[$item['index']] = true;
-            }
-        }
-
-        return $violations;
-    }
-
-    /**
-     * @param  Collection<int, Course>  $coursesMap
-     * @param  Collection<int, int>  $roomCapacityMap
-     */
-    private function checkIntraBatchRoomCapacityConflicts(array $operations, $coursesMap, $roomCapacityMap, array $ignoreScheduleIds): array
-    {
-        $violations = [];
-        $groups = [];
-        $fieldRoomIds = Rooms::whereIn('id', array_values(array_unique(array_filter(array_map(
-            static fn (array $operation): int => (int) ($operation['room_id'] ?? 0),
-            $operations,
-        )))))->where('room_type', 'field')->pluck('id')->mapWithKeys(
-            static fn ($id): array => [(int) $id => true],
-        )->all();
-
-        foreach ($operations as $index => $operation) {
-            $roomId = (int) ($operation['room_id'] ?? 0);
-            $termId = (int) ($operation['term_id'] ?? 0);
-            $departmentId = (int) ($operation['department_id'] ?? 0);
-            $day = (string) ($operation['day'] ?? '');
-            $mode = (string) ($operation['mode'] ?? 'on-site');
-            $capacity = isset($fieldRoomIds[$roomId])
-                ? $this->resourceLimits->field($departmentId)
-                : (int) ($roomCapacityMap->get($roomId) ?? 1);
-
-            if ($roomId <= 0 || $termId <= 0 || $departmentId <= 0 || $day === '' || $mode === 'online' || $capacity <= 1) {
-                continue;
-            }
-
-            $start = $this->timeToMinutesLocal((string) ($operation['start_time'] ?? '00:00'));
-            $end = $this->timeToMinutesLocal((string) ($operation['end_time'] ?? '00:00'));
-            if ($start >= $end) {
-                continue;
-            }
-
-            $groups["{$termId}:{$departmentId}:{$roomId}:{$day}"][] = [
-                'index' => $index,
-                'room_id' => $roomId,
-                'department_id' => $departmentId,
-                'day' => $day,
-                'start' => $start,
-                'end' => $end,
-                'capacity' => $capacity,
-                'course_id' => (int) ($operation['course_id'] ?? $operation['subject_id'] ?? 0),
-            ];
-        }
-
-        if ($groups !== []) {
-            $roomIds = [];
-            $termIds = [];
-            $departmentIds = [];
-            $days = [];
-            foreach ($groups as $items) {
-                foreach ($items as $item) {
-                    $roomIds[$item['room_id']] = $item['room_id'];
-                    $departmentIds[$item['department_id']] = $item['department_id'];
-                    $days[$item['day']] = $item['day'];
-                }
-            }
-            foreach ($operations as $operation) {
-                $termId = (int) ($operation['term_id'] ?? 0);
-                if ($termId > 0) {
-                    $termIds[$termId] = $termId;
-                }
-            }
-
-            $existingSchedules = Schedule::query()
-                ->whereIn('room_id', array_values($roomIds))
-                ->whereIn('term_id', array_values($termIds))
-                ->whereIn('department_id', array_values($departmentIds))
-                ->whereIn('day', array_values($days))
-                ->when($ignoreScheduleIds !== [], fn ($query) => $query->whereNotIn('id', $ignoreScheduleIds))
-                ->get(['id', 'room_id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
-
-            foreach ($existingSchedules as $schedule) {
-                $roomId = (int) $schedule->room_id;
-                $termId = (int) $schedule->term_id;
-                $day = (string) $schedule->day;
-                $capacity = isset($fieldRoomIds[$roomId])
-                    ? $this->resourceLimits->field((int) $schedule->department_id)
-                    : (int) ($roomCapacityMap->get($roomId) ?? 1);
-                if ($capacity <= 1) {
-                    continue;
-                }
-
-                $groups["{$termId}:{$schedule->department_id}:{$roomId}:{$day}"][] = [
-                    'index' => null,
-                    'schedule_id' => (int) $schedule->id,
-                    'room_id' => $roomId,
-                    'department_id' => (int) $schedule->department_id,
-                    'day' => $day,
-                    'start' => $this->timeToMinutesLocal((string) $schedule->start_time),
-                    'end' => $this->timeToMinutesLocal((string) $schedule->end_time),
-                    'capacity' => $capacity,
-                    'course_id' => 0,
-                ];
-            }
-        }
-
-        foreach ($groups as $items) {
-            $events = [];
-            foreach ($items as $item) {
-                $events[] = ['minute' => $item['start'], 'delta' => 1, 'item' => $item];
-                $events[] = ['minute' => $item['end'], 'delta' => -1, 'item' => $item];
-            }
-
-            usort(
-                $events,
-                static fn (array $left, array $right): int => ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
-            );
-
-            $active = [];
-            $reported = [];
-            foreach ($events as $event) {
-                $item = $event['item'];
-                $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
-                if ($event['delta'] < 0) {
-                    unset($active[$activeKey]);
-
-                    continue;
-                }
-
-                $active[$activeKey] = $item;
-                if ($item['index'] === null || count($active) <= $item['capacity'] || isset($reported[$item['index']])) {
-                    continue;
-                }
-
-                $courseCode = $coursesMap->get($item['course_id'])?->course_code ?? 'Course';
-                $overlapStart = $this->minutesToTimeString(max(array_column($active, 'start')));
-                $overlapEnd = $this->minutesToTimeString(min(array_column($active, 'end')));
-
-                $violations[] = [
-                    'rule' => 'room_capacity_conflict',
-                    'operation_index' => $item['index'],
-                    'course_code' => $courseCode,
-                    'day' => $item['day'],
-                    'message' => "Intra-batch Room Capacity Conflict: FIELD allows only {$item['capacity']} concurrent classes per department on {$item['day']} from {$overlapStart} to {$overlapEnd}.",
-                ];
-                $reported[$item['index']] = true;
-            }
-        }
-
-        return $violations;
+        return $schedule->status === 'finalized'
+            ? 'A finalized schedule cannot be reassigned.'
+            : 'Instructor assignment is available only after VPAA approval.';
     }
 
     private function hydrateExistingScheduleOperation(array $operation): array
@@ -1184,18 +1031,69 @@ class ScheduleController extends Controller
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
 
-        $attemptData = array_merge($schedule->toArray(), $validated, ['ignore_schedule_id' => $schedule->id]);
+        if (array_key_exists('faculty_id', $validated)) {
+            $stageError = $this->instructorAssignmentStageError(
+                $schedule,
+                $validated['faculty_id'] === null ? null : (int) $validated['faculty_id'],
+            );
 
-        $violations = $this->ruleEngine->validate($attemptData);
-
-        if (! empty($violations)) {
-            return response()->json([
-                'message' => 'Schedule update conflicts with existing entries.',
-                'violations' => $violations,
-            ], 422);
+            if ($stageError !== null) {
+                return response()->json(['message' => $stageError], 422);
+            }
         }
 
-        $schedule->update($validated);
+        // The timetable's slot popup and inline picker assign through this route,
+        // so they need the same overload confirmation the dedicated assignment
+        // page gets. Clearing faculty_id can never overload anyone, so only a
+        // non-null assignment is gated. The flag is read straight off the request
+        // rather than validated into $validated, which is mass-assigned below.
+        $assignedFacultyId = ($validated['faculty_id'] ?? null) !== null
+            ? (int) $validated['faculty_id']
+            : null;
+
+        if ($assignedFacultyId !== null && ! $request->boolean('confirm_overload')) {
+            $faculty = Faculty::query()->find($assignedFacultyId);
+            // This route's faculty payload carries faculty_id on its own, so the
+            // row's existing section and course are the pair being loaded.
+            $pair = $faculty !== null ? $this->loadPairForSchedule($schedule) : null;
+
+            if ($pair !== null) {
+                $confirmation = $this->overloadConfirmationResponse([
+                    $this->withAssignmentLabel(
+                        $this->facultyLoad->projectLoad($faculty, $this->activeTermId(), [$pair]),
+                        $this->assignmentLabelForSchedule($schedule),
+                    ),
+                ]);
+
+                if ($confirmation !== null) {
+                    return $confirmation;
+                }
+            }
+        }
+
+        $attemptData = array_merge($schedule->toArray(), $validated, ['ignore_schedule_id' => $schedule->id]);
+
+        // Same check-then-write race as batch(): validate and write under one
+        // lock and one transaction so a concurrent save cannot land between
+        // them. This is the path drag-relocate and faculty assignment use.
+        $termId = (int) ($validated['term_id'] ?? $schedule->term_id);
+
+        try {
+            $this->withScheduleWriteLock($termId > 0 ? [$termId] : [], function () use ($schedule, $validated, $attemptData): void {
+                DB::transaction(function () use ($schedule, $validated, $attemptData): void {
+                    $violations = $this->ruleEngine->validate($attemptData);
+
+                    if (! empty($violations)) {
+                        throw new ScheduleConflictException($violations, 'Schedule update conflicts with existing entries.');
+                    }
+
+                    $schedule->update($validated);
+                });
+            });
+        } catch (ScheduleConflictException $exception) {
+            return response()->json($exception->payload(), 422);
+        }
+
         $schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department']);
         $this->notifyScheduleSaved($request, $schedule, 'updated');
 
@@ -1321,6 +1219,186 @@ class ScheduleController extends Controller
             $schedule->department_id,
             $schedule->term_id
         );
+    }
+
+    /**
+     * Assign (or clear) instructors for many schedules in one transaction.
+     *
+     * Auto-Assign used to issue one PUT per schedule. Nothing spanned those
+     * requests, so a failure partway through left the earlier assignments
+     * committed while the user was told the operation failed. Validating and
+     * writing here under the same term lock and transaction that batch() uses
+     * makes the set all-or-nothing, and because each row is written before the
+     * next is validated, the RuleEngine sees the in-flight assignments and can
+     * catch two schedules being given the same instructor at the same hour.
+     */
+    public function batchFaculty(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'assignments' => 'required|array|min:1',
+            'assignments.*.schedule_ids' => 'required|array|min:1',
+            'assignments.*.schedule_ids.*' => 'integer|exists:schedules,id',
+            'assignments.*.faculty_id' => 'nullable|integer|exists:faculties,id',
+        ]);
+
+        $scheduleIds = [];
+        foreach ($validated['assignments'] as $assignment) {
+            foreach ($assignment['schedule_ids'] as $scheduleId) {
+                $scheduleIds[] = (int) $scheduleId;
+            }
+        }
+
+        if (count($scheduleIds) !== count(array_unique($scheduleIds))) {
+            return response()->json([
+                'message' => 'A schedule cannot appear in more than one assignment.',
+            ], 422);
+        }
+
+        if (! $this->scheduleIdsBelongToDepartment($request, $scheduleIds)) {
+            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+
+        $schedules = Schedule::query()
+            ->whereIn('id', $scheduleIds)
+            ->get()
+            ->keyBy(static fn (Schedule $schedule): int => (int) $schedule->id);
+
+        foreach ($validated['assignments'] as $assignment) {
+            $facultyId = isset($assignment['faculty_id']) ? (int) $assignment['faculty_id'] : null;
+
+            foreach ($assignment['schedule_ids'] as $scheduleId) {
+                $schedule = $schedules->get((int) $scheduleId);
+                if ($schedule === null) {
+                    continue;
+                }
+
+                $stageError = $this->instructorAssignmentStageError($schedule, $facultyId);
+                if ($stageError !== null) {
+                    return response()->json([
+                        'message' => $stageError,
+                        'violations' => [[
+                            'rule' => 'instructor_assignment_stage',
+                            'schedule_id' => (int) $schedule->id,
+                            'message' => $stageError,
+                        ]],
+                    ], 422);
+                }
+            }
+        }
+
+        // Bulk assignment gets one confirmation per instructor rather than one per
+        // class: the whole batch is projected onto each instructor at once, so the
+        // prompt reports the load they actually end up carrying. Clearing an
+        // instructor can never overload anyone, so null assignments are skipped.
+        if (! $request->boolean('confirm_overload')) {
+            $rowsByFaculty = [];
+
+            foreach ($validated['assignments'] as $assignment) {
+                $facultyId = isset($assignment['faculty_id']) ? (int) $assignment['faculty_id'] : null;
+
+                if ($facultyId === null) {
+                    continue;
+                }
+
+                foreach ($assignment['schedule_ids'] as $scheduleId) {
+                    $schedule = $schedules->get((int) $scheduleId);
+
+                    if ($schedule !== null) {
+                        $rowsByFaculty[$facultyId][] = $schedule;
+                    }
+                }
+            }
+
+            $projections = [];
+
+            if ($rowsByFaculty !== []) {
+                $activeTermId = $this->activeTermId();
+                $faculties = Faculty::query()->whereIn('id', array_keys($rowsByFaculty))->get();
+
+                foreach ($faculties as $faculty) {
+                    $rows = $rowsByFaculty[(int) $faculty->id] ?? [];
+                    $pairs = $this->loadPairsForSchedules($rows);
+
+                    $projections[] = $this->withAssignmentLabel(
+                        $this->facultyLoad->projectLoad($faculty, $activeTermId, $pairs),
+                        $this->assignmentLabelForClasses($rows, count($pairs)),
+                    );
+                }
+            }
+
+            $confirmation = $this->overloadConfirmationResponse($projections);
+
+            if ($confirmation !== null) {
+                return $confirmation;
+            }
+        }
+
+        $termIds = $schedules
+            ->pluck('term_id')
+            ->filter()
+            ->map('intval')
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
+
+        try {
+            $this->withScheduleWriteLock($termIds, function () use ($validated, $schedules): void {
+                DB::transaction(function () use ($validated, $schedules): void {
+                    foreach ($validated['assignments'] as $assignment) {
+                        $facultyId = $assignment['faculty_id'] ?? null;
+                        $facultyId = $facultyId === null ? null : (int) $facultyId;
+
+                        foreach ($assignment['schedule_ids'] as $scheduleId) {
+                            $schedule = $schedules->get((int) $scheduleId);
+                            if ($schedule === null) {
+                                throw new ScheduleConflictException(
+                                    [[
+                                        'rule' => 'missing_schedule',
+                                        'schedule_id' => (int) $scheduleId,
+                                        'message' => 'A selected schedule no longer exists.',
+                                    ]],
+                                    'A selected schedule no longer exists.',
+                                );
+                            }
+
+                            $violations = $this->ruleEngine->validate(array_merge(
+                                $schedule->toArray(),
+                                [
+                                    'faculty_id' => $facultyId,
+                                    'ignore_schedule_id' => (int) $schedule->id,
+                                ],
+                            ));
+
+                            if (! empty($violations)) {
+                                throw new ScheduleConflictException(
+                                    array_map(
+                                        static fn (array $violation): array => array_merge($violation, [
+                                            'schedule_id' => (int) $schedule->id,
+                                        ]),
+                                        $violations,
+                                    ),
+                                    'Instructor assignment conflicts with existing entries.',
+                                );
+                            }
+
+                            $schedule->update(['faculty_id' => $facultyId]);
+                        }
+                    }
+                });
+            });
+        } catch (ScheduleConflictException $exception) {
+            return response()->json($exception->payload(), 422);
+        }
+
+        return response()->json([
+            'message' => 'Instructor assignments completed successfully.',
+            'schedules' => Schedule::query()
+                ->whereIn('id', $scheduleIds)
+                ->with(['term', 'section', 'course', 'faculty', 'room', 'department'])
+                ->get(),
+            'schedules_updated' => count($scheduleIds),
+        ]);
     }
 
     public function batchStatus(Request $request): JsonResponse

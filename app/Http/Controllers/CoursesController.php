@@ -13,20 +13,20 @@ class CoursesController extends Controller
         $bypassActiveCurriculum = $request->query('all') === 'true' || $request->query('catalog') === 'true';
 
         if (!$bypassActiveCurriculum) {
-            // 1. Query for active curricula scoped to the department if requested
-            $curriculaQuery = \App\Models\Curriculum::where('status', 'active');
+            // 1. Query for active curriculum records scoped to the department if requested
+            $curriculumQuery = \App\Models\Curriculum::where('status', 'active');
 
             if ($deptId) {
-                $curriculaQuery->where('department_id', $deptId);
+                $curriculumQuery->where('department_id', $deptId);
             }
 
-            $activeCurriculaIds = $curriculaQuery->pluck('id');
+            $activeCurriculumIds = $curriculumQuery->pluck('id');
 
-            if ($activeCurriculaIds->isNotEmpty()) {
-                // 2. Fetch all courses belonging to these active curricula
+            if ($activeCurriculumIds->isNotEmpty()) {
+                // 2. Fetch all courses belonging to these active curriculum records
                 $courses = Course::with('department')
-                    ->whereHas('curricula', function ($q) use ($activeCurriculaIds) {
-                        $q->whereIn('curricula.id', $activeCurriculaIds);
+                    ->whereHas('curriculum', function ($q) use ($activeCurriculumIds) {
+                        $q->whereIn('curriculum.id', $activeCurriculumIds);
                     })
                     ->when($deptId, function ($q) use ($deptId) {
                         $q->where(function ($courseQuery) use ($deptId) {
@@ -41,7 +41,7 @@ class CoursesController extends Controller
 
                 // 3. Load pivot data for year_level and semester mapping
                 $pivotData = \DB::table('curriculum_course')
-                    ->whereIn('curriculum_id', $activeCurriculaIds)
+                    ->whereIn('curriculum_id', $activeCurriculumIds)
                     ->get();
 
                 $pivotMap = [];
@@ -140,16 +140,19 @@ class CoursesController extends Controller
             'year_level' => 'nullable|in:1,2,3,4',
             'semester' => 'nullable|in:1st,2nd,summer',
             'department_id' => 'nullable|exists:departments,id',
+            'program_id' => $this->programRule($request->input('department_id')),
             'status' => 'nullable|in:active,inactive',
         ]);
 
+        $validated = $this->clearProgramForNonMajor($validated, $validated['course_category'] ?? null);
+
         $course = Course::create($validated);
-        return response()->json($course->load('department'), 201);
+        return response()->json($course->load(['department', 'program']), 201);
     }
 
     public function show(Course $course)
     {
-        return response()->json($course->load('department'));
+        return response()->json($course->load(['department', 'program']));
     }
 
     public function update(Request $request, Course $course)
@@ -181,12 +184,60 @@ class CoursesController extends Controller
             'year_level' => 'sometimes|required|in:1,2,3,4',
             'semester' => 'sometimes|required|in:1st,2nd,summer',
             'department_id' => 'nullable|exists:departments,id',
+            'program_id' => $this->programRule(
+                $request->has('department_id') ? $request->input('department_id') : $course->department_id
+            ),
             'status' => 'nullable|in:active,inactive',
         ]);
 
+        $validated = $this->clearProgramForNonMajor(
+            $validated,
+            $validated['course_category'] ?? $course->course_category,
+        );
+
         $course->update($validated);
 
-        return response()->json($course->load('department'));
+        return response()->json($course->load(['department', 'program']));
+    }
+
+    /**
+     * The program restriction is for majors only: a minor or service course is
+     * taught across programs, so it never carries one. Clearing it here also means
+     * turning a major into a minor drops the program it used to be tied to.
+     *
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function clearProgramForNonMajor(array $validated, mixed $category): array
+    {
+        $isMajor = strtolower(trim((string) ($category ?? 'major'))) === 'major';
+
+        if (! $isMajor) {
+            $validated['program_id'] = null;
+        }
+
+        return $validated;
+    }
+
+    /**
+     * A major's program decides which instructors may teach it, so the program has
+     * to belong to the department that offers the course.
+     *
+     * @return array<int, mixed>
+     */
+    private function programRule(mixed $departmentId): array
+    {
+        if ($departmentId === null || $departmentId === '') {
+            return ['nullable', 'integer', 'exists:programs,id'];
+        }
+
+        return [
+            'nullable',
+            'integer',
+            \Illuminate\Validation\Rule::exists('programs', 'id')->where(
+                fn ($query) => $query->where('department_id', (int) $departmentId),
+            ),
+        ];
     }
 
     public function destroy(Course $course)

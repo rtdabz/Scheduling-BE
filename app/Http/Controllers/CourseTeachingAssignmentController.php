@@ -39,9 +39,26 @@ class CourseTeachingAssignmentController extends Controller
             'department_id' => ['required', 'integer', 'exists:departments,id'],
         ]);
 
+        $course = Course::query()->findOrFail((int) $validated['course_id']);
+        $departmentId = (int) $validated['department_id'];
+
+        // Teaching assignments exist to delegate service and minor courses. A
+        // major is taught by the department that offers it, so it cannot be
+        // pointed elsewhere — the rule engine would refuse every instructor the
+        // assignment implied.
+        if (
+            SchedulingPolicy::isMajorCourse($course)
+            && $course->department_id !== null
+            && (int) $course->department_id !== $departmentId
+        ) {
+            return response()->json([
+                'message' => 'A major course can only be taught by the department that offers it, so it cannot be assigned to another department.',
+            ], 422);
+        }
+
         $assignment = CourseTeachingAssignment::query()->updateOrCreate(
             ['course_id' => (int) $validated['course_id']],
-            ['department_id' => (int) $validated['department_id']],
+            ['department_id' => $departmentId],
         );
 
         SchedulingPolicy::clearCourseTeachingAssignmentCache();

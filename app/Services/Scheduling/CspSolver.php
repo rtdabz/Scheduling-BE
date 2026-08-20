@@ -478,11 +478,28 @@ class CSPSolver
                     return $leftConstrained ? -1 : 1;
                 }
 
+                // Lecture/laboratory splits need a matched pair of placements, so
+                // they are the next-hardest thing to satisfy after a fixed pattern.
+                $leftSplit = (bool) ($left['is_split_lecture_lab'] ?? false);
+                $rightSplit = (bool) ($right['is_split_lecture_lab'] ?? false);
+                if ($leftSplit !== $rightSplit) {
+                    return $leftSplit ? -1 : 1;
+                }
+
                 $priorityComparison = ($left['scheduling_priority'] ?? 2)
                     <=> ($right['scheduling_priority'] ?? 2);
 
                 if ($priorityComparison !== 0) {
                     return $priorityComparison;
+                }
+
+                // Courses that can only use a handful of physical rooms are placed
+                // before courses that could still go anywhere.
+                $roomOptionComparison = ($left['physical_room_options'] ?? PHP_INT_MAX)
+                    <=> ($right['physical_room_options'] ?? PHP_INT_MAX);
+
+                if ($roomOptionComparison !== 0) {
+                    return $roomOptionComparison;
                 }
 
                 $domainComparison = count($left['domain'])
@@ -1096,6 +1113,8 @@ class CSPSolver
                 'course_id' => (int) $course->id,
                 'scheduling_priority' => $this->courseSchedulingPriority($course),
                 'is_field' => $this->isFieldCourse($course),
+                'is_split_lecture_lab' => $hasBothComponents,
+                'physical_room_options' => $this->countPhysicalRoomOptions($domain),
                 'duration_slots' => $durationSlots,
                 'preferred_pattern' => $preferredPattern,
                 'forced_day' => $forcedDay,
@@ -1284,12 +1303,16 @@ class CSPSolver
                 default => (string) $course->room_type_required,
             };
 
-            // For on-site courses, prioritize room type based on curriculum (lab_hours)
-            // with compatible fallbacks (lecture for lab courses, lab for lecture courses).
+            // For on-site courses, prioritize room type based on curriculum (lab_hours).
+            // A lecture course may fall back to a lecture-capable laboratory, but a
+            // laboratory course gets no lecture-room fallback: RuleEngine rejects a
+            // laboratory course in a lecture room, so such a candidate could only
+            // ever produce a preview that fails to save. Online stays the fallback
+            // when no laboratory is free.
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
-                    $roomTypes = ['laboratory', 'lecture'];
+                    $roomTypes = ['laboratory'];
                 } elseif ($targetRoomType === 'lecture') {
                     $roomTypes = $allowLectureInVacantLab
                         ? ['lecture', 'laboratory']
@@ -1801,12 +1824,16 @@ class CSPSolver
                 default => (string) $course->room_type_required,
             };
 
-            // For on-site courses, prioritize room type based on curriculum (lab_hours)
-            // with compatible fallbacks (lecture for lab courses, lab for lecture courses).
+            // For on-site courses, prioritize room type based on curriculum (lab_hours).
+            // A lecture course may fall back to a lecture-capable laboratory, but a
+            // laboratory course gets no lecture-room fallback: RuleEngine rejects a
+            // laboratory course in a lecture room, so such a candidate could only
+            // ever produce a preview that fails to save. Online stays the fallback
+            // when no laboratory is free.
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
-                    $roomTypes = ['laboratory', 'lecture'];
+                    $roomTypes = ['laboratory'];
                 } elseif ($targetRoomType === 'lecture') {
                     $roomTypes = $this->isMajorFullLectureCourse($course)
                         ? ['lecture', 'laboratory']
@@ -3571,6 +3598,34 @@ class CSPSolver
         }
 
         return $this->candidateContainsWeekendBlock($candidate) ? $physicalTier + 3 : $physicalTier;
+    }
+
+    /**
+     * Distinct physical rooms this domain could still use. A low count marks a
+     * limited-room course, which the variable ordering places earlier so it
+     * claims a room before the flexible courses consume them.
+     *
+     * @param  list<array<string, mixed>>  $domain
+     */
+    private function countPhysicalRoomOptions(array $domain): int
+    {
+        $roomIds = [];
+
+        foreach ($domain as $candidate) {
+            foreach ($candidate['blocks'] ?? [] as $block) {
+                $roomId = array_key_exists('room_id', $block)
+                    ? $block['room_id']
+                    : ($candidate['room_id'] ?? null);
+
+                if ($roomId !== null) {
+                    $roomIds[(int) $roomId] = true;
+                }
+            }
+        }
+
+        // A domain with no physical room at all (virtual online/field delivery)
+        // is not room-constrained, so it must not sort ahead of a course that is.
+        return $roomIds === [] ? PHP_INT_MAX : count($roomIds);
     }
 
     private function hasWeekdayPhysicalCandidate(array $domain): bool

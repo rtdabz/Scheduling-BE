@@ -9,6 +9,7 @@ use App\Http\Controllers\RoomsController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ProgramController;
 
+use App\Http\Controllers\FacultyAvailabilityController;
 use App\Http\Controllers\FacultyController;
 
 use App\Http\Controllers\CoursesController;
@@ -22,6 +23,7 @@ use App\Http\Controllers\InstructorAssignmentController;
 use App\Http\Controllers\SystemNotificationController;
 use App\Http\Controllers\TermsController;
 use App\Http\Controllers\InitialDataController;
+use App\Http\Controllers\InstitutionSettingsController;
 use App\Http\Controllers\CurriculumController;
 use App\Http\Controllers\SchedulingSettingsController;
 use App\Http\Controllers\CourseTeachingAssignmentController;
@@ -40,6 +42,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
     Route::get('/initial-data', InitialDataController::class);
+    Route::get('/institution-settings', [InstitutionSettingsController::class, 'show']);
     Route::get('/notifications', [SystemNotificationController::class, 'index']);
     Route::patch('/notifications/read-all', [SystemNotificationController::class, 'markAllAsRead']);
     Route::patch('/notifications/{notification}/read', [SystemNotificationController::class, 'markAsRead']);
@@ -57,8 +60,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('/departments/{id}/restore', [DepartmentsController::class, 'restore'])->name('departments.restore');
         Route::delete('/departments/{id}/force-delete', [DepartmentsController::class, 'forceDelete'])->name('departments.forceDelete');
         Route::apiResource('terms', TermsController::class)->except(['index', 'show']);
+        Route::patch('/institution-settings', [InstitutionSettingsController::class, 'update']);
         Route::patch('terms/{id}/activate', [TermsController::class, 'activate']);
-        Route::get('programs', [ProgramController::class, 'index']);
         Route::post('programs', [ProgramController::class, 'store']);
         Route::get('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'index']);
         Route::post('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'store']);
@@ -69,6 +72,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('role:vpaa,dean,secretary,program_head')->group(function () {
         Route::get('departments', [DepartmentsController::class, 'index']);
         Route::get('departments/{department}', [DepartmentsController::class, 'show']);
+
+        // Which program an instructor or a major belongs to decides who may teach
+        // it, so every role that maintains faculty or courses reads this list.
+        Route::get('programs', [ProgramController::class, 'index']);
 
         // Department schedule-status (read: all 4 roles; write: owner dept only, enforced in controller)
         Route::get('departments/{id}/schedule-status', [DepartmentScheduleController::class, 'scheduleStatus']);
@@ -82,10 +89,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('rooms', [RoomsController::class, 'index']);
         Route::get('rooms/{room}', [RoomsController::class, 'show']);
 
-        // Curricula read
-        Route::get('/curricula', [CurriculumController::class, 'index']);
-        Route::get('/curricula/{curriculum}', [CurriculumController::class, 'show']);
-        Route::get('/curricula/{curriculum}/full', [CurriculumController::class, 'showWithCourses']);
+        // Curriculum read
+        Route::get('/curriculum', [CurriculumController::class, 'index']);
+        Route::get('/curriculum/{curriculum}', [CurriculumController::class, 'show']);
+        Route::get('/curriculum/{curriculum}/full', [CurriculumController::class, 'showWithCourses']);
 
         // Rooms management — restricted to authorized administrators (VPAA and Dean)
         Route::middleware('role:vpaa,dean')->group(function () {
@@ -111,6 +118,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('schedules/batch/validate-splits', [ScheduleController::class, 'validateSplits']);
         Route::post('schedules/batch', [ScheduleController::class, 'batch']);
         Route::patch('schedules/batch-status', [ScheduleController::class, 'batchStatus']);
+        Route::patch('schedules/batch-faculty', [ScheduleController::class, 'batchFaculty']);
         Route::get('schedules/pending-department-count', [ScheduleController::class, 'pendingDepartmentCount']);
         Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
@@ -120,6 +128,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // Faculties Read-only
         Route::get('faculties', [FacultyController::class, 'index']);
         Route::get('faculties/{faculty}', [FacultyController::class, 'show']);
+        Route::get('faculties/{faculty}/availabilities', [FacultyAvailabilityController::class, 'index']);
     });
 
     Route::middleware('role:vpaa,dean,secretary,program_head,admin')->group(function () {
@@ -138,7 +147,22 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
             ->whereNumber('id');
     });
 
-    // Courses, Sections & Faculties — writable by VPAA, Secretary and Program Head.
+    // Instructor roster — the VPAA owns who exists, so creating and deleting an
+    // instructor profile is VPAA-only.
+    Route::middleware('role:vpaa')->group(function () {
+        Route::post('faculties', [FacultyController::class, 'store']);
+        Route::delete('faculties/{faculty}', [FacultyController::class, 'destroy']);
+    });
+
+    // The secretary maintains the teaching load allowances and the weekly
+    // availability windows they schedule against; FacultyController::update
+    // narrows a secretary to the load fields alone.
+    Route::middleware('role:vpaa,secretary')->group(function () {
+        Route::match(['put', 'patch'], 'faculties/{faculty}', [FacultyController::class, 'update']);
+        Route::put('faculties/{faculty}/availabilities', [FacultyAvailabilityController::class, 'replace']);
+    });
+
+    // Courses & Sections — writable by VPAA, Secretary and Program Head.
     // Recommendation workflow is limited to schedule-building roles.
     Route::middleware('role:secretary,program_head')->group(function () {
         Route::get('instructor-assignments', [InstructorAssignmentController::class, 'index']);
@@ -157,10 +181,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('schedule-recommendations/{scheduleRecommendation}/reject', [ScheduleRecommendationController::class, 'reject']);
         Route::get('scheduling-settings', [SchedulingSettingsController::class, 'show']);
         Route::patch('scheduling-settings', [SchedulingSettingsController::class, 'update']);
-        Route::post('curricula/{curriculum}/courses', [CurriculumController::class, 'attachCourse']);
-        Route::post('curricula/{curriculum}/courses/batch', [CurriculumController::class, 'attachCoursesBatch']);
-        Route::post('curricula/{curriculum}/courses/batch-create', [CurriculumController::class, 'batchCreateAndAttachCourses']);
-        Route::delete('curricula/{curriculum}/courses/{course}', [CurriculumController::class, 'detachCourse']);
+        Route::post('curriculum/{curriculum}/courses', [CurriculumController::class, 'attachCourse']);
+        Route::post('curriculum/{curriculum}/courses/batch', [CurriculumController::class, 'attachCoursesBatch']);
+        Route::post('curriculum/{curriculum}/courses/batch-create', [CurriculumController::class, 'batchCreateAndAttachCourses']);
+        Route::delete('curriculum/{curriculum}/courses/{course}', [CurriculumController::class, 'detachCourse']);
     });
 
     Route::middleware('role:vpaa,secretary,program_head')->group(function () {
@@ -173,15 +197,11 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::match(['put', 'patch'], 'sections/{section}', [SectionsController::class, 'update']);
         Route::delete('sections/{section}', [SectionsController::class, 'destroy']);
 
-        Route::post('faculties', [FacultyController::class, 'store']);
-        Route::match(['put', 'patch'], 'faculties/{faculty}', [FacultyController::class, 'update']);
-        Route::delete('faculties/{faculty}', [FacultyController::class, 'destroy']);
-
-        // Curricula write
-        Route::post('/curricula', [CurriculumController::class, 'store']);
-        Route::match(['put', 'patch'], '/curricula/{curriculum}', [CurriculumController::class, 'update']);
-        Route::delete('/curricula/{curriculum}', [CurriculumController::class, 'destroy']);
-        Route::post('/curricula/{curriculum}/duplicate', [CurriculumController::class, 'duplicate']);
-        Route::patch('/curricula/{curriculum}/status', [CurriculumController::class, 'updateStatus']);
+        // Curriculum write
+        Route::post('/curriculum', [CurriculumController::class, 'store']);
+        Route::match(['put', 'patch'], '/curriculum/{curriculum}', [CurriculumController::class, 'update']);
+        Route::delete('/curriculum/{curriculum}', [CurriculumController::class, 'destroy']);
+        Route::post('/curriculum/{curriculum}/duplicate', [CurriculumController::class, 'duplicate']);
+        Route::patch('/curriculum/{curriculum}/status', [CurriculumController::class, 'updateStatus']);
     });
 });

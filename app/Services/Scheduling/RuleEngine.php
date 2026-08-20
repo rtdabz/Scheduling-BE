@@ -6,6 +6,7 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Faculty;
+use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
@@ -18,9 +19,38 @@ class RuleEngine
 {
     private DepartmentResourceSlotLimitService $resourceLimits;
 
+    /**
+     * Per-instance memo for reference-entity lookups.
+     *
+     * `validate()` is called once per operation in a batch save, and a batch
+     * almost always reuses the same term, section, room and department. Without
+     * this, a 40-operation batch re-ran the same handful of primary-key lookups
+     * 40 times (audit finding #8). The engine is resolved per request, so the
+     * memo cannot outlive the data it caches.
+     *
+     * @var array<string, mixed>
+     */
+    private array $entityCache = [];
+
     public function __construct(?DepartmentResourceSlotLimitService $resourceLimits = null)
     {
         $this->resourceLimits = $resourceLimits ?? new DepartmentResourceSlotLimitService;
+    }
+
+    /**
+     * Memoized primary-key lookup.
+     *
+     * @template TValue
+     * @param  callable(): TValue  $resolver
+     * @return TValue
+     */
+    private function remember(string $key, callable $resolver): mixed
+    {
+        if (! array_key_exists($key, $this->entityCache)) {
+            $this->entityCache[$key] = $resolver();
+        }
+
+        return $this->entityCache[$key];
     }
 
     public function checkRoomConflict(
@@ -33,7 +63,7 @@ class RuleEngine
         ?int $departmentId = null,
     ): ?array {
         $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
-        $room = Rooms::query()->find($roomId);
+        $room = $this->remember('room:'.$roomId, fn () => Rooms::query()->find($roomId));
         $capacity = $this->effectiveRoomCapacity($room, $departmentId);
 
         if (($room?->room_type ?? null) === 'field' && $capacity > 1) {
@@ -295,7 +325,7 @@ class RuleEngine
         string $deliveryMode = 'on-site',
         ?string $meetingType = null
     ): ?array {
-        $course = Course::find($courseId);
+        $course = $this->remember('course:'.$courseId, fn () => Course::find($courseId));
 
         if (! $course) {
             return [
@@ -308,7 +338,7 @@ class RuleEngine
             return null;
         }
 
-        $room = $roomId !== null ? Rooms::find($roomId) : null;
+        $room = $roomId !== null ? $this->remember('room:'.$roomId, fn () => Rooms::find($roomId)) : null;
 
         if (! $room) {
             return [
@@ -427,15 +457,15 @@ class RuleEngine
     {
         $violations = [];
 
-        $term = Terms::find($attempt['term_id']);
-        $section = Sections::find($attempt['section_id']);
+        $term = $this->remember('term:'.$attempt['term_id'], fn () => Terms::find($attempt['term_id']));
+        $section = $this->remember('section:'.$attempt['section_id'], fn () => Sections::find($attempt['section_id']));
         $courseId = $attempt['course_id'] ?? $attempt['subject_id'] ?? null;
-        $course = $courseId ? Course::find($courseId) : null;
+        $course = $courseId ? $this->remember('course:'.$courseId, fn () => Course::find($courseId)) : null;
         $mode = (string) ($attempt['mode'] ?? 'on-site');
         $roomId = $attempt['room_id'] ?? null;
-        $room = $roomId !== null ? Rooms::find($roomId) : null;
+        $room = $roomId !== null ? $this->remember('room:'.$roomId, fn () => Rooms::find($roomId)) : null;
         $faculty = ! empty($attempt['faculty_id'])
-            ? Faculty::find($attempt['faculty_id'])
+            ? $this->remember('faculty:'.$attempt['faculty_id'], fn () => Faculty::find($attempt['faculty_id']))
             : null;
 
         if (! $term) {
@@ -477,10 +507,10 @@ class RuleEngine
             return $violations;
         }
 
-        $activeCurriculum = Curriculum::query()
+        $activeCurriculum = $this->remember('curriculum:'.$section->department_id, fn () => Curriculum::query()
             ->where('department_id', $section->department_id)
             ->where('status', 'active')
-            ->first();
+            ->first());
 
         if ($activeCurriculum) {
             $pivot = DB::table('curriculum_course')
@@ -628,19 +658,51 @@ class RuleEngine
             }
 
             $assignedTeachingDepartmentId = SchedulingPolicy::assignedTeachingDepartmentId($course);
-            if ($assignedTeachingDepartmentId !== null) {
+
+            if (SchedulingPolicy::isMajorCourse($course)) {
+                // A major belongs to the department — and, when recorded, the
+                // program — that offers it, so it is taught from inside that
+                // program rather than delegated like a service course.
+                $majorDepartmentId = SchedulingPolicy::majorTeachingDepartmentId(
+                    $course,
+                    (int) $section->department_id,
+                );
+
+                if ($majorDepartmentId !== null && (int) $faculty->department_id !== $majorDepartmentId) {
+                    $violations[] = [
+                        'rule' => 'major_faculty_department_alignment',
+                        'message' => 'A major course must be assigned to an instructor from the department that offers it.',
+                    ];
+                }
+
+                $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($course);
+                if ($requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
+                    $program = $this->remember(
+                        'program:'.$requiredProgramId,
+                        fn () => Program::find($requiredProgramId),
+                    );
+                    $programLabel = $program?->code ?? $program?->name;
+
+                    $violations[] = [
+                        'rule' => 'major_faculty_program_alignment',
+                        'message' => $programLabel !== null
+                            ? "This major course belongs to the {$programLabel} program, so the selected instructor must belong to that program."
+                            : 'This major course belongs to a program the selected instructor is not assigned to.',
+                    ];
+                }
+            } elseif ($assignedTeachingDepartmentId !== null) {
                 if ((int) $faculty->department_id !== $assignedTeachingDepartmentId) {
                     $violations[] = [
                         'rule' => 'service_subject_faculty_department_alignment',
                         'message' => 'This course must be assigned to an instructor from its VPAA-assigned teaching department.',
                     ];
                 }
-            } elseif ((int) $faculty->department_id !== (int) $section->department_id) {
-                $violations[] = [
-                    'rule' => 'faculty_department_alignment',
-                    'message' => 'Selected faculty member does not belong to the selected section department.',
-                ];
             }
+            // A minor or service course with no assigned teaching department is open
+            // to any department: shared minors such as PATH FIT are taught by
+            // instructors from outside the section's department, which is what the
+            // external-instructor assignment path is for. Majors are restricted by
+            // their own department and program rules above.
         }
 
         $mode = (string) ($attempt['mode'] ?? 'on-site');
@@ -667,6 +729,16 @@ class RuleEngine
         );
         if ($dayCategoryViolation !== null) {
             $violations[] = $dayCategoryViolation;
+        }
+
+        $fieldEveningViolation = $this->checkFieldEveningWindow(
+            course: $course,
+            endTime: (string) ($attempt['end_time'] ?? ''),
+            mode: $mode,
+            section: $section,
+        );
+        if ($fieldEveningViolation !== null) {
+            $violations[] = $fieldEveningViolation;
         }
 
         return $violations;
@@ -966,11 +1038,11 @@ class RuleEngine
         }
 
         // Major courses: any day Mon–Sat; Sunday requires online mode.
-        $sundayOnlineOnlyEnabled = (bool) (
-            Departments::query()
+        $sundayOnlineOnlyEnabled = (bool) $this->remember(
+            'sundayOnlineOnly:'.(int) $section->department_id,
+            fn () => Departments::query()
                 ->whereKey((int) $section->department_id)
-                ->value('sunday_online_only_enabled')
-            ?? true
+                ->value('sunday_online_only_enabled') ?? true,
         );
 
         if ($sundayOnlineOnlyEnabled && $day === 'Sunday' && $mode !== 'online') {
@@ -991,6 +1063,46 @@ class RuleEngine
         return SchedulingPolicy::isNstpCourse($course);
     }
 
+    /** End of the ordinary field-course day, mirroring CspSolver::FIELD_DAY_END_TIME. */
+    private const FIELD_DAY_END_TIME = '17:00:00';
+
+    /**
+     * Field courses stop at 17:00 unless the department opts into evening use.
+     *
+     * The setting was previously read only by CspSolver, so it steered generation
+     * but not manual placement — the Settings page promised a limit that a
+     * drag-and-drop could ignore (audit finding #41).
+     */
+    private function checkFieldEveningWindow(
+        Course $course,
+        string $endTime,
+        string $mode,
+        Sections $section,
+    ): ?array {
+        $isFieldPlacement = $mode === 'field' || $this->isFieldCourse($course);
+        if (! $isFieldPlacement) {
+            return null;
+        }
+
+        $eveningEnabled = (bool) $this->remember(
+            'fieldEvening:'.(int) $section->department_id,
+            fn () => Departments::query()
+                ->whereKey((int) $section->department_id)
+                ->value('field_evening_schedule_enabled') ?? false,
+        );
+        if ($eveningEnabled) {
+            return null;
+        }
+
+        if (SchedulingPolicy::normalizeTime($endTime) <= self::FIELD_DAY_END_TIME) {
+            return null;
+        }
+
+        return [
+            'rule' => 'field_evening_window',
+            'message' => 'Field courses must end by 5:00 PM unless evening field scheduling is enabled for this department.',
+        ];
+    }
     /**
      * Enforces that a single section does not exceed 5 online classes.
      */

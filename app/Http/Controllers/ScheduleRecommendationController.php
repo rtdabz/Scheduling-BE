@@ -3,14 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\ScheduleGenerationPreflightException;
+use App\Exceptions\YearLevelGenerationException;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Schedule;
 use App\Models\ScheduleRecommendation;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
+use App\Services\Scheduling\BatchConflict;
+use App\Services\Scheduling\BatchConflictValidator;
 use App\Services\Scheduling\CSPSolver;
-use App\Services\Scheduling\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\ScheduleCandidateOptimizer;
 use App\Services\Scheduling\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\ScheduleRequirementBuilderResolver;
@@ -20,7 +22,6 @@ use App\Services\Scheduling\YearLevelScheduleGenerationService;
 use App\Services\SystemNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use RuntimeException;
@@ -38,7 +39,7 @@ class ScheduleRecommendationController extends Controller
         private readonly YearLevelScheduleGenerationService $yearLevelGenerator,
         private readonly ScheduleGenerationPreflightService $preflight,
         private readonly ScheduleRequirementBuilderResolver $requirementBuilders,
-        private readonly DepartmentResourceSlotLimitService $resourceLimits,
+        private readonly BatchConflictValidator $batchConflicts,
         private readonly SystemNotificationService $notifications,
     ) {}
 
@@ -440,6 +441,15 @@ class ScheduleRecommendationController extends Controller
             $result = $this->yearLevelGenerator->preview($sections->all(), $configsBySectionId);
         } catch (ScheduleGenerationPreflightException $exception) {
             return response()->json($exception->payload(), 422);
+        } catch (YearLevelGenerationException $exception) {
+            return response()->json(array_merge($exception->payload(), [
+                'department_profile' => $profile->value ?? null,
+                'year_level' => (int) $validated['year_level'],
+                'sections' => $sections->map(fn (Sections $section): array => [
+                    'id' => (int) $section->id,
+                    'name' => (string) $section->section_name,
+                ])->values(),
+            ]), 422);
         } catch (InvalidArgumentException|RuntimeException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);
         }
@@ -448,6 +458,9 @@ class ScheduleRecommendationController extends Controller
             'message' => 'Year-level schedule recommendations generated successfully.',
             'department_profile' => $profile->value,
             'year_level' => (int) $validated['year_level'],
+            'applied_strategy' => $result['applied_strategy'] ?? null,
+            'applied_adjustments' => $result['applied_adjustments'] ?? [],
+            'generation_attempts' => $result['generation_attempts'] ?? [],
             'sections' => $sections->map(fn (Sections $section): array => [
                 'id' => (int) $section->id,
                 'name' => (string) $section->section_name,
@@ -938,72 +951,38 @@ class ScheduleRecommendationController extends Controller
         return (abs((int) crc32($payload)) % 1000000) + 1;
     }
 
+    /**
+     * Conflict checks for the rows a recommendation is about to persist.
+     *
+     * Delegates the rules to BatchConflictValidator, the same service
+     * ScheduleController::batch() uses. The two used to keep separate copies of
+     * this logic that had drifted: this path was missing the
+     * subject_section_time_conflict rule the batch save enforced, and it counted
+     * the rows it was about to replace against shared-room capacity.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     *
+     * @throws RecommendationConflictException
+     */
     private function validateBatchConflicts(array $rows): void
     {
-        $violations = [];
-        $roomIds = array_values(array_unique(array_filter(array_map(
-            static fn (array $row): int => (int) ($row['room_id'] ?? 0),
-            $rows,
-        ))));
-        $roomTypeMap = $roomIds === []
-            ? collect()
-            : DB::table('rooms')->whereIn('id', $roomIds)->pluck('room_type', 'id');
-        $roomCapacityMap = $roomIds === []
-            ? collect()
-            : DB::table('rooms')
-                ->whereIn('id', $roomIds)
-                ->get(['id', 'room_type', 'max_concurrent_classes'])
-                ->mapWithKeys(static fn ($room): array => [
-                    (int) $room->id => max(1, (int) ($room->max_concurrent_classes ?? 1)),
-                ]);
+        $conflicts = $this->batchConflicts->validate($rows, $this->replaceableScheduleIds($rows));
 
-        foreach ($rows as $leftIndex => $left) {
-            foreach ($rows as $rightIndex => $right) {
-                if ($leftIndex >= $rightIndex) {
-                    continue;
-                }
-
-                if ($left['term_id'] !== $right['term_id'] || $left['day'] !== $right['day']) {
-                    continue;
-                }
-
-                if (! $this->timesOverlap($left['start_time'], $left['end_time'], $right['start_time'], $right['end_time'])) {
-                    continue;
-                }
-
-                if ($left['section_id'] === $right['section_id']) {
-                    $violations[] = $this->batchViolation('section_conflict', $leftIndex, $rightIndex);
-                }
-
-                if (
-                    $left['room_id'] !== null &&
-                    $right['room_id'] !== null &&
-                    $left['room_id'] === $right['room_id'] &&
-                    ($left['mode'] ?? 'on-site') !== 'online' &&
-                    ($right['mode'] ?? 'on-site') !== 'online' &&
-                    ($roomTypeMap->get((int) $left['room_id']) !== 'field'
-                        || (int) $left['department_id'] === (int) $right['department_id']) &&
-                    ($roomTypeMap->get((int) $left['room_id']) === 'field'
-                        ? $this->resourceLimits->field((int) $left['department_id'])
-                        : (int) ($roomCapacityMap->get((int) $left['room_id']) ?? 1)) <= 1
-                ) {
-                    $violations[] = $this->batchViolation('room_conflict', $leftIndex, $rightIndex);
-                }
-
-                if (
-                    ! empty($left['faculty_id'])
-                    && ! empty($right['faculty_id'])
-                    && $left['faculty_id'] === $right['faculty_id']
-                ) {
-                    $violations[] = $this->batchViolation('faculty_conflict', $leftIndex, $rightIndex);
-                }
-            }
-        }
-
-        $violations = array_merge(
-            $violations,
-            $this->batchRoomCapacityViolations($rows, $roomCapacityMap),
-            $this->batchOnlineCapacityViolations($rows),
+        $violations = array_map(
+            static fn (BatchConflict $conflict): array => $conflict->isPairwise()
+                ? [
+                    'rule' => $conflict->rule,
+                    'message' => "Recommended rows {$conflict->otherIndex} and {$conflict->index} overlap before they can be accepted.",
+                    'recommendation_rows' => [$conflict->otherIndex, $conflict->index],
+                ]
+                : [
+                    'rule' => $conflict->rule,
+                    'message' => $conflict->rule === BatchConflict::RULE_ONLINE_CAPACITY
+                        ? "Recommended row {$conflict->index} exceeds the configured online slot limit of {$conflict->capacity} for this department on {$conflict->day}."
+                        : "Recommended row {$conflict->index} exceeds room capacity. FIELD allows only {$conflict->capacity} concurrent classes per department on {$conflict->day}.",
+                    'recommendation_row' => $conflict->index,
+                ],
+            $conflicts,
         );
 
         foreach ($rows as $index => $row) {
@@ -1029,246 +1008,35 @@ class ScheduleRecommendationController extends Controller
     }
 
     /**
-     * @param  Collection<int, int>  $roomCapacityMap
+     * Ids of the persisted schedules both accept paths delete immediately after
+     * validation, so capacity checks must not count them.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
+     * @return list<int>
      */
-    private function batchRoomCapacityViolations(array $rows, $roomCapacityMap): array
+    private function replaceableScheduleIds(array $rows): array
     {
-        $violations = [];
-        $groups = [];
-        $fieldRoomIds = DB::table('rooms')
-            ->whereIn('id', $roomCapacityMap->keys()->all())
-            ->where('room_type', 'field')
-            ->pluck('id')
-            ->mapWithKeys(static fn ($id): array => [(int) $id => true])
-            ->all();
-
-        foreach ($rows as $index => $row) {
-            $roomId = (int) ($row['room_id'] ?? 0);
-            $termId = (int) ($row['term_id'] ?? 0);
-            $departmentId = (int) ($row['department_id'] ?? 0);
-            $capacity = isset($fieldRoomIds[$roomId])
-                ? $this->resourceLimits->field($departmentId)
-                : (int) ($roomCapacityMap->get($roomId) ?? 1);
-            $day = (string) ($row['day'] ?? '');
-
-            if ($roomId <= 0 || $capacity <= 1 || $termId <= 0 || $departmentId <= 0 || $day === '') {
-                continue;
-            }
-
-            $groups["{$termId}:{$departmentId}:{$roomId}:{$day}"][] = [
-                'index' => $index,
-                'term_id' => $termId,
-                'department_id' => $departmentId,
-                'room_id' => $roomId,
-                'capacity' => $capacity,
-                'day' => $day,
-                'start' => $this->timeToMinutes((string) $row['start_time']),
-                'end' => $this->timeToMinutes((string) $row['end_time']),
-            ];
-        }
-
-        if ($groups !== []) {
-            $roomIds = [];
-            $termIds = [];
-            $departmentIds = [];
-            $days = [];
-            foreach ($groups as $items) {
-                foreach ($items as $item) {
-                    $roomIds[$item['room_id'] ?? 0] = $item['room_id'] ?? 0;
-                    $termIds[$item['term_id'] ?? 0] = $item['term_id'] ?? 0;
-                    $departmentIds[$item['department_id'] ?? 0] = $item['department_id'] ?? 0;
-                    $days[$item['day']] = $item['day'];
-                }
-            }
-
-            $existingSchedules = Schedule::query()
-                ->whereIn('room_id', array_filter(array_values($roomIds)))
-                ->whereIn('term_id', array_filter(array_values($termIds)))
-                ->whereIn('department_id', array_filter(array_values($departmentIds)))
-                ->whereIn('day', array_values($days))
-                ->get(['id', 'room_id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
-
-            foreach ($existingSchedules as $schedule) {
-                $roomId = (int) $schedule->room_id;
-                $capacity = isset($fieldRoomIds[$roomId])
-                    ? $this->resourceLimits->field((int) $schedule->department_id)
-                    : (int) ($roomCapacityMap->get($roomId) ?? 1);
-                if ($capacity <= 1) {
-                    continue;
-                }
-
-                $groups["{$schedule->term_id}:{$schedule->department_id}:{$roomId}:{$schedule->day}"][] = [
-                    'index' => null,
-                    'schedule_id' => (int) $schedule->id,
-                    'department_id' => (int) $schedule->department_id,
-                    'capacity' => $capacity,
-                    'day' => (string) $schedule->day,
-                    'start' => $this->timeToMinutes((string) $schedule->start_time),
-                    'end' => $this->timeToMinutes((string) $schedule->end_time),
-                ];
-            }
-        }
-
-        foreach ($groups as $items) {
-            $events = [];
-            foreach ($items as $item) {
-                $events[] = ['minute' => $item['start'], 'delta' => 1, 'item' => $item];
-                $events[] = ['minute' => $item['end'], 'delta' => -1, 'item' => $item];
-            }
-
-            usort(
-                $events,
-                static fn (array $left, array $right): int => ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
-            );
-
-            $active = [];
-            $reported = [];
-            foreach ($events as $event) {
-                $item = $event['item'];
-                $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
-                if ($event['delta'] < 0) {
-                    unset($active[$activeKey]);
-
-                    continue;
-                }
-
-                $active[$activeKey] = $item;
-                if ($item['index'] === null || count($active) <= $item['capacity'] || isset($reported[$item['index']])) {
-                    continue;
-                }
-
-                $violations[] = [
-                    'rule' => 'room_capacity_conflict',
-                    'message' => "Recommended row {$item['index']} exceeds room capacity. FIELD allows only {$item['capacity']} concurrent classes per department on {$item['day']}.",
-                    'recommendation_row' => $item['index'],
-                ];
-                $reported[$item['index']] = true;
-            }
-        }
-
-        return $violations;
-    }
-
-    private function batchOnlineCapacityViolations(array $rows): array
-    {
-        $violations = [];
-        $groups = [];
-
-        foreach ($rows as $index => $row) {
-            if (($row['mode'] ?? 'on-site') !== 'online') {
-                continue;
-            }
-
-            $termId = (int) ($row['term_id'] ?? 0);
-            $departmentId = (int) ($row['department_id'] ?? 0);
-            $day = (string) ($row['day'] ?? '');
-            if ($termId <= 0 || $departmentId <= 0 || $day === '') {
-                continue;
-            }
-
-            $groups["{$termId}:{$departmentId}:{$day}"][] = [
-                'index' => $index,
-                'term_id' => $termId,
-                'department_id' => $departmentId,
-                'day' => $day,
-                'start' => $this->timeToMinutes((string) $row['start_time']),
-                'end' => $this->timeToMinutes((string) $row['end_time']),
-            ];
-        }
-
-        if ($groups === []) {
+        if ($rows === []) {
             return [];
         }
 
-        $termIds = [];
-        $departmentIds = [];
-        $days = [];
-        foreach ($groups as $items) {
-            foreach ($items as $item) {
-                $termIds[$item['term_id']] = $item['term_id'];
-                $departmentIds[$item['department_id']] = $item['department_id'];
-                $days[$item['day']] = $item['day'];
-            }
+        $courseIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $row): int => (int) ($row['course_id'] ?? 0),
+            $rows,
+        ))));
+
+        if ($courseIds === []) {
+            return [];
         }
 
-        $existingSchedules = Schedule::query()
-            ->where('mode', 'online')
-            ->whereIn('term_id', array_values($termIds))
-            ->whereIn('department_id', array_values($departmentIds))
-            ->whereIn('day', array_values($days))
-            ->get(['id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
-
-        foreach ($existingSchedules as $schedule) {
-            $groups["{$schedule->term_id}:{$schedule->department_id}:{$schedule->day}"][] = [
-                'index' => null,
-                'schedule_id' => (int) $schedule->id,
-                'department_id' => (int) $schedule->department_id,
-                'day' => (string) $schedule->day,
-                'start' => $this->timeToMinutes((string) $schedule->start_time),
-                'end' => $this->timeToMinutes((string) $schedule->end_time),
-            ];
-        }
-
-        foreach ($groups as $items) {
-            $events = [];
-            foreach ($items as $item) {
-                $events[] = ['minute' => $item['start'], 'delta' => 1, 'item' => $item];
-                $events[] = ['minute' => $item['end'], 'delta' => -1, 'item' => $item];
-            }
-
-            usort(
-                $events,
-                static fn (array $left, array $right): int => ($left['minute'] <=> $right['minute']) ?: ($left['delta'] <=> $right['delta']),
-            );
-
-            $active = [];
-            $reported = [];
-            foreach ($events as $event) {
-                $item = $event['item'];
-                $activeKey = $item['index'] ?? "existing:{$item['schedule_id']}";
-                if ($event['delta'] < 0) {
-                    unset($active[$activeKey]);
-
-                    continue;
-                }
-
-                $active[$activeKey] = $item;
-                $onlineLimit = $this->resourceLimits->online((int) ($item['department_id'] ?? 0));
-                if ($item['index'] === null || count($active) <= $onlineLimit || isset($reported[$item['index']])) {
-                    continue;
-                }
-
-                $violations[] = [
-                    'rule' => 'online_capacity_conflict',
-                    'message' => "Recommended row {$item['index']} exceeds the configured online slot limit of {$onlineLimit} for this department on {$item['day']}.",
-                    'recommendation_row' => $item['index'],
-                ];
-                $reported[$item['index']] = true;
-            }
-        }
-
-        return $violations;
-    }
-
-    private function timesOverlap(string $leftStart, string $leftEnd, string $rightStart, string $rightEnd): bool
-    {
-        return $leftStart < $rightEnd && $rightStart < $leftEnd;
-    }
-
-    private function timeToMinutes(string $time): int
-    {
-        [$hour, $minute] = array_map('intval', explode(':', substr($time, 0, 5)));
-
-        return ($hour * 60) + $minute;
-    }
-
-    private function batchViolation(string $rule, int $leftIndex, int $rightIndex): array
-    {
-        return [
-            'rule' => $rule,
-            'message' => "Recommended rows {$leftIndex} and {$rightIndex} overlap before they can be accepted.",
-            'recommendation_rows' => [$leftIndex, $rightIndex],
-        ];
+        return Schedule::query()
+            ->where('term_id', (int) ($rows[array_key_first($rows)]['term_id'] ?? 0))
+            ->where('section_id', (int) ($rows[array_key_first($rows)]['section_id'] ?? 0))
+            ->whereIn('course_id', $courseIds)
+            ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
+            ->pluck('id')
+            ->map(static fn ($id): int => (int) $id)
+            ->all();
     }
 
     public function autoGenerateAndApply(Request $request): JsonResponse

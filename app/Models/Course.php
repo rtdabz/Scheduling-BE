@@ -19,12 +19,18 @@ class Course extends Model
         'year_level',
         'semester',
         'department_id',
+        'program_id',
         'status',
     ];
 
     public function department()
     {
         return $this->belongsTo(Departments::class, 'department_id');
+    }
+
+    public function program()
+    {
+        return $this->belongsTo(Program::class, 'program_id');
     }
 
     public function teachingAssignment()
@@ -42,7 +48,7 @@ class Course extends Model
     {
         return $this->hasMany(Schedule::class, 'course_id');
     }
-    public function curricula() {
+    public function curriculum() {
         return $this->belongsToMany(Curriculum::class, 'curriculum_course')
             ->withPivot(['year_level', 'semester'])
             ->withTimestamps();

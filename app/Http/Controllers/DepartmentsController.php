@@ -82,6 +82,20 @@ class DepartmentsController extends Controller
             ], 422);
         }
 
+        if (($validated['scheduling_profile'] ?? null) === 'standard') {
+            // Otherwise these stay true forever: SchedulingSettingsController
+            // refuses to *enable* them on a standard department and the Settings
+            // page greys the toggles out, while CspSolver still reads them
+            // (audit finding #37).
+            $validated += [
+                'lecture_lab_schedule_override_enabled' => false,
+                'custom_lab_duration_override_enabled' => false,
+                'custom_lab_duration_6_hours_enabled' => false,
+                'custom_lab_duration_5_hours_enabled' => false,
+                'custom_lab_duration_other_enabled' => false,
+            ];
+        }
+
         $department->update($validated);
         ApiCache::forgetGroup('departments.index');
 

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\ConfirmsFacultyOverload;
 use App\Models\Faculty;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
@@ -17,13 +18,16 @@ use Illuminate\Support\Facades\DB;
 
 class InstructorAssignmentController extends Controller
 {
-    private const ASSIGNABLE_STATUSES = ['approved', 'faculty_assignment'];
+    use ConfirmsFacultyOverload;
 
-    private const VISIBLE_STATUSES = ['approved', 'faculty_assignment', 'finalized'];
+    private const ASSIGNABLE_STATUSES = SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES;
+
+    private const VISIBLE_STATUSES = SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES;
 
     public function __construct(
         private readonly RuleEngine $ruleEngine,
         private readonly SystemNotificationService $notifications,
+        private readonly \App\Services\FacultyLoadService $facultyLoad,
     ) {
     }
 
@@ -56,7 +60,7 @@ class InstructorAssignmentController extends Controller
             $allAssignedCourseIds = SchedulingPolicy::assignedCourseIds();
 
             $schedules = Schedule::query()
-                ->with(['section', 'course.department', 'faculty', 'room', 'department'])
+                ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
                 ->where('term_id', $activeTerm->id)
                 ->whereIn('status', self::VISIBLE_STATUSES)
                 ->whereHas('course', fn ($query) => $query->where('status', 'active'))
@@ -78,12 +82,17 @@ class InstructorAssignmentController extends Controller
                 ->get();
 
              $faculties = Faculty::query()
-                ->with(['department', 'availabilities'])
+                ->with(['department', 'program', 'availabilities'])
                 ->where('department_id', $departmentId)
                 ->where('status', 'active')
                 ->orderBy('last_name')
                 ->orderBy('first_name')
                 ->get();
+
+            // The picker shows each instructor's live load so an overload is
+            // visible before Save is pressed, and the tier badge needs the same
+            // numbers the confirmation gate projects from.
+            $this->facultyLoad->decorateMany($faculties, (int) $activeTerm->id);
 
             $courses = $schedules->pluck('course')->filter()->unique('id')->values();
 
@@ -107,18 +116,28 @@ class InstructorAssignmentController extends Controller
             'faculty_id' => 'required|integer|exists:faculties,id',
         ]);
 
-        $schedule->loadMissing('course');
         $departmentId = (int) ($request->user()?->department_id ?? 0);
+        // For a major the offering department is the only one that can assign; the
+        // VPAA-assigned teaching department applies to service and minor courses.
         $teachingDepartmentId = $schedule->course
-            ? SchedulingPolicy::assignedTeachingDepartmentId($schedule->course) ?? (int) $schedule->department_id
+            ? (SchedulingPolicy::isMajorCourse($schedule->course)
+                ? SchedulingPolicy::majorTeachingDepartmentId($schedule->course, (int) $schedule->department_id)
+                : SchedulingPolicy::assignedTeachingDepartmentId($schedule->course) ?? (int) $schedule->department_id)
             : null;
 
-        if (
-            !$schedule->course
-            || (int) $teachingDepartmentId !== $departmentId
-        ) {
+        if (!$schedule->course) {
             return response()->json([
                 'message' => 'Only the VPAA-assigned teaching department can assign this course instructor.',
+            ], 403);
+        }
+
+        $isMajor = SchedulingPolicy::isMajorCourse($schedule->course);
+
+        if ((int) $teachingDepartmentId !== $departmentId) {
+            return response()->json([
+                'message' => $isMajor
+                    ? 'Only the department that offers this major can assign its instructor.'
+                    : 'Only the VPAA-assigned teaching department can assign this course instructor.',
             ], 403);
         }
 
@@ -134,6 +153,21 @@ class InstructorAssignmentController extends Controller
         if ((int) $faculty->department_id !== $departmentId || $faculty->status !== 'active') {
             return response()->json([
                 'message' => 'The selected instructor must be active and belong to the VPAA-assigned teaching department.',
+            ], 422);
+        }
+
+        // Checked here as well as in the rule engine so the workspace can say why
+        // the instructor is ineligible instead of reporting a generic conflict.
+        $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
+        if ($requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
+            $schedule->course->loadMissing('program');
+            $programLabel = $schedule->course->program?->code
+                ?? $schedule->course->program?->name;
+
+            return response()->json([
+                'message' => $programLabel !== null
+                    ? "This major belongs to the {$programLabel} program, so only instructors of that program can be assigned."
+                    : 'This major belongs to a program the selected instructor is not assigned to.',
             ], 422);
         }
 
@@ -154,6 +188,25 @@ class InstructorAssignmentController extends Controller
                 'message' => 'The instructor assignment conflicts with an existing schedule.',
                 'violations' => $violations,
             ], 422);
+        }
+
+        // Assignment continues past the Basic Load into the overload allowance
+        // and then pro bono, so this asks rather than refuses — but it asks
+        // before the write, so answering No leaves the schedule untouched.
+        $activeTermId = $this->activeTermId();
+        $incoming = array_values(array_filter([$this->loadPairForSchedule($schedule)]));
+
+        if (! $request->boolean('confirm_overload')) {
+            $confirmation = $this->overloadConfirmationResponse([
+                $this->withAssignmentLabel(
+                    $this->facultyLoad->projectLoad($faculty, $activeTermId, $incoming),
+                    $this->assignmentLabelForSchedule($schedule),
+                ),
+            ]);
+
+            if ($confirmation !== null) {
+                return $confirmation;
+            }
         }
 
         $previousFacultyId = $schedule->faculty_id;
@@ -181,7 +234,7 @@ class InstructorAssignmentController extends Controller
                 'metadata' => [
                     'schedule_id' => $linkedSchedules->first()->id,
                     'schedule_ids' => $linkedScheduleIds,
-                    'subject_id' => $linkedSchedules->first()->subject_id,
+                    'course_id' => $linkedSchedules->first()->course_id,
                     'previous_faculty_id' => $previousFacultyId,
                     'faculty_id' => $faculty->id,
                     'offering_department_id' => $linkedSchedules->first()->department_id,
@@ -190,7 +243,7 @@ class InstructorAssignmentController extends Controller
             ]);
 
             return Schedule::query()
-                ->with(['section', 'subject.department', 'faculty', 'room', 'department'])
+                ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
                 ->whereIn('id', $linkedScheduleIds)
                 ->orderBy('day')
                 ->orderBy('start_time')
@@ -203,18 +256,61 @@ class InstructorAssignmentController extends Controller
             $this->notifications->notifyInstructorAssignmentProgress($updatedSchedules->first(), $request->user());
         }
 
+        // Projected with nothing incoming, so it reports what the instructor
+        // carries now that the assignment is committed.
+        $load = $this->facultyLoad->projectLoad($faculty->refresh(), $activeTermId, []);
+
         return response()->json([
             'schedule' => $updatedSchedules->first(),
             'schedules' => $updatedSchedules,
+            'warnings' => $this->loadWarnings($load),
+            'load' => $load,
         ]);
     }
 
+    /**
+     * The unit allowances are a soft rule: a chair may still need to overload
+     * someone, so a load past the ceiling reports a warning next to the saved
+     * schedule rather than refusing it. The overload confirmation already asked
+     * before the write — this is the record of where the load landed.
+     *
+     * @param  array<string, mixed>  $load  a post-write FacultyLoadService::projectLoad() result
+     * @return array<int, array<string, mixed>>
+     */
+    private function loadWarnings(array $load): array
+    {
+        $ceiling = (int) $load['unit_ceiling'];
+        $assigned = (int) $load['projected_units'];
+
+        if ($ceiling <= 0 || $assigned <= $ceiling) {
+            return [];
+        }
+
+        return [[
+            'rule' => 'faculty_unit_ceiling',
+            'severity' => 'soft',
+            'message' => "{$load['faculty_name']} now carries {$assigned} units, above their {$ceiling}-unit ceiling "
+                ."(Basic Load {$load['basic_load']}, plus overload {$load['overload_units']} and pro bono {$load['probono_units']}).",
+            'assigned_units' => $assigned,
+            'required_units' => (int) $load['basic_load'],
+            'unit_ceiling' => $ceiling,
+        ]];
+    }
+
+    /**
+     * Every meeting block of the same course in the same section, so assigning an
+     * instructor to one block assigns the whole class.
+     *
+     * `schedules` has no `subject_id` column — the name is a legacy alias for
+     * `course_id` elsewhere in the codebase — so matching on it silently selected
+     * nothing and the assignment then failed on an empty collection.
+     */
     private function linkedMeetingBlocks(Schedule $schedule)
     {
         return Schedule::query()
             ->where('term_id', $schedule->term_id)
             ->where('section_id', $schedule->section_id)
-            ->where('subject_id', $schedule->subject_id)
+            ->where('course_id', $schedule->course_id)
             ->where('department_id', $schedule->department_id)
             ->where('preferred_pattern', $schedule->preferred_pattern)
             ->whereIn('status', self::ASSIGNABLE_STATUSES)

@@ -12,7 +12,13 @@ class ProgramController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $departmentId = $request->query('department_id');
+        // Program membership decides who may teach a major, so the faculty and
+        // course forms need this list too. A non-VPAA user only ever assigns
+        // programs of their own department, so that is all they are shown.
+        $user = $request->user();
+        $departmentId = $user && ! $user->isVpaa()
+            ? $user->department_id
+            : $request->query('department_id');
 
         $programs = Program::query()
             ->with('department:id,department_name,department_code')
