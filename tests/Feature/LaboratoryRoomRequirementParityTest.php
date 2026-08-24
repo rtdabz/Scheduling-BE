@@ -62,12 +62,65 @@ class LaboratoryRoomRequirementParityTest extends TestCase
         $this->assertNotContains('room_type_match', $this->rules($labMeeting));
     }
 
+    public function test_the_online_lecture_of_a_split_is_validated_as_a_lecture_component(): void
+    {
+        [$term, $dept, $section] = $this->fixture();
+        $course = $this->course('LAB-ONLINE-LEC', lectureHours: 2, labHours: 1, roomTypeRequired: 'laboratory');
+
+        $lectureMeeting = $this->attempt($term, $dept, $section, $course, null);
+        $lectureMeeting['meeting_type'] = 'lecture';
+        $lectureMeeting['mode'] = 'online';
+
+        $this->assertNotContains('room_type_match', $this->rules($lectureMeeting));
+
+        $laboratoryMeeting = $lectureMeeting;
+        $laboratoryMeeting['meeting_type'] = 'laboratory';
+
+        $this->assertContains('room_type_match', $this->rules($laboratoryMeeting));
+    }
+
     public function test_a_lecture_only_course_is_unaffected(): void
     {
         [$term, $dept, $section, $lecture] = $this->fixture();
         $course = $this->course('LEC101', lectureHours: 3, labHours: 0, roomTypeRequired: 'lecture');
 
         $this->assertNotContains('room_type_match', $this->rules($this->attempt($term, $dept, $section, $course, $lecture->id)));
+    }
+
+    public function test_laboratory_course_may_remain_on_site_with_room_tba(): void
+    {
+        [$term, $dept, $section] = $this->fixture();
+        $course = $this->course('LAB-TBA', lectureHours: 0, labHours: 3, roomTypeRequired: 'laboratory');
+        $attempt = $this->attempt($term, $dept, $section, $course, null);
+
+        $rules = $this->rules($attempt);
+
+        $this->assertNotContains('room_type_match', $rules);
+        $this->assertNotContains('room_exists', $rules);
+        $this->assertNotContains('delivery_room_alignment', $rules);
+        $this->assertSame('laboratory', $course->fresh()->room_type_required);
+    }
+
+    public function test_laboratory_course_cannot_fallback_to_online(): void
+    {
+        [$term, $dept, $section] = $this->fixture();
+        $course = $this->course('LAB-NO-ONLINE', lectureHours: 0, labHours: 3, roomTypeRequired: 'laboratory');
+        $attempt = $this->attempt($term, $dept, $section, $course, null);
+        $attempt['mode'] = 'online';
+
+        $this->assertContains('room_type_match', $this->rules($attempt));
+    }
+
+    public function test_lecture_only_course_may_fallback_to_online_but_not_room_tba(): void
+    {
+        [$term, $dept, $section] = $this->fixture();
+        $course = $this->course('LEC-FALLBACK', lectureHours: 3, labHours: 0, roomTypeRequired: 'lecture');
+        $attempt = $this->attempt($term, $dept, $section, $course, null);
+
+        $this->assertContains('room_type_match', $this->rules($attempt));
+
+        $attempt['mode'] = 'online';
+        $this->assertNotContains('room_type_match', $this->rules($attempt));
     }
 
     /** @return list<string> */
@@ -79,7 +132,7 @@ class LaboratoryRoomRequirementParityTest extends TestCase
         ));
     }
 
-    private function attempt(Terms $term, Departments $dept, Sections $section, Course $course, int $roomId): array
+    private function attempt(Terms $term, Departments $dept, Sections $section, Course $course, ?int $roomId): array
     {
         return [
             'term_id' => $term->id,

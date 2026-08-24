@@ -8,6 +8,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleRecommendation;
 use App\Models\Sections;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -334,7 +335,7 @@ class GenerateScheduleService
      * not reject the schedule at accept-time for a room-type mismatch.
      */
     /**
-     * @param  \Illuminate\Support\Collection<int, Course>  $coursesById
+     * @param  Collection<int, Course>  $coursesById
      */
     private function applyMode(array $meetings, $coursesById): array
     {

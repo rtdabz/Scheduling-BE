@@ -33,6 +33,50 @@ trait ConfirmsFacultyOverload
     public const OVERLOAD_CONFIRMATION_MESSAGE_PLURAL = 'These instructors will have an overload. Do you want to proceed?';
 
     /**
+     * A unit ceiling is a hard limit. Overload and pro-bono allowances may be
+     * confirmed, but a new assignment may never push an instructor past the
+     * configured ceiling for the active term.
+     *
+     * @param  array<int, array<string, mixed>>  $projections
+     */
+    protected function facultyCeilingExceededResponse(array $projections): ?JsonResponse
+    {
+        $exceeded = array_values(array_filter(
+            $projections,
+            static fn (array $projection): bool =>
+                (int) ($projection['added_units'] ?? 0) > 0
+                && (int) ($projection['unit_ceiling'] ?? 0) > 0
+                && (int) ($projection['projected_units'] ?? 0) > (int) $projection['unit_ceiling'],
+        ));
+
+        if ($exceeded === []) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => count($exceeded) === 1
+                ? 'The assignment would exceed this instructor\'s unit ceiling.'
+                : 'These assignments would exceed the instructors\' unit ceilings.',
+            'violations' => array_map(static fn (array $projection): array => [
+                'rule' => 'faculty_unit_ceiling',
+                'severity' => 'hard',
+                'faculty_id' => $projection['faculty_id'] ?? null,
+                'faculty_name' => $projection['faculty_name'] ?? null,
+                'projected_units' => $projection['projected_units'] ?? null,
+                'unit_ceiling' => $projection['unit_ceiling'] ?? null,
+                'added_units' => $projection['added_units'] ?? null,
+                'assignment_label' => $projection['assignment_label'] ?? null,
+                'message' => sprintf(
+                    '%s would carry %d units, above the %d-unit ceiling.',
+                    $projection['faculty_name'] ?? 'The instructor',
+                    (int) ($projection['projected_units'] ?? 0),
+                    (int) ($projection['unit_ceiling'] ?? 0),
+                ),
+            ], $exceeded),
+        ], 422);
+    }
+
+    /**
      * The term the load is measured in. Load only counts the active term, so a
      * null here means every projection reports a zero current load.
      */

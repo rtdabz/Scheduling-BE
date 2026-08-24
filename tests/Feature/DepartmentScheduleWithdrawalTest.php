@@ -7,6 +7,7 @@ use App\Models\Departments;
 use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\ScheduleHistory;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\SystemNotification;
@@ -60,6 +61,10 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             'user_id' => $vpaa->id,
             'type' => 'schedule_withdrawn',
         ]);
+        $history = ScheduleHistory::query()->where('action', 'schedule_withdrawn')->get();
+        $this->assertCount(1, $history);
+        $this->assertSame($first->id, $history->first()->schedule_id);
+        $this->assertSame([$firstSection->id], $history->first()->changes['selected_section_ids']);
     }
 
     public function test_finalized_schedule_cannot_be_withdrawn(): void
@@ -155,7 +160,11 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             ->assertOk()
             ->assertJsonPath('instructors_released', 0);
 
-        $this->assertDatabaseCount('scheduling_audit_logs', 0);
+        $this->assertDatabaseHas('scheduling_audit_logs', [
+            'action' => 'schedule_withdrawn',
+            'department_id' => $department->id,
+        ]);
+        $this->assertDatabaseCount('scheduling_audit_logs', 1);
     }
 
     private function instructor(Departments $department): Faculty

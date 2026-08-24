@@ -334,13 +334,22 @@ class RuleEngine
             ];
         }
 
+        $room = $roomId !== null ? $this->remember('room:'.$roomId, fn () => Rooms::find($roomId)) : null;
+        $requiredRoomType = SchedulingPolicy::effectiveRoomType($course, $meetingType);
+
         if ($deliveryMode === 'online') {
-            return null;
+            return SchedulingPolicy::allowsOnlineRoomFallback($course, $meetingType)
+                ? null
+                : [
+                    'rule' => 'room_type_match',
+                    'message' => "Course {$course->course_code} cannot use online delivery for its {$requiredRoomType} requirement.",
+                ];
         }
 
-        $room = $roomId !== null ? $this->remember('room:'.$roomId, fn () => Rooms::find($roomId)) : null;
-
         if (! $room) {
+            if ($deliveryMode === 'on-site' && SchedulingPolicy::allowsRoomTbaFallback($course, $meetingType)) {
+                return null;
+            }
             return [
                 'rule' => 'room_type_match',
                 'message' => 'A physical room is required for this schedule.',
@@ -364,9 +373,6 @@ class RuleEngine
                     ."but '{$room->room_code}' is a '{$room->room_type}' room.",
             ];
         }
-
-        $requiredRoomType = $meetingType
-            ?? (SchedulingPolicy::isLaboratoryCourse($course) ? 'laboratory' : $course->room_type_required);
 
         if ($requiredRoomType === 'laboratory' && $room->room_type !== 'laboratory') {
             return [
@@ -464,6 +470,10 @@ class RuleEngine
         $mode = (string) ($attempt['mode'] ?? 'on-site');
         $roomId = $attempt['room_id'] ?? null;
         $room = $roomId !== null ? $this->remember('room:'.$roomId, fn () => Rooms::find($roomId)) : null;
+        $allowsLabTba = $course !== null
+            && $mode === 'on-site'
+            && $room === null
+            && SchedulingPolicy::allowsRoomTbaFallback($course, $attempt['meeting_type'] ?? null);
         $faculty = ! empty($attempt['faculty_id'])
             ? $this->remember('faculty:'.$attempt['faculty_id'], fn () => Faculty::find($attempt['faculty_id']))
             : null;
@@ -489,7 +499,7 @@ class RuleEngine
             ];
         }
 
-        if (! $room && $mode !== 'online') {
+        if (! $room && $mode !== 'online' && ! $allowsLabTba) {
             $violations[] = [
                 'rule' => 'room_exists',
                 'message' => 'Selected room does not exist.',
@@ -503,7 +513,7 @@ class RuleEngine
             ];
         }
 
-        if (! $term || ! $section || ! $course || (! $room && $mode !== 'online') || (! empty($attempt['faculty_id']) && ! $faculty)) {
+        if (! $term || ! $section || ! $course || (! $room && $mode !== 'online' && ! $allowsLabTba) || (! empty($attempt['faculty_id']) && ! $faculty)) {
             return $violations;
         }
 
@@ -694,7 +704,21 @@ class RuleEngine
                 if ((int) $faculty->department_id !== $assignedTeachingDepartmentId) {
                     $violations[] = [
                         'rule' => 'service_subject_faculty_department_alignment',
-                        'message' => 'This course must be assigned to an instructor from its VPAA-assigned teaching department.',
+                        'message' => 'This service course must be assigned to an instructor from the college that offers it.',
+                    ];
+                }
+            }
+
+            if (! SchedulingPolicy::isMajorCourse($course)) {
+                $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($course);
+                if ($requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
+                    $program = $this->remember('program:'.$requiredProgramId, fn () => Program::find($requiredProgramId));
+                    $programLabel = $program?->code ?? $program?->name;
+                    $violations[] = [
+                        'rule' => 'service_subject_faculty_program_alignment',
+                        'message' => $programLabel !== null
+                            ? "This course is assigned to the {$programLabel} program, so the selected instructor must belong to that program."
+                            : 'This course is assigned to a program the selected instructor is not assigned to.',
                     ];
                 }
             }
@@ -713,7 +737,7 @@ class RuleEngine
             ];
         }
 
-        if ($mode === 'on-site' && (! $room || in_array($room->room_type, ['online', 'field'], true))) {
+        if ($mode === 'on-site' && ((! $room && ! $allowsLabTba) || ($room && in_array($room->room_type, ['online', 'field'], true)))) {
             $violations[] = [
                 'rule' => 'delivery_room_alignment',
                 'message' => 'On-site schedules must use a lecture or laboratory room assignment.',
@@ -810,7 +834,7 @@ class RuleEngine
 
         // FIELD uses department-scoped shared room capacity. ONLINE is checked
         // separately because it does not use a physical room assignment.
-        if ($mode !== 'online') {
+        if ($mode !== 'online' && ($attempt['room_id'] ?? null) !== null) {
             $roomConflict = $this->checkRoomConflict(
                 (int) $attempt['room_id'],
                 $attempt['term_id'],
@@ -1064,7 +1088,6 @@ class RuleEngine
     }
 
     /** End of the ordinary field-course day, mirroring CspSolver::FIELD_DAY_END_TIME. */
-    private const FIELD_DAY_END_TIME = '17:00:00';
 
     /**
      * Field courses stop at 17:00 unless the department opts into evening use.
@@ -1094,7 +1117,7 @@ class RuleEngine
             return null;
         }
 
-        if (SchedulingPolicy::normalizeTime($endTime) <= self::FIELD_DAY_END_TIME) {
+        if (SchedulingPolicy::normalizeTime($endTime) <= SchedulingPolicy::FIELD_DAY_END_TIME) {
             return null;
         }
 

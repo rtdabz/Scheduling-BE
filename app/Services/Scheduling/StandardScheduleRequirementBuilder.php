@@ -18,12 +18,22 @@ class StandardScheduleRequirementBuilder implements ScheduleRequirementBuilder
             $componentType = match (true) {
                 $mode === 'online' => 'online',
                 SchedulingPolicy::isFieldCourse($course) || $mode === 'field' => 'field',
+                SchedulingPolicy::isLaboratoryCourse($course) => 'laboratory',
                 default => 'lecture',
             };
             $roomTypes = match ($componentType) {
                 'online' => ['online'],
                 'field' => ['field'],
+                'laboratory' => ['laboratory'],
                 default => ['lecture'],
+            };
+            $isExplicitMode = array_key_exists((int) $course->id, $deliveryModes)
+                || array_key_exists((string) $course->id, $deliveryModes);
+            $allowedModes = match ($componentType) {
+                'field' => ['field'],
+                'laboratory' => ['on-site'],
+                'online' => ['online'],
+                default => $isExplicitMode ? [$mode] : ['on-site', 'online'],
             };
 
             $requirements[(int) $course->id] = [
@@ -32,7 +42,7 @@ class StandardScheduleRequirementBuilder implements ScheduleRequirementBuilder
                     componentType: $componentType,
                     durationSlots: max(1, (int) round((float) ($course->units ?? 0) * 2)),
                     eligibleRoomTypes: $roomTypes,
-                    allowedDeliveryModes: [$componentType === 'field' ? 'field' : $mode],
+                    allowedDeliveryModes: $allowedModes,
                 ))->toArray(),
             ];
         }

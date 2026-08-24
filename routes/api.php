@@ -13,6 +13,7 @@ use App\Http\Controllers\FacultyAvailabilityController;
 use App\Http\Controllers\FacultyController;
 
 use App\Http\Controllers\CoursesController;
+use App\Http\Controllers\CourseTeachingAssignmentController;
 
 use App\Http\Controllers\SectionsController;
 
@@ -26,8 +27,9 @@ use App\Http\Controllers\InitialDataController;
 use App\Http\Controllers\InstitutionSettingsController;
 use App\Http\Controllers\CurriculumController;
 use App\Http\Controllers\SchedulingSettingsController;
-use App\Http\Controllers\CourseTeachingAssignmentController;
 use App\Http\Controllers\TimeslotController;
+use App\Http\Controllers\ActivityLogController;
+use App\Http\Controllers\ScheduleHistoryController;
 
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
@@ -49,6 +51,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
     // VPAA-only administration
     Route::middleware('role:vpaa')->group(function () {
+        Route::get('/activity-log', [ActivityLogController::class, 'index']);
         Route::get('/user', [UserController::class, 'index']);
         Route::post('/user', [UserController::class, 'store']);
         Route::put('/user/{user}', [UserController::class, 'update']);
@@ -62,11 +65,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::apiResource('terms', TermsController::class)->except(['index', 'show']);
         Route::patch('/institution-settings', [InstitutionSettingsController::class, 'update']);
         Route::patch('terms/{id}/activate', [TermsController::class, 'activate']);
-        Route::post('programs', [ProgramController::class, 'store']);
-        Route::get('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'index']);
-        Route::post('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'store']);
-        Route::delete('course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'destroy']);
+        Route::apiResource('programs', ProgramController::class)->only(['store', 'update', 'destroy']);
     });
+
+    Route::middleware('role:vpaa,dean,secretary,program_head')->get('/schedule-history', [ScheduleHistoryController::class, 'index']);
 
     // Common readable & scheduling administration routes across all roles.
     Route::middleware('role:vpaa,dean,secretary,program_head')->group(function () {
@@ -119,6 +121,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('schedules/batch', [ScheduleController::class, 'batch']);
         Route::patch('schedules/batch-status', [ScheduleController::class, 'batchStatus']);
         Route::patch('schedules/batch-faculty', [ScheduleController::class, 'batchFaculty']);
+        Route::patch('schedules/batch-faculty-done', [ScheduleController::class, 'batchFacultyDone']);
         Route::get('schedules/pending-department-count', [ScheduleController::class, 'pendingDepartmentCount']);
         Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
@@ -168,9 +171,20 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('instructor-assignments', [InstructorAssignmentController::class, 'index']);
         Route::patch('instructor-assignments/{schedule}', [InstructorAssignmentController::class, 'update']);
 
+        // Which college teaches a course, when it is not the one that owns it.
+        // Any secretary or program head may decide this for a delegable course;
+        // majors are refused by the controller.
+        Route::get('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'index']);
+        Route::post('course-teaching-assignments/batch', [CourseTeachingAssignmentController::class, 'batch']);
+        Route::match(['put', 'patch'], 'course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'update']);
+        Route::delete('course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'destroy']);
+
         Route::post('schedule-recommendations/auto-generate', [ScheduleRecommendationController::class, 'autoGenerateAndApply']);
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
-        Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview']);
+        Route::post('schedule-recommendations/preview/queue', [ScheduleRecommendationController::class, 'queuePreview'])->middleware('throttle:10,1');
+        Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview'])->middleware('throttle:5,1');
+        Route::post('schedule-recommendations/year-level-preview/queue', [ScheduleRecommendationController::class, 'queueYearLevelPreview'])->middleware('throttle:5,1');
+        Route::get('schedule-recommendations/generation-runs/{runId}', [ScheduleRecommendationController::class, 'generationRun']);
         Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
         Route::post('schedule-recommendations/recommend-split', [ScheduleRecommendationController::class, 'recommendSplit']);
         Route::get('schedule-recommendations', [ScheduleRecommendationController::class, 'index']);

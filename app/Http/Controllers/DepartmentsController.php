@@ -18,7 +18,9 @@ class DepartmentsController extends Controller
     {
         $departments = Cache::remember(ApiCache::key('departments.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Departments::query()
             ->withCount(['rooms', 'sections', 'faculties'])
-            ->with(['users' => fn ($query) => $query
+            ->with([
+                'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
+                'users' => fn ($query) => $query
                 ->where('role', 'dean')
                 ->select('id', 'name', 'department_id')
             ])
@@ -44,6 +46,7 @@ class DepartmentsController extends Controller
         ApiCache::forgetGroup('departments.index');
 
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
+            'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
             'users' => fn ($query) => $query
                 ->where('role', 'dean')
                 ->select('id', 'name', 'department_id'),
@@ -56,6 +59,7 @@ class DepartmentsController extends Controller
     public function show(Departments $department)
     {
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
+            'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
             'users' => fn ($query) => $query
                 ->where('role', 'dean')
                 ->select('id', 'name', 'department_id'),
@@ -100,6 +104,7 @@ class DepartmentsController extends Controller
         ApiCache::forgetGroup('departments.index');
 
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
+            'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
             'users' => fn ($query) => $query
                 ->where('role', 'dean')
                 ->select('id', 'name', 'department_id'),

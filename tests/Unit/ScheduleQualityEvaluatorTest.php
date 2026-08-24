@@ -149,6 +149,26 @@ class ScheduleQualityEvaluatorTest extends TestCase
         $this->assertGreaterThan(0, $fallback['score_breakdown']['laboratory_room_mismatch']);
     }
 
+    public function test_available_laboratory_room_ranks_above_room_tba_fallback(): void
+    {
+        $sections = [$this->section(1, '4')];
+        $assigned = [$this->row(1, 201, 41, 'on-site', 'laboratory', '08:00', '11:00')];
+        $roomTba = [array_merge($assigned[0], ['room_id' => null])];
+
+        $ranked = $this->evaluator->rank(
+            [
+                ['score' => 2, 'schedules' => $roomTba],
+                ['score' => 1, 'schedules' => $assigned],
+            ],
+            $sections,
+            roomTypesById: [201 => 'laboratory'],
+        );
+
+        $this->assertSame($assigned, $ranked[0]['schedules']);
+        $this->assertSame(0, $ranked[0]['score_breakdown']['unresolved_laboratory_rooms']);
+        $this->assertGreaterThan(0, $ranked[1]['score_breakdown']['unresolved_laboratory_rooms']);
+    }
+
     public function test_weekday_candidate_ranks_above_equivalent_optional_saturday_candidate(): void
     {
         $sections = [$this->section(1, '1')];

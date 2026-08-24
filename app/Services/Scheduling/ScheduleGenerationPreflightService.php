@@ -204,15 +204,8 @@ class ScheduleGenerationPreflightService
         $issues = [];
         $hasLaboratoryCourse = $courses->contains(fn (Course $course): bool => SchedulingPolicy::isLaboratoryCourse($course));
 
-        if ($hasLaboratoryCourse && $this->requiresPhysicalLaboratoryRoom($courses, $options) && ! $this->hasRoom($section, 'laboratory')) {
-            $issues[] = $this->issue(
-                'missing_laboratory_room',
-                "No eligible laboratory room is available for laboratory-enabled department {$department->department_code}.",
-                $section,
-                ['room_type' => 'laboratory'],
-                'Assign an available laboratory room or change the course delivery configuration.',
-            );
-        }
+        // Missing laboratory rooms are handled by the solver's Room TBA
+        // fallback and must not block generation at preflight.
 
         return $issues;
     }

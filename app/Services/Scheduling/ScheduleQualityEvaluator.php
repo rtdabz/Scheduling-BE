@@ -93,6 +93,10 @@ class ScheduleQualityEvaluator
 
     private const LAB_ROOM_MISMATCH_WEIGHT = 220000;
 
+    // Room TBA remains a valid fallback when capacity is exhausted, but a
+    // candidate with an available compatible laboratory should rank higher.
+    private const UNRESOLVED_LABORATORY_ROOM_WEIGHT = 180000;
+
     private const LAB_ROOM_IDLE_GAP_SLOT_WEIGHT = 18000;
 
     private const LAB_ROOM_SHORT_IDLE_GAP_WEIGHT = 70000;
@@ -143,6 +147,7 @@ class ScheduleQualityEvaluator
             'unnecessary_online' => $this->unnecessaryOnlinePenalty($summary, $fairness),
             'unused_rooms_with_online_classes' => $this->unusedRoomsWithOnlinePenalty($schedules, $summary, $fairness),
             'laboratory_room_mismatch' => $this->laboratoryRoomMismatchPenalty($schedules, $roomTypesById),
+            'unresolved_laboratory_rooms' => $this->unresolvedLaboratoryRoomPenalty($schedules),
             'laboratory_room_compactness' => $this->laboratoryRoomCompactnessPenalty($schedules, $roomTypesById),
             'room_concentration' => $this->roomConcentrationPenalty($schedules, $fairness),
             'room_idle_gaps' => $this->roomIdleGapPenalty($schedules, $roomTypesById),
@@ -513,6 +518,23 @@ class ScheduleQualityEvaluator
         }
 
         return $mismatches * self::LAB_ROOM_MISMATCH_WEIGHT;
+    }
+
+    private function unresolvedLaboratoryRoomPenalty(array $schedules): int
+    {
+        $unresolved = 0;
+
+        foreach ($schedules as $row) {
+            if (
+                ($row['meeting_type'] ?? null) === 'laboratory'
+                && ! in_array($row['mode'] ?? null, ['online', 'field'], true)
+                && empty($row['room_id'])
+            ) {
+                $unresolved++;
+            }
+        }
+
+        return $unresolved * self::UNRESOLVED_LABORATORY_ROOM_WEIGHT;
     }
 
     private function laboratoryRoomCompactnessPenalty(array $schedules, array $roomTypesById): int

@@ -6,12 +6,14 @@ use App\Models\Departments;
 use App\Models\Sections;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
+use App\Models\ScheduleHistory;
 use App\Models\Terms;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class DepartmentScheduleController extends Controller
 {
@@ -78,8 +80,9 @@ class DepartmentScheduleController extends Controller
             'revision'         => 0,
             'completed'        => 1,
             'submitted'        => 2,
-            'approved_by_dean' => 3,
-            'approved'         => 4,
+                'approved_by_dean' => 3,
+                'conditionally_approved' => 3,
+                'approved'         => 4,
         ];
 
         if (empty($scheduleStatuses)) {
@@ -93,6 +96,7 @@ class DepartmentScheduleController extends Controller
             // Normalise extended statuses to the 4 canonical ones
             $normalised = match (true) {
                 in_array($raw, ['faculty_assignment', 'finalized']) => 'approved',
+                $raw === 'conditionally_approved' => 'conditionally_approved',
                 $raw === 'approved_by_dean'                         => 'approved_by_dean',
                 $raw === 'submitted'                                => 'submitted',
                 $raw === 'completed'                                => 'completed',
@@ -230,6 +234,9 @@ class DepartmentScheduleController extends Controller
             ]);
 
         if ($updated > 0) {
+            $this->recordWorkflowAudit($request, 'schedule_submitted', $department->id, $activeTermId, [
+                'schedules_updated' => $updated,
+            ]);
             $term = Terms::query()->find($this->activeTermId());
             $this->notifications->notifyRoles(
                 ['dean', 'secretary', 'program_head'],
@@ -263,23 +270,33 @@ class DepartmentScheduleController extends Controller
             return $forbidden;
         }
 
+        $validated = $request->validate([
+            'override_room_tba' => ['sometimes', 'boolean'],
+            'override_reason' => ['required_if:override_room_tba,true', 'nullable', 'string', 'max:2000'],
+        ]);
         $department = Departments::findOrFail($id);
         $user = $request->user();
         $now = now();
 
-        $updated = DB::transaction(function () use ($id, $user, $now) {
+        $override = (bool) ($validated['override_room_tba'] ?? false);
+        $updated = DB::transaction(function () use ($id, $user, $now, $override, $validated) {
             return $this->departmentScheduleQuery($id)
                 ->where('status', 'submitted')
                 ->update([
-                    'status' => 'approved_by_dean',
+                    'status' => $override ? 'conditionally_approved' : 'approved_by_dean',
                     'reviewed_by_dean' => $user->id,
                     'reviewed_at_dean' => $now,
                     'rejection_reason' => null,
                     'updated_at' => $now,
+                    'approval_override' => $override,
+                    'approval_override_reason' => $override ? ($validated['override_reason'] ?? null) : null,
                 ]);
         });
 
         if ($updated > 0) {
+            $this->recordWorkflowAudit($request, 'schedule_approved_by_dean', $department->id, $this->activeTermId(), [
+                'schedules_updated' => $updated,
+            ]);
             $term = Terms::query()->find($this->activeTermId());
             $this->notifications->notifyRoles(
                 ['vpaa', 'dean', 'secretary', 'program_head'],
@@ -301,7 +318,9 @@ class DepartmentScheduleController extends Controller
         }
 
         return response()->json([
-            'message' => 'Department schedule approved by Dean and forwarded to VPAA.',
+            'message' => $override
+                ? 'Department schedule conditionally approved with Room TBA override.'
+                : 'Department schedule approved by Dean and forwarded to VPAA.',
             'department_name' => $department->department_name,
             'schedules_updated' => $updated,
         ]);
@@ -334,6 +353,10 @@ class DepartmentScheduleController extends Controller
         });
 
         if ($updated > 0) {
+            $this->recordWorkflowAudit($request, 'schedule_returned_by_dean', $department->id, $this->activeTermId(), [
+                'schedules_updated' => $updated,
+                'rejection_reason' => $validated['rejection_reason'],
+            ]);
             $term = Terms::query()->find($this->activeTermId());
             $this->notifications->notifyRoles(
                 ['dean', 'secretary', 'program_head'],
@@ -495,6 +518,15 @@ class DepartmentScheduleController extends Controller
         }
 
         $term = Terms::query()->find($this->activeTermId());
+        if ($updated['revision'] > 0) {
+            $this->recordWorkflowAudit($request, 'schedule_withdrawn', $department->id, $term?->id, [
+                'schedules_updated' => $updated['revision'],
+                'sections_unlocked' => count($sectionIds),
+                'withdrawal_stage' => $withdrawalStage,
+                'instructors_released' => $updated['instructors_released'],
+                'selected_section_ids' => $sectionIds,
+            ]);
+        }
         $this->notifications->notifyRoles(
             ['vpaa', 'dean', 'secretary', 'program_head'],
             'schedule_withdrawn',
@@ -541,7 +573,7 @@ class DepartmentScheduleController extends Controller
 
         $updated = DB::transaction(function () use ($id, $user, $now) {
             return $this->departmentScheduleQuery($id)
-                ->where('status', 'approved_by_dean')
+                ->whereIn('status', ['approved_by_dean', 'conditionally_approved'])
                 ->update([
                     'status' => 'faculty_assignment',
                     'approved_by_vpaa' => $user->id,
@@ -552,6 +584,9 @@ class DepartmentScheduleController extends Controller
         });
 
         if ($updated > 0) {
+            $this->recordWorkflowAudit($request, 'schedule_approved_by_vpaa', $department->id, $this->activeTermId(), [
+                'schedules_updated' => $updated,
+            ]);
             $term = Terms::query()->find($this->activeTermId());
             $this->notifications->notifyRoles(
                 ['vpaa', 'dean', 'secretary', 'program_head'],
@@ -606,6 +641,10 @@ class DepartmentScheduleController extends Controller
         });
 
         if ($updated > 0) {
+            $this->recordWorkflowAudit($request, 'schedule_returned_by_vpaa', $department->id, $this->activeTermId(), [
+                'schedules_updated' => $updated,
+                'rejection_reason' => $validated['rejection_reason'],
+            ]);
             $term = Terms::query()->find($this->activeTermId());
             $this->notifications->notifyRoles(
                 ['vpaa', 'dean', 'secretary', 'program_head'],
@@ -632,5 +671,66 @@ class DepartmentScheduleController extends Controller
             'department_name' => $department->department_name,
             'schedules_updated' => $updated,
         ]);
+    }
+
+    private function recordWorkflowAudit(Request $request, string $action, int $departmentId, ?int $termId, array $metadata = []): void
+    {
+        $historyGroupId = (string) Str::uuid();
+        $metadata['history_group_id'] = $historyGroupId;
+        $schedules = collect();
+
+        // Workflow transitions use bulk updates and therefore do not fire
+        // Schedule model events. Capture the resulting rows explicitly so
+        // approvals, returns, submissions, and withdrawals are visible in
+        // schedule history as well as the activity log.
+        if ($termId !== null) {
+            $targetSectionIds = collect($metadata['selected_section_ids'] ?? [])
+                ->map('intval')
+                ->filter()
+                ->unique()
+                ->values();
+            $departmentSchedules = Schedule::query()
+                ->where('department_id', $departmentId)
+                ->where('term_id', $termId)
+                ->get();
+            $allSectionIds = $departmentSchedules->pluck('section_id')->filter()->unique();
+            $schedules = $targetSectionIds->isNotEmpty()
+                ? $departmentSchedules->whereIn('section_id', $targetSectionIds)->values()
+                : $departmentSchedules;
+            $sectionIds = $schedules->pluck('section_id')->filter()->unique()->values()->all();
+            $metadata['affected_section_ids'] = $sectionIds;
+            $metadata['affected_section_count'] = count($sectionIds);
+            $metadata['entire_schedule'] = count($sectionIds) > 0 && count($sectionIds) === $allSectionIds->count();
+            $metadata['history_scope'] = $metadata['entire_schedule']
+                ? 'entire_schedule'
+                : (count($sectionIds) >= 2 ? 'multiple_sections' : 'section');
+            $metadata['history_group_id'] = $historyGroupId;
+        }
+
+        SchedulingAuditLog::create([
+            'user_id' => $request->user()?->id,
+            'term_id' => $termId,
+            'department_id' => $departmentId,
+            'action' => $action,
+            'metadata' => $metadata,
+            'created_at' => now(),
+        ]);
+
+        if ($schedules->isNotEmpty()) {
+            $schedules
+                ->each(function (Schedule $schedule) use ($request, $action, $metadata): void {
+                    ScheduleHistory::create([
+                        'schedule_id' => $schedule->id,
+                        'term_id' => $schedule->term_id,
+                        'section_id' => $schedule->section_id,
+                        'course_id' => $schedule->course_id,
+                        'department_id' => $schedule->department_id,
+                        'actor_user_id' => $request->user()?->id,
+                        'action' => $action,
+                        'snapshot' => $schedule->getAttributes(),
+                        'changes' => $metadata,
+                    ]);
+                });
+        }
     }
 }

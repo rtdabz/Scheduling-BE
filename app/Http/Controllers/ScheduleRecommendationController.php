@@ -2,17 +2,21 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\GenerateYearLevelSchedulePreview;
+use App\Jobs\GenerateSectionSchedulePreview;
 use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Exceptions\YearLevelGenerationException;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Schedule;
 use App\Models\ScheduleRecommendation;
+use App\Models\ScheduleGenerationRun;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Services\Scheduling\BatchConflict;
 use App\Services\Scheduling\BatchConflictValidator;
 use App\Services\Scheduling\CSPSolver;
+use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\ScheduleCandidateOptimizer;
 use App\Services\Scheduling\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\ScheduleRequirementBuilderResolver;
@@ -23,6 +27,7 @@ use App\Services\SystemNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -40,6 +45,7 @@ class ScheduleRecommendationController extends Controller
         private readonly ScheduleGenerationPreflightService $preflight,
         private readonly ScheduleRequirementBuilderResolver $requirementBuilders,
         private readonly BatchConflictValidator $batchConflicts,
+        private readonly RuleEngine $ruleEngine,
         private readonly SystemNotificationService $notifications,
     ) {}
 
@@ -358,6 +364,70 @@ class ScheduleRecommendationController extends Controller
         ]);
     }
 
+    public function queuePreview(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'section_id' => 'required|integer|exists:sections,id',
+            'course_ids' => 'sometimes|array|min:1',
+            'course_ids.*' => 'integer|exists:courses,id',
+            'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'is_hybrid' => 'sometimes|boolean',
+            'preferred_patterns' => 'sometimes|array',
+            'split_session_enabled' => 'sometimes|boolean',
+            'selected_split_session_course_ids' => 'sometimes|array',
+            'selected_split_session_course_ids.*' => 'integer|exists:courses,id',
+            'split_gec_enabled' => 'sometimes|boolean',
+            'selected_gec_course_ids' => 'sometimes|array',
+            'selected_gec_course_ids.*' => 'integer|exists:courses,id',
+            'delivery_modes_by_course_id' => 'sometimes|array',
+            'max_solutions' => 'sometimes|integer|min:1|max:5',
+            'max_iterations' => 'sometimes|integer|min:1',
+            'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
+            'seed' => 'sometimes|integer',
+        ]);
+
+        $section = Sections::query()->findOrFail((int) $validated['section_id']);
+        if (! $this->canManageDepartment($request, (int) $section->department_id)) {
+            return $this->departmentForbiddenResponse();
+        }
+
+        $runId = (string) Str::uuid();
+        ScheduleGenerationRun::create([
+            'run_id' => $runId,
+            'requested_by' => $request->user()->id,
+            'term_id' => $section->term_id,
+            'department_id' => $section->department_id,
+            'year_level' => (int) $section->year_level,
+            'status' => 'queued',
+        ]);
+        GenerateSectionSchedulePreview::dispatch($runId, (int) $section->id, $validated)->onQueue('scheduling');
+
+        return response()->json(['run_id' => $runId, 'status' => 'queued'], 202);
+    }
+
+    public function runAsyncSectionPreview(int $sectionId, array $input): array
+    {
+        $section = Sections::query()->findOrFail($sectionId);
+        $input['course_ids'] = $this->resolveCourseIds($section, $input['course_ids'] ?? null);
+        $input['selected_split_session_course_ids'] = ($input['split_session_enabled'] ?? false)
+            ? array_values(array_intersect(array_map('intval', $input['selected_split_session_course_ids'] ?? []), $input['course_ids'])) : [];
+        $gecIds = ($input['split_gec_enabled'] ?? false)
+            ? array_values(array_intersect(array_map('intval', $input['selected_gec_course_ids'] ?? []), $input['course_ids'])) : [];
+        $input['preferred_patterns'] = $this->mergeSelectedSplitPatterns($input['preferred_patterns'] ?? [], $gecIds, $input['course_ids']);
+        $input['balanced_split_course_ids'] = $gecIds;
+        $profile = $this->preflight->validate($section, $input['course_ids'], $input);
+        $input['requirements_by_course_id'] = $this->requirementBuilders->build($section, $input['course_ids'], $input);
+        $solutions = $this->candidateOptimizer->rankForSection($this->cspSolver->solveRankedFromSchema($input), $section, $input);
+
+        return [
+            'message' => $solutions === [] ? 'No recommendations found that satisfy the scheduling constraints.' : 'Schedule recommendations generated successfully.',
+            'department_profile' => $profile->value,
+            'search_limit_reached' => $this->cspSolver->searchLimitReached(),
+            'iterations_used' => $this->cspSolver->iterationsUsed(),
+            'recommendations' => $solutions,
+        ];
+    }
+
     public function yearLevelPreview(Request $request): JsonResponse
     {
         $this->allowLongRunningGeneration(self::YEAR_LEVEL_PREVIEW_EXECUTION_SECONDS);
@@ -479,6 +549,81 @@ class ScheduleRecommendationController extends Controller
             'section_summaries' => $result['section_summaries'],
             'schedules' => $result['schedules'],
         ]);
+    }
+
+    /** Queue the expensive year-level solve and return immediately. */
+    public function queueYearLevelPreview(Request $request): JsonResponse
+    {
+        $request->merge(['async' => false]);
+        // Reuse the same validation and preparation contract as the preview
+        // endpoint without running the solver in this request.
+        $validated = $request->validate([
+            'term_id' => 'required|integer|exists:terms,id',
+            'department_id' => 'required|integer|exists:departments,id',
+            'year_level' => 'required|integer|min:1|max:4',
+            'section_configs' => 'required|array|min:1',
+            'section_configs.*.section_id' => 'required|integer|distinct|exists:sections,id',
+            'section_configs.*.course_ids' => 'sometimes|array|min:1',
+            'section_configs.*.course_ids.*' => 'integer|exists:courses,id',
+            'section_configs.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
+            'section_configs.*.is_hybrid' => 'sometimes|boolean',
+            'section_configs.*.selected_split_session_course_ids' => 'sometimes|array',
+            'section_configs.*.selected_split_session_course_ids.*' => 'integer|exists:courses,id',
+            'section_configs.*.selected_gec_course_ids' => 'sometimes|array',
+            'section_configs.*.selected_gec_course_ids.*' => 'integer|exists:courses,id',
+            'section_configs.*.preferred_patterns' => 'sometimes|array',
+            'section_configs.*.delivery_modes_by_course_id' => 'sometimes|array',
+        ]);
+        if (! $this->canManageDepartment($request, (int) $validated['department_id'])) {
+            return $this->departmentForbiddenResponse();
+        }
+        $sections = Sections::query()->where('term_id', $validated['term_id'])
+            ->where('department_id', $validated['department_id'])
+            ->where('year_level', (string) $validated['year_level'])
+            ->where('status', 'active')->orderBy('section_name')->get();
+        if ($sections->isEmpty()) {
+            return response()->json(['message' => 'No active sections were found for the selected year level.'], 422);
+        }
+        $configs = collect($validated['section_configs'])->keyBy(fn (array $config): int => (int) $config['section_id']);
+        $configsBySectionId = [];
+        foreach ($sections as $section) {
+            $config = $configs->get((int) $section->id);
+            if ($config === null) {
+                return response()->json(['message' => 'Provide one configuration for every active section.'], 422);
+            }
+            $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
+            $splitIds = array_values(array_intersect(array_map('intval', $config['selected_split_session_course_ids'] ?? []), $courseIds));
+            $gecIds = array_values(array_intersect(array_map('intval', $config['selected_gec_course_ids'] ?? []), $courseIds));
+            $preferredPatterns = $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $gecIds, $courseIds);
+            $sectionConfig = [
+                'course_ids' => $courseIds, 'mode' => (string) ($config['mode'] ?? 'on-site'),
+                'is_hybrid' => (bool) ($config['is_hybrid'] ?? false),
+                'selected_split_session_course_ids' => $splitIds, 'balanced_split_course_ids' => $gecIds,
+                'preferred_patterns' => $preferredPatterns, 'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
+                'seed' => $this->yearLevelConfigSeed((int) $validated['term_id'], (int) $validated['department_id'], (int) $validated['year_level'], (int) $section->id, $courseIds, $splitIds, $gecIds, $preferredPatterns),
+            ];
+            $profile = $this->preflight->validate($section, $courseIds, $sectionConfig);
+            $sectionConfig['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $sectionConfig);
+            $sectionConfig['department_profile'] = $profile->value;
+            $configsBySectionId[(int) $section->id] = $sectionConfig;
+        }
+        $runId = (string) Str::uuid();
+        ScheduleGenerationRun::create(['run_id' => $runId, 'requested_by' => $request->user()->id, 'term_id' => $validated['term_id'], 'department_id' => $validated['department_id'], 'year_level' => $validated['year_level'], 'status' => 'queued']);
+        GenerateYearLevelSchedulePreview::dispatch(
+            $runId,
+            $sections->pluck('id')->map('intval')->values()->all(),
+            $configsBySectionId,
+        )->onQueue('scheduling');
+        return response()->json(['run_id' => $runId, 'status' => 'queued'], 202);
+    }
+
+    public function generationRun(Request $request, string $runId): JsonResponse
+    {
+        $run = ScheduleGenerationRun::query()->where('run_id', $runId)->firstOrFail();
+        if ($request->user()->role !== 'vpaa' && (int) $run->requested_by !== (int) $request->user()->id) {
+            return $this->departmentForbiddenResponse();
+        }
+        return response()->json($run);
     }
 
     public function select(Request $request): JsonResponse
@@ -966,7 +1111,8 @@ class ScheduleRecommendationController extends Controller
      */
     private function validateBatchConflicts(array $rows): void
     {
-        $conflicts = $this->batchConflicts->validate($rows, $this->replaceableScheduleIds($rows));
+        $replaceableScheduleIds = $this->replaceableScheduleIds($rows);
+        $conflicts = $this->batchConflicts->validate($rows, $replaceableScheduleIds);
 
         $violations = array_map(
             static fn (BatchConflict $conflict): array => $conflict->isPairwise()
@@ -984,6 +1130,15 @@ class ScheduleRecommendationController extends Controller
                 ],
             $conflicts,
         );
+
+        foreach ($rows as $index => $row) {
+            foreach ($this->ruleEngine->validate(array_merge($row, [
+                'ignore_schedule_id' => $replaceableScheduleIds,
+            ])) as $violation) {
+                $violation['recommendation_row'] = $index;
+                $violations[] = $violation;
+            }
+        }
 
         foreach ($rows as $index => $row) {
             $duplicateExists = Schedule::query()

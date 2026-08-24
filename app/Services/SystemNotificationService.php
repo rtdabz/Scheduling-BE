@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Departments;
+use App\Models\Course;
 use App\Models\Schedule;
 use App\Models\SystemNotification;
 use App\Models\Terms;
@@ -115,7 +116,9 @@ class SystemNotificationService
 
     public function notifyInstructorAssignmentProgress(Schedule $schedule, User $actor): void
     {
-        $schedule->loadMissing(['course.department', 'term']);
+        $schedule->loadMissing(['course.department', 'course.teachingDepartment', 'term']);
+
+        $this->notifyDelegatedCourseCompletion($schedule, $actor);
 
         $courseDepartmentId = (int) ($schedule->course?->department_id ?? 0);
         if ($courseDepartmentId === 0) {
@@ -188,5 +191,49 @@ class SystemNotificationService
                 ],
             );
         }
+    }
+
+    private function notifyDelegatedCourseCompletion(Schedule $schedule, User $actor, ?array $completedScheduleIds = null): void
+    {
+        $course = $schedule->course;
+        $sourceDepartmentId = (int) ($course?->department_id ?? 0);
+        $receivingDepartmentId = (int) ($course?->teaching_department_id ?? 0);
+        if ($sourceDepartmentId === 0 || $receivingDepartmentId === 0 || $sourceDepartmentId === $receivingDepartmentId) return;
+
+        $courseIds = Course::query()
+            ->where('department_id', $sourceDepartmentId)
+            ->where('teaching_department_id', $receivingDepartmentId)
+            ->where('status', 'active')
+            ->pluck('id');
+        if ($courseIds->isEmpty()) return;
+
+        // A Done action represents the exact schedules shown in the receiving
+        // department's timetable. Use that batch when supplied so unrelated
+        // schedules cannot suppress or delay the completion notification.
+        if ($completedScheduleIds !== null) {
+            $completed = Schedule::query()
+                ->whereIn('id', $completedScheduleIds)
+                ->whereIn('course_id', $courseIds)
+                ->get(['id', 'course_id', 'faculty_id', 'faculty_assignment_done']);
+            if ($completed->isEmpty() || $completed->contains(fn (Schedule $item) => $item->faculty_id === null || ! (bool) $item->faculty_assignment_done)) return;
+            $courseIds = $completed->pluck('course_id')->unique()->values();
+        }
+
+        $termId = (int) ($schedule->term_id ?? 0);
+        if ($completedScheduleIds === null) {
+            $pending = Schedule::query()->where('term_id', $termId)->whereIn('course_id', $courseIds)
+                ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)->whereNull('faculty_id')->exists();
+            if ($pending) return;
+        }
+
+        $source = $course->department?->department_name ?? 'The source department';
+        $receiving = $course->teachingDepartment?->department_name ?? 'The receiving department';
+        $message = "{$receiving} completed instructor assignments for the {$courseIds->count()} course" . ($courseIds->count() === 1 ? '' : 's') . '.';
+        $this->notifyRoles(['secretary', 'program_head', 'dean'], 'cross_department_instructor_assignments_completed', 'Cross-department assignments completed', $message, $actor, $sourceDepartmentId, $termId, null, ['course_ids' => $courseIds->values()->all(), 'receiving_department_id' => $receivingDepartmentId, 'link' => '/secretary/cross-department-assignments']);
+    }
+
+    public function notifyCrossDepartmentCompletion(Schedule $schedule, User $actor, ?array $completedScheduleIds = null): void
+    {
+        $this->notifyDelegatedCourseCompletion($schedule, $actor, $completedScheduleIds);
     }
 }

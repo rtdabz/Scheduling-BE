@@ -168,4 +168,47 @@ class SplitScheduleRecommendationTest extends TestCase
         $this->assertNotEquals('Monday', $recs3[0]['day']);
         $this->assertEquals('07:00', $recs3[0]['start_time']);
     }
+
+    public function test_laboratory_recommendation_returns_room_tba_when_no_lab_room_is_available()
+    {
+        $user = \App\Models\User::create([
+            'name' => 'TBA User', 'username' => 'tba-user', 'email' => 'tba@example.com',
+            'password' => bcrypt('password'), 'role' => 'secretary',
+        ]);
+        $this->actingAs($user);
+
+        $term = Terms::create([
+            'academic_year' => '2026-2027', 'semester' => '1st',
+            'is_active' => true, 'is_enabled' => true,
+        ]);
+        $dept = Departments::create([
+            'department_name' => 'College of Information Technology', 'department_code' => 'CIT',
+        ]);
+        $course = Course::create([
+            'course_code' => 'ITL201', 'course_name' => 'Laboratory Practice',
+            'lecture_hours' => 0, 'lab_hours' => 3, 'units' => 2,
+            'course_category' => 'major', 'room_type_required' => 'laboratory',
+            'year_level' => '1', 'semester' => '1st', 'department_id' => $dept->id,
+            'status' => 'active',
+        ]);
+        $section = Sections::create([
+            'section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st',
+            'department_id' => $dept->id, 'term_id' => $term->id, 'status' => 'active',
+        ]);
+
+        $response = $this->postJson('/api/schedule-recommendations/recommend-split', [
+            'term_id' => $term->id,
+            'section_id' => $section->id,
+            'course_id' => $course->id,
+            'department_id' => $dept->id,
+            'duration_slots' => 18,
+            'mode' => 'on-site',
+            'meeting_type' => 'laboratory',
+            'preferred_day' => 'Monday',
+            'preferred_start_time' => '07:00',
+        ]);
+
+        $response->assertOk()->assertJsonPath('recommendations.0.room_id', null);
+        $this->assertSame('Room TBA', $response->json('recommendations.0.room_name'));
+    }
 }

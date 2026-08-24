@@ -23,6 +23,7 @@ class UserFacultyProfileService
             'deload_units' => 0,
             'probono_units' => 0,
             'department_id' => $user->department_id,
+            'program_id' => $user->program_id,
             'status' => 'active',
             'profile_picture' => $user->profile_picture,
         ]);
@@ -39,6 +40,7 @@ class UserFacultyProfileService
             'middle_name' => $middleName,
             'last_name' => $lastName,
             'department_id' => $user->department_id,
+            'program_id' => $user->program_id,
             'profile_picture' => $user->profile_picture,
         ]);
 

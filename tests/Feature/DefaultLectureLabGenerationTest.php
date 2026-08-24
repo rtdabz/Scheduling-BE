@@ -831,7 +831,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertSame($labRoom->id, $laboratory['room_id']);
     }
 
-    public function test_default_lecture_lab_generation_requires_physical_laboratory_room(): void
+    public function test_default_lecture_lab_generation_uses_room_tba_when_laboratory_is_unavailable(): void
     {
         $term = Terms::create([
             'academic_year' => '2026-2027',
@@ -885,10 +885,14 @@ class DefaultLectureLabGenerationTest extends TestCase
             seed: 1234,
         );
 
-        $this->assertEmpty($solutions);
+        $this->assertNotEmpty($solutions);
+        $laboratory = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'laboratory');
+        $this->assertNotNull($laboratory);
+        $this->assertSame('on-site', $laboratory['mode']);
+        $this->assertNull($laboratory['room_id']);
     }
 
-    public function test_missing_laboratory_course_can_be_generated_online_when_requested(): void
+    public function test_missing_laboratory_course_keeps_room_tba_even_when_online_is_requested(): void
     {
         $term = Terms::create([
             'academic_year' => '2026-2027',
@@ -942,7 +946,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         );
 
         $this->assertNotEmpty($solutions);
-        $this->assertSame('online', $solutions[0]['schedules'][0]['mode']);
+        $this->assertSame('on-site', $solutions[0]['schedules'][0]['mode']);
         $this->assertNull($solutions[0]['schedules'][0]['room_id']);
     }
 

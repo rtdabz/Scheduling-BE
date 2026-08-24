@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Models\Course;
-use App\Models\CourseTeachingAssignment;
 use App\Models\Departments;
 use App\Models\Faculty;
 use App\Models\Rooms;
@@ -11,7 +10,6 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Services\Scheduling\RuleEngine;
-use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -324,7 +322,7 @@ class RuleEngineSplitValidationTest extends TestCase
 
         $rules = collect($violations)->pluck('rule')->all();
         $this->assertNotContains('room_exists', $rules);
-        $this->assertNotContains('room_type_match', $rules);
+        $this->assertContains('room_type_match', $rules);
         $this->assertNotContains('delivery_room_alignment', $rules);
     }
 
@@ -686,101 +684,5 @@ class RuleEngineSplitValidationTest extends TestCase
             $this->assertNotContains('service_subject_faculty_department_alignment', $rules);
             $this->assertNotContains('faculty_department_alignment', $rules);
         }
-    }
-
-    public function test_vpaa_course_teaching_assignment_controls_allowed_faculty_department(): void
-    {
-        $term = Terms::create([
-            'academic_year' => '2026-2027',
-            'semester' => '1st',
-            'is_active' => true,
-            'is_enabled' => true,
-        ]);
-
-        $cas = Departments::create([
-            'department_name' => 'College of Arts and Sciences',
-            'department_code' => 'CAS',
-        ]);
-        $cit = Departments::create([
-            'department_name' => 'College of Information Technology',
-            'department_code' => 'CIT',
-        ]);
-
-        $casFaculty = Faculty::create([
-            'first_name' => 'Jose',
-            'last_name' => 'Rizal',
-            'employment_type' => 'full-time',
-            'max_units' => 21,
-            'department_id' => $cas->id,
-            'status' => 'active',
-        ]);
-        $citFaculty = Faculty::create([
-            'first_name' => 'Ada',
-            'last_name' => 'Lovelace',
-            'employment_type' => 'full-time',
-            'max_units' => 21,
-            'department_id' => $cit->id,
-            'status' => 'active',
-        ]);
-
-        $section = Sections::create([
-            'section_name' => 'IT 1A',
-            'year_level' => '1',
-            'semester' => '1st',
-            'department_id' => $cit->id,
-            'term_id' => $term->id,
-            'status' => 'active',
-        ]);
-
-        $room = Rooms::create([
-            'room_code' => 'IT105',
-            'room_name' => 'IT Room 105',
-            'room_type' => 'lecture',
-            'status' => 'available',
-            'department_id' => $cit->id,
-        ]);
-
-        $course = Course::create([
-            'course_code' => 'GEC 2',
-            'course_name' => 'Readings in Philippine History',
-            'lecture_hours' => 3,
-            'lab_hours' => 0,
-            'units' => 3,
-            'course_category' => 'minor',
-            'room_type_required' => 'lecture',
-            'year_level' => '1',
-            'semester' => '1st',
-            'department_id' => $cas->id,
-            'status' => 'active',
-        ]);
-
-        CourseTeachingAssignment::create([
-            'course_id' => $course->id,
-            'department_id' => $cit->id,
-        ]);
-        SchedulingPolicy::clearCourseTeachingAssignmentCache();
-
-        $base = [
-            'term_id' => $term->id,
-            'section_id' => $section->id,
-            'course_id' => $course->id,
-            'room_id' => $room->id,
-            'department_id' => $cit->id,
-            'day' => 'Monday',
-            'start_time' => '10:00',
-            'end_time' => '13:00',
-            'mode' => 'on-site',
-        ];
-
-        $casRules = collect(app(RuleEngine::class)->validate(array_merge($base, [
-            'faculty_id' => $casFaculty->id,
-        ])))->pluck('rule')->all();
-        $this->assertContains('service_subject_faculty_department_alignment', $casRules);
-
-        $citRules = collect(app(RuleEngine::class)->validate(array_merge($base, [
-            'faculty_id' => $citFaculty->id,
-        ])))->pluck('rule')->all();
-        $this->assertNotContains('service_subject_faculty_department_alignment', $citRules);
-        $this->assertNotContains('faculty_department_alignment', $citRules);
     }
 }

@@ -44,7 +44,8 @@ class YearLevelFeasibilityService
 
         $blocking = [];
         $blocking = [...$blocking, ...$this->checkPhysicalRoomCapacity($sections, $configsBySectionId, $courses, $department, $slotsPerDay)];
-        $blocking = [...$blocking, ...$this->checkLaboratoryCapacity($sections, $configsBySectionId, $courses, $department, $slotsPerDay)];
+        // Laboratory capacity is advisory: the CSP may place a laboratory
+        // meeting on-site with Room TBA when no compatible lab slot exists.
         $blocking = [...$blocking, ...$this->checkFixedPatternCapacity($sections, $configsBySectionId, $courses, $department)];
         $blocking = [...$blocking, ...$this->checkOnlineCapacity($sections, $configsBySectionId, $courses, $department, $slotsPerDay)];
 
@@ -384,6 +385,11 @@ class YearLevelFeasibilityService
         foreach ($this->configuredCourses($config, $courses) as $course) {
             $mode = $config['delivery_modes_by_course_id'][(int) $course->id] ?? null;
             if ($mode === 'online') {
+                continue;
+            }
+            if (SchedulingPolicy::isLaboratoryCourse($course)) {
+                // Laboratory placements may use Room TBA when no compatible
+                // laboratory slot is available; do not hard-block generation.
                 continue;
             }
             if ($mode === 'field' || SchedulingPolicy::isFieldCourse($course)) {

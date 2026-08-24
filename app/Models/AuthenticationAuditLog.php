@@ -19,4 +19,14 @@ class AuthenticationAuditLog extends Model
     {
         return ['metadata' => 'array'];
     }
+
+    public function actor()
+    {
+        return $this->belongsTo(User::class, 'actor_user_id');
+    }
+
+    public function subject()
+    {
+        return $this->belongsTo(User::class, 'subject_user_id');
+    }
 }

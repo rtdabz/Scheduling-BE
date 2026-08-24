@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Concerns\ConfirmsFacultyOverload;
 use App\Models\Faculty;
+use App\Models\Course;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
 use App\Models\Terms;
@@ -38,11 +39,23 @@ class InstructorAssignmentController extends Controller
             return response()->json(['message' => 'Your account must belong to a department.'], 422);
         }
 
+        // Program heads operate inside one program even when several programs
+        // share the same college. A missing program assignment intentionally
+        // produces no faculty candidates instead of widening to the department.
+        $programId = $request->user()?->role === 'program_head'
+            ? (int) ($request->user()?->program_id ?? 0)
+            : null;
+
         $cacheKey = ApiCache::key('instructor_assignments.index', [
             'department_id' => $departmentId,
+            'program_id' => $programId,
+            // The payload includes delegated courses and source-department timetable
+            // rows; bump this when that dataset changes so old empty responses cannot
+            // hide a newly assigned cross-department course.
+            'version' => 3,
         ]);
 
-        $data = Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($departmentId) {
+        $data = Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($departmentId, $programId) {
             $activeTerm = Terms::query()->where('is_active', true)->first();
 
             if (!$activeTerm) {
@@ -53,29 +66,48 @@ class InstructorAssignmentController extends Controller
                     'subjects' => [],
                     'faculties' => [],
                     'schedules' => [],
+                    'incoming_courses' => [],
                 ];
             }
 
-            $assignedCourseIds = SchedulingPolicy::courseIdsAssignedToTeachingDepartment($departmentId);
-            $allAssignedCourseIds = SchedulingPolicy::assignedCourseIds();
+            $incomingCourses = Course::query()
+                ->with(['department:id,department_code,department_name'])
+                ->where('status', 'active')
+                ->where('teaching_department_id', $departmentId)
+                ->when($programId !== null, fn ($query) => $query->where(
+                    fn ($programScope) => $programScope
+                        ->where('program_id', $programId)
+                        ->orWhere('teaching_program_id', $programId),
+                ))
+                ->where(function ($query) use ($departmentId): void {
+                    $query->whereNull('department_id')->orWhere('department_id', '!=', $departmentId);
+                })
+                ->orderBy('course_code')
+                ->get(['id', 'course_code', 'course_name', 'units', 'year_level', 'department_id', 'teaching_department_id']);
 
             $schedules = Schedule::query()
                 ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
                 ->where('term_id', $activeTerm->id)
                 ->whereIn('status', self::VISIBLE_STATUSES)
                 ->whereHas('course', fn ($query) => $query->where('status', 'active'))
-                ->where(function ($scheduleQuery) use ($departmentId, $assignedCourseIds, $allAssignedCourseIds) {
-                    if ($assignedCourseIds !== []) {
-                        $scheduleQuery->whereIn('course_id', $assignedCourseIds);
-                    }
-
-                    $scheduleQuery->orWhere(function ($fallbackQuery) use ($departmentId, $allAssignedCourseIds) {
-                        $fallbackQuery->where('department_id', $departmentId);
-                        if ($allAssignedCourseIds !== []) {
-                            $fallbackQuery->whereNotIn('course_id', $allAssignedCourseIds);
-                        }
-                    });
+                // Own offerings, plus anything another college has delegated to this
+                // one: IT owns GEC 101 but CAS teaches it, so the CAS workspace has
+                // to show IT's GEC 101 offerings for CAS to be able to assign them.
+                // Only an explicit override widens this — a GEC course owned by this
+                // department already matches on `department_id`.
+                ->where(function ($query) use ($departmentId) {
+                    $query->where('department_id', $departmentId)
+                        ->orWhereHas(
+                            'course',
+                            fn ($course) => $course->where('teaching_department_id', $departmentId),
+                        );
                 })
+                ->when($programId !== null, fn ($query) => $query->whereHas(
+                    'course',
+                    fn ($course) => $course
+                        ->where('program_id', $programId)
+                        ->orWhere('teaching_program_id', $programId),
+                ))
                 ->orderBy('department_id')
                 ->orderBy('day')
                 ->orderBy('start_time')
@@ -84,6 +116,7 @@ class InstructorAssignmentController extends Controller
              $faculties = Faculty::query()
                 ->with(['department', 'program', 'availabilities'])
                 ->where('department_id', $departmentId)
+                ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
                 ->where('status', 'active')
                 ->orderBy('last_name')
                 ->orderBy('first_name')
@@ -104,6 +137,7 @@ class InstructorAssignmentController extends Controller
                 'subjects' => $courses,
                 'faculties' => $faculties,
                 'schedules' => $schedules,
+                'incoming_courses' => $incomingCourses,
             ];
         });
 
@@ -117,8 +151,8 @@ class InstructorAssignmentController extends Controller
         ]);
 
         $departmentId = (int) ($request->user()?->department_id ?? 0);
-        // For a major the offering department is the only one that can assign; the
-        // VPAA-assigned teaching department applies to service and minor courses.
+        // For a major the offering department is the only one that can assign; a GEC
+        // service course is assigned by the college that offers it.
         $teachingDepartmentId = $schedule->course
             ? (SchedulingPolicy::isMajorCourse($schedule->course)
                 ? SchedulingPolicy::majorTeachingDepartmentId($schedule->course, (int) $schedule->department_id)
@@ -127,17 +161,26 @@ class InstructorAssignmentController extends Controller
 
         if (!$schedule->course) {
             return response()->json([
-                'message' => 'Only the VPAA-assigned teaching department can assign this course instructor.',
+                'message' => 'Only the college that offers this course can assign its instructor.',
             ], 403);
         }
 
         $isMajor = SchedulingPolicy::isMajorCourse($schedule->course);
 
+        if ($request->user()?->role === 'program_head') {
+            $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
+            if ($requiredProgramId === null || $requiredProgramId !== (int) ($request->user()?->program_id ?? 0)) {
+                return response()->json([
+                    'message' => 'Program Heads can only assign courses assigned to their program.',
+                ], 403);
+            }
+        }
+
         if ((int) $teachingDepartmentId !== $departmentId) {
             return response()->json([
                 'message' => $isMajor
                     ? 'Only the department that offers this major can assign its instructor.'
-                    : 'Only the VPAA-assigned teaching department can assign this course instructor.',
+                    : 'Only the college that offers this course can assign its instructor.',
             ], 403);
         }
 
@@ -152,7 +195,16 @@ class InstructorAssignmentController extends Controller
         $faculty = Faculty::query()->findOrFail($validated['faculty_id']);
         if ((int) $faculty->department_id !== $departmentId || $faculty->status !== 'active') {
             return response()->json([
-                'message' => 'The selected instructor must be active and belong to the VPAA-assigned teaching department.',
+                'message' => 'The selected instructor must be active and belong to the college that teaches this course.',
+            ], 422);
+        }
+
+        if (
+            $request->user()?->role === 'program_head'
+            && (int) $faculty->program_id !== (int) ($request->user()?->program_id ?? 0)
+        ) {
+            return response()->json([
+                'message' => 'Program Heads can only assign instructors from their assigned program.',
             ], 422);
         }
 
@@ -160,14 +212,18 @@ class InstructorAssignmentController extends Controller
         // the instructor is ineligible instead of reporting a generic conflict.
         $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
         if ($requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
-            $schedule->course->loadMissing('program');
-            $programLabel = $schedule->course->program?->code
-                ?? $schedule->course->program?->name;
+            $schedule->course->loadMissing(['program', 'teachingProgram']);
+            $requiredProgram = SchedulingPolicy::isMajorCourse($schedule->course)
+                ? $schedule->course->program
+                : $schedule->course->teachingProgram;
+            $programLabel = $requiredProgram?->code ?? $requiredProgram?->name;
 
             return response()->json([
                 'message' => $programLabel !== null
-                    ? "This major belongs to the {$programLabel} program, so only instructors of that program can be assigned."
-                    : 'This major belongs to a program the selected instructor is not assigned to.',
+                    ? (SchedulingPolicy::isMajorCourse($schedule->course)
+                        ? "This major belongs to the {$programLabel} program, so only instructors of that program can be assigned."
+                        : "This course is assigned to the {$programLabel} program, so only instructors of that program can be assigned.")
+                    : 'This course is assigned to a program the selected instructor is not assigned to.',
             ], 422);
         }
 
@@ -196,13 +252,18 @@ class InstructorAssignmentController extends Controller
         $activeTermId = $this->activeTermId();
         $incoming = array_values(array_filter([$this->loadPairForSchedule($schedule)]));
 
+        $projection = $this->withAssignmentLabel(
+            $this->facultyLoad->projectLoad($faculty, $activeTermId, $incoming),
+            $this->assignmentLabelForSchedule($schedule),
+        );
+
+        $ceilingError = $this->facultyCeilingExceededResponse([$projection]);
+        if ($ceilingError !== null) {
+            return $ceilingError;
+        }
+
         if (! $request->boolean('confirm_overload')) {
-            $confirmation = $this->overloadConfirmationResponse([
-                $this->withAssignmentLabel(
-                    $this->facultyLoad->projectLoad($faculty, $activeTermId, $incoming),
-                    $this->assignmentLabelForSchedule($schedule),
-                ),
-            ]);
+            $confirmation = $this->overloadConfirmationResponse([$projection]);
 
             if ($confirmation !== null) {
                 return $confirmation;

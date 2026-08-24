@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Auth;
 
 class Schedule extends Model
 {
@@ -21,6 +22,7 @@ class Schedule extends Model
         'section_id',
         'course_id',
         'faculty_id',
+        'faculty_assignment_done',
         'room_id',
         'department_id',
         'day',
@@ -38,7 +40,11 @@ class Schedule extends Model
         'reviewed_at_dean',
         'approved_by_vpaa',
         'approved_at_vpaa',
+        'approval_override',
+        'approval_override_reason',
     ];
+
+    protected $casts = ['faculty_assignment_done' => 'boolean', 'approval_override' => 'boolean'];
 
     protected ?string $tempSplitGroupId = null;
     protected ?string $tempMeetingType = null;
@@ -96,6 +102,33 @@ class Schedule extends Model
 
     protected static function booted()
     {
+        static::saved(function (Schedule $schedule) {
+            ScheduleHistory::create([
+                'schedule_id' => $schedule->id,
+                'term_id' => $schedule->term_id,
+                'section_id' => $schedule->section_id,
+                'course_id' => $schedule->course_id,
+                'department_id' => $schedule->department_id,
+                'actor_user_id' => Auth::id(),
+                'action' => $schedule->wasRecentlyCreated ? 'created' : 'updated',
+                'snapshot' => $schedule->getAttributes(),
+                'changes' => $schedule->getChanges(),
+            ]);
+        });
+
+        static::deleted(function (Schedule $schedule) {
+            ScheduleHistory::create([
+                'schedule_id' => $schedule->id,
+                'term_id' => $schedule->term_id,
+                'section_id' => $schedule->section_id,
+                'course_id' => $schedule->course_id,
+                'department_id' => $schedule->department_id,
+                'actor_user_id' => Auth::id(),
+                'action' => 'deleted',
+                'snapshot' => $schedule->getAttributes(),
+            ]);
+        });
+
         static::saved(function (Schedule $schedule) {
             if ($schedule->tempSplitGroupId !== null || $schedule->tempMeetingType !== null || $schedule->tempMeetingIndex !== null) {
                 $split = $schedule->split ?: new ScheduleSplit();

@@ -19,6 +19,10 @@ class Curriculum extends Model
                 \DB::transaction(function () use ($curriculum) {
                     self::where('department_id', $curriculum->department_id)
                         ->where('id', '!=', $curriculum->id)
+                        ->when($curriculum->program_id === null,
+                            fn ($query) => $query->whereNull('program_id'),
+                            fn ($query) => $query->where('program_id', $curriculum->program_id),
+                        )
                         ->where('status', 'active')
                         ->update(['status' => 'draft']);
                 });

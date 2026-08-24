@@ -47,8 +47,20 @@ class InstructorManagementTest extends TestCase
             ->postJson('/api/faculties', $this->payload($f))
             ->assertCreated()
             ->assertJsonPath('assigned_units', 0)
-            ->assertJsonPath('required_units', 18)
-            ->assertJsonPath('unit_ceiling', 18);
+            ->assertJsonPath('max_units', 21)
+            ->assertJsonPath('required_units', 21)
+            ->assertJsonPath('unit_ceiling', 21);
+    }
+
+    public function test_vpaa_cannot_update_load_allowances(): void
+    {
+        $f = $this->fixture();
+
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/faculties/{$f['faculty']->id}", ['max_units' => 30])
+            ->assertForbidden();
+
+        $this->assertSame(18, (int) $f['faculty']->refresh()->max_units);
     }
 
     public function test_unvalidated_columns_cannot_be_mass_assigned(): void
@@ -324,6 +336,32 @@ class InstructorManagementTest extends TestCase
             ->postJson('/api/faculties', $this->payload($f) + ['program_id' => $foreign->id])
             ->assertStatus(422)
             ->assertJsonValidationErrors('program_id');
+    }
+
+    public function test_program_head_faculty_index_is_scoped_to_the_assigned_program(): void
+    {
+        $department = Departments::create(['department_name' => 'Education', 'department_code' => 'CED']);
+        $bped = Program::create(['department_id' => $department->id, 'code' => 'BPED', 'name' => 'Physical Education']);
+        $beed = Program::create(['department_id' => $department->id, 'code' => 'BEED', 'name' => 'Elementary Education']);
+        $head = User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $department->id,
+            'program_id' => $bped->id,
+        ]);
+        $bpedFaculty = Faculty::create([
+            'first_name' => 'BPED', 'last_name' => 'Instructor', 'employment_type' => 'full-time',
+            'max_units' => 21, 'department_id' => $department->id, 'program_id' => $bped->id, 'status' => 'active',
+        ]);
+        Faculty::create([
+            'first_name' => 'BEED', 'last_name' => 'Instructor', 'employment_type' => 'full-time',
+            'max_units' => 21, 'department_id' => $department->id, 'program_id' => $beed->id, 'status' => 'active',
+        ]);
+
+        $this->actingAs($head)->getJson('/api/faculties')
+            ->assertOk()
+            ->assertJsonCount(1)
+            ->assertJsonPath('0.id', $bpedFaculty->id)
+            ->assertJsonPath('0.program_id', $bped->id);
     }
 
     /** @return array<string, mixed> */

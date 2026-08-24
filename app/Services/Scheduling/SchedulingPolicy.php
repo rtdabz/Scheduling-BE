@@ -15,6 +15,9 @@ final class SchedulingPolicy
 {
     public const SLOT_MINUTES = 30;
 
+    /** End of the ordinary field-course day. Shared by generation and validation. */
+    public const FIELD_DAY_END_TIME = '17:00:00';
+
     private static ?string $cachedOpeningTime = null;
     private static ?string $cachedClosingTime = null;
 
@@ -25,9 +28,6 @@ final class SchedulingPolicy
     /** @var array<string, true>|null */
     /** @var array<string, array<string, true>> */
     private static array $cachedFieldCourseCodeMap = [];
-
-    /** @var array<int, int>|null */
-    private static ?array $cachedCourseTeachingAssignmentMap = null;
 
     /** @var array<int, array<string, true>>|null */
     private static ?array $cachedCourseCategoryMap = null;
@@ -90,6 +90,7 @@ final class SchedulingPolicy
         'finalized',
         'rejected',
         'revision',
+        'conditionally_approved',
     ];
 
     /**
@@ -309,7 +310,7 @@ final class SchedulingPolicy
         'service_subject_faculty_department_alignment' => [
             'severity'    => 'hard',
             'category'    => 'faculty',
-            'description' => 'A course with a VPAA-assigned teaching department (including GEC service subjects owned by CAS) must be assigned to an instructor from that department. A minor with no assigned department may be taught by an instructor from any department.',
+            'description' => 'A GEC service subject must be assigned to an instructor from the college that offers it. Any other minor may be taught by an instructor from any department.',
             'enforced_by' => ['rule_engine'],
         ],
         'part_time_faculty_availability' => [
@@ -409,9 +410,9 @@ final class SchedulingPolicy
             'enforced_by' => ['csp'],
         ],
         'faculty_unit_ceiling' => [
-            'severity' => 'soft',
+            'severity' => 'hard',
             'category' => 'workload',
-            'description' => 'Prefer keeping an instructor at or below their unit ceiling (maximum units, less deload, plus overload and pro bono allowances). Reported as a warning so a deliberate overload is still possible.',
+            'description' => 'Keep an instructor at or below their unit ceiling (maximum units, less deload, plus overload and pro bono allowances).',
             'enforced_by' => ['instructor_assignment'],
         ],
     ];
@@ -820,6 +821,37 @@ final class SchedulingPolicy
             || (string) ($course->room_type_required ?? '') === 'laboratory';
     }
 
+    public static function effectiveRoomType(Course $course, ?string $meetingType = null): string
+    {
+        if ($meetingType !== null && in_array($meetingType, ['lecture', 'laboratory', 'field'], true)) {
+            return $meetingType;
+        }
+
+        if (self::isFieldCourse($course)) {
+            return 'field';
+        }
+
+        return self::isLaboratoryCourse($course)
+            ? 'laboratory'
+            : ((string) ($course->room_type_required ?: 'lecture'));
+    }
+
+    public static function allowsRoomTbaFallback(Course $course, ?string $meetingType = null): bool
+    {
+        return self::effectiveRoomType($course, $meetingType) === 'laboratory';
+    }
+
+    public static function allowsOnlineRoomFallback(Course $course, ?string $meetingType = null): bool
+    {
+        return self::effectiveRoomType($course, $meetingType) === 'lecture'
+            && ! self::isFieldCourse($course)
+            // A split course retains the parent course's laboratory metadata.
+            // When the row explicitly identifies its lecture component, apply
+            // the lecture delivery rule instead of rejecting it because another
+            // component of the same course requires a laboratory.
+            && ($meetingType === 'lecture' || ! self::isLaboratoryCourse($course));
+    }
+
     public static function courseHasCategory(Course $course, string $categoryName): bool
     {
         $normalized = self::normalizeCategoryName($categoryName);
@@ -833,17 +865,22 @@ final class SchedulingPolicy
         return isset(self::courseCategoryMap()[(int) $course->id][$normalized]);
     }
 
+    /**
+     * The department whose instructors may teach this course.
+     *
+     * An explicit override on the course wins: a secretary may delegate GEC 101 to
+     * the College of Arts and Sciences even though Information Technology owns it.
+     * With no override the derived rule stands — a GEC subject is taught by the
+     * college that offers it, every other minor is open to any department, and a
+     * major is covered by the own-department and program rules below instead.
+     */
     public static function assignedTeachingDepartmentId(Course $course): ?int
     {
-        $assignmentDepartmentId = self::courseTeachingAssignmentMap()[(int) $course->id] ?? null;
-        if ($assignmentDepartmentId !== null) {
-            return $assignmentDepartmentId;
+        if ($course->teaching_department_id !== null) {
+            return (int) $course->teaching_department_id;
         }
 
-        if (
-            self::isCasServiceCourse($course)
-            && $course->department_id !== null
-        ) {
+        if (self::isCasServiceCourse($course) && $course->department_id !== null) {
             return (int) $course->department_id;
         }
 
@@ -851,10 +888,23 @@ final class SchedulingPolicy
     }
 
     /**
+     * Whether this course's teaching may be handed to another college at all.
+     *
+     * Only a service or minor course can be: a major belongs to the department —
+     * and program — that offers it, so delegating one would contradict the
+     * own-department and program rules the engine enforces below. The management
+     * endpoint refuses a major on this basis rather than storing an override the
+     * rule engine would then ignore.
+     */
+    public static function isDelegableCourse(Course $course): bool
+    {
+        return ! self::isMajorCourse($course);
+    }
+
+    /**
      * A major course belongs to the department that offers it, so it is taught by
-     * that department's own instructors. Service courses are the delegated case —
-     * a major never is, which is why `courseTeachingAssignmentMap()` drops any
-     * assignment that would send one elsewhere.
+     * that department's own instructors — never delegated the way a GEC service
+     * course is handed to the college that offers it.
      */
     public static function isMajorCourse(Course $course): bool
     {
@@ -884,29 +934,10 @@ final class SchedulingPolicy
     public static function requiredTeachingProgramId(Course $course): ?int
     {
         if (! self::isMajorCourse($course)) {
-            return null;
+            return $course->teaching_program_id === null ? null : (int) $course->teaching_program_id;
         }
 
         return $course->program_id === null ? null : (int) $course->program_id;
-    }
-
-    /**
-     * @return list<int>
-     */
-    public static function assignedCourseIds(): array
-    {
-        return array_keys(self::courseTeachingAssignmentMap());
-    }
-
-    /**
-     * @return list<int>
-     */
-    public static function courseIdsAssignedToTeachingDepartment(int $departmentId): array
-    {
-        return array_values(array_keys(array_filter(
-            self::courseTeachingAssignmentMap(),
-            static fn (int $assignedDepartmentId): bool => $assignedDepartmentId === $departmentId,
-        )));
     }
 
     /**
@@ -965,56 +996,9 @@ final class SchedulingPolicy
         self::$cachedFieldCourseCodeMap = [];
     }
 
-    public static function clearCourseTeachingAssignmentCache(): void
-    {
-        self::$cachedCourseTeachingAssignmentMap = null;
-    }
-
     public static function clearCourseCategoryCache(): void
     {
         self::$cachedCourseCategoryMap = null;
-    }
-
-    /**
-     * @return array<int, int>
-     */
-    private static function courseTeachingAssignmentMap(): array
-    {
-        if (self::$cachedCourseTeachingAssignmentMap !== null) {
-            return self::$cachedCourseTeachingAssignmentMap;
-        }
-
-        if (!self::courseTeachingAssignmentsTableExists()) {
-            return self::$cachedCourseTeachingAssignmentMap = [];
-        }
-
-        // A major belongs to the department that offers it, so an assignment
-        // pointing one at another department is ignored rather than obeyed —
-        // dropping it here keeps every consumer (the rule engine, the assignment
-        // workspace listing, and the permission checks) on the same answer.
-        $rows = DB::table('course_teaching_assignments')
-            ->join('courses', 'courses.id', '=', 'course_teaching_assignments.course_id')
-            ->get([
-                'course_teaching_assignments.course_id',
-                'course_teaching_assignments.department_id',
-                'courses.course_category',
-                'courses.department_id as course_department_id',
-            ]);
-
-        $map = [];
-        foreach ($rows as $row) {
-            $isMajor = self::normalizeCategoryName((string) ($row->course_category ?? 'major')) === 'major';
-            $delegatesAway = $row->course_department_id !== null
-                && (int) $row->department_id !== (int) $row->course_department_id;
-
-            if ($isMajor && $delegatesAway) {
-                continue;
-            }
-
-            $map[(int) $row->course_id] = (int) $row->department_id;
-        }
-
-        return self::$cachedCourseTeachingAssignmentMap = $map;
     }
 
     /**
@@ -1062,15 +1046,6 @@ final class SchedulingPolicy
     {
         try {
             return DB::getSchemaBuilder()->hasTable('field_course_settings');
-        } catch (\Throwable) {
-            return false;
-        }
-    }
-
-    private static function courseTeachingAssignmentsTableExists(): bool
-    {
-        try {
-            return DB::getSchemaBuilder()->hasTable('course_teaching_assignments');
         } catch (\Throwable) {
             return false;
         }

@@ -11,7 +11,7 @@ return new class extends Migration
         Schema::table('departments', function (Blueprint $table): void {
             $table->boolean('field_evening_schedule_enabled')
                 ->default(false)
-                ->after('force_schedule_reuse_enabled');
+                ->after('gec_split_schedule_override_enabled');
         });
     }
 

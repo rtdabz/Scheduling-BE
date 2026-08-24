@@ -67,6 +67,8 @@ return [
 
     'timezone' => 'UTC',
 
+    'performance_logging' => env('PERFORMANCE_LOGGING', false),
+
     /*
     |--------------------------------------------------------------------------
     | Application Locale Configuration

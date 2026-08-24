@@ -25,7 +25,11 @@ class FacultyController extends Controller
     {
         $departmentId = $this->resolveDepartmentId($request);
 
-        return response()->json($this->facultyLoad->get($departmentId, $this->activeTermId()));
+        $programId = $request->user()?->role === 'program_head'
+            ? (int) ($request->user()?->program_id ?? 0)
+            : null;
+
+        return response()->json($this->facultyLoad->get($departmentId, $this->activeTermId(), $programId));
     }
 
     public function store(Request $request)
@@ -36,7 +40,10 @@ class FacultyController extends Controller
             'last_name' => 'required|string|max:255',
             'middle_name' => 'nullable|string|max:255',
             'employment_type' => 'required|in:full-time,part-time',
-            'max_units' => 'required|integer|min:1',
+            // Load allowances are maintained by the Secretary. VPAA creates the
+            // roster record only; the database default is used until the
+            // Secretary configures the instructor's load.
+            'max_units' => 'sometimes|integer|min:1',
             'overload_units' => 'nullable|integer|min:0',
             'deload_units' => 'nullable|integer|min:0',
             'probono_units' => 'nullable|integer|min:0',
@@ -55,6 +62,13 @@ class FacultyController extends Controller
         // so passing the raw request through let a caller forge an
         // administrative badge or claim another user's profile.
         $payload = $validator->validated();
+        unset($payload['max_units'], $payload['overload_units'], $payload['deload_units'], $payload['probono_units']);
+        $payload += [
+            'max_units' => 21,
+            'overload_units' => 0,
+            'deload_units' => 0,
+            'probono_units' => 0,
+        ];
         if ($departmentId !== null) {
             $payload['department_id'] = $departmentId;
         }
@@ -81,6 +95,16 @@ class FacultyController extends Controller
 
         $departmentId = $this->resolveDepartmentId($request);
         $loadOnly = $this->isLoadOnlyEditor($request);
+
+        if (! $loadOnly) {
+            $submittedLoadFields = array_intersect(array_keys($request->all()), self::LOAD_FIELDS);
+            if ($submittedLoadFields !== []) {
+                return response()->json([
+                    'message' => 'Only the Secretary may update teaching load allowances.',
+                    'errors' => ['role' => ['Not permitted to change '.implode(', ', $submittedLoadFields).'.']],
+                ], 403);
+            }
+        }
 
         $rules = [
             'max_units' => 'sometimes|required|integer|min:1',
@@ -194,6 +218,11 @@ class FacultyController extends Controller
         $departmentId = $this->resolveDepartmentId($request);
         if ($departmentId !== null && (int) $faculty->department_id !== $departmentId) {
             return response()->json(['message' => 'Faculty member not found in your department.'], 404);
+        }
+
+        $user = $request->user();
+        if ($user?->role === 'program_head' && (int) $faculty->program_id !== (int) ($user->program_id ?? 0)) {
+            return response()->json(['message' => 'Faculty member not found in your program.'], 404);
         }
 
         return null;

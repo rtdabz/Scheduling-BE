@@ -65,6 +65,14 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                 'laboratory' => ['laboratory'],
                 default => ['lecture', 'laboratory'],
             };
+            $isExplicitMode = array_key_exists($courseId, $deliveryModes)
+                || array_key_exists((string) $courseId, $deliveryModes);
+            $allowedModes = match ($componentType) {
+                'field' => ['field'],
+                'laboratory' => ['on-site'],
+                'online' => ['online'],
+                default => $isExplicitMode ? [$mode] : ['on-site', 'online'],
+            };
 
             $requirements[$courseId] = [
                 (new ScheduleRequirement(
@@ -72,7 +80,7 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                     componentType: $componentType,
                     durationSlots: max(1, (int) round((float) ($course->units ?? 0) * 2)),
                     eligibleRoomTypes: $roomTypes,
-                    allowedDeliveryModes: [$componentType === 'field' ? 'field' : $mode],
+                    allowedDeliveryModes: $allowedModes,
                     allowLectureLaboratoryFallback: $componentType === 'lecture' && $isMajor,
                 ))->toArray(),
             ];

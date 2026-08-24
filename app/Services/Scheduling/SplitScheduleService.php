@@ -82,7 +82,10 @@ final class SplitScheduleService
         // Build the list of rooms to search over.
         $rooms = $this->resolveRooms($course, $mode, $roomId, $departmentId, $meetingType);
 
-        if ($rooms->isEmpty()) {
+        $allowRoomTba = $mode === 'on-site'
+            && SchedulingPolicy::allowsRoomTbaFallback($course, $meetingType);
+
+        if ($rooms->isEmpty() && ! $allowRoomTba) {
             return ['status' => 'no_solution', 'recommendations' => []];
         }
 
@@ -94,6 +97,7 @@ final class SplitScheduleService
             mode:               $mode,
             preferredDay:       $preferredDay,
             preferredStartTime: $preferredStartTime,
+            allowRoomTba: $allowRoomTba,
         );
 
         if (empty($candidates)) {
@@ -159,7 +163,7 @@ final class SplitScheduleService
 
         $ranked = [];
         foreach (array_slice($validCandidates, 0, $maxResults) as $index => $candidate) {
-            $room = $rooms->firstWhere('id', $candidate['room_id']);
+            $room = $candidate['room_id'] !== null ? $rooms->firstWhere('id', $candidate['room_id']) : null;
             $ranked[] = [
                 'rank'       => $index + 1,
                 'score'      => $candidate['score'],
@@ -167,8 +171,8 @@ final class SplitScheduleService
                 'start_time' => $candidate['start_time'],
                 'end_time'   => $candidate['end_time'],
                 'room_id'    => $candidate['room_id'],
-                'room_name'  => $room?->room_code ?? ('Room ' . $candidate['room_id']),
-                'room_type'  => $room?->room_type ?? 'lecture',
+                'room_name'  => $room?->room_code ?? 'Room TBA',
+                'room_type'  => $room?->room_type ?? 'laboratory',
                 'mode'       => $candidate['mode'],
             ];
         }
@@ -273,6 +277,7 @@ final class SplitScheduleService
         string     $mode,
         ?string    $preferredDay = null,
         ?string    $preferredStartTime = null,
+        bool       $allowRoomTba = false,
     ): array {
         $startSlots = SchedulingPolicy::generatedStartSlotsForDuration($durationSlots);
 
@@ -283,13 +288,31 @@ final class SplitScheduleService
 
         $candidates = [];
 
+        $roomOptions = $rooms->all();
+        if ($allowRoomTba) {
+            // TBA is a last-resort candidate. Real rooms remain first so they
+            // win normal scoring, but the recommendation still has a valid
+            // result when every compatible laboratory room is occupied.
+            $roomOptions[] = null;
+        }
         foreach ($days as $day) {
             foreach ($startSlots as $startSlot) {
                 $endSlot   = $startSlot + $durationSlots;
                 $startTime = substr($this->slotToTime($startSlot), 0, 5);
                 $endTime   = substr($this->slotToTime($endSlot), 0, 5);
 
-                foreach ($rooms as $room) {
+                foreach ($roomOptions as $room) {
+                    if ($room === null) {
+                        $candidates[] = [
+                            'day' => $day,
+                            'start_time' => $startTime,
+                            'end_time' => $endTime,
+                            'room_id' => null,
+                            'mode' => 'on-site',
+                            'room_type' => 'laboratory',
+                        ];
+                        continue;
+                    }
                     $candidateMode     = $mode;
                     $candidateRoomType = (string) $room->room_type;
 

@@ -4,12 +4,16 @@ namespace App\Http\Controllers;
 
 use App\Models\Course;
 use Illuminate\Http\Request;
+use App\Services\Scheduling\ScheduleAuthorizationService;
 
 class CoursesController extends Controller
 {
+    public function __construct(private readonly ScheduleAuthorizationService $authorization) {}
+
     public function index(Request $request)
     {
-        $deptId = $request->query('department_id');
+        if ($this->authorization->rejectsRequestedDepartment($request, $request->query('department_id'))) return response()->json(['message' => 'You can only view courses for your department.'], 403);
+        $deptId = $this->authorization->requestedDepartment($request, $request->query('department_id'));
         $bypassActiveCurriculum = $request->query('all') === 'true' || $request->query('catalog') === 'true';
 
         if (!$bypassActiveCurriculum) {
@@ -150,13 +154,15 @@ class CoursesController extends Controller
         return response()->json($course->load(['department', 'program']), 201);
     }
 
-    public function show(Course $course)
+    public function show(Request $request, Course $course)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
         return response()->json($course->load(['department', 'program']));
     }
 
     public function update(Request $request, Course $course)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
         if ($request->has('course_code')) {
             $request->merge([
                 'course_code' => $this->normalizeCourseCode($request->input('course_code')),
@@ -240,8 +246,9 @@ class CoursesController extends Controller
         ];
     }
 
-    public function destroy(Course $course)
+    public function destroy(Request $request, Course $course)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
         $course->delete();
         return response()->json(['message' => 'Course deleted successfully']);
     }

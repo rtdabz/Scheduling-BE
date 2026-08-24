@@ -5,7 +5,10 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
+use App\Models\Faculty;
+use App\Models\Program;
 use App\Models\Rooms;
+use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
@@ -54,6 +57,27 @@ class InitialDataPayloadTest extends TestCase
         }
     }
 
+    public function test_department_scoped_users_still_include_the_vpaa(): void
+    {
+        [$user, $dept] = $this->fixture();
+
+        $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
+        $otherDept = Departments::create(['department_name' => 'Other Dept', 'department_code' => 'OTH']);
+        $stranger = User::factory()->create(['role' => 'secretary', 'department_id' => $otherDept->id]);
+
+        $response = $this->actingAs($user)->getJson('/api/initial-data');
+
+        $response->assertOk();
+        $ids = collect($response->json('users'))->pluck('id')->all();
+
+        // The VPAA signs every college's load sheet but belongs to no department,
+        // so a plain department filter dropped the account the sheet is stamped from.
+        $this->assertContains($vpaa->id, $ids);
+        $this->assertContains($user->id, $ids);
+        $this->assertNotContains($stranger->id, $ids, 'Users from other departments must stay out of the payload.');
+        $this->assertSame($dept->id, $user->department_id);
+    }
+
     public function test_schema_probes_run_once_per_request(): void
     {
         [$user] = $this->fixture();
@@ -83,7 +107,81 @@ class InitialDataPayloadTest extends TestCase
         }
     }
 
-    /** @return array{0: User} */
+    public function test_program_head_auto_assign_payload_only_contains_their_program_faculty(): void
+    {
+        [, $department] = $this->fixture();
+        $bped = Program::create(['department_id' => $department->id, 'code' => 'BPED', 'name' => 'Physical Education']);
+        $beed = Program::create(['department_id' => $department->id, 'code' => 'BEED', 'name' => 'Elementary Education']);
+        $head = User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $department->id,
+            'program_id' => $bped->id,
+        ]);
+        $bpedFaculty = Faculty::create([
+            'first_name' => 'BPED', 'last_name' => 'Instructor', 'employment_type' => 'full-time',
+            'max_units' => 21, 'department_id' => $department->id, 'program_id' => $bped->id, 'status' => 'active',
+        ]);
+        Faculty::create([
+            'first_name' => 'BEED', 'last_name' => 'Instructor', 'employment_type' => 'full-time',
+            'max_units' => 21, 'department_id' => $department->id, 'program_id' => $beed->id, 'status' => 'active',
+        ]);
+
+        $this->actingAs($head)->getJson('/api/initial-data')
+            ->assertOk()
+            ->assertJsonCount(1, 'faculties')
+            ->assertJsonPath('faculties.0.id', $bpedFaculty->id)
+            ->assertJsonPath('faculties.0.program_id', $bped->id);
+    }
+
+    public function test_program_head_payload_only_contains_courses_and_schedules_assigned_to_their_program(): void
+    {
+        [, $department] = $this->fixture();
+        $term = Terms::query()->where('is_active', true)->firstOrFail();
+        $sourceDepartment = Departments::create(['department_name' => 'Source Dept', 'department_code' => 'SRC']);
+        $sourceSection = Sections::create([
+            'section_name' => 'SRC-1A', 'year_level' => '1', 'semester' => '1st',
+            'department_id' => $sourceDepartment->id, 'term_id' => $term->id, 'status' => 'active',
+        ]);
+        $bped = Program::create(['department_id' => $department->id, 'code' => 'BPED', 'name' => 'Physical Education']);
+        $beed = Program::create(['department_id' => $department->id, 'code' => 'BEED', 'name' => 'Elementary Education']);
+        $bpedHead = User::factory()->create(['role' => 'program_head', 'department_id' => $department->id, 'program_id' => $bped->id]);
+        $beedHead = User::factory()->create(['role' => 'program_head', 'department_id' => $department->id, 'program_id' => $beed->id]);
+
+        $course = fn (string $code, int $programId) => Course::create([
+            'course_code' => $code, 'course_name' => $code,
+            'lecture_hours' => 2, 'lab_hours' => 0, 'units' => 2,
+            'course_category' => 'minor', 'room_type_required' => 'lecture',
+            'year_level' => '1', 'semester' => '1st',
+            'department_id' => $sourceDepartment->id,
+            'teaching_department_id' => $department->id,
+            'teaching_program_id' => $programId,
+            'status' => 'active',
+        ]);
+        $bpedCourse = $course('BPED 101', $bped->id);
+        $beedCourse = $course('BEED 101', $beed->id);
+
+        foreach ([$bpedCourse, $beedCourse] as $index => $assignedCourse) {
+            Schedule::create([
+                'term_id' => $term->id,
+                'section_id' => $sourceSection->id,
+                'course_id' => $assignedCourse->id,
+                'department_id' => $sourceDepartment->id,
+                'day' => $index === 0 ? 'Monday' : 'Tuesday',
+                'start_time' => '08:00', 'end_time' => '10:00',
+                'mode' => 'online', 'status' => 'approved',
+            ]);
+        }
+
+        $bpedResponse = $this->actingAs($bpedHead)->getJson('/api/initial-data')->assertOk();
+        $this->assertSame([$bpedCourse->id], collect($bpedResponse->json('courses'))->pluck('id')->all());
+        $this->assertSame([$bpedCourse->id], collect($bpedResponse->json('schedules'))->pluck('course_id')->unique()->values()->all());
+
+        $beedResponse = $this->actingAs($beedHead)->getJson('/api/initial-data')->assertOk();
+        $this->assertSame([$beedCourse->id], collect($beedResponse->json('courses'))->pluck('id')->all());
+        $this->assertSame([$beedCourse->id], collect($beedResponse->json('schedules'))->pluck('course_id')->unique()->values()->all());
+    }
+
+    /** @return array{0: User, 1: Departments} */
     private function fixture(): array
     {
         $term = Terms::create([
@@ -123,6 +221,6 @@ class InitialDataPayloadTest extends TestCase
 
         $user = User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]);
 
-        return [$user];
+        return [$user, $dept];
     }
 }

@@ -6,16 +6,12 @@ use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Exceptions\YearLevelGenerationException;
 use App\Models\Course;
 use App\Models\Rooms;
-use App\Models\Schedule;
 use App\Models\Sections;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 class YearLevelScheduleGenerationService
 {
-    private const REPLACEABLE_STATUSES = ['draft', 'completed', 'revision'];
-
     private const SECTION_ATTEMPTS = 2;
 
     private const SPLIT_HEAVY_SECTION_ATTEMPTS = 2;
@@ -52,6 +48,9 @@ class YearLevelScheduleGenerationService
      * @var Collection<int, Course>
      */
     private Collection $loadedCourses;
+
+    /** Candidate rows currently selected in the recursive in-memory search. */
+    private array $tentativeSchedules = [];
 
     public function __construct(
         private readonly CSPSolver $solver,
@@ -537,23 +536,15 @@ class YearLevelScheduleGenerationService
         int $seedOffset,
         ?array &$failure = null,
     ): ?array {
-        DB::beginTransaction();
+        $this->tentativeSchedules = [];
+        $evaluationConfigs = $configsBySectionId;
+        $roomTypesById = Rooms::query()
+            ->pluck('room_type', 'id')
+            ->mapWithKeys(static fn (string $type, int|string $id): array => [(int) $id => $type])
+            ->all();
 
-        try {
-            $sectionIds = array_map(static fn (Sections $section): int => (int) $section->id, $sections);
-            Schedule::query()
-                ->whereIn('section_id', $sectionIds)
-                ->whereIn('status', self::REPLACEABLE_STATUSES)
-                ->delete();
-
-            $evaluationConfigs = $configsBySectionId;
-            $roomTypesById = Rooms::query()
-                ->pluck('room_type', 'id')
-                ->mapWithKeys(static fn (string $type, int|string $id): array => [(int) $id => $type])
-                ->all();
-
-            $completeCandidates = [];
-            $this->collectAssignmentsForOrder(
+        $completeCandidates = [];
+        $this->collectAssignmentsForOrder(
                 sections: $sections,
                 configsBySectionId: $configsBySectionId,
                 evaluationConfigs: $evaluationConfigs,
@@ -562,13 +553,13 @@ class YearLevelScheduleGenerationService
                 seedOffset: $seedOffset,
                 failure: $failure,
                 completeCandidates: $completeCandidates,
-            );
+        );
 
-            if ($completeCandidates === []) {
-                return null;
-            }
+        if ($completeCandidates === []) {
+            return null;
+        }
 
-            $evaluated = array_map(
+        $evaluated = array_map(
                 fn (array $candidate): array => $this->evaluator->evaluate(
                     $candidate['schedules'],
                     $sections,
@@ -579,14 +570,11 @@ class YearLevelScheduleGenerationService
                 $completeCandidates,
             );
 
-            usort($evaluated, static fn (array $left, array $right): int => ((int) $right['quality_score'] <=> (int) $left['quality_score'])
+        usort($evaluated, static fn (array $left, array $right): int => ((int) $right['quality_score'] <=> (int) $left['quality_score'])
                 ?: ((int) ($left['csp_score'] ?? 0) <=> (int) ($right['csp_score'] ?? 0))
             );
 
-            return $evaluated[0];
-        } finally {
-            DB::rollBack();
-        }
+        return $evaluated[0];
     }
 
     /**
@@ -664,12 +652,7 @@ class YearLevelScheduleGenerationService
 
         foreach ($ranked as $candidate) {
             $selectedSchedules = array_slice($candidate['schedules'], count($combined));
-            $createdScheduleIds = [];
-            foreach ($selectedSchedules as $row) {
-                // Staging rows make the unchanged CSP hard-conflict checks
-                // aware of sections already selected in this candidate.
-                $createdScheduleIds[] = (int) Schedule::create($row)->id;
-            }
+            $this->tentativeSchedules = array_merge($combined, $selectedSchedules);
 
             $this->collectAssignmentsForOrder(
                 sections: $sections,
@@ -684,10 +667,6 @@ class YearLevelScheduleGenerationService
                 combined: array_merge($combined, $selectedSchedules),
                 scheduledSections: $nextScheduledSections,
             );
-
-            if ($createdScheduleIds !== []) {
-                Schedule::query()->whereIn('id', $createdScheduleIds)->delete();
-            }
 
             if (
                 microtime(true) >= $deadline
@@ -790,25 +769,15 @@ class YearLevelScheduleGenerationService
                 continue;
             }
 
-            DB::beginTransaction();
-            try {
-                Schedule::query()
-                    ->where('section_id', (int) $section->id)
-                    ->whereIn('status', self::REPLACEABLE_STATUSES)
-                    ->delete();
-
-                $splitCount = count($config['selected_split_session_course_ids'] ?? [])
-                    + count($config['balanced_split_course_ids'] ?? []);
-                $solutions = $this->solver->solveRankedFromSchema(array_merge($config, [
-                    'section_id' => (int) $section->id,
-                    'max_solutions' => 1,
-                    'max_iterations' => $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 120000 : 60000,
-                    'timeout_seconds' => $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 8 : 4,
-                    'seed' => (int) ($config['seed'] ?? 1),
-                ]));
-            } finally {
-                DB::rollBack();
-            }
+            $splitCount = count($config['selected_split_session_course_ids'] ?? [])
+                + count($config['balanced_split_course_ids'] ?? []);
+            $solutions = $this->solver->solveRankedFromSchema(array_merge($config, [
+                'section_id' => (int) $section->id,
+                'max_solutions' => 1,
+                'max_iterations' => $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 120000 : 60000,
+                'timeout_seconds' => $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 8 : 4,
+                'seed' => (int) ($config['seed'] ?? 1),
+            ]));
 
             if ($solutions === [] && $this->solver->iterationsUsed() === 0) {
                 $failure = $this->sectionFailure($section, $config, $courses);
@@ -849,6 +818,7 @@ class YearLevelScheduleGenerationService
                 'max_iterations' => $isSplitHeavy ? 400000 : 250000,
                 'timeout_seconds' => $attemptTimeout,
                 'seed' => $baseSeed + ($attempt * 7919),
+                'tentative_schedules' => $this->tentativeSchedules,
             ]));
 
             if ($solutions !== []) {

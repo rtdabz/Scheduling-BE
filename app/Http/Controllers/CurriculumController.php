@@ -7,15 +7,23 @@ use Illuminate\Http\Request;
 use App\Models\Curriculum;
 use App\Models\Course;
 use App\Support\ApiCache;
+use Illuminate\Validation\Rule;
+use App\Services\Scheduling\ScheduleAuthorizationService;
 
 class CurriculumController extends Controller
 {
+    public function __construct(private readonly ScheduleAuthorizationService $authorization) {}
+
     public function index(Request $request)
     {
         $query = Curriculum::with(['department'])->withCount('courses');
 
-        if ($request->has('department_id') && $request->department_id) {
-            $query->where('department_id', $request->department_id);
+        if ($this->authorization->rejectsRequestedDepartment($request, $request->query('department_id'))) {
+            return response()->json(['message' => 'You can only view curriculum for your department.'], 403);
+        }
+
+        if (($departmentId = $this->authorization->requestedDepartment($request, $request->query('department_id'))) !== null) {
+            $query->where('department_id', $departmentId);
         }
 
         if ($request->has('status') && $request->status !== 'all') {
@@ -35,7 +43,11 @@ class CurriculumController extends Controller
         $rules = [
             'name' => 'required|string|max:255',
             'code' => 'required|string|max:50|unique:curriculum,code',
-            'program_id' => 'nullable|integer',
+            'program_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id') ?: $user->department_id)),
+            ],
             'effective_school_year' => 'required|string|max:20',
             'status' => 'nullable|string|in:draft,active,archived',
             'description' => 'nullable|string',
@@ -55,6 +67,10 @@ class CurriculumController extends Controller
         $curriculum = \DB::transaction(function () use ($validated) {
             if ($validated['status'] === 'active' && !empty($validated['department_id'])) {
                 Curriculum::where('department_id', $validated['department_id'])
+                    ->when(($validated['program_id'] ?? null) === null,
+                        fn ($query) => $query->whereNull('program_id'),
+                        fn ($query) => $query->where('program_id', $validated['program_id']),
+                    )
                     ->where('status', 'active')
                     ->update(['status' => 'draft']);
             }
@@ -68,8 +84,9 @@ class CurriculumController extends Controller
         return response()->json($curriculum, 201);
     }
 
-    public function show(Curriculum $curriculum)
+    public function show(Request $request, Curriculum $curriculum)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
         $curriculum->loadCount('courses');
         $curriculum->load('department');
 
@@ -78,13 +95,18 @@ class CurriculumController extends Controller
 
     public function update(Request $request, Curriculum $curriculum)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
         $user = $request->user();
         $isPrivileged = in_array($user->role, ['vpaa', 'super_admin']);
 
         $rules = [
             'name' => 'sometimes|string|max:255',
             'code' => 'sometimes|string|max:50|unique:curriculum,code,' . $curriculum->id,
-            'program_id' => 'nullable|integer',
+            'program_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id') ?: $curriculum->department_id)),
+            ],
             'effective_school_year' => 'sometimes|string|max:20',
             'status' => 'nullable|string|in:draft,active,archived',
             'description' => 'nullable|string',
@@ -107,6 +129,10 @@ class CurriculumController extends Controller
             if ($newStatus === 'active' && $deptId) {
                 Curriculum::where('department_id', $deptId)
                     ->where('id', '!=', $curriculum->id)
+                    ->when(($validated['program_id'] ?? $curriculum->program_id) === null,
+                        fn ($query) => $query->whereNull('program_id'),
+                        fn ($query) => $query->where('program_id', $validated['program_id'] ?? $curriculum->program_id),
+                    )
                     ->where('status', 'active')
                     ->update(['status' => 'draft']);
             }
@@ -121,8 +147,9 @@ class CurriculumController extends Controller
         return response()->json($curriculum);
     }
 
-    public function destroy(Curriculum $curriculum)
+    public function destroy(Request $request, Curriculum $curriculum)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
         $curriculum->delete();
 
         ApiCache::forgetGroups(['curriculum.index']);
@@ -136,6 +163,7 @@ class CurriculumController extends Controller
             'name' => $curriculum->name . ' (Copy)',
             'code' => $curriculum->code . '-COPY-' . time(),
             'department_id' => $curriculum->department_id,
+            'program_id' => $curriculum->program_id,
             'effective_school_year' => $curriculum->effective_school_year,
             'status' => 'draft',
             'description' => $curriculum->description,
@@ -174,9 +202,13 @@ class CurriculumController extends Controller
 
         \DB::transaction(function () use ($validated, $curriculum) {
             if ($validated['status'] === 'active' && $curriculum->department_id) {
-                Curriculum::where('department_id', $curriculum->department_id)
-                    ->where('id', '!=', $curriculum->id)
-                    ->where('status', 'active')
+                    Curriculum::where('department_id', $curriculum->department_id)
+                        ->where('id', '!=', $curriculum->id)
+                        ->when($curriculum->program_id === null,
+                            fn ($query) => $query->whereNull('program_id'),
+                            fn ($query) => $query->where('program_id', $curriculum->program_id),
+                        )
+                        ->where('status', 'active')
                     ->update(['status' => 'draft']);
             }
 

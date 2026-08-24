@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Models\Course;
-use App\Models\CourseTeachingAssignment;
 use App\Models\Departments;
 use App\Models\Faculty;
 use App\Models\Program;
@@ -88,88 +87,16 @@ class MajorInstructorRestrictionTest extends TestCase
         $this->assertSame([], $violations);
     }
 
-    public function test_a_teaching_assignment_cannot_delegate_a_major_to_another_department(): void
-    {
-        $fixture = $this->fixture();
-        $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
-
-        $this->actingAs($vpaa)
-            ->postJson('/api/course-teaching-assignments', [
-                'course_id' => $fixture['major']->id,
-                'department_id' => $fixture['otherDepartment']->id,
-            ])
-            ->assertStatus(422)
-            ->assertJsonPath(
-                'message',
-                'A major course can only be taught by the department that offers it, so it cannot be assigned to another department.',
-            );
-
-        $this->assertDatabaseCount('course_teaching_assignments', 0);
-    }
-
-    public function test_a_teaching_assignment_may_still_delegate_a_minor(): void
-    {
-        $fixture = $this->fixture();
-        $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
-
-        $this->actingAs($vpaa)
-            ->postJson('/api/course-teaching-assignments', [
-                'course_id' => $fixture['minor']->id,
-                'department_id' => $fixture['otherDepartment']->id,
-            ])
-            ->assertStatus(201);
-
-        $this->assertDatabaseHas('course_teaching_assignments', [
-            'course_id' => $fixture['minor']->id,
-            'department_id' => $fixture['otherDepartment']->id,
-        ]);
-    }
-
-    public function test_an_existing_cross_department_major_assignment_is_ignored(): void
-    {
-        $fixture = $this->fixture();
-
-        // Written before the rule existed: the row says another department teaches
-        // this major. It must not make that department's instructors eligible.
-        CourseTeachingAssignment::create([
-            'course_id' => $fixture['major']->id,
-            'department_id' => $fixture['otherDepartment']->id,
-        ]);
-        \App\Services\Scheduling\SchedulingPolicy::clearCourseTeachingAssignmentCache();
-
-        $outside = $this->validate($fixture, $fixture['major'], $fixture['outsideInstructor']);
-        $own = $this->validate($fixture, $fixture['major'], $fixture['ownInstructor']);
-
-        $this->assertContains('major_faculty_department_alignment', $this->rules($outside));
-        $this->assertSame([], $own);
-    }
-
     public function test_a_shared_minor_accepts_an_instructor_from_another_department(): void
     {
         $fixture = $this->fixture();
-        // PATH FIT and the like: a minor no department owns or has been assigned to
-        // teach, taught by external instructors.
+        // PATH FIT and the like: a minor no department owns, taught by external
+        // instructors.
         $fixture['minor']->update(['department_id' => null]);
 
         $violations = $this->validate($fixture, $fixture['minor'], $fixture['outsideInstructor']);
 
         $this->assertSame([], $violations);
-    }
-
-    public function test_a_delegated_minor_still_requires_its_assigned_department(): void
-    {
-        $fixture = $this->fixture();
-        CourseTeachingAssignment::create([
-            'course_id' => $fixture['minor']->id,
-            'department_id' => $fixture['otherDepartment']->id,
-        ]);
-        \App\Services\Scheduling\SchedulingPolicy::clearCourseTeachingAssignmentCache();
-
-        $refused = $this->validate($fixture, $fixture['minor'], $fixture['ownInstructor']);
-        $accepted = $this->validate($fixture, $fixture['minor'], $fixture['outsideInstructor']);
-
-        $this->assertContains('service_subject_faculty_department_alignment', $this->rules($refused));
-        $this->assertSame([], $accepted);
     }
 
     public function test_a_minor_course_never_keeps_a_program(): void

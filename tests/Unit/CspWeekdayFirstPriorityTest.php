@@ -10,7 +10,7 @@ class CspWeekdayFirstPriorityTest extends TestCase
 {
     public function test_weekday_physical_candidate_ranks_before_weekend_and_online_candidates(): void
     {
-        $solver = new CSPSolver();
+        $solver = new CSPSolver;
         $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
 
         $weekdayPhysical = $this->candidate('Monday', 'on-site', 1, 'lecture');
@@ -29,7 +29,7 @@ class CspWeekdayFirstPriorityTest extends TestCase
 
     public function test_section_gaps_score_progressively_worse_as_they_grow(): void
     {
-        $solver = new CSPSolver();
+        $solver = new CSPSolver;
         $score = new ReflectionMethod($solver, 'calculateScore');
 
         $compact = $score->invoke($solver, [
@@ -53,6 +53,20 @@ class CspWeekdayFirstPriorityTest extends TestCase
         // exactly filled by a 3-slot class block, reducing the penalty,
         // while a 2-slot gap cannot be filled by any standard block size (3, 4, 6).
         $this->assertLessThan($oneHourGap, $fillableGap);
+    }
+
+    public function test_day_balance_prefers_an_unloaded_monday_to_saturday_day_before_reusing_a_loaded_day(): void
+    {
+        $solver = new CSPSolver;
+        $penalty = new ReflectionMethod($solver, 'candidateDayBalancePenalty');
+
+        $monday = $this->candidate('Monday', 'on-site', 1, 'lecture');
+        $tuesday = $this->candidate('Tuesday', 'on-site', 1, 'lecture');
+
+        $this->assertLessThan(
+            $penalty->invoke($solver, $monday, ['Monday' => 1], 42),
+            $penalty->invoke($solver, $tuesday, ['Monday' => 1], 42),
+        );
     }
 
     private function candidate(string $day, string $mode, ?int $roomId, string $roomType): array

@@ -123,7 +123,7 @@ class FacultyOverloadConfirmationTest extends TestCase
             ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 21);
     }
 
-    public function test_past_the_ceiling_is_still_assignable_and_still_warns(): void
+    public function test_past_the_ceiling_is_rejected_even_when_overload_is_confirmed(): void
     {
         $fixture = $this->fixture();
         // The full ceiling: Basic Load, overload allowance and pro bono all used.
@@ -134,26 +134,22 @@ class FacultyOverloadConfirmationTest extends TestCase
             ->patchJson("/api/instructor-assignments/{$target->id}", [
                 'faculty_id' => $fixture['faculty']->id,
             ])
-            ->assertStatus(409)
-            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'beyond_ceiling')
-            ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 24);
+            ->assertStatus(422)
+            ->assertJsonPath('violations.0.rule', 'faculty_unit_ceiling')
+            ->assertJsonPath('violations.0.severity', 'hard')
+            ->assertJsonPath('violations.0.projected_units', 24)
+            ->assertJsonPath('violations.0.unit_ceiling', 21);
 
-        // The ceiling is deliberately soft: confirming still commits, and the
-        // existing soft warning is what reports how far past it the load went.
+        // Overload confirmation only applies inside the configured ceiling.
         $this->actingAs($fixture['user'])
             ->patchJson("/api/instructor-assignments/{$target->id}", [
                 'faculty_id' => $fixture['faculty']->id,
                 'confirm_overload' => true,
             ])
-            ->assertOk()
-            ->assertJsonPath('load.tier', 'beyond_ceiling')
-            ->assertJsonPath('warnings.0.rule', 'faculty_unit_ceiling')
-            ->assertJsonPath('warnings.0.severity', 'soft')
-            ->assertJsonPath('warnings.0.assigned_units', 24)
-            ->assertJsonPath('warnings.0.required_units', 15)
-            ->assertJsonPath('warnings.0.unit_ceiling', 21);
+            ->assertStatus(422)
+            ->assertJsonPath('violations.0.rule', 'faculty_unit_ceiling');
 
-        $this->assertSame($fixture['faculty']->id, $target->refresh()->faculty_id);
+        $this->assertNull($target->refresh()->faculty_id);
     }
 
     public function test_re_saving_the_instructor_who_already_holds_the_class_does_not_prompt(): void

@@ -11,7 +11,7 @@ return new class extends Migration
         Schema::table('departments', function (Blueprint $table): void {
             $table->boolean('custom_lab_duration_override_enabled')
                 ->default(false)
-                ->after('split_units_schedule_override_enabled');
+                ->after('lecture_lab_schedule_override_enabled');
         });
     }
 
