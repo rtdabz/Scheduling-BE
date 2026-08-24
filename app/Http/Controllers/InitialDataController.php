@@ -199,7 +199,10 @@ class InitialDataController extends Controller
             ))
             ->when($activeTermId !== null, fn (Builder $query) => $query->where('term_id', $activeTermId))
             ->latest()
-            ->limit(min(max((int) $request->query('schedule_limit', 1000), 1), 5000))
+            // Keep the default response bounded for institution-wide viewers.
+            // Callers that genuinely need more rows can opt in up to 2,000 and
+            // should use the paged response mode for larger datasets.
+            ->limit(min(max((int) $request->query('schedule_limit', 500), 1), 2000))
             ->get();
 
         // A source department must not see delegated instructor assignments until

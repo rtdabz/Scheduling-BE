@@ -31,29 +31,56 @@ class ActivityLogController extends Controller
         $perPage = (int) ($validated['per_page'] ?? 25);
         $from = isset($validated['from']) ? Carbon::parse($validated['from'])->startOfDay() : null;
         $to = isset($validated['to']) ? Carbon::parse($validated['to'])->endOfDay() : null;
+        $category = $validated['category'] ?? null;
+        $search = isset($validated['search']) ? mb_strtolower(trim($validated['search'])) : null;
+
+        // Keep the merge bounded. The two audit tables are intentionally kept
+        // separate, so filtering is done in SQL and only a bounded recent window
+        // is hydrated before the final cross-source sort.
+        $candidateLimit = min(10000, max(500, ($page * $perPage) + $perPage));
 
         $scheduling = SchedulingAuditLog::query()
             ->with(['user:id,name,username,role', 'recommendation:id,department_id,term_id,section_id'])
+            ->when(in_array($category, ['authentication', 'user_management'], true), fn ($q) => $q->whereRaw('1 = 0'))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))
             ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('user_id', $id))
             ->when($validated['department_id'] ?? null, fn ($q, $id) => $q->where('department_id', $id))
             ->when($validated['term_id'] ?? null, fn ($q, $id) => $q->where('term_id', $id))
             ->when($validated['event'] ?? null, fn ($q, $event) => $q->where('action', $event))
+            ->when(in_array($category, ['scheduling', 'schedule_workflow', 'faculty_assignment'], true), function ($q) use ($category) {
+                if ($category === 'scheduling') {
+                    return $q->where('action', 'like', 'recommendation_%');
+                }
+                if ($category === 'faculty_assignment') {
+                    return $q->where('action', 'like', 'instructor_%');
+                }
+                return $q->where('action', 'not like', 'recommendation_%')
+                    ->where('action', 'not like', 'instructor_%');
+            })
+            ->latest('created_at')->latest('id')
+            ->limit($candidateLimit)
             ->get()
             ->map(fn (SchedulingAuditLog $log) => $this->schedulingEntry($log));
 
         $authentication = AuthenticationAuditLog::query()
             ->with(['actor:id,name,username,role,department_id', 'subject:id,name,username,role,department_id'])
+            ->when(in_array($category, ['scheduling', 'schedule_workflow', 'faculty_assignment'], true), fn ($q) => $q->whereRaw('1 = 0'))
+            ->when(($validated['term_id'] ?? null) !== null, fn ($q) => $q->whereRaw('1 = 0'))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))
             ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('actor_user_id', $id))
             ->when($validated['event'] ?? null, fn ($q, $event) => $q->where('event', $event))
+            ->when(in_array($category, ['authentication', 'user_management'], true), function ($q) use ($category) {
+                return $category === 'user_management'
+                    ? $q->whereIn('event', ['user_created', 'user_updated', 'user_deleted'])
+                    : $q->whereNotIn('event', ['user_created', 'user_updated', 'user_deleted']);
+            })
+            ->latest('created_at')->latest('id')
+            ->limit($candidateLimit)
             ->get()
             ->map(fn (AuthenticationAuditLog $log) => $this->authenticationEntry($log));
 
-        $category = $validated['category'] ?? null;
-        $search = isset($validated['search']) ? mb_strtolower(trim($validated['search'])) : null;
         $departmentId = $validated['department_id'] ?? null;
         $termId = $validated['term_id'] ?? null;
         $entries = $scheduling->concat($authentication)
@@ -67,6 +94,7 @@ class ActivityLogController extends Controller
         $total = $entries->count();
 
         if (($validated['export'] ?? null) === 'csv') {
+            abort_if($total > 10000, 422, 'Narrow the filters before exporting more than 10,000 audit entries.');
             return response()->streamDownload(function () use ($entries) {
                 $output = fopen('php://output', 'w');
                 fputcsv($output, ['Timestamp', 'Category', 'Event', 'Actor', 'Role', 'Department ID', 'Term ID', 'Target', 'Metadata']);
