@@ -831,6 +831,98 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertSame($labRoom->id, $laboratory['room_id']);
     }
 
+    public function test_laboratory_generation_tries_other_slots_before_room_tba(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'IT 105',
+            'course_name' => 'Laboratory Scheduling',
+            'lecture_hours' => 0,
+            'lab_hours' => 3,
+            'units' => 2,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+
+        $labRoom = Rooms::create([
+            'room_code' => 'CompLab1',
+            'building' => 'Building 4',
+            'room_type' => 'laboratory',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $otherSection = Sections::create([
+            'section_name' => 'IT 1B',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+        $existingCourse = Course::create([
+            'course_code' => 'IT 106',
+            'course_name' => 'Existing Laboratory',
+            'lecture_hours' => 0,
+            'lab_hours' => 3,
+            'units' => 2,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+        Schedule::create([
+            'term_id' => $term->id,
+            'section_id' => $otherSection->id,
+            'course_id' => $existingCourse->id,
+            'room_id' => $labRoom->id,
+            'department_id' => $department->id,
+            'day' => 'Monday',
+            'start_time' => '07:00:00',
+            'end_time' => '13:00:00',
+            'mode' => 'on-site',
+            'status' => 'draft',
+        ]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+        $row = $solutions[0]['schedules'][0];
+        $this->assertSame('on-site', $row['mode']);
+        $this->assertSame($labRoom->id, $row['room_id']);
+    }
+
     public function test_default_lecture_lab_generation_uses_room_tba_when_laboratory_is_unavailable(): void
     {
         $term = Terms::create([

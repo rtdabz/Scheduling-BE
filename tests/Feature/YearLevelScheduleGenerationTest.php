@@ -208,6 +208,83 @@ class YearLevelScheduleGenerationTest extends TestCase
         $this->assertSame(0, Schedule::query()->count());
     }
 
+    public function test_year_level_preview_reallocates_sections_before_using_room_tba(): void
+    {
+        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $department = Departments::create([
+            'department_name' => 'Information Technology',
+            'department_code' => 'IT',
+            'scheduling_profile' => 'laboratory_enabled',
+            'lecture_lab_schedule_override_enabled' => true,
+        ]);
+        $curriculum = Curriculum::create([
+            'name' => 'IT Curriculum',
+            'department_id' => $department->id,
+            'code' => 'IT-2026',
+            'effective_school_year' => '2026-2027',
+            'status' => 'active',
+        ]);
+
+        $sections = [];
+        for ($index = 1; $index <= 3; $index++) {
+            $sections[] = Sections::create([
+                'section_name' => "IT 1{$index}",
+                'year_level' => '1',
+                'semester' => '1st',
+                'department_id' => $department->id,
+                'term_id' => $term->id,
+                'status' => 'active',
+            ]);
+        }
+
+        $courses = [];
+        for ($index = 1; $index <= 2; $index++) {
+            $course = Course::create([
+                'course_code' => "IT 10{$index}",
+                'course_name' => "Programming {$index}",
+                'lecture_hours' => 2,
+                'lab_hours' => 1,
+                'units' => 3,
+                'course_category' => 'major',
+                'room_type_required' => 'laboratory',
+                'year_level' => '1',
+                'semester' => '1st',
+                'department_id' => $department->id,
+                'status' => 'active',
+            ]);
+            $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
+            $courses[] = $course;
+        }
+
+        $labRoom = Rooms::create([
+            'room_code' => 'LAB 101',
+            'building' => 'IT Building',
+            'room_type' => 'laboratory',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $courseIds = array_map(static fn (Course $course): int => (int) $course->id, $courses);
+
+        $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'section_configs' => array_map(static fn (Sections $section): array => [
+                'section_id' => $section->id,
+                'course_ids' => $courseIds,
+                'selected_split_session_course_ids' => $courseIds,
+            ], $sections),
+        ]);
+
+        $response->assertOk();
+        $laboratoryRows = collect($response->json('schedules'))->where('meeting_type', 'laboratory');
+        $this->assertCount(count($sections) * count($courses), $laboratoryRows);
+        $this->assertTrue($laboratoryRows->every(
+            static fn (array $row): bool => (int) ($row['room_id'] ?? 0) === (int) $labRoom->id,
+        ));
+    }
+
     public function test_year_level_preview_handles_split_heavy_sections_for_every_year_level(): void
     {
         foreach ([1, 2, 3, 4] as $yearLevel) {

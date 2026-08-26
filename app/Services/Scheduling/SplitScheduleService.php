@@ -146,6 +146,18 @@ final class SplitScheduleService
             return ['status' => 'no_solution', 'recommendations' => []];
         }
 
+        // Room TBA is strictly a last resort. Once Rule Engine validation has
+        // identified a compatible physical laboratory candidate, suppress TBA
+        // from the recommendation pool so a score tie or preferred-day bonus
+        // cannot promote the unresolved assignment.
+        $physicalCandidates = array_values(array_filter(
+            $validCandidates,
+            static fn (array $candidate): bool => $candidate['room_id'] !== null,
+        ));
+        if ($physicalCandidates !== []) {
+            $validCandidates = $physicalCandidates;
+        }
+
         if ($preferredStartTime !== null) {
             $sameTimeCandidates = array_values(array_filter(
                 $validCandidates,

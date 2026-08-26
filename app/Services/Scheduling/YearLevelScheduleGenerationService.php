@@ -77,6 +77,8 @@ class YearLevelScheduleGenerationService
             throw new RuntimeException('No active sections were found for the selected year level.');
         }
 
+        $this->solver->beginGenerationContext();
+
         $courses = $this->loadedCourses = $this->loadCourses($configsBySectionId);
         $configsBySectionId = $this->decorateConfigs($configsBySectionId, $courses);
 
@@ -441,7 +443,7 @@ class YearLevelScheduleGenerationService
 
     /**
      * @param  array<string, mixed>  $config
-     * @return array<string, mixed>|null  null when the adjustment changes nothing
+     * @return array<string, mixed>|null null when the adjustment changes nothing
      */
     private function applyAdjustment(array $config, string $type, int $courseId, mixed $value): ?array
     {
@@ -545,6 +547,21 @@ class YearLevelScheduleGenerationService
 
         $completeCandidates = [];
         $this->collectAssignmentsForOrder(
+            sections: $sections,
+            configsBySectionId: $configsBySectionId,
+            evaluationConfigs: $evaluationConfigs,
+            roomTypesById: $roomTypesById,
+            deadline: $deadline,
+            seedOffset: $seedOffset,
+            failure: $failure,
+            completeCandidates: $completeCandidates,
+            allowRoomTbaFallback: false,
+        );
+
+        if ($completeCandidates === [] && microtime(true) < $deadline) {
+            $this->tentativeSchedules = [];
+            $evaluationConfigs = $configsBySectionId;
+            $this->collectAssignmentsForOrder(
                 sections: $sections,
                 configsBySectionId: $configsBySectionId,
                 evaluationConfigs: $evaluationConfigs,
@@ -553,26 +570,28 @@ class YearLevelScheduleGenerationService
                 seedOffset: $seedOffset,
                 failure: $failure,
                 completeCandidates: $completeCandidates,
-        );
+                allowRoomTbaFallback: true,
+            );
+        }
 
         if ($completeCandidates === []) {
             return null;
         }
 
         $evaluated = array_map(
-                fn (array $candidate): array => $this->evaluator->evaluate(
-                    $candidate['schedules'],
-                    $sections,
-                    $candidate['configs'],
-                    $this->solver->departmentRoomFairness(),
-                    $roomTypesById,
-                ),
-                $completeCandidates,
-            );
+            fn (array $candidate): array => $this->evaluator->evaluate(
+                $candidate['schedules'],
+                $sections,
+                $candidate['configs'],
+                $this->solver->departmentRoomFairness(),
+                $roomTypesById,
+            ),
+            $completeCandidates,
+        );
 
         usort($evaluated, static fn (array $left, array $right): int => ((int) $right['quality_score'] <=> (int) $left['quality_score'])
                 ?: ((int) ($left['csp_score'] ?? 0) <=> (int) ($right['csp_score'] ?? 0))
-            );
+        );
 
         return $evaluated[0];
     }
@@ -592,6 +611,7 @@ class YearLevelScheduleGenerationService
         int $seedOffset,
         ?array &$failure,
         array &$completeCandidates,
+        bool $allowRoomTbaFallback,
         int $index = 0,
         array $combined = [],
         array $scheduledSections = [],
@@ -619,7 +639,13 @@ class YearLevelScheduleGenerationService
         $reservedForLaterSections = max(0, $remainingSections - 1)
             * min(self::RESERVED_SECONDS_PER_REMAINING_SECTION, $remainingSeconds / $remainingSections);
         $sectionTimeBudget = max(2.0, $remainingSeconds - $reservedForLaterSections - 0.5);
-        $solutions = $this->solveSectionWithRetries($section, $config, $sectionTimeBudget, $seedOffset);
+        $solutions = $this->solveSectionWithRetries(
+            section: $section,
+            config: $config,
+            timeBudget: $sectionTimeBudget,
+            seedOffset: $seedOffset,
+            allowRoomTbaFallback: $allowRoomTbaFallback,
+        );
 
         if ($solutions === []) {
             $failure = $this->sectionFailure($section, $config, $this->loadedCourses);
@@ -663,6 +689,7 @@ class YearLevelScheduleGenerationService
                 seedOffset: $seedOffset,
                 failure: $failure,
                 completeCandidates: $completeCandidates,
+                allowRoomTbaFallback: $allowRoomTbaFallback,
                 index: $index + 1,
                 combined: array_merge($combined, $selectedSchedules),
                 scheduledSections: $nextScheduledSections,
@@ -794,7 +821,13 @@ class YearLevelScheduleGenerationService
      * @param  array<string, mixed>  $config
      * @return list<array<string, mixed>>
      */
-    private function solveSectionWithRetries(Sections $section, array $config, float $timeBudget, int $seedOffset = 0): array
+    private function solveSectionWithRetries(
+        Sections $section,
+        array $config,
+        float $timeBudget,
+        int $seedOffset = 0,
+        bool $allowRoomTbaFallback = true,
+    ): array
     {
         $baseSeed = isset($config['seed']) ? (int) $config['seed'] : random_int(1, 1000000);
         $baseSeed += $seedOffset;
@@ -821,12 +854,35 @@ class YearLevelScheduleGenerationService
                 'tentative_schedules' => $this->tentativeSchedules,
             ]));
 
+            if (! $allowRoomTbaFallback) {
+                $solutions = array_values(array_filter(
+                    $solutions,
+                    fn (array $solution): bool => ! $this->scheduleRowsContainRoomTba($solution['schedules'] ?? []),
+                ));
+            }
+
             if ($solutions !== []) {
                 return $solutions;
             }
         }
 
         return [];
+    }
+
+    /** @param list<array<string, mixed>> $rows */
+    private function scheduleRowsContainRoomTba(array $rows): bool
+    {
+        foreach ($rows as $row) {
+            if (
+                ($row['meeting_type'] ?? null) === 'laboratory'
+                && ($row['mode'] ?? 'on-site') === 'on-site'
+                && empty($row['room_id'])
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

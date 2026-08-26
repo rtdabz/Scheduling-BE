@@ -19,7 +19,6 @@ use RuntimeException;
 
 class CSPSolver
 {
-
     private const SOFT_FIELD_EVENING_PENALTY = 6;
 
     private const SPLIT_LECTURE_LAB_START_PAIR_LIMIT = 6;
@@ -55,6 +54,12 @@ class CSPSolver
         $this->tentativeSchedules = $schedules;
     }
 
+    public function beginGenerationContext(): void
+    {
+        $this->loadedCoursesById = [];
+        $this->termScheduleRowsCache = [];
+    }
+
     /** @var array<int, int> */
     private array $existingRoomUseCounts = [];
 
@@ -80,6 +85,12 @@ class CSPSolver
 
     /** @var array<int, list<array<string, mixed>>> */
     private array $requirementsByCourseId = [];
+
+    /** @var array<int, Course> */
+    private array $loadedCoursesById = [];
+
+    /** @var array<int, list<array<string, mixed>>> */
+    private array $termScheduleRowsCache = [];
 
     /**
      * Exposes the prepared department-level fairness targets to coordinators
@@ -346,6 +357,8 @@ class CSPSolver
             ->values()
             ->keyBy('id');
 
+        $this->loadedCoursesById = $courses->all();
+
         if ($courses->isEmpty()) {
             throw new RuntimeException(
                 'No schedulable courses found for this section. Courses with 0 lecture hours, 0 lab hours, and 0 units are treated as non-timetable requirements.'
@@ -586,6 +599,14 @@ class CSPSolver
             );
         }
 
+        $resolvedLaboratorySolutions = array_values(array_filter(
+            $rawSolutions,
+            fn (array $assignments): bool => ! $this->solutionContainsRoomTba($assignments),
+        ));
+        if ($resolvedLaboratorySolutions !== []) {
+            $rawSolutions = $resolvedLaboratorySolutions;
+        }
+
         // Score every raw solution.
         $scored = array_map(
             function (array $assignments) use ($courses): array {
@@ -611,6 +632,18 @@ class CSPSolver
         unset($solution);
 
         return $ranked;
+    }
+
+    /** @param list<array<string, mixed>> $assignments */
+    private function solutionContainsRoomTba(array $assignments): bool
+    {
+        foreach ($assignments as $assignment) {
+            if ($assignment['_room_tba'] ?? false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function hasEnoughOnlineBalancedSolutions(
@@ -696,48 +729,68 @@ class CSPSolver
             (int) $section->id,
         );
 
-        foreach ($domain as $candidate) {
-            $this->iterations++;
+        $hasRoomTbaCandidates = collect($domain)->contains(
+            static fn (array $candidate): bool => (bool) ($candidate['_room_tba'] ?? false),
+        );
+        $candidateGroups = $hasRoomTbaCandidates
+            ? [
+                array_values(array_filter($domain, static fn (array $candidate): bool => ! ($candidate['_room_tba'] ?? false))),
+                array_values(array_filter($domain, static fn (array $candidate): bool => (bool) ($candidate['_room_tba'] ?? false))),
+            ]
+            : [$domain];
 
-            if ($this->hasExceededSearchLimits()) {
-                $this->searchLimitReached = true;
+        foreach ($candidateGroups as $groupIndex => $candidates) {
+            $solutionsBeforeGroup = count($solutions);
 
-                return;
+            foreach ($candidates as $candidate) {
+                $this->iterations++;
+
+                if ($this->hasExceededSearchLimits()) {
+                    $this->searchLimitReached = true;
+
+                    return;
+                }
+
+                if ($this->conflictsWithTentativeAssignments(
+                    candidate: $candidate,
+                    assignments: $assignments,
+                    sectionId: (int) $section->id,
+                )) {
+                    continue;
+                }
+
+                if (! $this->passesFastCandidateGuards(
+                    candidate: $candidate,
+                    section: $section,
+                )) {
+                    continue;
+                }
+
+                $nextAssignments = $assignments;
+                $nextAssignments[] = $this->withScheduleContext(
+                    assignment: $candidate,
+                    section: $section,
+                );
+
+                $this->backtrack(
+                    variableIndex: $variableIndex + 1,
+                    variables: $variables,
+                    section: $section,
+                    assignments: $nextAssignments,
+                    solutions: $solutions,
+                    solutionSignatures: $solutionSignatures,
+                    solutionLimit: $solutionLimit,
+                    minimumOnlineAssignments: $minimumOnlineAssignments,
+                );
+
+                if (count($solutions) >= $solutionLimit) {
+                    return;
+                }
             }
 
-            if ($this->conflictsWithTentativeAssignments(
-                candidate: $candidate,
-                assignments: $assignments,
-                sectionId: (int) $section->id,
-            )) {
-                continue;
-            }
-
-            if (! $this->passesFastCandidateGuards(
-                candidate: $candidate,
-                section: $section,
-            )) {
-                continue;
-            }
-
-            $nextAssignments = $assignments;
-            $nextAssignments[] = $this->withScheduleContext(
-                assignment: $candidate,
-                section: $section,
-            );
-
-            $this->backtrack(
-                variableIndex: $variableIndex + 1,
-                variables: $variables,
-                section: $section,
-                assignments: $nextAssignments,
-                solutions: $solutions,
-                solutionSignatures: $solutionSignatures,
-                solutionLimit: $solutionLimit,
-                minimumOnlineAssignments: $minimumOnlineAssignments,
-            );
-
-            if (count($solutions) >= $solutionLimit) {
+            // Search every compatible physical laboratory placement across all
+            // permitted days and times before considering the Room TBA group.
+            if ($hasRoomTbaCandidates && $groupIndex === 0 && count($solutions) > $solutionsBeforeGroup) {
                 return;
             }
         }
@@ -2988,7 +3041,7 @@ class CSPSolver
 
                     // Determine meeting type: lecture or laboratory
                     $courseId = (int) $assignment['course_id'];
-                    $courseObj = Course::find($courseId);
+                    $courseObj = $this->loadedCoursesById[$courseId] ?? null;
                     if (! empty($block['meeting_type'])) {
                         $row['meeting_type'] = $block['meeting_type'];
                     } elseif ($courseObj && $courseObj->lab_hours > 0) {
@@ -4280,8 +4333,7 @@ class CSPSolver
         int $departmentId,
         array $replaceCourseIds = [],
         array $tentativeSchedules = [],
-    ): void
-    {
+    ): void {
         $this->existingScheduleIndex = [];
         $this->existingRoomUseCounts = [];
         $this->existingRoomDayUseSlots = [];
@@ -4292,16 +4344,24 @@ class CSPSolver
             static fn (int $courseId): bool => $courseId > 0,
         )));
 
-        $schedules = Schedule::query()
-            ->where('term_id', $termId)
-            ->when($replaceCourseIds !== [], function ($query) use ($sectionId, $replaceCourseIds): void {
-                $query->where(function ($q) use ($sectionId, $replaceCourseIds): void {
-                    $q->where('section_id', '!=', $sectionId)
-                        ->orWhereNotIn('course_id', $replaceCourseIds)
-                        ->orWhereNotIn('status', ['draft', 'completed', 'revision']);
-                });
+        $scheduleRows = $this->termScheduleRowsCache[$termId]
+            ??= Schedule::query()
+                ->where('term_id', $termId)
+                ->get(['room_id', 'section_id', 'course_id', 'faculty_id', 'department_id', 'day', 'start_time', 'end_time', 'mode', 'status'])
+                ->map(static fn (Schedule $schedule): array => $schedule->getAttributes())
+                ->all();
+
+        $schedules = collect($scheduleRows)
+            ->filter(function (array $schedule) use ($sectionId, $replaceCourseIds): bool {
+                if ($replaceCourseIds === []) {
+                    return true;
+                }
+
+                return (int) $schedule['section_id'] !== $sectionId
+                    || ! in_array((int) $schedule['course_id'], $replaceCourseIds, true)
+                    || ! in_array((string) ($schedule['status'] ?? ''), ['draft', 'completed', 'revision'], true);
             })
-            ->get(['room_id', 'section_id', 'course_id', 'faculty_id', 'department_id', 'day', 'start_time', 'end_time', 'mode']);
+            ->map(static fn (array $schedule): Schedule => new Schedule($schedule));
 
         foreach ($tentativeSchedules as $row) {
             if (! is_array($row) || (int) ($row['term_id'] ?? $termId) !== $termId) {

@@ -79,14 +79,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // it, so every role that maintains faculty or courses reads this list.
         Route::get('programs', [ProgramController::class, 'index']);
 
-        // Department schedule-status (read: all 4 roles; write: owner dept only, enforced in controller)
+        // Department schedule-status is readable by all four operational roles.
         Route::get('departments/{id}/schedule-status', [DepartmentScheduleController::class, 'scheduleStatus']);
-        Route::post('departments/{id}/submit-schedules', [DepartmentScheduleController::class, 'submitSchedules']);
-        Route::post('departments/{id}/withdraw-submission', [DepartmentScheduleController::class, 'withdrawSubmission']);
-        Route::post('departments/{id}/approve-by-dean', [DepartmentScheduleController::class, 'approveByDean']);
-        Route::post('departments/{id}/return-by-dean', [DepartmentScheduleController::class, 'returnByDean']);
-        Route::post('departments/{id}/approve-by-vpaa', [DepartmentScheduleController::class, 'approveByVpaa']);
-        Route::post('departments/{id}/return-by-vpaa', [DepartmentScheduleController::class, 'returnByVpaa']);
 
         Route::get('rooms', [RoomsController::class, 'index']);
         Route::get('rooms/{room}', [RoomsController::class, 'show']);
@@ -96,8 +90,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/curriculum/{curriculum}', [CurriculumController::class, 'show']);
         Route::get('/curriculum/{curriculum}/full', [CurriculumController::class, 'showWithCourses']);
 
-        // Rooms management — restricted to authorized administrators (VPAA and Dean)
-        Route::middleware('role:vpaa,dean')->group(function () {
+        // Room management is institution-wide administration owned by VPAA.
+        Route::middleware('role:vpaa')->group(function () {
             Route::post('rooms', [RoomsController::class, 'store']);
             Route::match(['put', 'patch'], 'rooms/{room}', [RoomsController::class, 'update']);
             Route::delete('rooms/{room}', [RoomsController::class, 'destroy']);
@@ -116,22 +110,42 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('sections/department/{departmentId}', [SectionsController::class, 'byDepartment']);
         Route::get('sections/{section}', [SectionsController::class, 'show']);
 
-        // Schedules Management
-        Route::post('schedules/batch/validate-splits', [ScheduleController::class, 'validateSplits']);
-        Route::post('schedules/batch', [ScheduleController::class, 'batch']);
-        Route::patch('schedules/batch-status', [ScheduleController::class, 'batchStatus']);
-        Route::patch('schedules/batch-faculty', [ScheduleController::class, 'batchFaculty']);
-        Route::patch('schedules/batch-faculty-done', [ScheduleController::class, 'batchFacultyDone']);
+        // Schedule reads remain available to all four roles.
         Route::get('schedules/pending-department-count', [ScheduleController::class, 'pendingDepartmentCount']);
         Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
-        Route::apiResource('schedules', ScheduleController::class);
-        Route::apiResource('schedule-splits', ScheduleSplitController::class);
+        Route::apiResource('schedules', ScheduleController::class)->only(['index', 'show']);
+        Route::apiResource('schedule-splits', ScheduleSplitController::class)->only(['index', 'show']);
 
         // Faculties Read-only
         Route::get('faculties', [FacultyController::class, 'index']);
         Route::get('faculties/{faculty}', [FacultyController::class, 'show']);
         Route::get('faculties/{faculty}/availabilities', [FacultyAvailabilityController::class, 'index']);
+    });
+
+    // Department schedule authors may create and edit schedules, submit them for
+    // review, and manage instructor-assignment state. Dean is intentionally
+    // excluded: the Dean only reviews and approves submitted schedules.
+    Route::middleware('role:vpaa,secretary,program_head')->group(function () {
+        Route::post('departments/{id}/submit-schedules', [DepartmentScheduleController::class, 'submitSchedules']);
+        Route::post('departments/{id}/withdraw-submission', [DepartmentScheduleController::class, 'withdrawSubmission']);
+        Route::post('schedules/batch/validate-splits', [ScheduleController::class, 'validateSplits']);
+        Route::post('schedules/batch', [ScheduleController::class, 'batch']);
+        Route::patch('schedules/batch-status', [ScheduleController::class, 'batchStatus']);
+        Route::patch('schedules/batch-faculty', [ScheduleController::class, 'batchFaculty']);
+        Route::patch('schedules/batch-faculty-done', [ScheduleController::class, 'batchFacultyDone']);
+        Route::apiResource('schedules', ScheduleController::class)->except(['index', 'show']);
+        Route::apiResource('schedule-splits', ScheduleSplitController::class)->except(['index', 'show']);
+    });
+
+    Route::middleware('role:dean,vpaa')->group(function () {
+        Route::post('departments/{id}/approve-by-dean', [DepartmentScheduleController::class, 'approveByDean']);
+        Route::post('departments/{id}/return-by-dean', [DepartmentScheduleController::class, 'returnByDean']);
+    });
+
+    Route::middleware('role:vpaa')->group(function () {
+        Route::post('departments/{id}/approve-by-vpaa', [DepartmentScheduleController::class, 'approveByVpaa']);
+        Route::post('departments/{id}/return-by-vpaa', [DepartmentScheduleController::class, 'returnByVpaa']);
     });
 
     Route::middleware('role:vpaa,dean,secretary,program_head,admin')->group(function () {

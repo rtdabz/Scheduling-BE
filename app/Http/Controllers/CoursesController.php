@@ -148,6 +148,11 @@ class CoursesController extends Controller
             'status' => 'nullable|in:active,inactive',
         ]);
 
+        $requestedDepartmentId = $validated['department_id'] ?? null;
+        if ($requestedDepartmentId !== null && ! $this->authorization->payloadBelongsToDepartment($request, (int) $requestedDepartmentId)) {
+            return response()->json(['message' => 'You can only manage courses for your department.'], 403);
+        }
+
         $validated = $this->clearProgramForNonMajor($validated, $validated['course_category'] ?? null);
 
         $course = Course::create($validated);

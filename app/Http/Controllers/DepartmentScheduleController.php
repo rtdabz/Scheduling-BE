@@ -167,17 +167,18 @@ class DepartmentScheduleController extends Controller
      * If gating passes, all 'completed' and 'rejected'/'rejected_by_dean'
      * schedule rows for this department are set to 'submitted'.
      *
-     * RBAC: only vpaa, or dean/secretary whose department_id matches.
+     * RBAC: only VPAA, Secretary, or Program Head. Department roles may submit
+     * only their own department.
      */
     public function submitSchedules(int $id, Request $request): JsonResponse
     {
         $user = $request->user();
 
-        // RBAC check — vpaa can submit any department;
-        // dean/secretary can only submit their own department.
+        // VPAA can submit any department; department schedule authors can submit
+        // only their own department. Dean remains review/approval-only.
         $allowed =
             $user->role === 'vpaa' ||
-            (in_array($user->role, ['dean', 'secretary', 'program_head']) &&
+            (in_array($user->role, ['secretary', 'program_head']) &&
              (int) $user->department_id === $id);
 
         if (! $allowed) {

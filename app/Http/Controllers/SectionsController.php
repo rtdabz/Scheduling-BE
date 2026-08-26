@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Sections;
 use App\Models\Terms;
+use App\Services\Scheduling\ScheduleAuthorizationService;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
@@ -11,6 +12,8 @@ use Illuminate\Support\Facades\Cache;
 
 class SectionsController extends Controller
 {
+    public function __construct(private readonly ScheduleAuthorizationService $authorization) {}
+
     // Get all sections
     public function index()
     {
@@ -38,6 +41,10 @@ class SectionsController extends Controller
             'department_id'      => 'required|exists:departments,id',
         ]);
 
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
+            return response()->json(['message' => 'You can only manage sections for your department.'], 403);
+        }
+
         $validated['term_id'] = $activeTerm->id;
         $validated['semester'] = $activeTerm->semester;
         $validated['status'] = 'active';
@@ -63,6 +70,14 @@ class SectionsController extends Controller
             'sections.*.year_level'         => SchedulingPolicy::allowedYearLevelsRule('required'),
             'sections.*.department_id'      => 'required|exists:departments,id',
         ]);
+
+        $departmentIds = collect($validated['sections'])
+            ->pluck('department_id')
+            ->map(fn ($departmentId) => (int) $departmentId)
+            ->unique();
+        if ($departmentIds->contains(fn (int $departmentId) => ! $this->authorization->payloadBelongsToDepartment($request, $departmentId))) {
+            return response()->json(['message' => 'You can only manage sections for your department.'], 403);
+        }
 
         $created = \Illuminate\Support\Facades\DB::transaction(function () use ($validated, $activeTerm) {
             $list = [];
@@ -98,6 +113,10 @@ class SectionsController extends Controller
     // Update section
     public function update(Request $request, Sections $section)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $section->department_id)) {
+            return response()->json(['message' => 'You can only manage sections for your department.'], 403);
+        }
+
         $validated = $request->validate([
             'section_name'       => 'sometimes|string|max:255',
             'year_level'         => SchedulingPolicy::allowedYearLevelsRule('sometimes'),
@@ -106,6 +125,10 @@ class SectionsController extends Controller
             'term_id'            => 'sometimes|exists:terms,id',
             'status'             => SchedulingPolicy::allowedActiveStatusesRule('sometimes'),
         ]);
+
+        if (isset($validated['department_id']) && ! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
+            return response()->json(['message' => 'You can only move sections within your department.'], 403);
+        }
 
         $section->update($validated);
         ApiCache::forgetGroups([
@@ -119,8 +142,12 @@ class SectionsController extends Controller
     }
 
     // Delete section
-    public function destroy(Sections $section)
+    public function destroy(Request $request, Sections $section)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $section->department_id)) {
+            return response()->json(['message' => 'You can only manage sections for your department.'], 403);
+        }
+
         $section->delete();
         ApiCache::forgetGroups([
             'sections.index',

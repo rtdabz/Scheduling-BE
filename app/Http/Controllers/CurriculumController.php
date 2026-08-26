@@ -157,8 +157,10 @@ class CurriculumController extends Controller
         return response()->json(['message' => 'Curriculum deleted successfully']);
     }
 
-    public function duplicate(Curriculum $curriculum)
+    public function duplicate(Request $request, Curriculum $curriculum)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+
         $newCurriculum = Curriculum::create([
             'name' => $curriculum->name . ' (Copy)',
             'code' => $curriculum->code . '-COPY-' . time(),
@@ -190,6 +192,8 @@ class CurriculumController extends Controller
 
     public function updateStatus(Request $request, Curriculum $curriculum)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+
         $validated = $request->validate([
             'status' => 'required|string|in:draft,active,archived',
         ]);
@@ -224,6 +228,8 @@ class CurriculumController extends Controller
 
     public function attachCourse(Request $request, Curriculum $curriculum)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+
         $validated = $request->validate([
             'course_id'          => 'required|exists:courses,id',
             'year_level'         => 'required|integer|between:1,4',
@@ -257,6 +263,8 @@ class CurriculumController extends Controller
 
     public function attachCoursesBatch(Request $request, Curriculum $curriculum)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+
         $validated = $request->validate([
             'courses'              => 'required|array|min:1',
             'courses.*.course_id'  => 'required|integer|exists:courses,id',
@@ -284,6 +292,8 @@ class CurriculumController extends Controller
 
     public function batchCreateAndAttachCourses(Request $request, Curriculum $curriculum)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+
         $validated = $request->validate([
             'courses' => 'required|array|min:1',
             'courses.*.row_id' => 'required|string',
@@ -412,8 +422,10 @@ class CurriculumController extends Controller
         ]);
     }
 
-    public function detachCourse(Curriculum $curriculum, Course $course)
+    public function detachCourse(Request $request, Curriculum $curriculum, Course $course)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+
         $curriculum->courses()->detach($course->id);
 
         ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
@@ -421,8 +433,10 @@ class CurriculumController extends Controller
         return response()->json(['message' => 'Course removed successfully']);
     }
 
-    public function showWithCourses(Curriculum $curriculum)
+    public function showWithCourses(Request $request, Curriculum $curriculum)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+
         $curriculum->loadCount('courses');
         $curriculum->load('department');
 

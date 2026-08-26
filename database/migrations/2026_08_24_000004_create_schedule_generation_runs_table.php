@@ -20,7 +20,12 @@ return new class extends Migration {
             $table->timestamp('started_at')->nullable();
             $table->timestamp('finished_at')->nullable();
             $table->timestamps();
-            $table->index(['department_id', 'term_id', 'year_level', 'created_at']);
+            // MySQL limits identifier names to 64 characters; the generated
+            // Laravel name for this composite index exceeds that limit.
+            $table->index(
+                ['department_id', 'term_id', 'year_level', 'created_at'],
+                'sgr_dept_term_year_created_idx'
+            );
         });
     }
 

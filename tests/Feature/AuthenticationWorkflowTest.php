@@ -136,4 +136,5 @@ class AuthenticationWorkflowTest extends TestCase
 
         Notification::assertSentTo(User::first(), ResetPasswordNotification::class);
     }
+
 }
