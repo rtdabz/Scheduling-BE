@@ -52,6 +52,14 @@ class TimeslotService
         ]);
     }
 
+    public function hasActiveOverridesForDuration(int $durationMinutes): bool
+    {
+        return TimeslotOverride::query()
+            ->where('duration_minutes', $durationMinutes)
+            ->where('is_active', true)
+            ->exists();
+    }
+
     /**
      * @param  Collection<int, string>  $times
      * @return array<int, string>

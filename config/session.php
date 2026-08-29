@@ -32,7 +32,9 @@ return [
     |
     */
 
-    'lifetime' => (int) env('SESSION_LIFETIME', 120),
+    // Keep authenticated sessions from expiring during normal use. Explicit
+    // logout and the server-side session store remain the termination paths.
+    'lifetime' => (int) env('SESSION_LIFETIME', 525600),
 
     'expire_on_close' => env('SESSION_EXPIRE_ON_CLOSE', false),
 

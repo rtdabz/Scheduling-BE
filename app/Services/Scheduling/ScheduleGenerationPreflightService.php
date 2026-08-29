@@ -202,7 +202,6 @@ class ScheduleGenerationPreflightService
     private function laboratoryIssues(Sections $section, Departments $department, Collection $courses, array $options): array
     {
         $issues = [];
-        $hasLaboratoryCourse = $courses->contains(fn (Course $course): bool => SchedulingPolicy::isLaboratoryCourse($course));
 
         // Missing laboratory rooms are handled by the solver's Room TBA
         // fallback and must not block generation at preflight.

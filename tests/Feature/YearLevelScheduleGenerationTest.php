@@ -481,7 +481,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         $this->assertSame(0, Schedule::query()->count());
     }
 
-    public function test_year_level_preview_applies_configured_gec_split_pattern(): void
+    public function test_year_level_preview_applies_configured_minor_course_split_pattern(): void
     {
         $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
@@ -495,8 +495,8 @@ class YearLevelScheduleGenerationTest extends TestCase
             Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active']),
         ];
         $course = Course::create([
-            'course_code' => 'GEC 101',
-            'course_name' => 'Understanding the Self',
+            'course_code' => 'PE 101',
+            'course_name' => 'Physical Fitness',
             'lecture_hours' => 3,
             'lab_hours' => 0,
             'units' => 3,

@@ -209,10 +209,6 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('schedule-recommendations/{scheduleRecommendation}/reject', [ScheduleRecommendationController::class, 'reject']);
         Route::get('scheduling-settings', [SchedulingSettingsController::class, 'show']);
         Route::patch('scheduling-settings', [SchedulingSettingsController::class, 'update']);
-        Route::post('curriculum/{curriculum}/courses', [CurriculumController::class, 'attachCourse']);
-        Route::post('curriculum/{curriculum}/courses/batch', [CurriculumController::class, 'attachCoursesBatch']);
-        Route::post('curriculum/{curriculum}/courses/batch-create', [CurriculumController::class, 'batchCreateAndAttachCourses']);
-        Route::delete('curriculum/{curriculum}/courses/{course}', [CurriculumController::class, 'detachCourse']);
     });
 
     Route::middleware('role:vpaa,secretary,program_head')->group(function () {
@@ -225,7 +221,15 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::match(['put', 'patch'], 'sections/{section}', [SectionsController::class, 'update']);
         Route::delete('sections/{section}', [SectionsController::class, 'destroy']);
 
-        // Curriculum write
+    });
+
+    // Curriculum ownership is centralized in the VPAA portal. Other roles retain
+    // the read routes above but cannot mutate curriculum records or placements.
+    Route::middleware('role:vpaa')->group(function () {
+        Route::post('curriculum/{curriculum}/courses', [CurriculumController::class, 'attachCourse']);
+        Route::post('curriculum/{curriculum}/courses/batch', [CurriculumController::class, 'attachCoursesBatch']);
+        Route::post('curriculum/{curriculum}/courses/batch-create', [CurriculumController::class, 'batchCreateAndAttachCourses']);
+        Route::delete('curriculum/{curriculum}/courses/{course}', [CurriculumController::class, 'detachCourse']);
         Route::post('/curriculum', [CurriculumController::class, 'store']);
         Route::match(['put', 'patch'], '/curriculum/{curriculum}', [CurriculumController::class, 'update']);
         Route::delete('/curriculum/{curriculum}', [CurriculumController::class, 'destroy']);

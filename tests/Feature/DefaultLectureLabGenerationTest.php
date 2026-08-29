@@ -923,6 +923,74 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertSame($labRoom->id, $row['room_id']);
     }
 
+    public function test_split_laboratory_generation_exhausts_weekday_room_slots_before_saturday(): void
+    {
+        [$term, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse] =
+            $this->splitLaboratoryWeekdayPriorityFixture();
+
+        Schedule::create([
+            'term_id' => $term->id,
+            'section_id' => $blockingSection->id,
+            'course_id' => $blockingCourse->id,
+            'room_id' => $labRoom->id,
+            'department_id' => $department->id,
+            'day' => 'Monday',
+            'start_time' => '07:00:00',
+            'end_time' => '13:00:00',
+            'mode' => 'on-site',
+            'status' => 'draft',
+        ]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            selectedLectureLabCourseIds: [$course->id],
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+        $laboratory = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'laboratory');
+        $this->assertNotNull($laboratory);
+        $this->assertContains($laboratory['day'], SchedulingPolicy::WEEKDAYS);
+        $this->assertSame($labRoom->id, $laboratory['room_id']);
+    }
+
+    public function test_split_laboratory_generation_uses_saturday_real_room_after_weekdays_are_exhausted(): void
+    {
+        [$term, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse] =
+            $this->splitLaboratoryWeekdayPriorityFixture();
+
+        foreach (SchedulingPolicy::WEEKDAYS as $day) {
+            Schedule::create([
+                'term_id' => $term->id,
+                'section_id' => $blockingSection->id,
+                'course_id' => $blockingCourse->id,
+                'room_id' => $labRoom->id,
+                'department_id' => $department->id,
+                'day' => $day,
+                'start_time' => '07:00:00',
+                'end_time' => '20:00:00',
+                'mode' => 'on-site',
+                'status' => 'draft',
+            ]);
+        }
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            selectedLectureLabCourseIds: [$course->id],
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+        $laboratory = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'laboratory');
+        $this->assertNotNull($laboratory);
+        $this->assertSame('Saturday', $laboratory['day']);
+        $this->assertSame($labRoom->id, $laboratory['room_id']);
+    }
+
     public function test_default_lecture_lab_generation_uses_room_tba_when_laboratory_is_unavailable(): void
     {
         $term = Terms::create([
@@ -982,6 +1050,92 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNotNull($laboratory);
         $this->assertSame('on-site', $laboratory['mode']);
         $this->assertNull($laboratory['room_id']);
+    }
+
+    /** @return array{Terms, Departments, Sections, Course, Rooms, Sections, Course} */
+    private function splitLaboratoryWeekdayPriorityFixture(): array
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+            'scheduling_profile' => 'laboratory_enabled',
+            'lecture_lab_schedule_override_enabled' => true,
+        ]);
+        $section = Sections::create([
+            'section_name' => 'BSIT 2E',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+        // Make the target course ID align the rotating day-balance anchor with
+        // Saturday. Weekday-first must remain a hard search priority regardless
+        // of that soft distribution tie-breaker.
+        for ($index = 1; $index <= 5; $index++) {
+            Course::create([
+                'course_code' => "CIT PAD {$index}",
+                'course_name' => "Fixture Padding {$index}",
+                'lecture_hours' => 1,
+                'lab_hours' => 0,
+                'units' => 1,
+                'course_category' => 'major',
+                'room_type_required' => 'lecture',
+                'year_level' => '2',
+                'semester' => '1st',
+                'department_id' => $department->id,
+                'status' => 'inactive',
+            ]);
+        }
+        $course = Course::create([
+            'course_code' => 'IT 109',
+            'course_name' => 'Fundamentals of Database Systems',
+            'lecture_hours' => 2,
+            'lab_hours' => 1,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+        $labRoom = Rooms::create([
+            'room_code' => 'CIT LAB 1',
+            'building' => 'CIT Building',
+            'room_type' => 'laboratory',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+        $blockingSection = Sections::create([
+            'section_name' => 'CIT ROOM BLOCKER',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'inactive',
+        ]);
+        $blockingCourse = Course::create([
+            'course_code' => 'CIT BLOCK',
+            'course_name' => 'Existing Laboratory Schedule',
+            'lecture_hours' => 0,
+            'lab_hours' => 1,
+            'units' => 1,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '2',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+
+        return [$term, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse];
     }
 
     public function test_missing_laboratory_course_keeps_room_tba_even_when_online_is_requested(): void

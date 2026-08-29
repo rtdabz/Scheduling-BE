@@ -732,14 +732,9 @@ class CSPSolver
         $hasRoomTbaCandidates = collect($domain)->contains(
             static fn (array $candidate): bool => (bool) ($candidate['_room_tba'] ?? false),
         );
-        $candidateGroups = $hasRoomTbaCandidates
-            ? [
-                array_values(array_filter($domain, static fn (array $candidate): bool => ! ($candidate['_room_tba'] ?? false))),
-                array_values(array_filter($domain, static fn (array $candidate): bool => (bool) ($candidate['_room_tba'] ?? false))),
-            ]
-            : [$domain];
+        $candidateGroups = $this->weekdayFirstCandidateGroups($domain, $hasRoomTbaCandidates);
 
-        foreach ($candidateGroups as $groupIndex => $candidates) {
+        foreach ($candidateGroups as $candidates) {
             $solutionsBeforeGroup = count($solutions);
 
             foreach ($candidates as $candidate) {
@@ -788,12 +783,81 @@ class CSPSolver
                 }
             }
 
-            // Search every compatible physical laboratory placement across all
-            // permitted days and times before considering the Room TBA group.
-            if ($hasRoomTbaCandidates && $groupIndex === 0 && count($solutions) > $solutionsBeforeGroup) {
+            // A lower-priority day or room fallback is opened only when this
+            // entire group cannot produce a complete conflict-free timetable.
+            if (count($solutions) > $solutionsBeforeGroup) {
                 return;
             }
         }
+    }
+
+    /**
+     * Keep ordinary generation priorities lexicographic after persisted
+     * conflicts have pruned the domain. Soft compactness and day-balancing
+     * scores may reorder candidates inside a tier, but cannot move Saturday or
+     * Room TBA ahead of a feasible weekday placement with a compatible room.
+     *
+     * @param  list<array<string, mixed>>  $domain
+     * @return list<list<array<string, mixed>>>
+     */
+    private function weekdayFirstCandidateGroups(array $domain, bool $hasRoomTbaCandidates): array
+    {
+        return $this->candidateGroupsByDayPriority(
+            domain: $domain,
+            hasRoomTbaCandidates: $hasRoomTbaCandidates,
+            dayPriority: [0, 1, 2],
+        );
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $domain
+     * @param  list<int>  $dayPriority
+     * @return list<list<array<string, mixed>>>
+     */
+    private function candidateGroupsByDayPriority(
+        array $domain,
+        bool $hasRoomTbaCandidates,
+        array $dayPriority,
+    ): array {
+        if (count($domain) < 2) {
+            return [$domain];
+        }
+
+        $roomTiers = $hasRoomTbaCandidates ? 2 : 1;
+        $buckets = array_fill(0, $roomTiers, array_fill(0, 3, []));
+
+        foreach ($domain as $candidate) {
+            $roomTier = ($hasRoomTbaCandidates && ($candidate['_room_tba'] ?? false)) ? 1 : 0;
+            $buckets[$roomTier][$this->candidateSearchDayTier($candidate)][] = $candidate;
+        }
+
+        $groups = [];
+        foreach ($buckets as $roomBucket) {
+            foreach ($dayPriority as $dayTier) {
+                if ($roomBucket[$dayTier] !== []) {
+                    $groups[] = $roomBucket[$dayTier];
+                }
+            }
+        }
+
+        return $groups;
+    }
+
+    private function candidateSearchDayTier(array $candidate): int
+    {
+        $tier = 0;
+
+        foreach ($candidate['blocks'] ?? [] as $block) {
+            $day = (string) ($block['day'] ?? '');
+            if ($day === 'Sunday') {
+                return 2;
+            }
+            if ($day === 'Saturday') {
+                $tier = 1;
+            }
+        }
+
+        return $tier;
     }
 
     /**
@@ -2039,7 +2103,9 @@ class CSPSolver
                     continue;
                 }
 
-                foreach ($this->rankedSplitStartPairs($day1StartSlots, $day2StartSlots) as [$day1Start, $day2Start]) {
+                $startPairs = $this->rankedSplitStartPairs($day1StartSlots, $day2StartSlots);
+
+                foreach ($startPairs as [$day1Start, $day2Start]) {
                     $day1End = $day1Start + $day1Duration;
                     $day2End = $day2Start + $day2Duration;
 

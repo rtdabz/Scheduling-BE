@@ -327,10 +327,11 @@ class ScheduleRecommendationController extends Controller
                 ))
                 : [];
             $selectedGecSplitCourseIds = ($validated['split_gec_enabled'] ?? false)
-                ? array_values(array_intersect(
-                    array_map('intval', $validated['selected_gec_course_ids'] ?? []),
+                ? $this->resolveMinorSplitCourseIds(
+                    $section,
+                    $validated['selected_gec_course_ids'] ?? [],
                     $validated['course_ids'],
-                ))
+                )
                 : [];
             $validated['preferred_patterns'] = $this->mergeSelectedSplitPatterns(
                 $validated['preferred_patterns'] ?? [],
@@ -412,7 +413,8 @@ class ScheduleRecommendationController extends Controller
         $input['selected_split_session_course_ids'] = ($input['split_session_enabled'] ?? false)
             ? array_values(array_intersect(array_map('intval', $input['selected_split_session_course_ids'] ?? []), $input['course_ids'])) : [];
         $gecIds = ($input['split_gec_enabled'] ?? false)
-            ? array_values(array_intersect(array_map('intval', $input['selected_gec_course_ids'] ?? []), $input['course_ids'])) : [];
+            ? $this->resolveMinorSplitCourseIds($section, $input['selected_gec_course_ids'] ?? [], $input['course_ids'])
+            : [];
         $input['preferred_patterns'] = $this->mergeSelectedSplitPatterns($input['preferred_patterns'] ?? [], $gecIds, $input['course_ids']);
         $input['balanced_split_course_ids'] = $gecIds;
         $profile = $this->preflight->validate($section, $input['course_ids'], $input);
@@ -481,7 +483,7 @@ class ScheduleRecommendationController extends Controller
                 $config = $configs->get((int) $section->id);
                 $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
                 $splitIds = array_values(array_intersect(array_map('intval', $config['selected_split_session_course_ids'] ?? []), $courseIds));
-                $gecIds = array_values(array_intersect(array_map('intval', $config['selected_gec_course_ids'] ?? []), $courseIds));
+                $gecIds = $this->resolveMinorSplitCourseIds($section, $config['selected_gec_course_ids'] ?? [], $courseIds);
                 $preferredPatterns = $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $gecIds, $courseIds);
                 $sectionConfig = [
                     'course_ids' => $courseIds,
@@ -593,10 +595,11 @@ class ScheduleRecommendationController extends Controller
             }
             $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
             $splitIds = array_values(array_intersect(array_map('intval', $config['selected_split_session_course_ids'] ?? []), $courseIds));
-            $gecIds = array_values(array_intersect(array_map('intval', $config['selected_gec_course_ids'] ?? []), $courseIds));
+            $gecIds = $this->resolveMinorSplitCourseIds($section, $config['selected_gec_course_ids'] ?? [], $courseIds);
             $preferredPatterns = $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $gecIds, $courseIds);
             $sectionConfig = [
-                'course_ids' => $courseIds, 'mode' => (string) ($config['mode'] ?? 'on-site'),
+                'course_ids' => $courseIds,
+                'mode' => (string) ($config['mode'] ?? 'on-site'),
                 'is_hybrid' => (bool) ($config['is_hybrid'] ?? false),
                 'selected_split_session_course_ids' => $splitIds, 'balanced_split_course_ids' => $gecIds,
                 'preferred_patterns' => $preferredPatterns, 'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
@@ -1052,6 +1055,30 @@ class ScheduleRecommendationController extends Controller
             'summer' => 3,
             default => throw new InvalidArgumentException("Unrecognized semester '{$semester}'."),
         };
+    }
+
+    private function resolveMinorSplitCourseIds(Sections $section, array $requestedCourseIds, array $validCourseIds): array
+    {
+        if (! (bool) ($section->department?->gec_split_schedule_override_enabled ?? false)) {
+            return [];
+        }
+
+        $candidateIds = array_values(array_intersect(
+            array_map('intval', $requestedCourseIds),
+            array_map('intval', $validCourseIds),
+        ));
+
+        if ($candidateIds === []) {
+            return [];
+        }
+
+        return Course::query()
+            ->whereIn('id', $candidateIds)
+            ->where('course_category', 'minor')
+            ->pluck('id')
+            ->map(static fn ($courseId): int => (int) $courseId)
+            ->values()
+            ->all();
     }
 
     private function mergeSelectedSplitPatterns(array $preferredPatterns, array $selectedCourseIds, array $validCourseIds): array
