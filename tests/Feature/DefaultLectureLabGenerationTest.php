@@ -688,6 +688,68 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertSame(180, $this->durationMinutes($laboratory));
     }
 
+    public function test_hybrid_split_components_are_always_scheduled_on_different_days(): void
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+            'lecture_lab_schedule_override_enabled' => true,
+        ]);
+
+        $section = Sections::create([
+            'section_name' => 'IT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'term_id' => $term->id,
+            'status' => 'active',
+        ]);
+
+        $course = Course::create([
+            'course_code' => 'IT 101',
+            'course_name' => 'Hybrid Programming 1',
+            'lecture_hours' => 2,
+            'lab_hours' => 1,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+
+        Rooms::create([
+            'room_code' => 'CompLab1',
+            'building' => 'Building 4',
+            'room_type' => 'laboratory',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $section->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            isHybrid: true,
+            selectedLectureLabCourseIds: [$course->id],
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+        $rows = $solutions[0]['schedules'];
+        $this->assertCount(2, $rows);
+        $this->assertNotSame($rows[0]['day'], $rows[1]['day']);
+        $this->assertTrue(collect($rows)->every(static fn (array $row): bool => $row['is_hybrid'] === true));
+    }
+
     public function test_split_session_places_lecture_online_by_default(): void
     {
         $term = Terms::create([
@@ -986,9 +1048,14 @@ class DefaultLectureLabGenerationTest extends TestCase
 
         $this->assertNotEmpty($solutions);
         $laboratory = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'laboratory');
+        $lecture = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'lecture');
         $this->assertNotNull($laboratory);
+        $this->assertNotNull($lecture);
         $this->assertSame('Saturday', $laboratory['day']);
         $this->assertSame($labRoom->id, $laboratory['room_id']);
+        $this->assertSame('Saturday', $lecture['day']);
+        $this->assertSame('online', $lecture['mode']);
+        $this->assertNull($lecture['room_id']);
     }
 
     public function test_default_lecture_lab_generation_uses_room_tba_when_laboratory_is_unavailable(): void

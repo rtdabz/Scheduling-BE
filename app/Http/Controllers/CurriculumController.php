@@ -150,11 +150,11 @@ class CurriculumController extends Controller
     public function destroy(Request $request, Curriculum $curriculum)
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
-        $curriculum->delete();
+        $curriculum->update(['status' => 'archived']);
 
         ApiCache::forgetGroups(['curriculum.index']);
 
-        return response()->json(['message' => 'Curriculum deleted successfully']);
+        return response()->json(['message' => 'Curriculum archived successfully']);
     }
 
     public function duplicate(Request $request, Curriculum $curriculum)

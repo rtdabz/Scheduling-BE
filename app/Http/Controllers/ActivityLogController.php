@@ -133,6 +133,10 @@ class ActivityLogController extends Controller
 
     private function schedulingEntry(SchedulingAuditLog $log): array
     {
+        $metadata = $log->metadata ?? [];
+        if ($log->history_version_id === null) {
+            $metadata['legacy_history'] = true;
+        }
         return [
             'id' => 'scheduling:'.$log->id,
             'source' => 'scheduling',
@@ -143,7 +147,7 @@ class ActivityLogController extends Controller
             'department_id' => $log->department_id,
             'term_id' => $log->term_id,
             'target' => ['type' => $log->schedule_recommendation_id ? 'schedule_recommendation' : 'schedule_workflow', 'id' => $log->schedule_recommendation_id ?? $log->section_id],
-            'metadata' => $log->metadata ?? [],
+            'metadata' => $metadata,
         ];
     }
 

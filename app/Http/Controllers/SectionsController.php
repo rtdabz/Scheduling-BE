@@ -155,7 +155,7 @@ class SectionsController extends Controller
             'sections.by_department',
             'departments.index',
         ]);
-        return response()->json(['message' => 'Section deleted successfully']);
+        return response()->json(['message' => 'Section archived successfully']);
     }
 
     // Get sections by term

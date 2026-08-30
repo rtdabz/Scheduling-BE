@@ -800,6 +800,10 @@ class YearLevelScheduleGenerationService
                 + count($config['balanced_split_course_ids'] ?? []);
             $solutions = $this->solver->solveRankedFromSchema(array_merge($config, [
                 'section_id' => (int) $section->id,
+                // An empty domain here means this branch is infeasible under
+                // the earlier sections' tentative placements. Let the
+                // year-level search backtrack instead of aborting the run.
+                'throw_on_empty_domain' => false,
                 'max_solutions' => 1,
                 'max_iterations' => $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 120000 : 60000,
                 'timeout_seconds' => $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 8 : 4,
@@ -847,6 +851,10 @@ class YearLevelScheduleGenerationService
 
             $solutions = $this->solver->solveRankedFromSchema(array_merge($config, [
                 'section_id' => (int) $section->id,
+                // Branch-local infeasibility must be returned to the
+                // coordinator so it can try another section ordering/slot.
+                'throw_on_empty_domain' => false,
+                'allow_room_tba_fallback' => $allowRoomTbaFallback,
                 'max_solutions' => self::SECTION_SOLUTIONS_PER_ATTEMPT,
                 'max_iterations' => $isSplitHeavy ? 400000 : 250000,
                 'timeout_seconds' => $attemptTimeout,

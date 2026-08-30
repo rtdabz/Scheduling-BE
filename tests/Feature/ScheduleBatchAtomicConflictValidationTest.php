@@ -134,7 +134,7 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
 
         $response->assertOk();
         $response->assertJsonPath('deleted_schedule_ids.0', $stale->id);
-        $this->assertDatabaseMissing('schedules', ['id' => $stale->id]);
+        $this->assertSoftDeleted('schedules', ['id' => $stale->id]);
         $this->assertDatabaseHas('schedules', [
             'section_id' => $section->id,
             'course_id' => $otherCourse->id,

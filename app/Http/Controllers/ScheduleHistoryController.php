@@ -2,9 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\ScheduleHistory;
-use App\Models\Faculty;
-use App\Models\Rooms;
+use App\Models\ScheduleHistoryVersion;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -31,74 +29,43 @@ class ScheduleHistoryController extends Controller
             return response()->json(['message' => 'You can only view history for your department.'], 403);
         }
 
-        $query = ScheduleHistory::query()
-            ->with(['actor:id,name,username,role', 'department:id,department_name,department_code', 'section:id,section_name', 'course:id,course_code,course_name,course_category,units,lecture_hours,lab_hours'])
+        return $this->indexVersions($validated, $page, $perPage, $user, $requestedDepartment);
+    }
+
+    private function indexVersions(array $validated, int $page, int $perPage, $user, $requestedDepartment): JsonResponse
+    {
+        $query = ScheduleHistoryVersion::query()
+            ->with(['actor:id,name,username,role', 'department:id,department_name,department_code', 'items.section:id,section_name', 'items.course:id,course_code,course_name,course_category,units,lecture_hours,lab_hours'])
             ->when($user?->role !== 'vpaa', fn ($q) => $q->where('department_id', $user->department_id))
             ->when($requestedDepartment, fn ($q, $id) => $q->where('department_id', $id))
             ->when($validated['term_id'] ?? null, fn ($q, $id) => $q->where('term_id', $id))
-            ->when($validated['schedule_id'] ?? null, fn ($q, $id) => $q->where('schedule_id', $id))
+            ->when($validated['schedule_id'] ?? null, fn ($q, $id) => $q->whereHas('items', fn ($items) => $items->where('original_schedule_id', $id)))
             ->latest('created_at')->latest('id');
-
-        // Paginate before hydrating snapshots and relationships. The previous
-        // implementation loaded the complete history table, then sliced it in
-        // PHP, which made memory and response time grow with all historical rows.
         $paginator = $query->paginate($perPage, ['*'], 'page', $page);
-        $items = collect($paginator->items());
-        $facultyNames = Faculty::query()
-            ->whereIn('id', $items->map(fn (ScheduleHistory $item) => data_get($item->snapshot, 'faculty_id'))->filter()->unique())
-            ->get(['id', 'first_name', 'last_name'])
-            ->mapWithKeys(fn (Faculty $faculty) => [$faculty->id => trim($faculty->first_name.' '.$faculty->last_name)]);
-        $roomNames = Rooms::query()
-            ->whereIn('id', $items->map(fn (ScheduleHistory $item) => data_get($item->snapshot, 'room_id'))->filter()->unique())
-            ->pluck('room_code', 'id');
-        $grouped = $items->groupBy(function (ScheduleHistory $item): string {
-            $groupId = data_get($item->changes, 'history_group_id');
-            if ($groupId) {
-                return 'workflow:'.$groupId;
-            }
-
-            // History rows created before workflow group IDs were introduced
-            // can still be safely grouped by the same bulk action timestamp.
-            if (! in_array($item->action, ['created', 'updated', 'deleted'], true)) {
-                return implode(':', [
-                    'legacy-workflow', $item->action, $item->actor_user_id,
-                    $item->department_id, $item->term_id,
-                    $item->created_at?->format('Y-m-d H:i:s'),
-                ]);
-            }
-
-            return 'history:'.$item->id;
-        })->map(function ($group) use ($facultyNames, $roomNames): array {
-            /** @var ScheduleHistory $first */
-            $first = $group->sortByDesc('created_at')->first();
-            $sectionIds = $group->pluck('section_id')->filter()->unique()->values()->all();
-            $metadata = $first->changes ?? [];
-            $departmentName = $first->department?->department_name ?: 'Department';
-            $scope = $metadata['history_scope'] ?? (count($sectionIds) >= 2 ? 'multiple_sections' : 'section');
-            $label = match ($scope) {
-                'entire_schedule' => $departmentName.' Schedule',
-                'multiple_sections' => $departmentName.' Department Schedule',
-                default => $first->section?->section_name
-                    ? $departmentName.' · '.$first->section->section_name
-                    : $departmentName.' Schedule',
-            };
-
+        $data = collect($paginator->items())->map(function (ScheduleHistoryVersion $version): array {
+            $items = $version->items;
+            $first = $items->first();
+            $metadata = $version->change_summary ?? [];
+            $departmentName = $version->department?->department_name ?: 'Department';
+            $sectionIds = $items->pluck('section_id')->filter()->unique()->values();
+            $scope = $metadata['history_scope'] ?? ($sectionIds->count() >= 2 ? 'multiple_sections' : 'section');
+            $label = $scope === 'entire_schedule' ? $departmentName.' Schedule' : ($scope === 'multiple_sections' ? $departmentName.' Department Schedule' : ($first?->section?->section_name ? $departmentName.' · '.$first->section->section_name : $departmentName.' Schedule'));
             return [
-                'id' => $first->id,
-                'group_id' => data_get($metadata, 'history_group_id'),
-                'schedule_id' => $first->schedule_id,
-                'schedule_count' => $group->count(),
-                'section_count' => count($sectionIds),
+                'id' => $version->id,
+                'group_id' => $metadata['history_group_id'] ?? null,
+                'schedule_id' => $first?->original_schedule_id,
+                'schedule_count' => $items->count(),
+                'section_count' => $sectionIds->count(),
                 'schedule_label' => $label,
-                'term_id' => $first->term_id,
-                'section_id' => $first->section_id,
-                'course_id' => $first->course_id,
-                'department_id' => $first->department_id,
-                'action' => $first->action,
-                'snapshot' => $first->snapshot,
-                'snapshots' => $group->values()->map(fn (ScheduleHistory $item) => [
+                'term_id' => $version->term_id,
+                'section_id' => $first?->section_id,
+                'course_id' => $first?->course_id,
+                'department_id' => $version->department_id,
+                'action' => $version->action,
+                'snapshot' => $first?->after_snapshot ?: $first?->before_snapshot,
+                'snapshots' => $items->map(fn ($item) => [
                     'id' => $item->id,
-                    'schedule_id' => $item->schedule_id,
+                    'schedule_id' => $item->original_schedule_id,
                     'section_id' => $item->section_id,
                     'section_name' => $item->section?->section_name,
                     'course_code' => $item->course?->course_code,
@@ -107,25 +74,12 @@ class ScheduleHistoryController extends Controller
                     'units' => $item->course?->units,
                     'lecture_hours' => $item->course?->lecture_hours,
                     'lab_hours' => $item->course?->lab_hours,
-                    'faculty_name' => $facultyNames->get(data_get($item->snapshot, 'faculty_id')),
-                    'room_name' => $roomNames->get(data_get($item->snapshot, 'room_id')),
-                    'snapshot' => $item->snapshot,
-                ])->all(),
-                'actor' => $first->actor ? ['id' => $first->actor->id, 'name' => $first->actor->name, 'username' => $first->actor->username, 'role' => $first->actor->role] : null,
-                'created_at' => $first->created_at?->toISOString(),
+                    'snapshot' => $item->after_snapshot ?: $item->before_snapshot,
+                ])->values()->all(),
+                'actor' => $version->actor ? ['id' => $version->actor->id, 'name' => $version->actor->name, 'username' => $version->actor->username, 'role' => $version->actor->role] : null,
+                'created_at' => $version->created_at?->toISOString(),
             ];
-        })->sortByDesc('created_at')->values();
-        $data = $grouped->values();
-        return response()->json([
-            'data' => $data,
-            'meta' => [
-                'current_page' => $page,
-                'per_page' => $perPage,
-                'total' => $paginator->total(),
-                'last_page' => $paginator->lastPage(),
-                'from' => $paginator->firstItem(),
-                'to' => $paginator->lastItem(),
-            ],
-        ]);
+        })->values();
+        return response()->json(['data' => $data, 'meta' => ['current_page' => $page, 'per_page' => $perPage, 'total' => $paginator->total(), 'last_page' => $paginator->lastPage(), 'from' => $paginator->firstItem(), 'to' => $paginator->lastItem()]]);
     }
 }

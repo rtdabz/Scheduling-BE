@@ -117,7 +117,7 @@ class TimeslotController extends Controller
         SchedulingPolicy::clearTimeCache();
 
         return response()->json([
-            'message' => 'Timeslot override removed successfully.',
+            'message' => 'Timeslot override archived successfully.',
         ]);
     }
 

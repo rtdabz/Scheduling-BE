@@ -163,20 +163,18 @@ class FacultyController extends Controller
 
         if ($faculty->user_id !== null) {
             return response()->json([
-                'message' => 'Remove the linked user account first before deleting this faculty profile.',
+                'message' => 'Archive the linked user account first before archiving this faculty profile.',
             ], 409);
         }
 
-        // `schedules.faculty_id` is nullOnDelete, so the approved rows survive the
-        // delete without an instructor. Report how many were released so the
-        // caller can tell the user what just happened instead of silently
-        // leaving instructor-less classes behind.
+        // Soft deletion hides the relationship from normal reads while retaining
+        // the foreign key so restoration reconnects the assignments.
         $released = $this->liveScheduleIds($faculty);
 
         DB::transaction(fn () => $faculty->delete());
 
         return response()->json([
-            'message' => 'Faculty deleted successfully',
+            'message' => 'Faculty archived successfully',
             'released_schedule_count' => count($released),
             'released_schedule_ids' => $released,
         ]);

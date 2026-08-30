@@ -11,6 +11,7 @@ use App\Models\Terms;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
+use App\Services\ScheduleHistoryRecorder;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -29,6 +30,7 @@ class InstructorAssignmentController extends Controller
         private readonly RuleEngine $ruleEngine,
         private readonly SystemNotificationService $notifications,
         private readonly \App\Services\FacultyLoadService $facultyLoad,
+        private readonly ScheduleHistoryRecorder $historyRecorder,
     ) {
     }
 
@@ -279,6 +281,7 @@ class InstructorAssignmentController extends Controller
             $previousFacultyId,
             $departmentId,
         ) {
+            $before = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
             Schedule::query()
                 ->whereIn('id', $linkedScheduleIds)
                 ->update([
@@ -286,12 +289,15 @@ class InstructorAssignmentController extends Controller
                     'status' => 'faculty_assignment',
                 ]);
 
+            $after = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
+            $version = $this->historyRecorder->record('instructor_assigned', $before, $after, $request->user()?->id, $linkedSchedules->first()->term_id, $departmentId, 'instructor_assignment');
             SchedulingAuditLog::create([
                 'user_id' => $request->user()?->id,
                 'term_id' => $linkedSchedules->first()->term_id,
                 'section_id' => $linkedSchedules->first()->section_id,
                 'department_id' => $departmentId,
                 'action' => 'instructor_assigned',
+                'history_version_id' => $version->id,
                 'metadata' => [
                     'schedule_id' => $linkedSchedules->first()->id,
                     'schedule_ids' => $linkedScheduleIds,

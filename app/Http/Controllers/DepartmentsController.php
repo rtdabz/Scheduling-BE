@@ -118,7 +118,7 @@ class DepartmentsController extends Controller
     {
         $department->delete();
         ApiCache::forgetGroup('departments.index');
-        return response()->json(['message' => 'Department deleted successfully']);
+        return response()->json(['message' => 'Department archived successfully']);
     }
 
     /**
@@ -140,18 +140,6 @@ class DepartmentsController extends Controller
 
         return redirect()->route('departments.trash')
             ->with('success', 'Department restored successfully.');
-    }
-
-    /**
-     * Permanently delete a soft-deleted department.
-     */
-    public function forceDelete($id)
-    {
-        $department = Departments::onlyTrashed()->findOrFail($id);
-        $department->forceDelete();
-
-        return redirect()->route('departments.trash')
-            ->with('success', 'Department permanently deleted.');
     }
 
     private function hasLaboratoryCourses(Departments $department): bool

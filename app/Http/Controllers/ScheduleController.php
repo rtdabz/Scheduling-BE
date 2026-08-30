@@ -8,6 +8,7 @@ use App\Models\Course;
 use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\SchedulingAuditLog;
 use App\Models\Terms;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\BatchConflict;
@@ -16,6 +17,7 @@ use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\ScheduleAuthorizationService;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
+use App\Services\ScheduleHistoryRecorder;
 use App\Services\TimeslotService;
 use App\Support\ApiCache;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -42,6 +44,7 @@ class ScheduleController extends Controller
         private readonly BatchConflictValidator $batchConflicts,
         private readonly FacultyLoadService $facultyLoad,
         private readonly ScheduleAuthorizationService $authorization,
+        private readonly ScheduleHistoryRecorder $historyRecorder,
     ) {
         $this->ruleEngine = $ruleEngine;
     }
@@ -77,6 +80,10 @@ class ScheduleController extends Controller
 
         $count = Schedule::query()
             ->where('status', $targetStatus)
+            ->when(
+                ($scope = $this->authorization->departmentScope($request)) !== null,
+                fn ($query) => $query->where('department_id', $scope),
+            )
             ->distinct()
             ->count('department_id');
 
@@ -364,7 +371,9 @@ class ScheduleController extends Controller
                         throw new ScheduleConflictException($allViolations);
                     }
 
+                    $deletedBefore = collect();
                     if (! empty($deleteIds)) {
+                        $deletedBefore = Schedule::whereIn('id', $deleteIds)->get();
                         Schedule::whereIn('id', $deleteIds)->delete();
                         $deletedScheduleIds = array_map('intval', $deleteIds);
                     }
@@ -405,6 +414,27 @@ class ScheduleController extends Controller
                         ->sortBy(static fn (Schedule $schedule): int => array_search((int) $schedule->id, $savedIds, true))
                         ->values()
                         ->all();
+
+                    if ($deletedBefore->isNotEmpty()) {
+                        $version = $this->historyRecorder->record(
+                            'schedule_batch_deleted',
+                            $deletedBefore,
+                            [],
+                            request()->user()?->id,
+                            $deletedBefore->first()->term_id,
+                            $deletedBefore->first()->department_id,
+                            'batch_delete',
+                        );
+                        SchedulingAuditLog::create([
+                            'user_id' => request()->user()?->id,
+                            'term_id' => $deletedBefore->first()->term_id,
+                            'department_id' => $deletedBefore->first()->department_id,
+                            'action' => 'schedule_batch_deleted',
+                            'history_version_id' => $version->id,
+                            'metadata' => ['schedule_ids' => $deleteIds],
+                            'created_at' => now(),
+                        ]);
+                    }
                 });
             });
         } catch (ScheduleConflictException $exception) {
@@ -1252,7 +1282,7 @@ class ScheduleController extends Controller
 
         $this->notifyScheduleSaved($request, $deletedSchedule, 'deleted');
 
-        return response()->json(['message' => 'Schedule deleted successfully']);
+        return response()->json(['message' => 'Schedule archived successfully']);
     }
 
     private function departmentScope(Request $request): ?int
@@ -1721,15 +1751,26 @@ class ScheduleController extends Controller
             ], 422);
         }
 
-        $updated = Schedule::whereIn('id', $validated['ids'])
-            ->update([
-                'status' => $validated['status'],
-                'updated_at' => now(),
+        $result = DB::transaction(function () use ($validated, $request): array {
+            $before = Schedule::whereIn('id', $validated['ids'])->get();
+            $updated = Schedule::whereIn('id', $validated['ids'])->update([
+                'status' => $validated['status'], 'updated_at' => now(),
             ]);
-
-        $schedules = Schedule::whereIn('id', $validated['ids'])
-            ->with(['term', 'section', 'course', 'faculty', 'room', 'department'])
-            ->get();
+            $schedules = Schedule::whereIn('id', $validated['ids'])->with(['term', 'section', 'course', 'faculty', 'room', 'department'])->get();
+            $version = $this->historyRecorder->record('schedule_batch_status_updated', $before, $schedules, $request->user()?->id, null, null, 'batch_status', null, ['status' => $validated['status']]);
+            SchedulingAuditLog::create([
+                'user_id' => $request->user()?->id,
+                'term_id' => $schedules->first()?->term_id,
+                'department_id' => $schedules->first()?->department_id,
+                'action' => 'schedule_batch_status_updated',
+                'history_version_id' => $version->id,
+                'metadata' => ['schedule_ids' => $validated['ids'], 'status' => $validated['status']],
+                'created_at' => now(),
+            ]);
+            return compact('updated', 'schedules');
+        });
+        $updated = $result['updated'];
+        $schedules = $result['schedules'];
 
         return response()->json([
             'message' => 'Batch status update completed successfully.',

@@ -121,29 +121,22 @@ class UserController extends Controller
     public function destroy(Request $request, User $user): JsonResponse
     {
         if ($user->role === 'vpaa') {
-            return response()->json(['message' => 'The VPAA account cannot be deleted here.'], 403);
+            return response()->json(['message' => 'The VPAA account cannot be archived here.'], 403);
         }
 
-        $validated = $request->validate([
+        $request->validate([
             'remove_faculty_profile' => 'sometimes|boolean',
         ]);
 
-        $removeFacultyProfile = $validated['remove_faculty_profile'] ?? false;
-        DB::transaction(function () use ($request, $user, $removeFacultyProfile) {
-            if ($removeFacultyProfile) {
-                $this->facultyProfiles->deleteFor($user);
-            } else {
-                $this->facultyProfiles->detachAsRegularFaculty($user);
-            }
-
-            $this->audit->record($request, 'user_deleted', $user, [
-                'faculty_profile_removed' => $removeFacultyProfile,
+        DB::transaction(function () use ($request, $user) {
+            $this->audit->record($request, 'user_archived', $user, [
+                'faculty_profile_preserved' => $user->facultyProfile()->exists(),
             ]);
             $user->tokens()->delete();
             $user->delete();
         });
 
-        return response()->json(['message' => 'User deleted successfully.']);
+        return response()->json(['message' => 'User archived successfully.']);
     }
 
     public function unlinkGoogle(Request $request, User $user): JsonResponse

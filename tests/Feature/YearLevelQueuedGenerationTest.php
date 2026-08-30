@@ -99,6 +99,50 @@ class YearLevelQueuedGenerationTest extends TestCase
         $this->assertSame('No valid timetable was found.', $run->error_message);
     }
 
+    public function test_worker_failure_marks_an_active_run_failed(): void
+    {
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        $runId = (string) Str::uuid();
+        $run = ScheduleGenerationRun::create([
+            'run_id' => $runId,
+            'requested_by' => $user->id,
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 3,
+            'status' => 'running',
+            'started_at' => now(),
+        ]);
+
+        (new GenerateYearLevelSchedulePreview($runId, [(int) $section->id], []))
+            ->failed(new \RuntimeException('Maximum execution time exceeded'));
+
+        $this->assertDatabaseHas('schedule_generation_runs', [
+            'id' => $run->id,
+            'status' => 'failed',
+            'error_message' => 'Maximum execution time exceeded',
+        ]);
+    }
+
+    public function test_poll_reconciles_an_orphaned_running_run(): void
+    {
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        $runId = (string) Str::uuid();
+        ScheduleGenerationRun::create([
+            'run_id' => $runId,
+            'requested_by' => $user->id,
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 3,
+            'status' => 'running',
+            'started_at' => now()->subSeconds(181),
+        ]);
+
+        $this->actingAs($user)
+            ->getJson("/api/schedule-recommendations/generation-runs/{$runId}")
+            ->assertOk()
+            ->assertJsonPath('status', 'failed');
+    }
+
     /** @return array{Terms, Departments, Sections, Course, User} */
     private function generationFixture(): array
     {

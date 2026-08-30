@@ -7,6 +7,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\ScheduleSubmission;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
@@ -16,8 +17,8 @@ use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 
 class InitialDataController extends Controller
 {
@@ -77,7 +78,7 @@ class InitialDataController extends Controller
                             ->when($departmentId !== null, function ($q) use ($departmentId) {
                                 $q->where(function ($scope) use ($departmentId) {
                                     $scope->whereNull('department_id')
-                                          ->orWhere('department_id', $departmentId);
+                                        ->orWhere('department_id', $departmentId);
                                 });
                             });
                     });
@@ -108,7 +109,7 @@ class InitialDataController extends Controller
 
             $pivotMap = [];
             foreach ($pivotData as $p) {
-                if (!isset($pivotMap[$p->course_id])) {
+                if (! isset($pivotMap[$p->course_id])) {
                     $pivotMap[$p->course_id] = $p;
                 }
             }
@@ -119,19 +120,26 @@ class InitialDataController extends Controller
                     $c->year_level = (string) $p->year_level;
                     $c->semester = (string) $p->semester === '1' ? '1st' : ((string) $p->semester === '2' ? '2nd' : 'summer');
                 }
+
                 return $c;
             })->sort(function ($a, $b) use ($semOrder) {
                 $yA = (int) ($a->year_level ?? 0);
                 $yB = (int) ($b->year_level ?? 0);
-                if ($yA !== $yB) return $yA <=> $yB;
+                if ($yA !== $yB) {
+                    return $yA <=> $yB;
+                }
 
                 $sA = $semOrder[$a->semester ?? ''] ?? 99;
                 $sB = $semOrder[$b->semester ?? ''] ?? 99;
-                if ($sA !== $sB) return $sA <=> $sB;
+                if ($sA !== $sB) {
+                    return $sA <=> $sB;
+                }
 
                 $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
                 $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
-                if ($catA !== $catB) return $catA <=> $catB;
+                if ($catA !== $catB) {
+                    return $catA <=> $catB;
+                }
 
                 return strcmp($a->course_code ?? '', $b->course_code ?? '');
             })->values();
@@ -162,8 +170,8 @@ class InitialDataController extends Controller
             ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
             ->when($activeTermId !== null, fn (Builder $query) => $query->where(function (Builder $q) use ($activeTermId, $activeTerm) {
                 $q->where('term_id', $activeTermId)
-                  ->orWhereNull('term_id');
-                if ($activeTerm && !empty($activeTerm->semester)) {
+                    ->orWhereNull('term_id');
+                if ($activeTerm && ! empty($activeTerm->semester)) {
                     $q->orWhere('semester', $activeTerm->semester);
                 }
             }))
@@ -204,6 +212,50 @@ class InitialDataController extends Controller
             // should use the paged response mode for larger datasets.
             ->limit(min(max((int) $request->query('schedule_limit', 500), 1), 2000))
             ->get();
+
+        $scheduleSubmissions = ScheduleSubmission::query()
+            ->with([
+                'sections:id,section_name,year_level,department_id,term_id',
+                'submitter:id,name',
+                'deanReviewer:id,name',
+                'vpaaReviewer:id,name',
+                'withdrawer:id,name',
+            ])
+            ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
+            ->when($activeTermId !== null, fn (Builder $query) => $query->where('term_id', $activeTermId))
+            ->orderByDesc('revision_number')
+            ->get();
+        $latestSubmissionBySection = collect();
+        foreach ($scheduleSubmissions as $submission) {
+            foreach ($submission->sections as $submissionSection) {
+                $sectionId = (int) $submissionSection->id;
+                if (! $latestSubmissionBySection->has($sectionId)) {
+                    $latestSubmissionBySection->put($sectionId, $submission);
+                }
+            }
+        }
+
+        // Keep the existing schedule response contract while approval ownership
+        // lives in schedule_submissions. These are virtual response attributes,
+        // not duplicated database columns on each timetable meeting.
+        $schedules->each(function (Schedule $schedule) use ($latestSubmissionBySection): void {
+            $submission = $latestSubmissionBySection->get((int) $schedule->section_id);
+            if ($submission === null) {
+                return;
+            }
+            $schedule->setAttribute('schedule_submission_id', $submission->id);
+            $schedule->setAttribute('submission_status', $submission->status);
+            $schedule->setAttribute('submission_revision_number', $submission->revision_number);
+            $schedule->setAttribute('submitted_by', $submission->submitted_by);
+            $schedule->setAttribute('submitted_at', $submission->submitted_at);
+            $schedule->setAttribute('reviewed_by_dean', $submission->dean_reviewed_by);
+            $schedule->setAttribute('reviewed_at_dean', $submission->dean_reviewed_at);
+            $schedule->setAttribute('approved_by_vpaa', $submission->vpaa_reviewed_by);
+            $schedule->setAttribute('approved_at_vpaa', $submission->vpaa_reviewed_at);
+            $schedule->setAttribute('rejection_reason', $submission->rejection_reason);
+            $schedule->setAttribute('approval_override', $submission->approval_override);
+            $schedule->setAttribute('approval_override_reason', $submission->approval_override_reason);
+        });
 
         // A source department must not see delegated instructor assignments until
         // the receiving department explicitly marks its assignment batch done.
@@ -249,6 +301,7 @@ class InitialDataController extends Controller
             'faculties' => $this->facultyLoad->get($facultyDepartmentId, $activeTermId, $facultyProgramId),
             'sections' => $sections,
             'schedules' => $schedules,
+            'schedule_submissions' => $scheduleSubmissions,
             'departments' => $departments,
             'field_course_assignment_enabled' => SchedulingPolicy::fieldCourseSettingEnabled($departmentId),
             'field_course_codes' => array_keys(SchedulingPolicy::fieldCourseCodeMap($departmentId)),

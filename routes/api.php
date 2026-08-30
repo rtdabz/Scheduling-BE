@@ -30,6 +30,7 @@ use App\Http\Controllers\SchedulingSettingsController;
 use App\Http\Controllers\TimeslotController;
 use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\ScheduleHistoryController;
+use App\Http\Controllers\ArchiveController;
 
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
@@ -58,10 +59,13 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::delete('/user/{user}', [UserController::class, 'destroy']);
         Route::delete('/user/{user}/google-link', [UserController::class, 'unlinkGoogle']);
 
+        Route::get('/archives', [ArchiveController::class, 'index']);
+        Route::post('/archives/{type}/{id}/restore', [ArchiveController::class, 'restore'])
+            ->whereNumber('id');
+
         Route::apiResource('departments', DepartmentsController::class)->except(['index', 'show']);
         Route::get('/departments/trash', [DepartmentsController::class, 'trash'])->name('departments.trash');
         Route::post('/departments/{id}/restore', [DepartmentsController::class, 'restore'])->name('departments.restore');
-        Route::delete('/departments/{id}/force-delete', [DepartmentsController::class, 'forceDelete'])->name('departments.forceDelete');
         Route::apiResource('terms', TermsController::class)->except(['index', 'show']);
         Route::patch('/institution-settings', [InstitutionSettingsController::class, 'update']);
         Route::patch('terms/{id}/activate', [TermsController::class, 'activate']);

@@ -92,7 +92,7 @@ class InstructorManagementTest extends TestCase
             ->assertCreated();
     }
 
-    public function test_delete_reports_the_schedules_it_releases(): void
+    public function test_archive_reports_affected_schedules_and_preserves_assignments_for_restore(): void
     {
         $f = $this->fixture();
         $live = $this->schedule($f, ['status' => 'faculty_assignment']);
@@ -103,7 +103,8 @@ class InstructorManagementTest extends TestCase
             ->assertJsonPath('released_schedule_count', 1)
             ->assertJsonPath('released_schedule_ids.0', $live->id);
 
-        $this->assertNull($live->refresh()->faculty_id);
+        $this->assertSame($f['faculty']->id, (int) $live->refresh()->faculty_id);
+        $this->assertSoftDeleted('faculties', ['id' => $f['faculty']->id]);
     }
 
     public function test_index_exposes_the_release_count_for_the_confirmation(): void

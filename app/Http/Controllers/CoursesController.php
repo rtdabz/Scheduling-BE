@@ -255,7 +255,7 @@ class CoursesController extends Controller
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
         $course->delete();
-        return response()->json(['message' => 'Course deleted successfully']);
+        return response()->json(['message' => 'Course archived successfully']);
     }
 
     private function normalizeCourseCode(mixed $courseCode): string

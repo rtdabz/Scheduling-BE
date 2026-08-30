@@ -13,7 +13,7 @@ class ProgramManagementTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_vpaa_can_create_update_and_delete_a_program(): void
+    public function test_vpaa_can_create_update_and_archive_a_program(): void
     {
         $vpaa = User::factory()->create(['role' => 'vpaa']);
         $department = Departments::create([
@@ -41,7 +41,7 @@ class ProgramManagementTest extends TestCase
         $this->actingAs($vpaa, 'sanctum')->deleteJson("/api/programs/{$created['id']}")
             ->assertOk();
 
-        $this->assertDatabaseMissing('programs', ['id' => $created['id']]);
+        $this->assertSoftDeleted('programs', ['id' => $created['id']]);
     }
 
     public function test_program_code_must_be_unique_within_a_department(): void

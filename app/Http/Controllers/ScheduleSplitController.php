@@ -75,6 +75,6 @@ class ScheduleSplitController extends Controller
     {
         $scheduleSplit->delete();
 
-        return response()->json(['message' => 'Schedule split deleted successfully']);
+        return response()->json(['message' => 'Schedule split archived successfully']);
     }
 }

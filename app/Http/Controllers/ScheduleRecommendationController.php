@@ -24,6 +24,7 @@ use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\Scheduling\SplitScheduleService;
 use App\Services\Scheduling\YearLevelScheduleGenerationService;
 use App\Services\SystemNotificationService;
+use App\Services\ScheduleHistoryRecorder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -33,6 +34,8 @@ use RuntimeException;
 
 class ScheduleRecommendationController extends Controller
 {
+    private const GENERATION_RUN_TIMEOUT_SECONDS = 180;
+    private const GENERATION_QUEUE_STALE_SECONDS = 600;
     private const REPLACEABLE_SCHEDULE_STATUSES = ['draft', 'completed', 'revision'];
 
     private const YEAR_LEVEL_PREVIEW_EXECUTION_SECONDS = 150;
@@ -47,6 +50,7 @@ class ScheduleRecommendationController extends Controller
         private readonly BatchConflictValidator $batchConflicts,
         private readonly RuleEngine $ruleEngine,
         private readonly SystemNotificationService $notifications,
+        private readonly ScheduleHistoryRecorder $historyRecorder,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -197,20 +201,23 @@ class ScheduleRecommendationController extends Controller
             ], 422);
         }
 
-        if ($solutions !== []) {
-            Schedule::where('section_id', $section->id)
-                ->where('term_id', $section->term_id)
-                ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
-                ->delete();
-
-            ScheduleRecommendation::where('section_id', $section->id)
-                ->where('term_id', $section->term_id)
-                ->delete();
-        }
-
         $user = $request->user();
 
         $recommendations = DB::transaction(function () use ($solutions, $section, $validated, $user) {
+            if ($solutions !== []) {
+                // Keep replacement atomic with recommendation creation. If a
+                // recommendation insert fails, the previous editable schedule
+                // and its pending options remain available.
+                Schedule::where('section_id', $section->id)
+                    ->where('term_id', $section->term_id)
+                    ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
+                    ->delete();
+
+                ScheduleRecommendation::where('section_id', $section->id)
+                    ->where('term_id', $section->term_id)
+                    ->delete();
+            }
+
             $created = [];
 
             foreach ($solutions as $solution) {
@@ -459,6 +466,7 @@ class ScheduleRecommendationController extends Controller
         }
 
         $sections = Sections::query()
+            ->with('department')
             ->where('term_id', (int) $validated['term_id'])
             ->where('department_id', (int) $validated['department_id'])
             ->where('year_level', (string) $validated['year_level'])
@@ -579,7 +587,7 @@ class ScheduleRecommendationController extends Controller
         if (! $this->canManageDepartment($request, (int) $validated['department_id'])) {
             return $this->departmentForbiddenResponse();
         }
-        $sections = Sections::query()->where('term_id', $validated['term_id'])
+        $sections = Sections::query()->with('department')->where('term_id', $validated['term_id'])
             ->where('department_id', $validated['department_id'])
             ->where('year_level', (string) $validated['year_level'])
             ->where('status', 'active')->orderBy('section_name')->get();
@@ -626,6 +634,25 @@ class ScheduleRecommendationController extends Controller
         if ($request->user()->role !== 'vpaa' && (int) $run->requested_by !== (int) $request->user()->id) {
             return $this->departmentForbiddenResponse();
         }
+
+        // A worker can be terminated by its timeout before the queued job's
+        // exception handler runs. Reconcile an orphaned active run on poll so
+        // the durable status reflects the actual lifecycle outcome.
+        if (in_array($run->status, ['queued', 'running'], true) && $run->finished_at === null) {
+            $reference = $run->started_at ?? $run->created_at;
+            $staleAfter = $run->status === 'running'
+                ? self::GENERATION_RUN_TIMEOUT_SECONDS
+                : self::GENERATION_QUEUE_STALE_SECONDS;
+            if ($reference !== null && $reference->lt(now()->subSeconds($staleAfter))) {
+                $run->update([
+                    'status' => 'failed',
+                    'error_message' => 'Year-level generation exceeded its execution time limit.',
+                    'finished_at' => now(),
+                ]);
+                $run->refresh();
+            }
+        }
+
         return response()->json($run);
     }
 
@@ -802,12 +829,13 @@ class ScheduleRecommendationController extends Controller
                     $rows,
                 )));
 
-                Schedule::query()
+                $before = Schedule::query()
                     ->where('term_id', $rows[0]['term_id'])
                     ->where('section_id', $rows[0]['section_id'])
                     ->whereIn('course_id', $courseIdsToCreate)
                     ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
-                    ->delete();
+                    ->get();
+                Schedule::query()->whereIn('id', $before->modelKeys())->delete();
 
                 $createdIds = [];
                 foreach ($rows as $row) {
@@ -833,12 +861,15 @@ class ScheduleRecommendationController extends Controller
                     'accepted_at' => now(),
                 ]);
 
+                $version = $this->historyRecorder->record('recommendation_accepted', $before, $createdSchedules, $user?->id, $recommendation->term_id, $recommendation->department_id, 'recommendation_acceptance');
+
                 $this->recordAudit(
                     action: 'recommendation_accepted',
                     userId: $user?->id,
                     recommendation: $recommendation,
                     metadata: [
                         'created_schedule_ids' => $createdSchedules->pluck('id')->map(static fn ($id): int => (int) $id)->all(),
+                        'history_version_id' => $version->id,
                     ],
                 );
 
@@ -973,72 +1004,35 @@ class ScheduleRecommendationController extends Controller
      */
     private function resolveCourseIds(Sections $section, ?array $providedCourseIds): array
     {
-        if (! empty($providedCourseIds)) {
-            $curriculum = Curriculum::where('department_id', $section->department_id)
-                ->where('status', 'active')
-                ->first();
-
-            if ($curriculum) {
-                $validPivotIds = $curriculum->courses()
-                    ->whereIn('courses.id', $providedCourseIds)
-                    ->wherePivot('year_level', (int) $section->year_level)
-                    ->wherePivot('semester', $this->mapSemesterToInt($section->semester))
-                    ->pluck('courses.id')
-                    ->toArray();
-
-                if (! empty($validPivotIds)) {
-                    return $validPivotIds;
-                }
-            }
-
-            $validProvidedIds = Course::query()
-                ->whereIn('id', $providedCourseIds)
-                ->where('status', 'active')
-                ->where('year_level', (string) $section->year_level)
-                ->where('semester', (string) $section->semester)
-                ->pluck('id')
-                ->toArray();
-
-            if (! empty($validProvidedIds)) {
-                return $validProvidedIds;
-            }
-        }
-
         $curriculum = Curriculum::where('department_id', $section->department_id)
             ->where('status', 'active')
             ->first();
 
-        if ($curriculum) {
-            $courseIds = $curriculum->courses()
-                ->wherePivot('year_level', (int) $section->year_level)
-                ->wherePivot('semester', $this->mapSemesterToInt($section->semester))
-                ->pluck('courses.id')
-                ->toArray();
-
-            if (! empty($courseIds)) {
-                return $courseIds;
-            }
-        }
-
-        // Fallback: search courses table directly for courses matching section department/year_level/semester
-        $fallbackCourseIds = Course::query()
-            ->where('status', 'active')
-            ->where(function ($q) use ($section) {
-                $q->whereNull('department_id')
-                    ->orWhere('department_id', $section->department_id);
-            })
-            ->where('year_level', (string) $section->year_level)
-            ->where('semester', (string) $section->semester)
-            ->pluck('id')
-            ->toArray();
-
-        if (! empty($fallbackCourseIds)) {
-            return $fallbackCourseIds;
-        }
-
         if (! $curriculum) {
             throw new InvalidArgumentException(
                 'No active curriculum found for this department. Activate a curriculum before generating a schedule.'
+            );
+        }
+
+        $semester = $this->mapSemesterToInt($section->semester);
+        $courseQuery = $curriculum->courses()
+            ->wherePivot('year_level', (int) $section->year_level)
+            ->wherePivot('semester', $semester)
+            ->where('courses.status', 'active');
+
+        if (! empty($providedCourseIds)) {
+            $courseQuery->whereIn('courses.id', array_map('intval', $providedCourseIds));
+        }
+
+        $courseIds = $courseQuery->pluck('courses.id')->toArray();
+
+        if (! empty($courseIds)) {
+            return $courseIds;
+        }
+
+        if (! empty($providedCourseIds)) {
+            throw new InvalidArgumentException(
+                'The selected courses are not active entries in the department curriculum for this year and semester.'
             );
         }
 
@@ -1305,12 +1299,13 @@ class ScheduleRecommendationController extends Controller
                     $rows,
                 )));
 
-                Schedule::query()
+                $before = Schedule::query()
                     ->where('term_id', $rows[0]['term_id'])
                     ->where('section_id', $rows[0]['section_id'])
                     ->whereIn('course_id', $courseIdsToCreate)
                     ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
-                    ->delete();
+                    ->get();
+                Schedule::query()->whereIn('id', $before->modelKeys())->delete();
 
                 $createdIds = [];
                 foreach ($rows as $row) {
@@ -1330,12 +1325,15 @@ class ScheduleRecommendationController extends Controller
                     ])
                     ->get();
 
+                $version = $this->historyRecorder->record('recommendation_auto_applied', $before, $schedules, $user?->id, $recommendation->term_id, $recommendation->department_id, 'recommendation_auto_apply');
+
                 $this->recordAudit(
                     action: 'recommendation_auto_applied',
                     userId: $user?->id,
                     recommendation: $recommendation,
                     metadata: [
                         'created_schedule_ids' => $schedules->pluck('id')->map(static fn ($id): int => (int) $id)->all(),
+                        'history_version_id' => $version->id,
                     ],
                 );
 
@@ -1372,6 +1370,7 @@ class ScheduleRecommendationController extends Controller
             'section_id' => $recommendation->section_id,
             'department_id' => $recommendation->department_id,
             'action' => $action,
+            'history_version_id' => $metadata['history_version_id'] ?? null,
             'metadata' => $metadata,
             'created_at' => now(),
         ]);

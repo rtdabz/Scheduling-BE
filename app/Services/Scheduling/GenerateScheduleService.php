@@ -204,13 +204,14 @@ class GenerateScheduleService
             ];
         }
 
-        // Clear previous schedules for this section and term to prevent duplicate/merge issues
-        Schedule::where('section_id', $recommendation->section_id)
-            ->where('term_id', $recommendation->term_id)
-            ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
-            ->delete();
-
         return DB::transaction(function () use ($recommendation, $userId, $meetings) {
+            // Replace the section's editable rows in the same transaction as
+            // the new inserts. A failed insert must not erase the prior draft.
+            Schedule::where('section_id', $recommendation->section_id)
+                ->where('term_id', $recommendation->term_id)
+                ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
+                ->delete();
+
             $created = [];
             foreach ($meetings as $meeting) {
                 $created[] = Schedule::create([

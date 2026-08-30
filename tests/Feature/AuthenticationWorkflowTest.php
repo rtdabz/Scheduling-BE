@@ -82,10 +82,11 @@ class AuthenticationWorkflowTest extends TestCase
         $facultyId = Faculty::where('user_id', $user->id)->value('id');
         $this->actingAs($vpaa, 'sanctum')->deleteJson("/api/user/{$user->id}")
             ->assertOk();
+        $this->assertSoftDeleted('users', ['id' => $user->id]);
         $this->assertDatabaseHas('faculties', [
             'id' => $facultyId,
-            'user_id' => null,
-            'administrative_role' => null,
+            'user_id' => $user->id,
+            'administrative_role' => 'secretary',
         ]);
     }
 

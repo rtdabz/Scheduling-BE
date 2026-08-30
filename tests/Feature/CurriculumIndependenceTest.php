@@ -69,11 +69,13 @@ class CurriculumIndependenceTest extends TestCase
             'username' => 'sec_user',
             'email' => 'sec@example.com',
             'password' => bcrypt('password'),
-            'role' => 'secretary',
+            'role' => 'vpaa',
         ]);
         $this->actingAs($user);
 
         $dept = Departments::create(['department_name' => 'Dept', 'department_code' => 'D']);
+        $user->update(['department_id' => $dept->id]);
+        $this->actingAs($user);
         $curr = Curriculum::create([
             'name' => 'Curriculum 1',
             'code' => 'CURR1',
@@ -191,13 +193,15 @@ class CurriculumIndependenceTest extends TestCase
             'username' => 'vpaa_admin4',
             'email' => 'vpaa4@example.com',
             'password' => bcrypt('password'),
-            'role' => 'secretary',
+            'role' => 'vpaa',
         ]);
         $this->actingAs($user);
 
         $itDept = Departments::create(['department_name' => 'IT Dept', 'department_code' => 'IT']);
         $baDept = Departments::create(['department_name' => 'BA Dept', 'department_code' => 'BA']);
 
+        $user->update(['department_id' => $itDept->id]);
+        $this->actingAs($user);
         $itCurriculum = Curriculum::create([
             'name' => 'IT Curriculum',
             'code' => 'IT-CURR',
@@ -240,7 +244,7 @@ class CurriculumIndependenceTest extends TestCase
             'username' => 'sec_cross_minor',
             'email' => 'sec-cross-minor@example.com',
             'password' => bcrypt('password'),
-            'role' => 'secretary',
+            'role' => 'vpaa',
         ]);
         $this->actingAs($user);
 
@@ -254,6 +258,8 @@ class CurriculumIndependenceTest extends TestCase
             'effective_school_year' => '2026-2027',
             'status' => 'draft',
         ]);
+        $user->update(['department_id' => $hmDept->id]);
+        $this->actingAs($user);
 
         $itOwnedMinor = Course::create([
             'course_code' => 'GEE 4',
@@ -289,7 +295,7 @@ class CurriculumIndependenceTest extends TestCase
             'username' => 'hm_sec',
             'email' => 'hm@example.com',
             'password' => bcrypt('password'),
-            'role' => 'secretary',
+            'role' => 'vpaa',
         ]);
         $this->actingAs($user);
 
@@ -431,11 +437,13 @@ class CurriculumIndependenceTest extends TestCase
             'username' => 'sec_user2',
             'email' => 'sec2@example.com',
             'password' => bcrypt('password'),
-            'role' => 'secretary',
+            'role' => 'vpaa',
         ]);
         $this->actingAs($user);
 
         $dept = Departments::create(['department_name' => 'IT Dept', 'department_code' => 'IT']);
+        $user->update(['department_id' => $dept->id]);
+        $this->actingAs($user);
         $curriculum = Curriculum::create([
             'name' => 'IT Curriculum',
             'code' => 'IT-CURR-2',

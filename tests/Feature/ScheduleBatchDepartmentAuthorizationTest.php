@@ -6,6 +6,8 @@ use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\ScheduleHistoryItem;
+use App\Models\ScheduleHistoryVersion;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
@@ -15,6 +17,29 @@ use Tests\TestCase;
 class ScheduleBatchDepartmentAuthorizationTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_batch_status_update_persists_action_history_version_and_item(): void
+    {
+        [$deptA, , $term, $roomA, , $courseA, , $sectionA] = $this->fixture();
+        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $schedule = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, ['status' => 'draft']);
+
+        $this->actingAs($user)->patchJson('/api/schedules/batch-status', [
+            'ids' => [$schedule->id],
+            'status' => 'completed',
+        ])->assertOk();
+
+        $version = ScheduleHistoryVersion::query()->where('action', 'schedule_batch_status_updated')->latest('id')->first();
+        $this->assertNotNull($version);
+        $this->assertDatabaseHas('schedule_history_items', [
+            'history_version_id' => $version->id,
+            'original_schedule_id' => $schedule->id,
+        ]);
+        $this->assertDatabaseHas('scheduling_audit_logs', [
+            'action' => 'schedule_batch_status_updated',
+            'history_version_id' => $version->id,
+        ]);
+    }
 
     public function test_batch_update_uses_persisted_schedule_department_for_authorization(): void
     {
@@ -94,7 +119,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
                 'deleted_schedule_ids' => [$schedule->id],
             ]);
 
-        $this->assertDatabaseMissing('schedules', [
+        $this->assertSoftDeleted('schedules', [
             'id' => $schedule->id,
         ]);
     }
@@ -131,8 +156,8 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
         ]);
 
         $response->assertOk();
-        $this->assertDatabaseMissing('schedules', ['id' => $oldDraft->id]);
-        $this->assertDatabaseMissing('schedules', ['id' => $oldRevision->id]);
+        $this->assertSoftDeleted('schedules', ['id' => $oldDraft->id]);
+        $this->assertSoftDeleted('schedules', ['id' => $oldRevision->id]);
         $this->assertDatabaseHas('schedules', ['id' => $finalized->id]);
         $this->assertDatabaseHas('schedules', [
             'section_id' => $sectionA->id,

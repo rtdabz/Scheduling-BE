@@ -113,7 +113,7 @@ class RoomsController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Room deleted successfully.',
+            'message' => 'Room archived successfully.',
         ]);
     }
 

@@ -12,6 +12,7 @@ class ScheduleRecommendation extends Model
         'term_id',
         'section_id',
         'department_id',
+        'generation_run_id',
         'requested_by',
         'accepted_by',
         'rejected_by',
@@ -60,5 +61,10 @@ class ScheduleRecommendation extends Model
     public function rejecter()
     {
         return $this->belongsTo(User::class, 'rejected_by');
+    }
+
+    public function generationRun()
+    {
+        return $this->belongsTo(ScheduleGenerationRun::class, 'generation_run_id');
     }
 }

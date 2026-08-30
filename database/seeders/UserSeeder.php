@@ -28,16 +28,6 @@ class UserSeeder extends Seeder
             }
         }
 
-        // Seed VPAA
-        User::updateOrCreate(
-            ['username' => 'vpaa'],
-            [
-                'name' => 'VPAA User',
-                'password' => Hash::make('password'),
-                'role' => 'vpaa',
-            ]
-        );
-
         // Seed Secretary
         User::updateOrCreate(
             ['username' => 'arts_sec'],

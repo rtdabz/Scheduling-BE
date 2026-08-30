@@ -2,7 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\Models\ScheduleHistory;
+use App\Models\ScheduleHistoryItem;
+use App\Models\ScheduleHistoryVersion;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -24,21 +25,10 @@ class ScheduleHistoryTest extends TestCase
     public function test_vpaa_receives_newest_history_first(): void
     {
         $vpaa = User::factory()->create(['role' => 'vpaa']);
-        ScheduleHistory::create([
-            'schedule_id' => 10,
-            'actor_user_id' => $vpaa->id,
-            'action' => 'created',
-            'snapshot' => ['day' => 'Monday'],
-            'created_at' => now()->subMinute(),
-        ]);
-        ScheduleHistory::create([
-            'schedule_id' => 10,
-            'actor_user_id' => $vpaa->id,
-            'action' => 'updated',
-            'snapshot' => ['day' => 'Tuesday'],
-            'changes' => ['day' => 'Tuesday'],
-            'created_at' => now(),
-        ]);
+        $created = ScheduleHistoryVersion::create(['actor_user_id' => $vpaa->id, 'action' => 'created', 'created_at' => now()->subMinute()]);
+        ScheduleHistoryItem::create(['history_version_id' => $created->id, 'original_schedule_id' => 10, 'after_snapshot' => ['day' => 'Monday']]);
+        $updated = ScheduleHistoryVersion::create(['actor_user_id' => $vpaa->id, 'action' => 'updated', 'change_summary' => ['day' => 'Tuesday'], 'created_at' => now()]);
+        ScheduleHistoryItem::create(['history_version_id' => $updated->id, 'original_schedule_id' => 10, 'after_snapshot' => ['day' => 'Tuesday']]);
 
         $this->actingAs($vpaa, 'sanctum')
             ->getJson('/api/schedule-history')
@@ -58,11 +48,8 @@ class ScheduleHistoryTest extends TestCase
             'updated_at' => now(),
         ]);
         $secretary = User::factory()->create(['role' => 'secretary', 'department_id' => $departmentId]);
-        ScheduleHistory::create([
-            'department_id' => $departmentId,
-            'action' => 'updated',
-            'snapshot' => ['day' => 'Friday'],
-        ]);
+        $version = ScheduleHistoryVersion::create(['department_id' => $departmentId, 'action' => 'updated']);
+        ScheduleHistoryItem::create(['history_version_id' => $version->id, 'after_snapshot' => ['day' => 'Friday']]);
 
         $this->actingAs($secretary, 'sanctum')
             ->getJson('/api/schedule-history')

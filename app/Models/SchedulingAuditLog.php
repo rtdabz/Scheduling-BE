@@ -13,6 +13,8 @@ class SchedulingAuditLog extends Model
     protected $fillable = [
         'user_id',
         'schedule_recommendation_id',
+        'history_version_id',
+        'schedule_submission_id',
         'term_id',
         'section_id',
         'department_id',
@@ -29,6 +31,16 @@ class SchedulingAuditLog extends Model
     public function recommendation()
     {
         return $this->belongsTo(ScheduleRecommendation::class, 'schedule_recommendation_id');
+    }
+
+    public function historyVersion()
+    {
+        return $this->belongsTo(ScheduleHistoryVersion::class, 'history_version_id');
+    }
+
+    public function submission()
+    {
+        return $this->belongsTo(ScheduleSubmission::class, 'schedule_submission_id');
     }
 
     public function user()

@@ -159,7 +159,9 @@ class CSPSolver
      *     max_iterations?: int|string,
      *     maxIterations?: int|string,
      *     timeout_seconds?: float|int|string,
-     *     timeoutSeconds?: float|int|string
+     *     timeoutSeconds?: float|int|string,
+     *     throw_on_empty_domain?: bool|int|string,
+     *     allow_room_tba_fallback?: bool|int|string
      * } $input
      */
     public function solveFromSchema(array $input): array
@@ -188,7 +190,9 @@ class CSPSolver
      *     max_iterations?: int|string,
      *     maxIterations?: int|string,
      *     timeout_seconds?: float|int|string,
-     *     timeoutSeconds?: float|int|string
+     *     timeoutSeconds?: float|int|string,
+     *     throw_on_empty_domain?: bool|int|string,
+     *     allow_room_tba_fallback?: bool|int|string
      * } $input
      */
     public function solveRankedFromSchema(array $input): array
@@ -211,6 +215,8 @@ class CSPSolver
             requirementsByCourseId: $schema['requirements_by_course_id'],
             seed: $schema['seed'] ?? null,
             tentativeSchedules: $schema['tentative_schedules'],
+            throwOnEmptyDomain: $schema['throw_on_empty_domain'],
+            allowRoomTbaFallback: $schema['allow_room_tba_fallback'],
         );
     }
 
@@ -234,6 +240,8 @@ class CSPSolver
         array $requirementsByCourseId = [],
         ?int $seed = null,
         array $tentativeSchedules = [],
+        bool $throwOnEmptyDomain = true,
+        bool $allowRoomTbaFallback = true,
     ): array {
         $rankedSolutions = $this->solveRanked(
             sectionId: $sectionId,
@@ -250,6 +258,8 @@ class CSPSolver
             deliveryModesByCourseId: $deliveryModesByCourseId,
             requirementsByCourseId: $requirementsByCourseId,
             seed: $seed,
+            throwOnEmptyDomain: $throwOnEmptyDomain,
+            allowRoomTbaFallback: $allowRoomTbaFallback,
         );
 
         return array_map(
@@ -278,6 +288,8 @@ class CSPSolver
         array $requirementsByCourseId = [],
         ?int $seed = null,
         array $tentativeSchedules = [],
+        bool $throwOnEmptyDomain = true,
+        bool $allowRoomTbaFallback = true,
     ): array {
         $this->validateArguments(
             courseIds: $courseIds,
@@ -469,6 +481,8 @@ class CSPSolver
             anchoredSchedulesByCourseId: $anchoredSchedulesByCourseId,
             deliveryModesByCourseId: $deliveryModesByCourseId,
             requirementsByCourseId: $this->requirementsByCourseId,
+            throwOnEmptyDomain: $throwOnEmptyDomain,
+            allowRoomTbaFallback: $allowRoomTbaFallback,
         );
 
         $variables = $this->prunePersistedConflictingCandidates(
@@ -476,6 +490,19 @@ class CSPSolver
             sectionId: (int) $section->id,
             departmentId: (int) $section->department_id,
         );
+
+        if (! $allowRoomTbaFallback) {
+            // Keep TBA out of the physical search entirely. Filtering only
+            // returned solutions lets TBA candidates consume CSP iterations
+            // before weekday and Saturday real-room combinations are tried.
+            foreach ($variables as &$variable) {
+                $variable['domain'] = array_values(array_filter(
+                    $variable['domain'],
+                    static fn (array $candidate): bool => ! ($candidate['_room_tba'] ?? false),
+                ));
+            }
+            unset($variable);
+        }
 
         if ($this->requirementsByCourseId !== []) {
             $coursesById = $courses->keyBy(static fn (Course $course): int => (int) $course->id);
@@ -485,11 +512,13 @@ class CSPSolver
                 }
 
                 $course = $coursesById->get((int) $variable['course_id']);
-                throw new RuntimeException(sprintf(
+                if ($throwOnEmptyDomain) {
+                    throw new RuntimeException(sprintf(
                     '%s / %s has no eligible room candidates after existing schedule conflicts were applied.',
                     (string) $section->section_name,
                     (string) ($course?->course_code ?? ('Course '.$variable['course_id'])),
-                ));
+                    ));
+                }
             }
         }
 
@@ -1122,6 +1151,8 @@ class CSPSolver
         array $anchoredSchedulesByCourseId = [],
         array $deliveryModesByCourseId = [],
         array $requirementsByCourseId = [],
+        bool $throwOnEmptyDomain = true,
+        bool $allowRoomTbaFallback = true,
     ): array {
         $variables = [];
 
@@ -1219,7 +1250,7 @@ class CSPSolver
                 );
             }
 
-            if ($domain === [] && isset($requirementsByCourseId[(int) $course->id])) {
+            if ($throwOnEmptyDomain && $domain === [] && isset($requirementsByCourseId[(int) $course->id])) {
                 throw new RuntimeException(sprintf(
                     '%s / %s has no eligible scheduling candidates for the configured department profile.',
                     (string) ($sectionId > 0 ? (Sections::query()->find($sectionId)?->section_name ?? 'Section') : 'Section'),
@@ -1693,7 +1724,11 @@ class CSPSolver
             '_room_tba' => true,
         ];
 
-        $dayPairs = $this->splitLectureLabDayPairs($course, $sundayOnlineOnlyEnabled);
+        $dayPairs = $this->splitLectureLabDayPairs(
+            course: $course,
+            sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
+            isHybrid: $isHybrid,
+        );
 
         $domain = [];
         $componentOrders = [
@@ -1735,6 +1770,18 @@ class CSPSolver
                     $day1End = $day1Start + $firstComponent['slots'];
                     $day2End = $day2Start + $secondComponent['slots'];
 
+                    // Hybrid lecture/lab meetings must be distributed across
+                    // different days. Regular split courses may still use the
+                    // all-Saturday fallback when weekdays are exhausted, but a
+                    // hybrid same-day pair is never a valid domain candidate.
+                    if ($isHybrid && $day1 === $day2) {
+                        continue;
+                    }
+
+                    if ($day1 === $day2 && $day1Start < $day2End && $day2Start < $day1End) {
+                        continue;
+                    }
+
                     foreach ($firstOptions as $option1) {
                         foreach ($secondOptions as $option2) {
                             $domain[] = [
@@ -1745,6 +1792,7 @@ class CSPSolver
                                 'mode' => $option1['mode'],
                                 'is_hybrid' => $isHybrid,
                                 '_split_lecture_online_default' => true,
+                                '_all_saturday_split' => $day1 === 'Saturday' && $day2 === 'Saturday',
                                 // Preserve the fallback marker on the composed
                                 // split candidate. Without this, a Room TBA lab
                                 // is ranked like a real lab room and may win
@@ -1790,7 +1838,11 @@ class CSPSolver
         return $domain;
     }
 
-    private function splitLectureLabDayPairs(Course $course, bool $sundayOnlineOnlyEnabled): array
+    private function splitLectureLabDayPairs(
+        Course $course,
+        bool $sundayOnlineOnlyEnabled,
+        bool $isHybrid = false,
+    ): array
     {
         $onSiteDays = array_values(array_unique(array_map(
             static fn (array $pair): string => $pair[0],
@@ -1808,6 +1860,7 @@ class CSPSolver
         }
 
         $fallbackPairs = [
+            ['Saturday', 'Saturday'],
             ['Monday', 'Tuesday'],
             ['Monday', 'Thursday'],
             ['Tuesday', 'Wednesday'],
@@ -1824,6 +1877,10 @@ class CSPSolver
         ];
 
         foreach ($fallbackPairs as $days) {
+            if ($isHybrid && $days[0] === $days[1]) {
+                continue;
+            }
+
             if (in_array($days[0], $onSiteDays, true) && in_array($days[1], $onSiteDays, true)) {
                 $pairs[] = $days;
             }
@@ -2042,6 +2099,11 @@ class CSPSolver
         $lecHours = (int) ($course->lecture_hours ?? 0);
         $labHours = (int) ($course->lab_hours ?? 0);
         $hasBothComponents = $isMajor && $lecHours > 0 && $labHours > 0;
+
+        if ($isHybrid && $hasBothComponents && $day1 === $day2) {
+            return [];
+        }
+
         $modes = match (true) {
             $isField => ['field'],
             $hasBothComponents => ['on-site'],
@@ -3315,6 +3377,14 @@ class CSPSolver
             'max_iterations' => (int) ($input['max_iterations'] ?? $input['maxIterations'] ?? 250_000),
             'timeout_seconds' => (float) ($input['timeout_seconds'] ?? $input['timeoutSeconds'] ?? 8.0),
             'seed' => isset($input['seed']) ? (int) $input['seed'] : null,
+            'throw_on_empty_domain' => filter_var(
+                $input['throw_on_empty_domain'] ?? $input['throwOnEmptyDomain'] ?? true,
+                FILTER_VALIDATE_BOOLEAN,
+            ),
+            'allow_room_tba_fallback' => filter_var(
+                $input['allow_room_tba_fallback'] ?? $input['allowRoomTbaFallback'] ?? true,
+                FILTER_VALIDATE_BOOLEAN,
+            ),
         ];
     }
 
@@ -3810,6 +3880,9 @@ class CSPSolver
         }
 
         if (($candidate['_split_lecture_online_default'] ?? false) && $this->candidateContainsLaboratoryBlock($candidate)) {
+            if (($candidate['_all_saturday_split'] ?? false)) {
+                return 1;
+            }
             if ($this->hasOnlineLectureBlock($candidate)) {
                 return $this->candidateContainsWeekendBlock($candidate) ? 2 : 0;
             }

@@ -23,6 +23,9 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
 
     public int $tries = 3;
 
+    /** A timeout is a terminal generation failure, not a retryable preview. */
+    public bool $failOnTimeout = true;
+
     public function backoff(): array
     {
         return [10, 30, 60];
@@ -47,6 +50,7 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
 
         try {
             $sections = Sections::query()
+                ->with('department')
                 ->whereIn('id', array_map('intval', $this->sectionIds))
                 ->where('department_id', $run->department_id)
                 ->orderBy('section_name')
@@ -77,5 +81,22 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
             $run->update(['status' => 'failed', 'error_message' => $exception->getMessage(), 'finished_at' => now()]);
             throw $exception;
         }
+    }
+
+    /**
+     * Laravel invokes this after worker-level failures, including timeouts
+     * that never reach handle()'s catch blocks. Keep the durable run record
+     * from remaining in the misleading running state.
+     */
+    public function failed(?Throwable $exception): void
+    {
+        ScheduleGenerationRun::query()
+            ->where('run_id', $this->runId)
+            ->whereIn('status', ['queued', 'running'])
+            ->update([
+                'status' => 'failed',
+                'error_message' => $exception?->getMessage() ?? 'Year-level generation job failed.',
+                'finished_at' => now(),
+            ]);
     }
 }

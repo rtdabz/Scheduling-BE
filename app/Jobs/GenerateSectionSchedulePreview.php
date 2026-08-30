@@ -20,6 +20,8 @@ class GenerateSectionSchedulePreview implements ShouldQueue
     public int $timeout = 60;
     public int $tries = 3;
 
+    public bool $failOnTimeout = true;
+
     public function backoff(): array
     {
         return [10, 30, 60];
@@ -49,5 +51,18 @@ class GenerateSectionSchedulePreview implements ShouldQueue
             $run->update(['status' => 'failed', 'error_message' => $exception->getMessage(), 'finished_at' => now()]);
             throw $exception;
         }
+    }
+
+    /** Keep the durable run from remaining active after a worker-level failure. */
+    public function failed(?Throwable $exception): void
+    {
+        ScheduleGenerationRun::query()
+            ->where('run_id', $this->runId)
+            ->whereIn('status', ['queued', 'running'])
+            ->update([
+                'status' => 'failed',
+                'error_message' => $exception?->getMessage() ?? 'Section generation job failed.',
+                'finished_at' => now(),
+            ]);
     }
 }

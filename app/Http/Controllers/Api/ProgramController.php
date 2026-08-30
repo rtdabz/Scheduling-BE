@@ -98,13 +98,13 @@ class ProgramController extends Controller
     {
         if ($program->users()->exists() || $program->faculties()->exists() || $program->courses()->exists()) {
             return response()->json([
-                'message' => 'This program cannot be deleted while users, faculty, or courses are assigned to it.',
+                'message' => 'This program cannot be archived while users, faculty, or courses are assigned to it.',
             ], 422);
         }
 
         $program->delete();
         ApiCache::forgetGroup('departments.index');
 
-        return response()->json(['message' => 'Program deleted successfully.']);
+        return response()->json(['message' => 'Program archived successfully.']);
     }
 }

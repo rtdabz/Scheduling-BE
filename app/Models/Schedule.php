@@ -3,10 +3,13 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\Auth;
 
 class Schedule extends Model
 {
+    use SoftDeletes;
+
     protected $table = 'schedules';
 
     protected $with = ['split'];
@@ -35,19 +38,14 @@ class Schedule extends Model
         'meeting_type',
         'meeting_index',
         'status',
-        'rejection_reason',
-        'reviewed_by_dean',
-        'reviewed_at_dean',
-        'approved_by_vpaa',
-        'approved_at_vpaa',
-        'approval_override',
-        'approval_override_reason',
     ];
 
-    protected $casts = ['faculty_assignment_done' => 'boolean', 'approval_override' => 'boolean'];
+    protected $casts = ['faculty_assignment_done' => 'boolean'];
 
     protected ?string $tempSplitGroupId = null;
+
     protected ?string $tempMeetingType = null;
+
     protected ?int $tempMeetingIndex = null;
 
     public function split()
@@ -103,7 +101,7 @@ class Schedule extends Model
     protected static function booted()
     {
         static::saved(function (Schedule $schedule) {
-            ScheduleHistory::create([
+            $version = ScheduleHistoryVersion::create([
                 'schedule_id' => $schedule->id,
                 'term_id' => $schedule->term_id,
                 'section_id' => $schedule->section_id,
@@ -114,24 +112,40 @@ class Schedule extends Model
                 'snapshot' => $schedule->getAttributes(),
                 'changes' => $schedule->getChanges(),
             ]);
+            ScheduleHistoryItem::create(['history_version_id' => $version->id, 'original_schedule_id' => $schedule->id, 'section_id' => $schedule->section_id, 'course_id' => $schedule->course_id, 'faculty_id' => $schedule->faculty_id, 'room_id' => $schedule->room_id, 'after_snapshot' => $schedule->getAttributes(), 'snapshot_metadata' => ['event' => 'saved']]);
         });
 
         static::deleted(function (Schedule $schedule) {
-            ScheduleHistory::create([
+            $version = ScheduleHistoryVersion::create([
                 'schedule_id' => $schedule->id,
                 'term_id' => $schedule->term_id,
                 'section_id' => $schedule->section_id,
                 'course_id' => $schedule->course_id,
                 'department_id' => $schedule->department_id,
                 'actor_user_id' => Auth::id(),
-                'action' => 'deleted',
+                'action' => $schedule->isForceDeleting() ? 'deleted' : 'archived',
                 'snapshot' => $schedule->getAttributes(),
             ]);
+            ScheduleHistoryItem::create(['history_version_id' => $version->id, 'original_schedule_id' => $schedule->id, 'section_id' => $schedule->section_id, 'course_id' => $schedule->course_id, 'faculty_id' => $schedule->faculty_id, 'room_id' => $schedule->room_id, 'before_snapshot' => $schedule->getAttributes(), 'snapshot_metadata' => ['event' => 'deleted']]);
+        });
+
+        static::restored(function (Schedule $schedule) {
+            $version = ScheduleHistoryVersion::create([
+                'schedule_id' => $schedule->id,
+                'term_id' => $schedule->term_id,
+                'section_id' => $schedule->section_id,
+                'course_id' => $schedule->course_id,
+                'department_id' => $schedule->department_id,
+                'actor_user_id' => Auth::id(),
+                'action' => 'restored',
+                'snapshot' => $schedule->getAttributes(),
+            ]);
+            ScheduleHistoryItem::create(['history_version_id' => $version->id, 'original_schedule_id' => $schedule->id, 'section_id' => $schedule->section_id, 'course_id' => $schedule->course_id, 'faculty_id' => $schedule->faculty_id, 'room_id' => $schedule->room_id, 'after_snapshot' => $schedule->getAttributes(), 'snapshot_metadata' => ['event' => 'restored']]);
         });
 
         static::saved(function (Schedule $schedule) {
             if ($schedule->tempSplitGroupId !== null || $schedule->tempMeetingType !== null || $schedule->tempMeetingIndex !== null) {
-                $split = $schedule->split ?: new ScheduleSplit();
+                $split = $schedule->split ?: new ScheduleSplit;
                 $split->schedule_id = $schedule->id;
                 if ($schedule->tempSplitGroupId !== null) {
                     $split->split_group_id = $schedule->tempSplitGroupId;
@@ -147,7 +161,6 @@ class Schedule extends Model
             }
         });
     }
-
 
     public function term()
     {
@@ -177,15 +190,5 @@ class Schedule extends Model
     public function department()
     {
         return $this->belongsTo(Departments::class);
-    }
-
-    public function deanReviewer()
-    {
-        return $this->belongsTo(User::class, 'reviewed_by_dean');
-    }
-
-    public function vpaaApprover()
-    {
-        return $this->belongsTo(User::class, 'approved_by_vpaa');
     }
 }

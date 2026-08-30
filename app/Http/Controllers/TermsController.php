@@ -139,7 +139,7 @@ class TermsController extends Controller
 
         if ($term->is_active) {
             return response()->json([
-                'message' => 'Cannot delete the active academic term. Please activate another term first.'
+                'message' => 'Cannot archive the active academic term. Please activate another term first.'
             ], 400);
         }
 
@@ -152,7 +152,7 @@ class TermsController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Term deleted successfully.'
+            'message' => 'Term archived successfully.'
         ]);
     }
 
