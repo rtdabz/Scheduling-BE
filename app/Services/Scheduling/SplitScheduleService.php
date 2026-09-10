@@ -83,7 +83,7 @@ final class SplitScheduleService
         $rooms = $this->resolveRooms($course, $mode, $roomId, $departmentId, $meetingType);
 
         $allowRoomTba = $mode === 'on-site'
-            && SchedulingPolicy::allowsRoomTbaFallback($course, $meetingType);
+            && SchedulingPolicy::allowsRoomTbaFallback($course, $departmentId, $meetingType);
 
         if ($rooms->isEmpty() && ! $allowRoomTba) {
             return ['status' => 'no_solution', 'recommendations' => []];

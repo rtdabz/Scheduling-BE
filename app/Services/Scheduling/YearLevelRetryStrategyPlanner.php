@@ -44,6 +44,7 @@ class YearLevelRetryStrategyPlanner
             $this->clearBottleneckPattern($configsBySectionId, $courses, $sectionNames, $focusSectionId, $focusCourseId),
             $this->clearSectionPatterns($configsBySectionId, $courses, $sectionNames, $focusSectionId),
             $this->clearBottleneckSplit($configsBySectionId, $courses, $sectionNames, $focusSectionId, $focusCourseId),
+            $this->disableSectionHybrid($configsBySectionId, $courses, $sectionNames, $focusSectionId),
             $this->clearSectionForcedModes($configsBySectionId, $courses, $sectionNames, $focusSectionId),
             $this->clearAllPatterns($configsBySectionId, $courses, $sectionNames),
         ] as $strategy) {
@@ -58,16 +59,20 @@ class YearLevelRetryStrategyPlanner
             ],
             YearLevelGenerationDiagnostics::TYPE_LECTURE_LAB_SPLIT => [
                 'alternate_ordering', 'clear_bottleneck_split', 'alternate_pattern', 'clear_section_patterns',
+                'alternate_ordering', 'clear_bottleneck_split', 'disable_section_hybrid', 'alternate_pattern', 'clear_section_patterns',
             ],
             YearLevelGenerationDiagnostics::TYPE_LABORATORY_ROOM => [
                 'alternate_ordering', 'clear_bottleneck_split', 'clear_section_forced_modes', 'clear_section_patterns',
+                'alternate_ordering', 'clear_bottleneck_split', 'disable_section_hybrid', 'clear_section_forced_modes', 'clear_section_patterns',
             ],
             YearLevelGenerationDiagnostics::TYPE_FORCED_ON_SITE,
             YearLevelGenerationDiagnostics::TYPE_LIMITED_ROOMS => [
                 'clear_section_forced_modes', 'alternate_ordering', 'clear_section_patterns', 'clear_bottleneck_split',
+                'clear_section_forced_modes', 'alternate_ordering', 'clear_section_patterns', 'clear_bottleneck_split', 'disable_section_hybrid',
             ],
             default => [
                 'alternate_ordering', 'clear_bottleneck_pattern', 'clear_bottleneck_split', 'clear_section_forced_modes', 'clear_all_patterns',
+                'alternate_ordering', 'clear_bottleneck_pattern', 'clear_bottleneck_split', 'disable_section_hybrid', 'clear_section_forced_modes', 'clear_all_patterns',
             ],
         };
 
@@ -327,6 +332,48 @@ class YearLevelRetryStrategyPlanner
             ),
             'impact' => 'high',
             'adjustments' => $adjustments,
+        ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @param  Collection<int, Course>  $courses
+     * @param  array<int, string>  $sectionNames
+     * @return array<string, mixed>|null
+     */
+    private function disableSectionHybrid(
+        array $configsBySectionId,
+        Collection $courses,
+        array $sectionNames,
+        int $focusSectionId,
+    ): ?array {
+        if ($focusSectionId <= 0 || ! isset($configsBySectionId[$focusSectionId])) {
+            return null;
+        }
+
+        $splitIds = array_map('intval', $configsBySectionId[$focusSectionId]['selected_split_session_course_ids'] ?? []);
+        $isHybrid = (bool) ($configsBySectionId[$focusSectionId]['is_hybrid'] ?? false);
+        if ($splitIds === [] && ! $isHybrid) {
+            return null;
+        }
+
+        return [
+            'key' => 'disable_section_hybrid',
+            'label' => sprintf('Turn off hybrid split sessions in %s', $sectionNames[$focusSectionId] ?? 'the section'),
+            'description' => sprintf(
+                'Schedule all %d split courses in %s as standard single sessions to resolve schedule crowding while keeping hybrid scheduling active on the other sections.',
+                count($splitIds),
+                $sectionNames[$focusSectionId] ?? 'the section',
+            ),
+            'impact' => 'high',
+            'adjustments' => [[
+                'type' => 'disable_section_hybrid',
+                'section_id' => $focusSectionId,
+                'course_id' => 0,
+                'value' => null,
+                'section_name' => $sectionNames[$focusSectionId] ?? '',
+                'course_code' => '',
+            ]],
         ];
     }
 

@@ -94,6 +94,7 @@ class MajorLectureLaboratoryFallbackTest extends TestCase
             roomId: (int) $lab->id,
             deliveryMode: 'on-site',
             meetingType: 'lecture',
+            departmentId: (int) $section->department_id,
         );
 
         $this->assertSame('room_type_match', $violation['rule'] ?? null);

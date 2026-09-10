@@ -7,6 +7,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Sections;
 use App\Services\Scheduling\SchedulingPolicy;
+use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -34,8 +35,10 @@ class SchedulingSettingsController extends Controller
             'gec_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'field_evening_schedule_enabled' => 'sometimes|required|boolean',
             'sunday_online_only_enabled' => 'sometimes|required|boolean',
-            'online_slot_limit' => 'sometimes|required|integer|min:1|max:100',
-            'field_slot_limit' => 'sometimes|required|integer|min:1|max:100',
+            // Null clears the ceiling: neither resource is a room, so an
+            // absent limit means unlimited rather than a default of three.
+            'online_slot_limit' => 'sometimes|nullable|integer|min:1|max:100',
+            'field_slot_limit' => 'sometimes|nullable|integer|min:1|max:100',
             'forced_day_rules' => 'sometimes|array',
             'forced_day_rules.*.course_id' => 'required|integer|exists:courses,id',
             'forced_day_rules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
@@ -94,10 +97,14 @@ class SchedulingSettingsController extends Controller
             $department->sunday_online_only_enabled = (bool) $validated['sunday_online_only_enabled'];
         }
         if (array_key_exists('online_slot_limit', $validated)) {
-            $department->online_slot_limit = (int) $validated['online_slot_limit'];
+            $department->online_slot_limit = $validated['online_slot_limit'] === null
+                ? null
+                : (int) $validated['online_slot_limit'];
         }
         if (array_key_exists('field_slot_limit', $validated)) {
-            $department->field_slot_limit = (int) $validated['field_slot_limit'];
+            $department->field_slot_limit = $validated['field_slot_limit'] === null
+                ? null
+                : (int) $validated['field_slot_limit'];
         }
         $department->save();
 
@@ -107,6 +114,8 @@ class SchedulingSettingsController extends Controller
         if (array_key_exists('field_course_codes', $validated)) {
             $this->syncFieldCourseCodes($department, $validated['field_course_codes'], $section);
         }
+
+        ApiCache::forgetGroup('initial.data');
 
         return response()->json($this->settingsPayload(
             $department,
@@ -132,8 +141,10 @@ class SchedulingSettingsController extends Controller
             'gec_split_schedule_override_enabled' => (bool) $department->gec_split_schedule_override_enabled,
             'field_evening_schedule_enabled' => (bool) $department->field_evening_schedule_enabled,
             'sunday_online_only_enabled' => (bool) ($department->sunday_online_only_enabled ?? true),
-            'online_slot_limit' => max(1, (int) ($department->online_slot_limit ?? 3)),
-            'field_slot_limit' => max(1, (int) ($department->field_slot_limit ?? 3)),
+            // NULL is surfaced as-is so the UI can show "no limit" rather than
+            // inventing a ceiling the scheduler does not apply.
+            'online_slot_limit' => $department->online_slot_limit === null ? null : max(1, (int) $department->online_slot_limit),
+            'field_slot_limit' => $department->field_slot_limit === null ? null : max(1, (int) $department->field_slot_limit),
             'lecture_lab_available' => $lectureLabAvailable,
             'generation_period' => $section ? [
                 'section_id' => (int) $section->id,
@@ -172,33 +183,50 @@ class SchedulingSettingsController extends Controller
 
     private function hasLectureLabCourses(Departments $department): bool
     {
-        $activeCurriculum = Curriculum::query()
+        // A department-wide capability question: if *any* curriculum it runs
+        // has a lecture+lab major, the setting is relevant. Checking only the
+        // first active curriculum hid the setting from departments whose
+        // lecture+lab majors live in the curriculum that happened to sort second.
+        $activeCurriculumIds = Curriculum::query()
             ->where('department_id', $department->id)
             ->where('status', 'active')
-            ->first();
+            ->pluck('id');
 
-        if (! $activeCurriculum) {
+        if ($activeCurriculumIds->isEmpty()) {
             return false;
         }
 
-        return $activeCurriculum->courses()
+        return Course::query()
+            ->whereHas('curriculum', fn ($scope) => $scope->whereIn('curriculum.id', $activeCurriculumIds))
             ->where('course_category', 'major')
             ->where('lecture_hours', '>', 0)
             ->where('lab_hours', '>', 0)
             ->exists();
     }
 
-    private function activeCurriculum(Departments $department): ?Curriculum
+    /**
+     * When a section is in hand, its own curriculum is the answer — that is the
+     * course list the user is configuring against. Only the department-wide
+     * question (no section) falls back to scanning the department's active
+     * curricula, and then any of them will do because the caller is asking
+     * whether such a course exists at all, not where it sits.
+     */
+    private function activeCurriculum(Departments $department, ?Sections $section = null): ?Curriculum
     {
+        if ($section?->curriculum_id !== null) {
+            return Curriculum::query()->find((int) $section->curriculum_id);
+        }
+
         return Curriculum::query()
             ->where('department_id', $department->id)
             ->where('status', 'active')
+            ->orderByDesc('effective_school_year')
             ->first();
     }
 
     private function forcedDayCourses(Departments $department, ?Sections $section = null): array
     {
-        $activeCurriculum = $this->activeCurriculum($department);
+        $activeCurriculum = $this->activeCurriculum($department, $section);
 
         if (! $activeCurriculum) {
             return [];
@@ -234,7 +262,7 @@ class SchedulingSettingsController extends Controller
 
     private function fieldCourseOptions(Departments $department, ?Sections $section = null): array
     {
-        $activeCurriculum = $this->activeCurriculum($department);
+        $activeCurriculum = $this->activeCurriculum($department, $section);
 
         if (! $activeCurriculum) {
             return [];

@@ -23,6 +23,13 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
     {
         $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'IT']);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
 
         // One lecture room can offer 24 slots on each of six days (144 room-slots).
@@ -36,7 +43,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
                 'section_name' => "IT 1{$index}",
                 'year_level' => '1',
                 'semester' => '1st',
-                'department_id' => $department->id,
+                'department_id' => $department->id, 'program_id' => $departmentProgram->id,
                 'term_id' => $term->id,
                 'status' => 'active',
             ]);
@@ -61,7 +68,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             $courseIds[] = (int) $course->id;
         }
 
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
             'term_id' => $term->id,
@@ -200,6 +207,13 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             'lecture_lab_schedule_override_enabled' => true,
             'gec_split_schedule_override_enabled' => true,
         ]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
         $curriculum = Curriculum::create(['name' => 'CIT Curriculum', 'department_id' => $department->id, 'code' => 'CIT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
 
         foreach (['IT 105', 'NEE 204'] as $code) {
@@ -215,7 +229,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
                 'section_name' => "BSIT 1{$suffix}",
                 'year_level' => '1',
                 'semester' => '1st',
-                'department_id' => $department->id,
+                'department_id' => $department->id, 'program_id' => $departmentProgram->id,
                 'term_id' => $term->id,
                 'status' => 'active',
             ]);
@@ -256,7 +270,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
         $curriculum->courses()->attach($gec->id, ['year_level' => 1, 'semester' => 1]);
 
         $courseIds = [...$laboratoryCourseIds, (int) $gec->id];
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
             'term_id' => $term->id,
@@ -293,6 +307,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
                 $row['room_id'] === null ? null : (int) $row['room_id'],
                 (string) ($row['mode'] ?? 'on-site'),
                 $row['meeting_type'] ?? null,
+                isset($row['department_id']) ? (int) $row['department_id'] : null,
             );
 
             $this->assertNull(
@@ -313,8 +328,15 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             'department_code' => 'IT',
             'gec_split_schedule_override_enabled' => true,
         ]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
-        $section = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active']);
+        $section = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
         $course = Course::create([
             'course_code' => 'GEC 101',
             'course_name' => 'Understanding the Self',
@@ -337,7 +359,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             'section' => $section,
             'course' => $course,
             'room' => $room,
-            'user' => User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]),
+            'user' => $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id])),
         ];
     }
 

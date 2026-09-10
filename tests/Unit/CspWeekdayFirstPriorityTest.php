@@ -27,6 +27,32 @@ class CspWeekdayFirstPriorityTest extends TestCase
         );
     }
 
+    public function test_online_lecture_can_enter_the_same_search_tier_on_saturday(): void
+    {
+        $solver = new CSPSolver;
+        $dayTier = new ReflectionMethod($solver, 'candidateSearchDayTier');
+        $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
+
+        $weekdayOnline = $this->candidate('Monday', 'online', null, 'online');
+        $saturdayOnline = $this->candidate('Saturday', 'online', null, 'online');
+
+        $this->assertSame($dayTier->invoke($solver, $weekdayOnline), $dayTier->invoke($solver, $saturdayOnline));
+        $this->assertSame($priority->invoke($solver, $weekdayOnline, 1), $priority->invoke($solver, $saturdayOnline, 1));
+    }
+
+    public function test_hybrid_online_lecture_is_not_demoted_when_its_pair_contains_saturday(): void
+    {
+        $solver = new CSPSolver;
+        $dayTier = new ReflectionMethod($solver, 'candidateSearchDayTier');
+        $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
+
+        $weekdayHybrid = $this->hybridCandidate('Monday', 'Tuesday');
+        $saturdayHybrid = $this->hybridCandidate('Saturday', 'Tuesday');
+
+        $this->assertSame($dayTier->invoke($solver, $weekdayHybrid), $dayTier->invoke($solver, $saturdayHybrid));
+        $this->assertSame($priority->invoke($solver, $weekdayHybrid, 1), $priority->invoke($solver, $saturdayHybrid, 1));
+    }
+
     public function test_section_gaps_score_progressively_worse_as_they_grow(): void
     {
         $solver = new CSPSolver;
@@ -80,6 +106,7 @@ class CspWeekdayFirstPriorityTest extends TestCase
                 'mode' => $mode,
                 'room_id' => $roomId,
                 'room_type' => $roomType,
+                'meeting_type' => $mode === 'online' ? 'lecture' : null,
             ]],
         ];
     }
@@ -106,6 +133,20 @@ class CspWeekdayFirstPriorityTest extends TestCase
                 'room_type' => 'lecture',
                 'mode' => 'on-site',
             ]],
+        ];
+    }
+
+    private function hybridCandidate(string $lectureDay, string $labDay): array
+    {
+        return [
+            'mode' => 'online',
+            'room_id' => null,
+            'room_type' => 'online',
+            '_split_lecture_online_default' => true,
+            'blocks' => [
+                ['day' => $lectureDay, 'mode' => 'online', 'meeting_type' => 'lecture'],
+                ['day' => $labDay, 'mode' => 'on-site', 'room_type' => 'laboratory', 'meeting_type' => 'laboratory'],
+            ],
         ];
     }
 }

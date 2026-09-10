@@ -319,11 +319,18 @@ class RuleEngine
         return null;
     }
 
+    /**
+     * $departmentId is the scheduling department, not the course's owner. Field
+     * course codes are configured per department and shared minors carry no
+     * department of their own, so the room-type rule must be asked in the same
+     * terms as the day rules below or one course gets two answers in one run.
+     */
     public function checkRoomTypeMatch(
         int $courseId,
         ?int $roomId,
         string $deliveryMode = 'on-site',
-        ?string $meetingType = null
+        ?string $meetingType = null,
+        ?int $departmentId = null
     ): ?array {
         $course = $this->remember('course:'.$courseId, fn () => Course::find($courseId));
 
@@ -335,10 +342,10 @@ class RuleEngine
         }
 
         $room = $roomId !== null ? $this->remember('room:'.$roomId, fn () => Rooms::find($roomId)) : null;
-        $requiredRoomType = SchedulingPolicy::effectiveRoomType($course, $meetingType);
+        $requiredRoomType = SchedulingPolicy::effectiveRoomType($course, $departmentId, $meetingType);
 
         if ($deliveryMode === 'online') {
-            return SchedulingPolicy::allowsOnlineRoomFallback($course, $meetingType)
+            return SchedulingPolicy::allowsOnlineRoomFallback($course, $departmentId, $meetingType)
                 ? null
                 : [
                     'rule' => 'room_type_match',
@@ -347,7 +354,7 @@ class RuleEngine
         }
 
         if (! $room) {
-            if ($deliveryMode === 'on-site' && SchedulingPolicy::allowsRoomTbaFallback($course, $meetingType)) {
+            if ($deliveryMode === 'on-site' && SchedulingPolicy::allowsRoomTbaFallback($course, $departmentId, $meetingType)) {
                 return null;
             }
             return [
@@ -473,7 +480,11 @@ class RuleEngine
         $allowsLabTba = $course !== null
             && $mode === 'on-site'
             && $room === null
-            && SchedulingPolicy::allowsRoomTbaFallback($course, $attempt['meeting_type'] ?? null);
+            && SchedulingPolicy::allowsRoomTbaFallback(
+                $course,
+                $section?->department_id === null ? null : (int) $section->department_id,
+                $attempt['meeting_type'] ?? null,
+            );
         $faculty = ! empty($attempt['faculty_id'])
             ? $this->remember('faculty:'.$attempt['faculty_id'], fn () => Faculty::find($attempt['faculty_id']))
             : null;
@@ -765,6 +776,15 @@ class RuleEngine
             $violations[] = $fieldEveningViolation;
         }
 
+        $forcedDayViolation = $this->checkForcedCourseDay(
+            courseId: (int) $course->id,
+            departmentId: (int) $section->department_id,
+            day: (string) ($attempt['day'] ?? ''),
+        );
+        if ($forcedDayViolation !== null) {
+            $violations[] = $forcedDayViolation;
+        }
+
         return $violations;
     }
 
@@ -830,6 +850,11 @@ class RuleEngine
             $this->checkRelationalIntegrity($attempt)
         );
 
+        $configuredShapeViolation = $this->checkConfiguredMeetingShape($attempt);
+        if ($configuredShapeViolation !== null) {
+            $violations[] = $configuredShapeViolation;
+        }
+
         $mode = (string) ($attempt['mode'] ?? 'on-site');
 
         // FIELD uses department-scoped shared room capacity. ONLINE is checked
@@ -890,11 +915,15 @@ class RuleEngine
         }
 
         $courseId = $attempt['course_id'] ?? $attempt['subject_id'] ?? 0;
+        $roomTypeSection = isset($attempt['section_id'])
+            ? $this->remember('section:'.$attempt['section_id'], fn () => Sections::find($attempt['section_id']))
+            : null;
         $roomTypeMatch = $this->checkRoomTypeMatch(
             $courseId,
             isset($attempt['room_id']) ? (int) $attempt['room_id'] : null,
             (string) ($attempt['mode'] ?? 'on-site'),
-            $attempt['meeting_type'] ?? null
+            $attempt['meeting_type'] ?? null,
+            $roomTypeSection?->department_id === null ? null : (int) $roomTypeSection->department_id,
         );
         if ($roomTypeMatch) {
             $violations[] = $roomTypeMatch;
@@ -940,6 +969,180 @@ class RuleEngine
         }
 
         return $violations;
+    }
+
+    /**
+     * Validate linked meeting shapes that cannot be judged one row at a time.
+     * Legacy custom `days:x-y` groups are intentionally left alone; only the
+     * explicit Generator configurations are covered here.
+     *
+     * @param  list<array<string, mixed>>  $operations
+     * @return list<array<string, mixed>>
+     */
+    public function validateConfiguredMeetingGroups(array $operations): array
+    {
+        $violations = [];
+        $groups = collect($operations)
+            ->filter(static fn (array $operation): bool => ! empty($operation['split_group_id']))
+            ->groupBy(static fn (array $operation): string => (string) $operation['split_group_id']);
+
+        foreach ($groups as $groupId => $group) {
+            $rows = $group->values();
+            $first = $rows->first();
+            if (! is_array($first)) {
+                continue;
+            }
+
+            $isHybrid = $rows->contains(static fn (array $row): bool => (bool) ($row['is_hybrid'] ?? false));
+            $pattern = SchedulingPolicy::normalizePreferredPattern($first['preferred_pattern'] ?? null);
+            $isMinorSplit = ! $isHybrid && in_array($pattern, ['MW', 'TTh'], true);
+
+            if (! $isHybrid && ! $isMinorSplit) {
+                continue;
+            }
+
+            if ($rows->count() !== 2) {
+                $violations[] = [
+                    'rule' => $isHybrid ? 'hybrid_component_count' : 'minor_split_component_count',
+                    'message' => $isHybrid
+                        ? 'Hybrid scheduling requires exactly one online lecture and one on-site laboratory meeting.'
+                        : 'Split Session scheduling requires exactly two linked meetings.',
+                    'split_group_id' => $groupId,
+                ];
+                continue;
+            }
+
+            $courseId = (int) ($first['course_id'] ?? $first['subject_id'] ?? 0);
+            $course = $courseId > 0 ? $this->remember('course:'.$courseId, fn () => Course::find($courseId)) : null;
+            if ($course === null) {
+                continue;
+            }
+
+            if ($isHybrid) {
+                $types = $rows->pluck('meeting_type')->sort()->values()->all();
+                if ($types !== ['laboratory', 'lecture']) {
+                    $violations[] = [
+                        'rule' => 'hybrid_components',
+                        'message' => 'Hybrid scheduling requires one lecture component and one laboratory component.',
+                        'split_group_id' => $groupId,
+                    ];
+                }
+                continue;
+            }
+
+            $sectionId = (int) ($first['section_id'] ?? 0);
+            $section = $sectionId > 0
+                ? $this->remember('section:'.$sectionId, fn () => Sections::with('department')->find($sectionId))
+                : null;
+            if (! $section?->department?->gec_split_schedule_override_enabled || SchedulingPolicy::isMajorCourse($course)) {
+                $violations[] = [
+                    'rule' => 'minor_split_eligibility',
+                    'message' => 'Split Session is available only for minor courses when Minor Course Split Sessions is enabled.',
+                    'split_group_id' => $groupId,
+                ];
+                continue;
+            }
+
+            $expectedDays = $pattern === 'MW' ? ['Monday', 'Wednesday'] : ['Tuesday', 'Thursday'];
+            $actualDays = $rows->pluck('day')->sort()->values()->all();
+            sort($expectedDays);
+            if ($actualDays !== $expectedDays) {
+                $violations[] = [
+                    'rule' => 'minor_split_pattern',
+                    'message' => "Split Session {$pattern} meetings must use the configured day pair.",
+                    'split_group_id' => $groupId,
+                ];
+            }
+
+            $totalMinutes = $rows->sum(fn (array $row): int => max(0,
+                (int) ($this->timeToMinutes((string) ($row['end_time'] ?? '')) ?? 0)
+                - (int) ($this->timeToMinutes((string) ($row['start_time'] ?? '')) ?? 0)
+            ));
+            $expectedMinutes = max(1, (int) round((float) ($course->units ?? 0) * 60));
+            if ($totalMinutes !== $expectedMinutes) {
+                $violations[] = [
+                    'rule' => 'minor_split_duration',
+                    'message' => 'Split Session meeting durations must add up to the course contact hours used by the Schedule Generator.',
+                    'split_group_id' => $groupId,
+                ];
+            }
+        }
+
+        return $violations;
+    }
+
+    private function checkConfiguredMeetingShape(array $attempt): ?array
+    {
+        if (! (bool) ($attempt['is_hybrid'] ?? false)) {
+            return null;
+        }
+
+        $courseId = (int) ($attempt['course_id'] ?? $attempt['subject_id'] ?? 0);
+        $sectionId = (int) ($attempt['section_id'] ?? 0);
+        $course = $courseId > 0 ? $this->remember('course:'.$courseId, fn () => Course::find($courseId)) : null;
+        $section = $sectionId > 0
+            ? $this->remember('section:'.$sectionId, fn () => Sections::with('department')->find($sectionId))
+            : null;
+        if ($course === null || $section === null) {
+            return null;
+        }
+
+        if (! $section->department?->lecture_lab_schedule_override_enabled
+            || ! SchedulingPolicy::isMajorCourse($course)
+            || (int) ($course->lecture_hours ?? 0) <= 0
+            || (int) ($course->lab_hours ?? 0) <= 0) {
+            return [
+                'rule' => 'hybrid_eligibility',
+                'message' => 'Hybrid scheduling is available only for major courses with both lecture and laboratory hours when the department setting is enabled.',
+            ];
+        }
+
+        $meetingType = $attempt['meeting_type'] ?? null;
+        $expected = match ($meetingType) {
+            'lecture' => ['mode' => 'online', 'minutes' => (int) $course->lecture_hours * 60],
+            'laboratory' => ['mode' => 'on-site', 'minutes' => (int) $course->lab_hours * 180],
+            default => null,
+        };
+        if ($expected === null) {
+            return [
+                'rule' => 'hybrid_component_type',
+                'message' => 'Hybrid schedules must identify each meeting as lecture or laboratory.',
+            ];
+        }
+
+        $durationMinutes = (int) ($this->timeToMinutes((string) ($attempt['end_time'] ?? '')) ?? 0)
+            - (int) ($this->timeToMinutes((string) ($attempt['start_time'] ?? '')) ?? 0);
+        if (($attempt['mode'] ?? 'on-site') !== $expected['mode'] || $durationMinutes !== $expected['minutes']) {
+            return [
+                'rule' => 'hybrid_component_shape',
+                'message' => $meetingType === 'lecture'
+                    ? 'The Hybrid lecture must be online and use the Generator lecture duration.'
+                    : 'The Hybrid laboratory must be on-site and use the Generator laboratory duration.',
+            ];
+        }
+
+        return null;
+    }
+
+    private function checkForcedCourseDay(int $courseId, int $departmentId, string $day): ?array
+    {
+        $forcedDay = $this->remember(
+            "forcedDay:{$departmentId}:{$courseId}",
+            fn () => DB::table('department_forced_course_days')
+                ->where('department_id', $departmentId)
+                ->where('course_id', $courseId)
+                ->value('day'),
+        );
+
+        if ($forcedDay === null || $forcedDay === $day) {
+            return null;
+        }
+
+        return [
+            'rule' => 'forced_course_day',
+            'message' => "This course is configured to meet on {$forcedDay}.",
+            'required_day' => $forcedDay,
+        ];
     }
 
     private function checkOnlineCapacity(
@@ -1036,7 +1239,7 @@ class RuleEngine
             return null;
         }
 
-        if ($this->isFieldCourse($course)) {
+        if (SchedulingPolicy::isFieldCourse($course, (int) $section->department_id)) {
             // Non-NSTP field courses (PATHFIT, etc.): Mon–Fri only.
             if (! in_array($day, SchedulingPolicy::WEEKDAYS, true)) {
                 return [
@@ -1102,7 +1305,7 @@ class RuleEngine
         string $mode,
         Sections $section,
     ): ?array {
-        $isFieldPlacement = $mode === 'field' || $this->isFieldCourse($course);
+        $isFieldPlacement = $mode === 'field' || SchedulingPolicy::isFieldCourse($course, (int) $section->department_id);
         if (! $isFieldPlacement) {
             return null;
         }
@@ -1165,11 +1368,4 @@ class RuleEngine
         return null;
     }
 
-    /**
-     * Returns true when the course requires a field room (PATHFIT, NSTP, etc.).
-     */
-    private function isFieldCourse(Course $course): bool
-    {
-        return SchedulingPolicy::isFieldCourse($course);
-    }
 }

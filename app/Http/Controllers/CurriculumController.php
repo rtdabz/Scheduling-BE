@@ -2,13 +2,13 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
-use App\Models\Curriculum;
 use App\Models\Course;
-use App\Support\ApiCache;
-use Illuminate\Validation\Rule;
+use App\Models\Curriculum;
 use App\Services\Scheduling\ScheduleAuthorizationService;
+use App\Support\ApiCache;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Validation\Rule;
 
 class CurriculumController extends Controller
 {
@@ -16,23 +16,119 @@ class CurriculumController extends Controller
 
     public function index(Request $request)
     {
-        $query = Curriculum::with(['department'])->withCount('courses');
+        $query = Curriculum::with(['department', 'program'])
+            ->withCount('courses')
+            // How many cohorts still follow this curriculum. Drives the "in use"
+            // badge and the guard that refuses to archive one out from under them.
+            ->withCount(['sections as active_sections_count' => fn ($scope) => $scope->where('sections.status', 'active')]);
 
         if ($this->authorization->rejectsRequestedDepartment($request, $request->query('department_id'))) {
             return response()->json(['message' => 'You can only view curriculum for your department.'], 403);
         }
 
-        if (($departmentId = $this->authorization->requestedDepartment($request, $request->query('department_id'))) !== null) {
-            $query->where('department_id', $departmentId);
-        }
+        $departmentId = $this->authorization->requestedDepartment($request, $request->query('department_id'));
+        $status = $request->has('status') && $request->status !== 'all'
+            ? (string) $request->status
+            : null;
 
-        if ($request->has('status') && $request->status !== 'all') {
-            $query->where('status', $request->status);
-        }
+        // Nine mutation paths already call ApiCache::forgetGroups(['curriculum.index'])
+        // but nothing ever read that group, so the bumps were inert. Reading it here
+        // makes the existing invalidation meaningful.
+        $curriculumList = Cache::remember(
+            ApiCache::key('curriculum.index', [
+                'department_id' => $departmentId,
+                'status' => $status,
+            ]),
+            ApiCache::LOOKUP_TTL_SECONDS,
+            function () use ($query, $departmentId, $status) {
+                $curricula = $query
+                    ->when($departmentId !== null, fn ($scope) => $scope->where('department_id', $departmentId))
+                    ->when($status !== null, fn ($scope) => $scope->where('status', $status))
+                    // Newest effective year first so the list reads in the same
+                    // order as the new/old badges the annotation assigns.
+                    ->orderByDesc('effective_school_year')
+                    ->orderBy('created_at', 'desc')
+                    ->get();
 
-        $curriculumList = $query->orderBy('created_at', 'desc')->get();
+                // Ranking new against old needs every active sibling in the
+                // group, which a status filter would hide. Annotate against the
+                // unfiltered set, then return only what was asked for.
+                if ($status !== null) {
+                    $siblings = Curriculum::query()
+                        ->when($departmentId !== null, fn ($scope) => $scope->where('department_id', $departmentId))
+                        ->get(['id', 'department_id', 'program_id', 'effective_school_year', 'status']);
+                    Curriculum::annotateLifecycle($siblings);
+                    $labels = $siblings->keyBy('id');
+
+                    foreach ($curricula as $curriculum) {
+                        $match = $labels->get($curriculum->id);
+                        $curriculum->setAttribute('lifecycle', $match?->lifecycle);
+                        $curriculum->setAttribute('lifecycle_label', $match?->lifecycle_label);
+                    }
+
+                    return $curricula;
+                }
+
+                return Curriculum::annotateLifecycle($curricula);
+            },
+        );
 
         return response()->json($curriculumList);
+    }
+
+    /**
+     * New-vs-old is a statement about a curriculum's siblings, so a single
+     * record cannot label itself. Load the group and rank within it.
+     */
+    private function annotateAgainstSiblings(Curriculum $curriculum): void
+    {
+        $siblings = Curriculum::query()
+            ->where('department_id', $curriculum->department_id)
+            ->get(['id', 'department_id', 'program_id', 'effective_school_year', 'status']);
+
+        Curriculum::annotateLifecycle($siblings);
+        $match = $siblings->firstWhere('id', $curriculum->id);
+
+        $curriculum->setAttribute('lifecycle', $match?->lifecycle);
+        $curriculum->setAttribute('lifecycle_label', $match?->lifecycle_label);
+    }
+
+    /**
+     * Refuses to retire a curriculum that active sections still follow.
+     *
+     * Nothing else stops it: sections.curriculum_id is restrictOnDelete, but a
+     * status change is not a delete, and a section pointed at a deactivated or
+     * archived curriculum would fail generation with a confusing error far from
+     * the action that caused it. Answer here instead, naming the cohorts.
+     */
+    private function rejectIfStillInUse(Curriculum $curriculum, string $targetStatus): ?\Illuminate\Http\JsonResponse
+    {
+        $sections = $curriculum->sections()
+            ->where('sections.status', 'active')
+            ->orderBy('year_level')
+            ->orderBy('section_name')
+            ->get(['id', 'section_name', 'year_level']);
+
+        if ($sections->isEmpty()) {
+            return null;
+        }
+
+        $verb = $targetStatus === 'archived' ? 'Archive' : 'Deactivate';
+        $names = $sections->pluck('section_name')->take(5)->implode(', ');
+        $overflow = $sections->count() > 5 ? sprintf(' and %d more', $sections->count() - 5) : '';
+
+        return response()->json([
+            'message' => sprintf(
+                'Cannot %s this curriculum: %d active section%s still follow%s it (%s%s). Move them to another curriculum first.',
+                strtolower($verb),
+                $sections->count(),
+                $sections->count() === 1 ? '' : 's',
+                $sections->count() === 1 ? 's' : '',
+                $names,
+                $overflow,
+            ),
+            'blocking_sections' => $sections,
+        ], 422);
     }
 
     public function store(Request $request)
@@ -49,7 +145,7 @@ class CurriculumController extends Controller
                 Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id') ?: $user->department_id)),
             ],
             'effective_school_year' => 'required|string|max:20',
-            'status' => 'nullable|string|in:draft,active,archived',
+            'status' => 'nullable|string|in:active,deactivated,archived',
             'description' => 'nullable|string',
         ];
 
@@ -58,57 +154,56 @@ class CurriculumController extends Controller
         }
 
         $validated = $request->validate($rules);
-        $validated['status'] = $validated['status'] ?? 'draft';
+        // A new curriculum starts out of service until somebody activates it.
+        $validated['status'] = $validated['status'] ?? 'deactivated';
 
-        if (!$isPrivileged) {
+        if (! $isPrivileged) {
             $validated['department_id'] = $user->department_id;
         }
 
-        $curriculum = \DB::transaction(function () use ($validated) {
-            if ($validated['status'] === 'active' && !empty($validated['department_id'])) {
-                Curriculum::where('department_id', $validated['department_id'])
-                    ->when(($validated['program_id'] ?? null) === null,
-                        fn ($query) => $query->whereNull('program_id'),
-                        fn ($query) => $query->where('program_id', $validated['program_id']),
-                    )
-                    ->where('status', 'active')
-                    ->update(['status' => 'draft']);
-            }
-            return Curriculum::create($validated);
-        });
+        // Activating a curriculum no longer demotes its siblings: a department
+        // mid-transition runs the old and the new one side by side, and each
+        // section says which of them it follows.
+        $curriculum = Curriculum::create($validated);
 
         $curriculum->loadCount('courses');
 
-        ApiCache::forgetGroups(['curriculum.index']);
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json($curriculum, 201);
     }
 
     public function show(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
         $curriculum->loadCount('courses');
-        $curriculum->load('department');
+        $curriculum->loadCount(['sections as active_sections_count' => fn ($scope) => $scope->where('sections.status', 'active')]);
+        $curriculum->load(['department', 'program']);
+        $this->annotateAgainstSiblings($curriculum);
 
         return response()->json($curriculum);
     }
 
     public function update(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
         $user = $request->user();
         $isPrivileged = in_array($user->role, ['vpaa', 'super_admin']);
 
         $rules = [
             'name' => 'sometimes|string|max:255',
-            'code' => 'sometimes|string|max:50|unique:curriculum,code,' . $curriculum->id,
+            'code' => 'sometimes|string|max:50|unique:curriculum,code,'.$curriculum->id,
             'program_id' => [
                 'nullable',
                 'integer',
                 Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id') ?: $curriculum->department_id)),
             ],
             'effective_school_year' => 'sometimes|string|max:20',
-            'status' => 'nullable|string|in:draft,active,archived',
+            'status' => 'nullable|string|in:active,deactivated,archived',
             'description' => 'nullable|string',
         ];
 
@@ -118,56 +213,54 @@ class CurriculumController extends Controller
 
         $validated = $request->validate($rules);
 
-        if (!$isPrivileged) {
+        if (! $isPrivileged) {
             unset($validated['department_id']);
         }
 
-        \DB::transaction(function () use ($validated, $curriculum) {
-            $newStatus = $validated['status'] ?? $curriculum->status;
-            $deptId = isset($validated['department_id']) ? $validated['department_id'] : $curriculum->department_id;
+        $newStatus = $validated['status'] ?? $curriculum->status;
+        if ($newStatus !== 'active' && $curriculum->status === 'active'
+            && ($blocked = $this->rejectIfStillInUse($curriculum, $newStatus)) !== null) {
+            return $blocked;
+        }
 
-            if ($newStatus === 'active' && $deptId) {
-                Curriculum::where('department_id', $deptId)
-                    ->where('id', '!=', $curriculum->id)
-                    ->when(($validated['program_id'] ?? $curriculum->program_id) === null,
-                        fn ($query) => $query->whereNull('program_id'),
-                        fn ($query) => $query->where('program_id', $validated['program_id'] ?? $curriculum->program_id),
-                    )
-                    ->where('status', 'active')
-                    ->update(['status' => 'draft']);
-            }
-
-            $curriculum->update($validated);
-        });
+        $curriculum->update($validated);
 
         $curriculum->loadCount('courses');
 
-        ApiCache::forgetGroups(['curriculum.index']);
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json($curriculum);
     }
 
     public function destroy(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+        if (($blocked = $this->rejectIfStillInUse($curriculum, 'archived')) !== null) {
+            return $blocked;
+        }
+
         $curriculum->update(['status' => 'archived']);
 
-        ApiCache::forgetGroups(['curriculum.index']);
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json(['message' => 'Curriculum archived successfully']);
     }
 
     public function duplicate(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
 
         $newCurriculum = Curriculum::create([
-            'name' => $curriculum->name . ' (Copy)',
-            'code' => $curriculum->code . '-COPY-' . time(),
+            'name' => $curriculum->name.' (Copy)',
+            'code' => $curriculum->code.'-COPY-'.time(),
             'department_id' => $curriculum->department_id,
             'program_id' => $curriculum->program_id,
             'effective_school_year' => $curriculum->effective_school_year,
-            'status' => 'draft',
+            'status' => 'deactivated',
             'description' => $curriculum->description,
         ]);
 
@@ -185,56 +278,50 @@ class CurriculumController extends Controller
 
         $newCurriculum->loadCount('courses');
 
-        ApiCache::forgetGroups(['curriculum.index']);
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json($newCurriculum, 201);
     }
 
     public function updateStatus(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
-
-        $validated = $request->validate([
-            'status' => 'required|string|in:draft,active,archived',
-        ]);
-
-        if ($validated['status'] === 'archived' && $curriculum->status === 'active') {
-            return response()->json([
-                'message' => 'Cannot archive an active curriculum. Please deactivate it first.'
-            ], 422);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        \DB::transaction(function () use ($validated, $curriculum) {
-            if ($validated['status'] === 'active' && $curriculum->department_id) {
-                    Curriculum::where('department_id', $curriculum->department_id)
-                        ->where('id', '!=', $curriculum->id)
-                        ->when($curriculum->program_id === null,
-                            fn ($query) => $query->whereNull('program_id'),
-                            fn ($query) => $query->where('program_id', $curriculum->program_id),
-                        )
-                        ->where('status', 'active')
-                    ->update(['status' => 'draft']);
-            }
+        $validated = $request->validate([
+            'status' => 'required|string|in:active,deactivated,archived',
+        ]);
 
-            $curriculum->update(['status' => $validated['status']]);
-        });
+        // An active curriculum may now be retired directly, but only once no
+        // cohort still follows it. That check replaces the old blanket refusal,
+        // which existed only because deactivating used to be the way to make
+        // room for a different active curriculum.
+        if ($validated['status'] !== 'active'
+            && ($blocked = $this->rejectIfStillInUse($curriculum, $validated['status'])) !== null) {
+            return $blocked;
+        }
+
+        $curriculum->update(['status' => $validated['status']]);
 
         $curriculum->loadCount('courses');
 
-        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json($curriculum);
     }
 
     public function attachCourse(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
 
         $validated = $request->validate([
-            'course_id'          => 'required|exists:courses,id',
-            'year_level'         => 'required|integer|between:1,4',
-            'semester'           => 'required|integer|between:1,3',
-            'replace_course_id'  => 'sometimes|integer|exists:courses,id',
+            'course_id' => 'required|exists:courses,id',
+            'year_level' => 'required|integer|between:1,4',
+            'semester' => 'required|integer|between:1,3',
+            'replace_course_id' => 'sometimes|integer|exists:courses,id',
         ]);
 
         $course = Course::findOrFail($validated['course_id']);
@@ -244,7 +331,7 @@ class CurriculumController extends Controller
             $curriculum->courses()->syncWithoutDetaching([
                 $validated['course_id'] => [
                     'year_level' => $validated['year_level'],
-                    'semester'   => $validated['semester'],
+                    'semester' => $validated['semester'],
                 ],
             ]);
 
@@ -256,20 +343,22 @@ class CurriculumController extends Controller
             }
         });
 
-        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json(['message' => 'Course attached successfully']);
     }
 
     public function attachCoursesBatch(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
 
         $validated = $request->validate([
-            'courses'              => 'required|array|min:1',
-            'courses.*.course_id'  => 'required|integer|exists:courses,id',
+            'courses' => 'required|array|min:1',
+            'courses.*.course_id' => 'required|integer|exists:courses,id',
             'courses.*.year_level' => 'required|integer|between:1,4',
-            'courses.*.semester'   => 'required|integer|between:1,3',
+            'courses.*.semester' => 'required|integer|between:1,3',
         ]);
 
         $syncData = [];
@@ -279,20 +368,22 @@ class CurriculumController extends Controller
 
             $syncData[$item['course_id']] = [
                 'year_level' => $item['year_level'],
-                'semester'   => $item['semester'],
+                'semester' => $item['semester'],
             ];
         }
 
         $curriculum->courses()->syncWithoutDetaching($syncData);
 
-        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
-        return response()->json(['message' => count($syncData) . ' course(s) attached successfully']);
+        return response()->json(['message' => count($syncData).' course(s) attached successfully']);
     }
 
     public function batchCreateAndAttachCourses(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
 
         $validated = $request->validate([
             'courses' => 'required|array|min:1',
@@ -326,20 +417,20 @@ class CurriculumController extends Controller
                 // 1. Check if course already exists (majors scoped to department, minors globally)
                 $course = null;
                 if ($category === 'minor') {
-                    $course = \App\Models\Course::where('course_code', $code)
+                    $course = Course::where('course_code', $code)
                         ->where('course_category', 'minor')
                         ->first();
                 } else {
-                    $course = \App\Models\Course::where('course_code', $code)
+                    $course = Course::where('course_code', $code)
                         ->where('department_id', $curriculum->department_id)
                         ->first();
                 }
 
                 $semStr = $semester == 1 ? '1st' : ($semester == 2 ? '2nd' : 'summer');
 
-                if (!$course) {
+                if (! $course) {
                     // Create course
-                    $course = \App\Models\Course::create([
+                    $course = Course::create([
                         'course_code' => $code,
                         'course_name' => $name,
                         'lecture_hours' => $lec,
@@ -383,9 +474,10 @@ class CurriculumController extends Controller
                             'row_id' => $rowId,
                             'status' => 'success',
                             'course' => $course,
-                            'message' => 'Course is already attached to this term.'
+                            'message' => 'Course is already attached to this term.',
                         ];
                         \DB::commit();
+
                         continue;
                     } else {
                         throw new \Exception('Course code is already used in another term of this curriculum.');
@@ -403,39 +495,43 @@ class CurriculumController extends Controller
                 $results[] = [
                     'row_id' => $rowId,
                     'status' => 'success',
-                    'course' => $course
+                    'course' => $course,
                 ];
             } catch (\Exception $e) {
                 \DB::rollBack();
                 $results[] = [
                     'row_id' => $rowId,
                     'status' => 'error',
-                    'message' => $e->getMessage()
+                    'message' => $e->getMessage(),
                 ];
             }
         }
 
-        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json([
-            'results' => $results
+            'results' => $results,
         ]);
     }
 
     public function detachCourse(Request $request, Curriculum $curriculum, Course $course)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
 
         $curriculum->courses()->detach($course->id);
 
-        ApiCache::forgetGroups(['curriculum.index', 'initial.data']);
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json(['message' => 'Course removed successfully']);
     }
 
     public function showWithCourses(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
 
         $curriculum->loadCount('courses');
         $curriculum->load('department');
@@ -449,25 +545,29 @@ class CurriculumController extends Controller
             ->orderBy('curriculum_course.semester')
             ->get();
 
-        $grouped = $courses->groupBy(fn($c) => $c->pivot->year_level . '-' . $c->pivot->semester)
+        $grouped = $courses->groupBy(fn ($c) => $c->pivot->year_level.'-'.$c->pivot->semester)
             ->map(function ($group) {
                 $first = $group->first();
+
                 return [
-                    'year_level' => (int)$first->pivot->year_level,
-                    'semester'   => (int)$first->pivot->semester,
-                    'courses'    => $group->sort(function ($a, $b) {
+                    'year_level' => (int) $first->pivot->year_level,
+                    'semester' => (int) $first->pivot->semester,
+                    'courses' => $group->sort(function ($a, $b) {
                         $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
                         $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
-                        if ($catA !== $catB) return $catA <=> $catB;
+                        if ($catA !== $catB) {
+                            return $catA <=> $catB;
+                        }
+
                         return strcmp($a->course_code ?? '', $b->course_code ?? '');
-                    })->map(fn($c) => [
-                        'id'          => $c->id,
-                        'code'       => $c->course_code,
-                        'title'      => $c->course_name,
-                        'category'   => $c->course_category,
-                        'lec_units'  => $c->lecture_hours,
-                        'lab_units'  => $c->lab_hours,
-                        'total_units'=> $c->units,
+                    })->map(fn ($c) => [
+                        'id' => $c->id,
+                        'code' => $c->course_code,
+                        'title' => $c->course_name,
+                        'category' => $c->course_category,
+                        'lec_units' => $c->lecture_hours,
+                        'lab_units' => $c->lab_hours,
+                        'total_units' => $c->units,
                         // Which program owns a major decides who may teach it, so
                         // the course editor shows and edits it here.
                         'program_id' => $c->program_id,
@@ -475,7 +575,7 @@ class CurriculumController extends Controller
                     'totals' => [
                         'lec' => $group->sum('lecture_hours'),
                         'lab' => $group->sum('lab_hours'),
-                        'tu'  => $group->sum('units'),
+                        'tu' => $group->sum('units'),
                     ],
                 ];
             })->values();
@@ -493,7 +593,7 @@ class CurriculumController extends Controller
                 'description' => $curriculum->description,
                 'courses_count' => $curriculum->courses_count,
             ],
-            'terms'      => $grouped,
+            'terms' => $grouped,
         ]);
     }
 

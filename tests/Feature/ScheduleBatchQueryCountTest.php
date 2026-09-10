@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Sections;
 use App\Models\Terms;
@@ -136,15 +137,18 @@ class ScheduleBatchQueryCountTest extends TestCase
             'is_active' => true, 'is_enabled' => true,
         ]);
         $dept = Departments::create(['department_name' => 'Query Dept', 'department_code' => 'QRY']);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $program = Program::create(['department_id' => $dept->id, 'code' => 'QRYP', 'name' => 'Query Program']);
         $section = Sections::create([
             'section_name' => 'QRY-1A', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $dept->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $dept->id, 'program_id' => $program->id, 'term_id' => $term->id, 'status' => 'active',
         ]);
         $room = Rooms::create([
             'room_code' => 'QRY101', 'room_type' => 'lecture', 'status' => 'available',
             'department_id' => $dept->id, 'max_concurrent_classes' => 1,
         ]);
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]));
 
         return [$term, $dept, $section, $room, $user];
     }

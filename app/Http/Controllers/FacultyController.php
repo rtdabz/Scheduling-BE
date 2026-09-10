@@ -5,7 +5,11 @@ namespace App\Http\Controllers;
 use App\Models\Faculty;
 use App\Models\Terms;
 use App\Services\FacultyLoadService;
+use App\Services\Scheduling\SchedulingPolicy;
+use App\Support\ApiCache;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
@@ -19,17 +23,40 @@ class FacultyController extends Controller
      */
     private const LOAD_FIELDS = ['max_units', 'deload_units', 'overload_units', 'probono_units'];
 
+    /**
+     * The allowances the Secretary alone maintains. The two units the roster
+     * editor enters — the contract ceiling (`max_units`) and the overload
+     * granted on top of it — are set with the rest of the roster record, since
+     * the Add Instructor form asks for one of them by load type. Deload and pro
+     * bono remain the Secretary's to grant.
+     */
+    private const SECRETARY_ONLY_LOAD_FIELDS = ['deload_units', 'probono_units'];
+
+    /** Fallback ceiling when the roster editor submits no load. */
+    private const DEFAULT_MAX_UNITS = 21;
+
     public function __construct(private readonly FacultyLoadService $facultyLoad) {}
 
     public function index(Request $request)
     {
         $departmentId = $this->resolveDepartmentId($request);
+        $termId = $this->activeTermId();
 
         $programId = $request->user()?->role === 'program_head'
             ? (int) ($request->user()?->program_id ?? 0)
             : null;
 
-        return response()->json($this->facultyLoad->get($departmentId, $this->activeTermId(), $programId));
+        $faculty = Cache::remember(
+            ApiCache::key('faculty.index', [
+                'department_id' => $departmentId,
+                'term_id' => $termId,
+                'program_id' => $programId,
+            ]),
+            ApiCache::LOOKUP_TTL_SECONDS,
+            fn () => $this->facultyLoad->get($departmentId, $termId, $programId),
+        );
+
+        return response()->json($faculty);
     }
 
     public function store(Request $request)
@@ -40,9 +67,10 @@ class FacultyController extends Controller
             'last_name' => 'required|string|max:255',
             'middle_name' => 'nullable|string|max:255',
             'employment_type' => 'required|in:full-time,part-time',
-            // Load allowances are maintained by the Secretary. VPAA creates the
-            // roster record only; the database default is used until the
-            // Secretary configures the instructor's load.
+            // The units come from the roster editor, so a part-time instructor
+            // is not created carrying a full-time load. Which of the two the
+            // form fills depends on the load type it was given. Deload and pro
+            // bono are maintained by the Secretary.
             'max_units' => 'sometimes|integer|min:1',
             'overload_units' => 'nullable|integer|min:0',
             'deload_units' => 'nullable|integer|min:0',
@@ -62,9 +90,15 @@ class FacultyController extends Controller
         // so passing the raw request through let a caller forge an
         // administrative badge or claim another user's profile.
         $payload = $validator->validated();
-        unset($payload['max_units'], $payload['overload_units'], $payload['deload_units'], $payload['probono_units']);
+        unset($payload['deload_units'], $payload['probono_units']);
+        // `overload_units` is nullable in the request but NOT NULL in the
+        // table, so an explicit null has to fall through to the default below
+        // rather than be inserted.
+        if (($payload['overload_units'] ?? null) === null) {
+            unset($payload['overload_units']);
+        }
         $payload += [
-            'max_units' => 21,
+            'max_units' => self::DEFAULT_MAX_UNITS,
             'overload_units' => 0,
             'deload_units' => 0,
             'probono_units' => 0,
@@ -74,6 +108,7 @@ class FacultyController extends Controller
         }
 
         $faculty = Faculty::create($payload);
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
         return response()->json($this->present($faculty), 201);
     }
@@ -97,7 +132,7 @@ class FacultyController extends Controller
         $loadOnly = $this->isLoadOnlyEditor($request);
 
         if (! $loadOnly) {
-            $submittedLoadFields = array_intersect(array_keys($request->all()), self::LOAD_FIELDS);
+            $submittedLoadFields = array_intersect(array_keys($request->all()), self::SECRETARY_ONLY_LOAD_FIELDS);
             if ($submittedLoadFields !== []) {
                 return response()->json([
                     'message' => 'Only the Secretary may update teaching load allowances.',
@@ -151,6 +186,7 @@ class FacultyController extends Controller
         }
 
         $faculty->update($payload);
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
         return response()->json($this->present($faculty->refresh()));
     }
@@ -172,6 +208,7 @@ class FacultyController extends Controller
         $released = $this->liveScheduleIds($faculty);
 
         DB::transaction(fn () => $faculty->delete());
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
         return response()->json([
             'message' => 'Faculty archived successfully',
@@ -205,13 +242,13 @@ class FacultyController extends Controller
         return DB::table('schedules')
             ->where('faculty_id', $faculty->id)
             ->where('term_id', $termId)
-            ->whereIn('status', \App\Services\Scheduling\SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
+            ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
             ->pluck('id')
             ->map(fn ($id) => (int) $id)
             ->all();
     }
 
-    private function guardDepartment(Request $request, Faculty $faculty): ?\Illuminate\Http\JsonResponse
+    private function guardDepartment(Request $request, Faculty $faculty): ?JsonResponse
     {
         $departmentId = $this->resolveDepartmentId($request);
         if ($departmentId !== null && (int) $faculty->department_id !== $departmentId) {

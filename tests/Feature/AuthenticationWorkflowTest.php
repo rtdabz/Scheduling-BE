@@ -51,7 +51,8 @@ class AuthenticationWorkflowTest extends TestCase
         ]);
 
         $response = $this->actingAs($vpaa, 'sanctum')->postJson('/api/user', [
-            'name' => 'Approved User',
+            'first_name' => 'Approved',
+            'last_name' => 'User',
             'username' => 'approved.user',
             'email' => 'approved@school.edu.ph',
             'password' => 'StrongPass123',
@@ -62,7 +63,8 @@ class AuthenticationWorkflowTest extends TestCase
 
         $user = User::where('username', 'approved.user')->firstOrFail();
         $this->actingAs($vpaa, 'sanctum')->putJson("/api/user/{$user->id}", [
-            'name' => $user->name,
+            'first_name' => $user->first_name,
+            'last_name' => $user->last_name,
             'email' => $user->email,
             'role' => $user->role,
             'department_id' => $departmentId,

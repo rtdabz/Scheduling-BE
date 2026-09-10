@@ -9,15 +9,18 @@ use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
+use App\Models\Sections;
 use App\Models\Terms;
 use App\Services\FacultyLoadService;
+use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\BatchConflict;
 use App\Services\Scheduling\BatchConflictValidator;
+use App\Services\Scheduling\Lock\SchedulingScopeLock;
+use App\Services\Scheduling\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\ScheduleAuthorizationService;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
-use App\Services\ScheduleHistoryRecorder;
 use App\Services\TimeslotService;
 use App\Support\ApiCache;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -30,10 +33,8 @@ class ScheduleController extends Controller
     use ConfirmsFacultyOverload;
 
     private const REPLACEABLE_BATCH_STATUSES = ['draft', 'completed', 'revision'];
-    private const PLOTTING_EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
 
-    /** Seconds to wait for a concurrent batch save on the same term before giving up. */
-    private const SCHEDULE_LOCK_TIMEOUT_SECONDS = 10;
+    private const PLOTTING_EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
 
     protected RuleEngine $ruleEngine;
 
@@ -44,7 +45,9 @@ class ScheduleController extends Controller
         private readonly BatchConflictValidator $batchConflicts,
         private readonly FacultyLoadService $facultyLoad,
         private readonly ScheduleAuthorizationService $authorization,
+        private readonly ManualHybridFacultyAssignmentResolver $manualHybridAssignments,
         private readonly ScheduleHistoryRecorder $historyRecorder,
+        private readonly SchedulingScopeLock $scheduleWriteLock,
     ) {
         $this->ruleEngine = $ruleEngine;
     }
@@ -53,7 +56,7 @@ class ScheduleController extends Controller
     {
         $perPage = min(max((int) $request->query('per_page', 500), 1), 1000);
         $query = Schedule::with([
-            'term', 'section', 'course', 'faculty', 'room', 'department',
+            'term', 'section', 'course', 'faculty', 'room', 'department', 'program',
         ]);
 
         if ($request->has('term_id') && $request->term_id) {
@@ -105,6 +108,7 @@ class ScheduleController extends Controller
             'faculty_id' => 'nullable|exists:faculties,id',
             'room_id' => 'nullable|exists:rooms,id',
             'department_id' => 'required|exists:departments,id',
+            'program_id' => 'nullable|integer|exists:programs,id',
             'day' => SchedulingPolicy::allowedDaysRule('required'),
             'start_time' => 'required|date_format:H:i',
             'end_time' => 'required|date_format:H:i|after:start_time',
@@ -118,8 +122,20 @@ class ScheduleController extends Controller
         ]);
         $validated = $this->clearOnlineRoomId($validated);
 
+        $section = Sections::with('program')->findOrFail($validated['section_id']);
+        $validated['program_id'] = $validated['program_id'] ?? $section->program_id;
+        if ($validated['program_id'] === null) {
+            return response()->json(['message' => 'This section cannot be scheduled until it is assigned to a Program.'], 422);
+        }
+        if ((int) $section->department_id !== (int) $validated['department_id'] || (int) $section->program_id !== (int) $validated['program_id']) {
+            return response()->json(['message' => 'The schedule Department, Program, and Section must match.'], 422);
+        }
+
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+        if (! $this->authorization->departmentHasProgram((int) $validated['department_id'])) {
+            return response()->json(['message' => 'Create at least one Program under this Department before scheduling.'], 422);
         }
 
         $duplicateMessage = $this->delegatedCourseScheduleMessage($validated);
@@ -137,8 +153,9 @@ class ScheduleController extends Controller
         }
 
         $schedule = Schedule::create($validated);
-        $schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department']);
+        $schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department', 'program']);
         $this->notifyScheduleSaved($request, $schedule, 'created');
+        ApiCache::forgetGroups(['faculty.index', 'initial.data']);
 
         return response()->json($schedule, 201);
     }
@@ -178,6 +195,13 @@ class ScheduleController extends Controller
         $replaceSectionIds = array_values(array_unique(array_map('intval', $validated['replace_section_ids'] ?? [])));
         $replaceTermId = isset($validated['replace_term_id']) ? (int) $validated['replace_term_id'] : null;
         $validated['operations'] = $validated['operations'] ?? [];
+        $validated['operations'] = array_map(static function (array $operation): array {
+            if (! isset($operation['course_id']) && isset($operation['subject_id'])) {
+                $operation['course_id'] = $operation['subject_id'];
+            }
+
+            return $operation;
+        }, $validated['operations']);
         $providedOperationFields = collect($validated['operations'])
             ->filter(static fn (array $operation): bool => isset($operation['id']))
             ->mapWithKeys(static fn (array $operation): array => [
@@ -252,6 +276,9 @@ class ScheduleController extends Controller
                 && ! $this->authorization->payloadBelongsToDepartment($request, (int) $operation['department_id'])
             ) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+            }
+            if (! isset($operation['id']) && isset($operation['department_id']) && ! $this->authorization->departmentHasProgram((int) $operation['department_id'])) {
+                return response()->json(['message' => 'Create at least one Program under this Department before scheduling.'], 422);
             }
         }
 
@@ -343,7 +370,10 @@ class ScheduleController extends Controller
         try {
             $this->withScheduleWriteLock($this->conflictScopeTermIds($validated['operations'], $deleteIds), function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds): void {
                 DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds): void {
-                    $allViolations = $this->checkIntraBatchConflicts($validated['operations'], $mergedIgnoreIds);
+                    $allViolations = array_merge(
+                        $this->checkIntraBatchConflicts($validated['operations'], $mergedIgnoreIds),
+                        $this->ruleEngine->validateConfiguredMeetingGroups($validated['operations']),
+                    );
 
                     $orderedOperations = $this->prioritizeSplitAnchorMeetings($validated['operations']);
 
@@ -354,6 +384,14 @@ class ScheduleController extends Controller
                         if (isset($attemptData['subject_id']) && ! isset($attemptData['course_id'])) {
                             $attemptData['course_id'] = $attemptData['subject_id'];
                         }
+
+                        $section = Sections::find($attemptData['section_id'] ?? 0);
+                        if ($section?->program_id === null) {
+                            $allViolations[] = ['operation_index' => $index, 'message' => 'This section cannot be scheduled until it is assigned to a Program.'];
+
+                            continue;
+                        }
+                        $attemptData['program_id'] = $attemptData['program_id'] ?? $section->program_id;
 
                         $attemptData['ignore_schedule_id'] = $mergedIgnoreIds;
 
@@ -375,6 +413,9 @@ class ScheduleController extends Controller
                     if (! empty($deleteIds)) {
                         $deletedBefore = Schedule::whereIn('id', $deleteIds)->get();
                         Schedule::whereIn('id', $deleteIds)->delete();
+                        // A bulk delete fires no model events; retire the split
+                        // rows so they do not outlive their schedules.
+                        Schedule::retireSplitsFor($deleteIds);
                         $deletedScheduleIds = array_map('intval', $deleteIds);
                     }
 
@@ -395,6 +436,10 @@ class ScheduleController extends Controller
                             $op['course_id'] = $op['subject_id'];
                         }
 
+                        if (! isset($op['program_id'])) {
+                            $op['program_id'] = Sections::whereKey($op['section_id'] ?? 0)->value('program_id');
+                        }
+
                         if (isset($op['id'])) {
                             $schedule = $existing->get((int) $op['id']);
                             if (! $schedule) {
@@ -409,7 +454,7 @@ class ScheduleController extends Controller
 
                     $savedSchedules = Schedule::query()
                         ->whereIn('id', $savedIds)
-                        ->with(['term', 'section', 'course', 'faculty', 'room', 'department'])
+                        ->with(['term', 'section', 'course', 'faculty', 'room', 'department', 'program'])
                         ->get()
                         ->sortBy(static fn (Schedule $schedule): int => array_search((int) $schedule->id, $savedIds, true))
                         ->values()
@@ -441,7 +486,7 @@ class ScheduleController extends Controller
             return response()->json($exception->payload(), 422);
         }
 
-        ApiCache::forgetGroup('instructor_assignments.index');
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         return response()->json([
             'message' => 'Batch schedule operation completed successfully.',
@@ -473,41 +518,7 @@ class ScheduleController extends Controller
      */
     private function withScheduleWriteLock(array $termIds, callable $callback): mixed
     {
-        $connection = DB::connection();
-
-        if (! in_array($connection->getDriverName(), ['mysql', 'mariadb'], true) || $termIds === []) {
-            return $callback();
-        }
-
-        $acquired = [];
-
-        try {
-            foreach ($termIds as $termId) {
-                $lockName = sprintf('wicars:schedule-write:%d', $termId);
-                $granted = $connection->selectOne(
-                    'SELECT GET_LOCK(?, ?) AS granted',
-                    [$lockName, self::SCHEDULE_LOCK_TIMEOUT_SECONDS],
-                );
-
-                if ((int) ($granted->granted ?? 0) !== 1) {
-                    throw new ScheduleConflictException(
-                        [[
-                            'rule' => 'concurrent_write',
-                            'message' => 'Another schedule save for this term is still in progress. Please retry in a moment.',
-                        ]],
-                        'Another schedule save for this term is still in progress. Please retry in a moment.',
-                    );
-                }
-
-                $acquired[] = $lockName;
-            }
-
-            return $callback();
-        } finally {
-            foreach (array_reverse($acquired) as $lockName) {
-                $connection->statement('DO RELEASE_LOCK(?)', [$lockName]);
-            }
-        }
+        return $this->scheduleWriteLock->execute($termIds, $callback);
     }
 
     /**
@@ -884,9 +895,10 @@ class ScheduleController extends Controller
         $requiredRoomType = match (true) {
             $mode === 'online' => 'online',
             $mode === 'field' => 'field',
+            $course !== null && SchedulingPolicy::isFieldCourse($course, $deptId) => 'field',
             $meetingType === 'lecture' => 'lecture',
             $meetingType === 'laboratory' => 'laboratory',
-            $course !== null => SchedulingPolicy::effectiveRoomType($course, $meetingType),
+            $course !== null => SchedulingPolicy::effectiveRoomType($course, $deptId, $meetingType),
             default => 'lecture',
         };
 
@@ -915,7 +927,7 @@ class ScheduleController extends Controller
             }
         }
 
-        if ($course !== null && SchedulingPolicy::allowsRoomTbaFallback($course, $meetingType)) {
+        if ($course !== null && SchedulingPolicy::allowsRoomTbaFallback($course, $deptId, $meetingType)) {
             $candidate = $op;
             $candidate['room_id'] = null;
             $candidate['mode'] = 'on-site';
@@ -924,7 +936,7 @@ class ScheduleController extends Controller
             }
         }
 
-        if ($course !== null && SchedulingPolicy::allowsOnlineRoomFallback($course, $meetingType)) {
+        if ($course !== null && SchedulingPolicy::allowsOnlineRoomFallback($course, $deptId, $meetingType)) {
             $candidate = $op;
             $candidate['room_id'] = null;
             $candidate['mode'] = 'online';
@@ -1046,6 +1058,14 @@ class ScheduleController extends Controller
             return 'Instructor assignments are marked done. Choose Edit Assignments before changing them.';
         }
 
+        // INSTRUCTOR_ASSIGNABLE_STATUSES is the only list that decides this, and
+        // it excludes 'finalized' on purpose. The near-identical
+        // INSTRUCTOR_ASSIGNED_STATUSES does include 'finalized', but answers a
+        // different question -- whether an existing assignment counts toward
+        // teaching load -- so it must not be reached for here: admitting
+        // 'finalized' would let a locked row be reassigned and make the refusal
+        // below unreachable. InstructorAssignmentController gates the same
+        // decision on the same constant.
         if (in_array($schedule->status, SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES, true)) {
             return null;
         }
@@ -1055,6 +1075,10 @@ class ScheduleController extends Controller
             : 'Instructor assignment is available only after VPAA approval.';
     }
 
+    /**
+     * Hybrid lecture and laboratory rows represent one faculty assignment.
+     * Their timetable placement remains independent, so only faculty is shared.
+     */
     private function hydrateExistingScheduleOperation(array $operation): array
     {
         if (! isset($operation['id'])) {
@@ -1096,7 +1120,7 @@ class ScheduleController extends Controller
 
     public function show(Schedule $schedule)
     {
-        return response()->json($schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department']));
+        return response()->json($schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department', 'program']));
     }
 
     public function byTerm(int|string $termId)
@@ -1204,6 +1228,25 @@ class ScheduleController extends Controller
             }
         }
 
+        $manualFacultySchedules = array_key_exists('faculty_id', $validated)
+            ? $this->manualHybridAssignments->resolve($schedule)
+            : collect([$schedule]);
+
+        if (array_key_exists('faculty_id', $validated)) {
+            foreach ($manualFacultySchedules as $relatedSchedule) {
+                if ((int) $relatedSchedule->id === (int) $schedule->id) {
+                    continue;
+                }
+                $stageError = $this->instructorAssignmentStageError(
+                    $relatedSchedule,
+                    $validated['faculty_id'] === null ? null : (int) $validated['faculty_id'],
+                );
+                if ($stageError !== null) {
+                    return response()->json(['message' => $stageError], 422);
+                }
+            }
+        }
+
         $plottingFields = [
             'term_id', 'section_id', 'course_id', 'subject_id', 'room_id', 'department_id',
             'day', 'start_time', 'end_time', 'mode', 'is_hybrid', 'preferred_pattern',
@@ -1224,7 +1267,16 @@ class ScheduleController extends Controller
             ], 422);
         }
 
-        $attemptData = array_merge($schedule->toArray(), $validated, ['ignore_schedule_id' => $schedule->id]);
+        $manualFacultyScheduleIds = $manualFacultySchedules
+            ->pluck('id')
+            ->map(static fn ($id): int => (int) $id)
+            ->values()
+            ->all();
+        $attemptData = array_merge($schedule->toArray(), $validated, [
+            'ignore_schedule_id' => array_key_exists('faculty_id', $validated)
+                ? $manualFacultyScheduleIds
+                : $schedule->id,
+        ]);
 
         // Same check-then-write race as batch(): validate and write under one
         // lock and one transaction so a concurrent save cannot land between
@@ -1232,8 +1284,8 @@ class ScheduleController extends Controller
         $termId = (int) ($validated['term_id'] ?? $schedule->term_id);
 
         try {
-            $this->withScheduleWriteLock($termId > 0 ? [$termId] : [], function () use ($schedule, $validated, $attemptData): void {
-                DB::transaction(function () use ($schedule, $validated, $attemptData): void {
+            $this->withScheduleWriteLock($termId > 0 ? [$termId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds): void {
+                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds): void {
                     $violations = $this->ruleEngine->validate($attemptData);
 
                     if (! empty($violations)) {
@@ -1241,6 +1293,29 @@ class ScheduleController extends Controller
                     }
 
                     $schedule->update($validated);
+
+                    if (array_key_exists('faculty_id', $validated)) {
+                        foreach ($manualFacultySchedules as $relatedSchedule) {
+                            if ((int) $relatedSchedule->id === (int) $schedule->id) {
+                                continue;
+                            }
+                            $relatedAttempt = array_merge(
+                                $relatedSchedule->toArray(),
+                                [
+                                    'faculty_id' => $validated['faculty_id'],
+                                    'ignore_schedule_id' => $manualFacultyScheduleIds,
+                                ],
+                            );
+                            $relatedViolations = $this->ruleEngine->validate($relatedAttempt);
+                            if (! empty($relatedViolations)) {
+                                throw new ScheduleConflictException(
+                                    $relatedViolations,
+                                    'Instructor assignment conflicts with a related hybrid schedule.',
+                                );
+                            }
+                            $relatedSchedule->update(['faculty_id' => $validated['faculty_id']]);
+                        }
+                    }
                 });
             });
         } catch (ScheduleConflictException $exception) {
@@ -1249,6 +1324,18 @@ class ScheduleController extends Controller
 
         $schedule->load(['term', 'section', 'course', 'faculty', 'room', 'department']);
         $this->notifyScheduleSaved($request, $schedule, 'updated');
+        ApiCache::forgetGroups(['faculty.index', 'initial.data']);
+
+        if (array_key_exists('faculty_id', $validated)) {
+            return response()->json([
+                ...$schedule->toArray(),
+                'schedule' => $schedule,
+                'schedules' => Schedule::query()
+                    ->whereIn('id', $manualFacultyScheduleIds)
+                    ->with(['term', 'section', 'course', 'faculty', 'room', 'department'])
+                    ->get(),
+            ]);
+        }
 
         return response()->json($schedule);
     }
@@ -1281,6 +1368,7 @@ class ScheduleController extends Controller
         }
 
         $this->notifyScheduleSaved($request, $deletedSchedule, 'deleted');
+        ApiCache::forgetGroups(['faculty.index', 'initial.data']);
 
         return response()->json(['message' => 'Schedule archived successfully']);
     }
@@ -1458,7 +1546,7 @@ class ScheduleController extends Controller
     {
         // Source-department timetable changes affect the receiving department's
         // instructor-assignment workspace when the course is delegated.
-        ApiCache::forgetGroup('instructor_assignments.index');
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         $actor = $request->user();
         if (! $actor) {
@@ -1498,6 +1586,22 @@ class ScheduleController extends Controller
             'assignments.*.schedule_ids.*' => 'integer|exists:schedules,id',
             'assignments.*.faculty_id' => 'nullable|integer|exists:faculties,id',
         ]);
+
+        $expandedAssignments = [];
+        foreach ($validated['assignments'] as $assignment) {
+            $assignmentScheduleIds = array_map('intval', $assignment['schedule_ids']);
+            foreach (Schedule::query()->whereIn('id', $assignmentScheduleIds)->get() as $schedule) {
+                $assignmentScheduleIds = array_merge(
+                    $assignmentScheduleIds,
+                    $this->manualHybridAssignments->resolve($schedule)->modelKeys(),
+                );
+            }
+            $expandedAssignments[] = [
+                ...$assignment,
+                'schedule_ids' => array_values(array_unique($assignmentScheduleIds)),
+            ];
+        }
+        $validated['assignments'] = $expandedAssignments;
 
         $scheduleIds = [];
         foreach ($validated['assignments'] as $assignment) {
@@ -1589,53 +1693,52 @@ class ScheduleController extends Controller
         // class: the whole batch is projected onto each instructor at once, so the
         // prompt reports the load they actually end up carrying. Clearing an
         // instructor can never overload anyone, so null assignments are skipped.
-        {
-            $rowsByFaculty = [];
 
-            foreach ($validated['assignments'] as $assignment) {
-                $facultyId = isset($assignment['faculty_id']) ? (int) $assignment['faculty_id'] : null;
+        $rowsByFaculty = [];
 
-                if ($facultyId === null) {
-                    continue;
-                }
+        foreach ($validated['assignments'] as $assignment) {
+            $facultyId = isset($assignment['faculty_id']) ? (int) $assignment['faculty_id'] : null;
 
-                foreach ($assignment['schedule_ids'] as $scheduleId) {
-                    $schedule = $schedules->get((int) $scheduleId);
-
-                    if ($schedule !== null) {
-                        $rowsByFaculty[$facultyId][] = $schedule;
-                    }
-                }
+            if ($facultyId === null) {
+                continue;
             }
 
-            $projections = [];
+            foreach ($assignment['schedule_ids'] as $scheduleId) {
+                $schedule = $schedules->get((int) $scheduleId);
 
-            if ($rowsByFaculty !== []) {
-                $activeTermId = $this->activeTermId();
-                $faculties = Faculty::query()->whereIn('id', array_keys($rowsByFaculty))->get();
-
-                foreach ($faculties as $faculty) {
-                    $rows = $rowsByFaculty[(int) $faculty->id] ?? [];
-                    $pairs = $this->loadPairsForSchedules($rows);
-
-                    $projections[] = $this->withAssignmentLabel(
-                        $this->facultyLoad->projectLoad($faculty, $activeTermId, $pairs),
-                        $this->assignmentLabelForClasses($rows, count($pairs)),
-                    );
+                if ($schedule !== null) {
+                    $rowsByFaculty[$facultyId][] = $schedule;
                 }
             }
+        }
 
-            $ceilingError = $this->facultyCeilingExceededResponse($projections);
-            if ($ceilingError !== null) {
-                return $ceilingError;
+        $projections = [];
+
+        if ($rowsByFaculty !== []) {
+            $activeTermId = $this->activeTermId();
+            $faculties = Faculty::query()->whereIn('id', array_keys($rowsByFaculty))->get();
+
+            foreach ($faculties as $faculty) {
+                $rows = $rowsByFaculty[(int) $faculty->id] ?? [];
+                $pairs = $this->loadPairsForSchedules($rows);
+
+                $projections[] = $this->withAssignmentLabel(
+                    $this->facultyLoad->projectLoad($faculty, $activeTermId, $pairs),
+                    $this->assignmentLabelForClasses($rows, count($pairs)),
+                );
             }
+        }
 
-            if (! $request->boolean('confirm_overload')) {
-                $confirmation = $this->overloadConfirmationResponse($projections);
+        $ceilingError = $this->facultyCeilingExceededResponse($projections);
+        if ($ceilingError !== null) {
+            return $ceilingError;
+        }
 
-                if ($confirmation !== null) {
-                    return $confirmation;
-                }
+        if (! $request->boolean('confirm_overload')) {
+            $confirmation = $this->overloadConfirmationResponse($projections);
+
+            if ($confirmation !== null) {
+                return $confirmation;
             }
         }
 
@@ -1697,7 +1800,7 @@ class ScheduleController extends Controller
             return response()->json($exception->payload(), 422);
         }
 
-        ApiCache::forgetGroup('instructor_assignments.index');
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         return response()->json([
             'message' => 'Instructor assignments completed successfully.',
@@ -1720,11 +1823,12 @@ class ScheduleController extends Controller
             return response()->json(['message' => 'Assign instructors to every schedule before marking done.'], 422);
         }
         $schedules->each(fn (Schedule $schedule) => $schedule->update(['faculty_assignment_done' => (bool) $validated['done']]));
-        ApiCache::forgetGroup('instructor_assignments.index');
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
         if ($validated['done'] && $schedules->isNotEmpty()) {
             $first = $schedules->first()->fresh(['course.department', 'course.teachingDepartment']);
             $this->notifications->notifyCrossDepartmentCompletion($first, $request->user(), $schedules->modelKeys());
         }
+
         return response()->json(['schedules' => Schedule::query()->whereIn('id', $validated['ids'])->with(['term', 'section', 'course', 'faculty', 'room', 'department'])->get()]);
     }
 
@@ -1740,8 +1844,90 @@ class ScheduleController extends Controller
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
 
-        if ($validated['status'] === 'finalized' && Schedule::query()
+        $targetSchedules = Schedule::query()
             ->whereIn('id', $validated['ids'])
+            ->with(['course', 'section'])
+            ->get();
+
+        if ($targetSchedules->isEmpty()) {
+            return response()->json(['message' => 'Select at least one schedule before changing its status.'], 422);
+        }
+
+        if ($validated['status'] === 'reassignment' && $targetSchedules->contains(
+            fn (Schedule $schedule): bool => $schedule->status !== 'finalized'
+        )) {
+            return response()->json([
+                'message' => 'Only finalized schedules can be placed under Reassignment.',
+            ], 422);
+        }
+
+        if (in_array($validated['status'], ['draft', 'revision'], true) && Schedule::query()
+            ->whereIn('id', $validated['ids'])
+            ->where('status', 'finalized')
+            ->exists()) {
+            return response()->json([
+                'message' => 'Finalized timetable rows cannot be reopened for plotting. Use Reassignment instead.',
+            ], 422);
+        }
+
+        if ($validated['status'] === 'finalized') {
+            $scopeSchedules = Schedule::query()
+                ->where(function ($query) use ($targetSchedules): void {
+                    foreach ($targetSchedules->groupBy(fn (Schedule $schedule): string => $schedule->term_id.'-'.$schedule->section_id) as $sectionSchedules) {
+                        $first = $sectionSchedules->first();
+                        $query->orWhere(function ($sectionQuery) use ($first): void {
+                            $sectionQuery->where('term_id', $first->term_id)
+                                ->where('section_id', $first->section_id);
+                        });
+                    }
+                })
+                ->with(['course', 'section'])
+                ->get();
+
+            $unselectedScheduleIds = $scopeSchedules->pluck('id')->diff($targetSchedules->pluck('id'));
+            if ($unselectedScheduleIds->isNotEmpty()) {
+                return response()->json([
+                    'message' => 'Finalize every scheduled course in the section together so all faculty assignments can be validated.',
+                    'unselected_schedule_ids' => $unselectedScheduleIds->values(),
+                ], 422);
+            }
+
+            $missingInstructors = $scopeSchedules
+                ->filter(fn (Schedule $schedule): bool => $schedule->faculty_id === null)
+                ->map(function (Schedule $schedule): array {
+                    $component = $schedule->meeting_type === null
+                        ? null
+                        : ucfirst($schedule->meeting_type);
+
+                    return [
+                        'schedule_id' => (int) $schedule->id,
+                        'course_code' => $schedule->course?->course_code ?? 'Unknown course',
+                        'section_name' => $schedule->section?->section_name ?? 'Unknown section',
+                        'component' => $component,
+                    ];
+                })
+                ->values();
+
+            if ($missingInstructors->isNotEmpty()) {
+                $missingLabels = $missingInstructors
+                    ->map(fn (array $item): string => sprintf(
+                        '%s (%s%s)',
+                        $item['course_code'],
+                        $item['section_name'],
+                        $item['component'] === null ? '' : ' - '.$item['component'],
+                    ))
+                    ->unique()
+                    ->implode(', ');
+
+                return response()->json([
+                    'message' => 'Cannot finalize while instructors are missing: '.$missingLabels.'.',
+                    'missing_instructors' => $missingInstructors,
+                ], 422);
+            }
+        }
+
+        if ($validated['status'] === 'finalized' && Schedule::query()
+            ->whereIn('id', $targetSchedules->modelKeys())
             ->whereNull('room_id')
             ->where('mode', 'on-site')
             ->whereHas('course', fn ($query) => $query->where('room_type_required', 'laboratory')->orWhere('lab_hours', '>', 0))
@@ -1753,9 +1939,13 @@ class ScheduleController extends Controller
 
         $result = DB::transaction(function () use ($validated, $request): array {
             $before = Schedule::whereIn('id', $validated['ids'])->get();
-            $updated = Schedule::whereIn('id', $validated['ids'])->update([
-                'status' => $validated['status'], 'updated_at' => now(),
-            ]);
+            $updateValues = ['status' => $validated['status'], 'updated_at' => now()];
+            if ($validated['status'] === 'reassignment') {
+                $updateValues['faculty_assignment_done'] = false;
+            } elseif ($validated['status'] === 'finalized') {
+                $updateValues['faculty_assignment_done'] = true;
+            }
+            $updated = Schedule::whereIn('id', $validated['ids'])->update($updateValues);
             $schedules = Schedule::whereIn('id', $validated['ids'])->with(['term', 'section', 'course', 'faculty', 'room', 'department'])->get();
             $version = $this->historyRecorder->record('schedule_batch_status_updated', $before, $schedules, $request->user()?->id, null, null, 'batch_status', null, ['status' => $validated['status']]);
             SchedulingAuditLog::create([
@@ -1767,10 +1957,12 @@ class ScheduleController extends Controller
                 'metadata' => ['schedule_ids' => $validated['ids'], 'status' => $validated['status']],
                 'created_at' => now(),
             ]);
+
             return compact('updated', 'schedules');
         });
         $updated = $result['updated'];
         $schedules = $result['schedules'];
+        ApiCache::forgetGroups(['faculty.index', 'initial.data']);
 
         return response()->json([
             'message' => 'Batch status update completed successfully.',

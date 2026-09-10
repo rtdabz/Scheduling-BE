@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
@@ -32,10 +33,10 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'department_id' => $department->id,
         ]);
 
-        $response = $this->actingAs(User::factory()->create([
+        $response = $this->actingAs($this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
-        ]))->postJson('/api/schedule-recommendations/preview', [
+        ])))->postJson('/api/schedule-recommendations/preview', [
             'section_id' => $section->id,
             'course_ids' => [$course->id],
             'mode' => 'on-site',
@@ -61,10 +62,10 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'department_id' => $department->id,
         ]);
 
-        $response = $this->actingAs(User::factory()->create([
+        $response = $this->actingAs($this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
-        ]))->postJson('/api/schedule-recommendations/preview', [
+        ])))->postJson('/api/schedule-recommendations/preview', [
             'section_id' => $section->id,
             'course_ids' => [$course->id],
             'mode' => 'on-site',
@@ -94,10 +95,10 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'department_id' => $department->id,
         ]);
 
-        $response = $this->actingAs(User::factory()->create([
+        $response = $this->actingAs($this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
-        ]))->postJson('/api/schedule-recommendations/preview', [
+        ])))->postJson('/api/schedule-recommendations/preview', [
             'section_id' => $section->id,
             'course_ids' => [$course->id],
             'mode' => 'on-site',
@@ -141,10 +142,10 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'status' => 'draft',
         ]);
 
-        $response = $this->actingAs(User::factory()->create([
+        $response = $this->actingAs($this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
-        ]))->postJson('/api/schedule-recommendations/preview', [
+        ])))->postJson('/api/schedule-recommendations/preview', [
             'section_id' => $section->id,
             'course_ids' => [$course->id],
             'mode' => 'on-site',
@@ -162,10 +163,13 @@ class DepartmentSchedulingPreflightTest extends TestCase
         [$term, $department, $section, $course] = $this->createBase('EDUC', 'Education', 'standard');
         $this->attachCourse($department, $course, $section);
 
-        $response = $this->actingAs(User::factory()->create([
+        $user = User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
-        ]))->postJson('/api/schedule-recommendations/preview', [
+        ]);
+        $user->syncPermissions(['schedule.generate']);
+
+        $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/preview', [
             'section_id' => $section->id,
             'course_ids' => [$course->id],
             'mode' => 'on-site',
@@ -236,11 +240,19 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'department_code' => $code,
             'scheduling_profile' => $profile,
         ]);
+        // Scheduling endpoints require the department to own at least one
+        // program before they will generate anything.
+        $program = Program::create([
+            'department_id' => $department->id,
+            'code' => "BS{$code}",
+            'name' => "Bachelor of Science in {$name}",
+        ]);
         $section = Sections::create([
             'section_name' => "{$code} 1A",
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
+            'program_id' => $program->id,
             'term_id' => $term->id,
             'status' => 'active',
         ]);

@@ -23,6 +23,7 @@ class YearLevelGenerationException extends RuntimeException
      * @param  array<string, mixed>|null  $bottleneck
      * @param  list<array<string, mixed>>  $attempts
      * @param  list<array<string, mixed>>  $recommendations
+     * @param  array<string, mixed>  $generationMetrics
      */
     public function __construct(
         string $message,
@@ -31,6 +32,7 @@ class YearLevelGenerationException extends RuntimeException
         private readonly ?array $bottleneck = null,
         private readonly array $attempts = [],
         private readonly array $recommendations = [],
+        private readonly array $generationMetrics = [],
     ) {
         parent::__construct($message);
     }
@@ -75,6 +77,7 @@ class YearLevelGenerationException extends RuntimeException
             'bottleneck' => $this->bottleneck,
             'attempts' => $this->attempts,
             'recommendations' => $this->recommendations,
+            'generation_metrics' => $this->generationMetrics,
         ];
     }
 }

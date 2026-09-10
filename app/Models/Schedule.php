@@ -4,7 +4,6 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Support\Facades\Auth;
 
 class Schedule extends Model
 {
@@ -23,11 +22,15 @@ class Schedule extends Model
     protected $fillable = [
         'term_id',
         'section_id',
+        // Which curriculum this row was generated from. Recorded rather than
+        // derived: curricula are editable and a section can be re-pointed later.
+        'curriculum_id',
         'course_id',
         'faculty_id',
         'faculty_assignment_done',
         'room_id',
         'department_id',
+        'program_id',
         'day',
         'start_time',
         'end_time',
@@ -101,49 +104,6 @@ class Schedule extends Model
     protected static function booted()
     {
         static::saved(function (Schedule $schedule) {
-            $version = ScheduleHistoryVersion::create([
-                'schedule_id' => $schedule->id,
-                'term_id' => $schedule->term_id,
-                'section_id' => $schedule->section_id,
-                'course_id' => $schedule->course_id,
-                'department_id' => $schedule->department_id,
-                'actor_user_id' => Auth::id(),
-                'action' => $schedule->wasRecentlyCreated ? 'created' : 'updated',
-                'snapshot' => $schedule->getAttributes(),
-                'changes' => $schedule->getChanges(),
-            ]);
-            ScheduleHistoryItem::create(['history_version_id' => $version->id, 'original_schedule_id' => $schedule->id, 'section_id' => $schedule->section_id, 'course_id' => $schedule->course_id, 'faculty_id' => $schedule->faculty_id, 'room_id' => $schedule->room_id, 'after_snapshot' => $schedule->getAttributes(), 'snapshot_metadata' => ['event' => 'saved']]);
-        });
-
-        static::deleted(function (Schedule $schedule) {
-            $version = ScheduleHistoryVersion::create([
-                'schedule_id' => $schedule->id,
-                'term_id' => $schedule->term_id,
-                'section_id' => $schedule->section_id,
-                'course_id' => $schedule->course_id,
-                'department_id' => $schedule->department_id,
-                'actor_user_id' => Auth::id(),
-                'action' => $schedule->isForceDeleting() ? 'deleted' : 'archived',
-                'snapshot' => $schedule->getAttributes(),
-            ]);
-            ScheduleHistoryItem::create(['history_version_id' => $version->id, 'original_schedule_id' => $schedule->id, 'section_id' => $schedule->section_id, 'course_id' => $schedule->course_id, 'faculty_id' => $schedule->faculty_id, 'room_id' => $schedule->room_id, 'before_snapshot' => $schedule->getAttributes(), 'snapshot_metadata' => ['event' => 'deleted']]);
-        });
-
-        static::restored(function (Schedule $schedule) {
-            $version = ScheduleHistoryVersion::create([
-                'schedule_id' => $schedule->id,
-                'term_id' => $schedule->term_id,
-                'section_id' => $schedule->section_id,
-                'course_id' => $schedule->course_id,
-                'department_id' => $schedule->department_id,
-                'actor_user_id' => Auth::id(),
-                'action' => 'restored',
-                'snapshot' => $schedule->getAttributes(),
-            ]);
-            ScheduleHistoryItem::create(['history_version_id' => $version->id, 'original_schedule_id' => $schedule->id, 'section_id' => $schedule->section_id, 'course_id' => $schedule->course_id, 'faculty_id' => $schedule->faculty_id, 'room_id' => $schedule->room_id, 'after_snapshot' => $schedule->getAttributes(), 'snapshot_metadata' => ['event' => 'restored']]);
-        });
-
-        static::saved(function (Schedule $schedule) {
             if ($schedule->tempSplitGroupId !== null || $schedule->tempMeetingType !== null || $schedule->tempMeetingIndex !== null) {
                 $split = $schedule->split ?: new ScheduleSplit;
                 $split->schedule_id = $schedule->id;
@@ -160,6 +120,37 @@ class Schedule extends Model
                 $schedule->setRelation('split', $split);
             }
         });
+
+        // The split row carries this schedule's meeting-type metadata and means
+        // nothing without it. The database cascade only fires on a hard delete,
+        // so a soft delete has to be carried across or the split is left live
+        // behind a deleted owner, where it still surfaces in the split listing.
+        // This covers single-model deletes; bulk deletes go through the query
+        // builder and fire no model events, so those call retireSplitsFor().
+        static::deleted(function (Schedule $schedule): void {
+            if ($schedule->isForceDeleting()) {
+                return;
+            }
+
+            ScheduleSplit::query()->where('schedule_id', $schedule->id)->delete();
+        });
+
+        static::restored(function (Schedule $schedule): void {
+            ScheduleSplit::withTrashed()->where('schedule_id', $schedule->id)->restore();
+        });
+    }
+
+    /**
+     * Soft-deletes the split rows belonging to the given schedules.
+     *
+     * Bulk soft deletes go through the query builder, which fires no model
+     * events, so every such path has to retire the splits explicitly.
+     *
+     * @param  \Illuminate\Contracts\Database\Query\Builder|array<int, int>|\Illuminate\Support\Collection  $scheduleIds
+     */
+    public static function retireSplitsFor($scheduleIds): void
+    {
+        ScheduleSplit::query()->whereIn('schedule_id', $scheduleIds)->delete();
     }
 
     public function term()
@@ -177,6 +168,11 @@ class Schedule extends Model
         return $this->belongsTo(Course::class, 'course_id');
     }
 
+    public function curriculum()
+    {
+        return $this->belongsTo(Curriculum::class, 'curriculum_id');
+    }
+
     public function faculty()
     {
         return $this->belongsTo(Faculty::class);
@@ -190,5 +186,10 @@ class Schedule extends Model
     public function department()
     {
         return $this->belongsTo(Departments::class);
+    }
+
+    public function program()
+    {
+        return $this->belongsTo(Program::class, 'program_id');
     }
 }

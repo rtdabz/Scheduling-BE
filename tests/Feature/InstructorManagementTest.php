@@ -344,11 +344,11 @@ class InstructorManagementTest extends TestCase
         $department = Departments::create(['department_name' => 'Education', 'department_code' => 'CED']);
         $bped = Program::create(['department_id' => $department->id, 'code' => 'BPED', 'name' => 'Physical Education']);
         $beed = Program::create(['department_id' => $department->id, 'code' => 'BEED', 'name' => 'Elementary Education']);
-        $head = User::factory()->create([
+        $head = $this->grantCapabilities(User::factory()->create([
             'role' => 'program_head',
             'department_id' => $department->id,
             'program_id' => $bped->id,
-        ]);
+        ]), ['schedule.view']);
         $bpedFaculty = Faculty::create([
             'first_name' => 'BPED', 'last_name' => 'Instructor', 'employment_type' => 'full-time',
             'max_units' => 21, 'department_id' => $department->id, 'program_id' => $bped->id, 'status' => 'active',

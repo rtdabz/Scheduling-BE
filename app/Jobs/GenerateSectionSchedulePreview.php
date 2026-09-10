@@ -2,10 +2,12 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\GenerationConfigurationConfirmationException;
 use App\Http\Controllers\ScheduleRecommendationController;
 use App\Models\ScheduleGenerationRun;
-use App\Models\User;
 use App\Models\Sections;
+use App\Models\Terms;
+use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -18,6 +20,7 @@ class GenerateSectionSchedulePreview implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $timeout = 60;
+
     public int $tries = 3;
 
     public bool $failOnTimeout = true;
@@ -40,6 +43,13 @@ class GenerateSectionSchedulePreview implements ShouldQueue
         $section = Sections::query()->find($this->sectionId);
         if (! $requester?->is_active || ! $section || ($requester->role !== 'vpaa' && (int) $requester->department_id !== (int) $section->department_id)) {
             $run->update(['status' => 'cancelled', 'error_message' => 'Requester is no longer authorized.', 'finished_at' => now()]);
+
+            return;
+        }
+        $term = Terms::query()->find((int) $section->term_id);
+        if (! $term?->is_active || (string) $section->semester !== (string) $term->semester || (int) $run->term_id !== (int) $section->term_id) {
+            $run->update(['status' => 'cancelled', 'error_message' => 'The selected academic term or semester is no longer active.', 'finished_at' => now()]);
+
             return;
         }
         $run->update(['status' => 'running', 'started_at' => now()]);
@@ -47,6 +57,13 @@ class GenerateSectionSchedulePreview implements ShouldQueue
         try {
             $result = $controller->runAsyncSectionPreview($this->sectionId, $this->input);
             $run->update(['status' => 'completed', 'result' => $result, 'finished_at' => now()]);
+        } catch (GenerationConfigurationConfirmationException $exception) {
+            $run->update([
+                'status' => 'failed',
+                'result' => $exception->payload(),
+                'error_message' => $exception->getMessage(),
+                'finished_at' => now(),
+            ]);
         } catch (Throwable $exception) {
             $run->update(['status' => 'failed', 'error_message' => $exception->getMessage(), 'finished_at' => now()]);
             throw $exception;

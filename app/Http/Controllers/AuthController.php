@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Program;
 use App\Models\User;
 use App\Services\AuthenticationAuditService;
+use App\Support\CapabilityRegistry;
 use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -18,7 +20,10 @@ use Throwable;
 
 class AuthController extends Controller
 {
-    public function __construct(private readonly AuthenticationAuditService $audit) {}
+    public function __construct(
+        private readonly AuthenticationAuditService $audit,
+        private readonly CapabilityRegistry $capabilities,
+    ) {}
 
     public function login(Request $request): JsonResponse
     {
@@ -125,8 +130,8 @@ class AuthController extends Controller
             })
             ->first();
 
-        if (! $user || ! $user->allow_google_login) {
-            return $this->googleErrorRedirect($frontendUrl, 'This Google account has not been approved by VPAA.');
+        if (! $user) {
+            return $this->googleErrorRedirect($frontendUrl, 'No active account matches this institutional Google email.');
         }
 
         if (! $user->is_active) {
@@ -169,7 +174,7 @@ class AuthController extends Controller
             ? User::find($exchange['user_id'])
             : null;
 
-        if (! $user || ! $user->is_active || ! $user->allow_google_login) {
+        if (! $user || ! $user->is_active) {
             return response()->json(['message' => 'The Google login request is invalid or expired.'], 401);
         }
 
@@ -225,7 +230,7 @@ class AuthController extends Controller
 
     public function me(Request $request): JsonResponse
     {
-        return response()->json($request->user()->load(['department', 'program']));
+        return response()->json($this->userPayload($request->user()));
     }
 
     private function authenticatedResponse(Request $request, User $user, string $method): JsonResponse
@@ -236,7 +241,17 @@ class AuthController extends Controller
 
         return response()->json([
             'token' => $token,
-            'user' => $user->fresh()->load(['department', 'program']),
+            'user' => $this->userPayload($user->fresh()),
+        ]);
+    }
+
+    private function userPayload(User $user): array
+    {
+        return array_merge($user->load(['department', 'program'])->toArray(), [
+            'permissions' => $user->capabilityNames(),
+            'capability_catalog' => $this->capabilities->catalogFor($user),
+            'modules' => $this->capabilities->modulesFor($user),
+            'scheduling_ready' => $user->department_id === null || Program::query()->where('department_id', $user->department_id)->exists(),
         ]);
     }
 

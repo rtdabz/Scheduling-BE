@@ -12,9 +12,16 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
+        // Lets repeat GETs of unchanged JSON come back as a bodyless 304
+        // instead of re-sending (and re-parsing) the whole payload.
+        $middleware->appendToGroup('api', [
+            \App\Http\Middleware\ConditionalGetJson::class,
+        ]);
+
         $middleware->alias([
             'auth' => \App\Http\Middleware\Authenticate::class,
             'role' => \App\Http\Middleware\RoleMiddleware::class,
+            'capability' => \App\Http\Middleware\CapabilityMiddleware::class,
             'active' => \App\Http\Middleware\EnsureUserIsActive::class,
         ]);
     })

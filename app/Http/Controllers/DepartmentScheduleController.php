@@ -3,11 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Schedule;
 use App\Models\ScheduleSubmission;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Terms;
+use App\Models\User;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
@@ -155,7 +157,7 @@ class DepartmentScheduleController extends Controller
         foreach ($scheduleStatuses as $raw) {
             // Normalise extended statuses to the 4 canonical ones
             $normalised = match (true) {
-                in_array($raw, ['faculty_assignment', 'finalized']) => 'approved',
+                in_array($raw, ['faculty_assignment', 'reassignment', 'finalized']) => 'approved',
                 $raw === 'conditionally_approved' => 'conditionally_approved',
                 $raw === 'approved_by_dean' => 'approved_by_dean',
                 $raw === 'submitted' => 'submitted',
@@ -181,6 +183,24 @@ class DepartmentScheduleController extends Controller
      * schedule status, grouped so the frontend can build the 4-stage counts
      * and per-year-level checklist without extra round-trips.
      */
+    /**
+     * Submitting sends the department's schedules to its Dean for approval, so
+     * there has to be one. Without this the submission succeeds, the schedules
+     * move to "submitted", and they sit there with nobody able to act on them --
+     * a dead end that can only be undone by withdrawing.
+     *
+     * A Dean is a user account, not a column: role "dean", assigned to this
+     * department, active, and not soft-deleted.
+     */
+    private function departmentHasDean(int $departmentId): bool
+    {
+        return User::query()
+            ->where('role', 'dean')
+            ->where('department_id', $departmentId)
+            ->where('is_active', true)
+            ->exists();
+    }
+
     public function scheduleStatus(int $id): JsonResponse
     {
         $department = Departments::findOrFail($id);
@@ -214,6 +234,9 @@ class DepartmentScheduleController extends Controller
             'department_name' => $department->department_name,
             'sections' => $result->values(),
             'department_status' => $this->deriveStatus($result->pluck('status')->toArray()),
+            // Lets the UI disable Submit and explain why, instead of letting the
+            // request fail. The backend still enforces it on submit.
+            'has_dean' => $this->departmentHasDean((int) $department->id),
         ]);
     }
 
@@ -224,22 +247,30 @@ class DepartmentScheduleController extends Controller
      * partial withdrawal, only the completed revision cohort is submitted;
      * finalized and already-approved cohorts remain at their current stage.
      *
-     * RBAC: only VPAA, Secretary, or Program Head. Department roles may submit
-     * only their own department.
+     * Capability middleware decides who may submit. Organizational assignment
+     * decides which department and, for Program Heads, which program is in scope.
      */
     public function submitSchedules(int $id, Request $request): JsonResponse
     {
         $user = $request->user();
 
-        // VPAA can submit any department; department schedule authors can submit
-        // only their own department. Dean remains review/approval-only.
-        $allowed =
-            $user->role === 'vpaa' ||
-            (in_array($user->role, ['secretary', 'program_head']) &&
-             (int) $user->department_id === $id);
-
-        if (! $allowed) {
+        if ($user->role !== 'vpaa' && (int) $user->department_id !== $id) {
             return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        if ($user->role === 'program_head' && $user->program_id === null) {
+            return response()->json(['message' => 'Program Head accounts must be assigned to a program.'], 403);
+        }
+
+        if (! Program::query()->where('department_id', $id)->exists()) {
+            return response()->json(['message' => 'Create at least one Program under this Department before scheduling.'], 422);
+        }
+
+        if (! $this->departmentHasDean($id)) {
+            return response()->json([
+                'message' => 'Submission unavailable. Please assign a Department Dean before submitting the schedule.',
+                'error_code' => 'department_dean_missing',
+            ], 422);
         }
 
         $department = Departments::findOrFail($id);
@@ -254,6 +285,7 @@ class DepartmentScheduleController extends Controller
                 ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId));
         }])
             ->where('department_id', $id)
+            ->when($user->role === 'program_head', fn ($query) => $query->where('program_id', $user->program_id))
             ->where('status', 'active')
             ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId))
             ->get();
@@ -277,6 +309,7 @@ class DepartmentScheduleController extends Controller
             'conditionally_approved',
             'approved',
             'faculty_assignment',
+            'reassignment',
             'finalized',
         ];
         $readySectionIds = collect();
@@ -580,18 +613,28 @@ class DepartmentScheduleController extends Controller
 
     public function withdrawSubmission(int $id, Request $request): JsonResponse
     {
-        if ($forbidden = $this->ensureRoleCanActOnDepartment($request, $id, ['secretary', 'program_head'])) {
-            return $forbidden;
-        }
-
         $department = Departments::findOrFail($id);
         $user = $request->user();
+        if ($user->role !== 'vpaa' && (int) $user->department_id !== $id) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+        if ($user->role === 'program_head' && $user->program_id === null) {
+            return response()->json(['message' => 'Program Head accounts must be assigned to a program.'], 403);
+        }
         $validated = $request->validate([
             'section_ids' => ['required', 'array', 'min:1'],
             'section_ids.*' => ['integer'],
         ]);
         $sectionIds = array_values(array_unique(array_map('intval', $validated['section_ids'])));
         $allowedSectionIds = $this->departmentSectionIds($id);
+        if ($user->role === 'program_head') {
+            $allowedSectionIds = Sections::query()
+                ->whereIn('id', $allowedSectionIds)
+                ->where('program_id', $user->program_id)
+                ->pluck('id')
+                ->map('intval')
+                ->all();
+        }
         $invalidSectionIds = array_diff($sectionIds, $allowedSectionIds);
         if (! empty($invalidSectionIds)) {
             return response()->json([
@@ -606,6 +649,7 @@ class DepartmentScheduleController extends Controller
             'conditionally_approved',
             'approved',
             'faculty_assignment',
+            'reassignment',
         ];
 
         // Withdrawal is section-scoped: finalized schedules in other sections
@@ -616,6 +660,30 @@ class DepartmentScheduleController extends Controller
             ->exists()) {
             return response()->json([
                 'message' => 'Finalized schedules cannot be withdrawn. Reopen the finalized workflow first.',
+            ], 422);
+        }
+
+        // Reassignment is a persisted workflow stage, not proof that an
+        // instructor is still assigned. Once every instructor has been cleared
+        // and the assignment handoff is open, the section is eligible to return
+        // to revision through the normal withdrawal workflow.
+        $blockedReassignmentSectionIds = (clone $query)
+            ->whereIn('section_id', $sectionIds)
+            ->where('status', 'reassignment')
+            ->where(function ($reassignmentQuery): void {
+                $reassignmentQuery
+                    ->whereNotNull('faculty_id')
+                    ->orWhere('faculty_assignment_done', true);
+            })
+            ->distinct()
+            ->pluck('section_id')
+            ->map(static fn ($sectionId): int => (int) $sectionId)
+            ->values()
+            ->all();
+        if ($blockedReassignmentSectionIds !== []) {
+            return response()->json([
+                'message' => 'Reassignment sections can be withdrawn only after all instructors are cleared and instructor assignment is reopened.',
+                'blocked_section_ids' => $blockedReassignmentSectionIds,
             ], 422);
         }
 
@@ -646,7 +714,7 @@ class DepartmentScheduleController extends Controller
             ], 422);
         }
 
-        $withdrawalStage = $currentStatuses->contains(fn (string $status): bool => in_array($status, ['approved', 'faculty_assignment'], true))
+        $withdrawalStage = $currentStatuses->contains(fn (string $status): bool => in_array($status, ['approved', 'faculty_assignment', 'reassignment'], true))
             ? 'vpaa_approved'
             : ($currentStatuses->contains(
                 fn (string $status): bool => in_array($status, ['approved_by_dean', 'conditionally_approved'], true)
@@ -654,25 +722,62 @@ class DepartmentScheduleController extends Controller
         $legacySubmissionStatus = $withdrawalStage === 'vpaa_approved'
             ? 'approved'
             : ($withdrawalStage === 'vpaa_review' ? 'pending_vpaa' : 'pending_dean');
-        $submission = ScheduleSubmission::query()
+        $submissions = ScheduleSubmission::query()
             ->with('sections')
             ->where('department_id', $id)
             ->where('term_id', $this->activeTermId())
-            ->whereIn('status', ['pending_dean', 'pending_vpaa', 'approved'])
-            ->whereHas('sections', fn ($sectionQuery) => $sectionQuery->whereIn('sections.id', $sectionIds))
-            ->latest('revision_number')
-            ->first()
-            ?? $this->submissionForStage(
+            ->whereIn('status', ['pending_dean', 'pending_vpaa', 'approved', 'partially_withdrawn'])
+            ->whereHas('sections', fn ($sectionQuery) => $sectionQuery
+                ->whereIn('sections.id', $sectionIds)
+                ->where('schedule_submission_sections.state', 'included'))
+            ->orderByDesc('revision_number')
+            ->get();
+        $submissionBySectionId = collect();
+        foreach ($submissions as $candidate) {
+            foreach ($candidate->sections as $candidateSection) {
+                $candidateSectionId = (int) $candidateSection->id;
+                if (in_array($candidateSectionId, $sectionIds, true)
+                    && $candidateSection->pivot->state === 'included'
+                    && ! $submissionBySectionId->has($candidateSectionId)) {
+                    $submissionBySectionId->put($candidateSectionId, $candidate);
+                }
+            }
+        }
+
+        $missingSubmissionSectionIds = array_values(array_diff($sectionIds, $submissionBySectionId->keys()->all()));
+        if ($missingSubmissionSectionIds !== []) {
+            $legacySubmission = $this->submissionForStage(
                 $id,
-                ['pending_dean', 'pending_vpaa', 'approved'],
+                ['pending_dean', 'pending_vpaa', 'approved', 'partially_withdrawn'],
                 $withdrawableStatuses,
                 $legacySubmissionStatus,
             );
-        if ($submission === null) {
+            if ($legacySubmission !== null) {
+                foreach ($legacySubmission->sections as $legacySection) {
+                    $legacySectionId = (int) $legacySection->id;
+                    if (in_array($legacySectionId, $missingSubmissionSectionIds, true)
+                        && $legacySection->pivot->state === 'included') {
+                        $submissionBySectionId->put($legacySectionId, $legacySubmission);
+                    }
+                }
+            }
+        }
+
+        if (array_diff($sectionIds, $submissionBySectionId->keys()->all()) !== []) {
             return response()->json(['message' => 'No approval submission contains the selected sections.'], 422);
         }
 
-        $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses, $request, $withdrawalStage, $submission, $user) {
+        $submissionSections = $submissionBySectionId
+            ->groupBy(static fn (ScheduleSubmission $submission): int => (int) $submission->id, true)
+            ->map(static fn ($group) => $group->keys()->map('intval')->values()->all());
+        $affectedSubmissions = $submissionBySectionId
+            ->values()
+            ->unique('id')
+            ->sortByDesc('revision_number')
+            ->values();
+        $primarySubmission = $affectedSubmissions->first();
+
+        $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses, $affectedSubmissions, $submissionSections, $user) {
             $completed = $this->departmentScheduleQuery($id)
                 ->whereIn('section_id', $sectionIds)
                 ->whereIn('status', $withdrawableStatuses)
@@ -681,15 +786,7 @@ class DepartmentScheduleController extends Controller
                     'updated_at' => now(),
                 ]);
 
-            // Rows about to be unlocked for revision are no longer VPAA-approved,
-            // and instructor assignment is only valid after that approval. Leaving
-            // faculty_id behind would keep an assignment nobody can see or clear
-            // (the assignment workspace and the timetable's phase-2 controls both
-            // hide non-approved rows) while it still counted towards teaching load
-            // and still fired faculty rules against the very edits the withdrawal
-            // was requested for. So the assignment is released here — recorded,
-            // not silently dropped — and made again after re-approval.
-            $released = $this->departmentScheduleQuery($id)
+            $preserved = $this->departmentScheduleQuery($id)
                 ->whereIn('section_id', $sectionIds)
                 ->where('status', 'completed')
                 ->whereNotNull('faculty_id')
@@ -700,60 +797,37 @@ class DepartmentScheduleController extends Controller
                 ->where('status', 'completed')
                 ->update([
                     'status' => 'revision',
-                    'faculty_id' => null,
                     'updated_at' => now(),
                 ]);
 
-            foreach ($released->groupBy('section_id') as $sectionId => $rows) {
-                SchedulingAuditLog::create([
-                    'user_id' => $request->user()?->id,
-                    'term_id' => (int) $rows->first()->term_id,
-                    'section_id' => (int) $sectionId,
-                    'department_id' => $id,
-                    'action' => 'instructor_assignment_released',
-                    'schedule_submission_id' => $submission->id,
-                    'metadata' => [
-                        'reason' => 'schedule_withdrawn',
-                        'withdrawal_stage' => $withdrawalStage,
-                        'released_count' => $rows->count(),
-                        'schedule_ids' => $rows->pluck('id')->map('intval')->all(),
-                        'previous_faculty_ids' => $rows
-                            ->mapWithKeys(static fn ($row): array => [
-                                (string) $row->id => (int) $row->faculty_id,
-                            ])
-                            ->all(),
-                    ],
-                    'created_at' => now(),
+            foreach ($affectedSubmissions as $submission) {
+                $submissionSectionIds = $submissionSections->get((int) $submission->id, []);
+                $submission->sections()->updateExistingPivot($submissionSectionIds, [
+                    'state' => 'withdrawn',
+                    'updated_at' => now(),
+                ]);
+                $remainingIncluded = DB::table('schedule_submission_sections')
+                    ->where('schedule_submission_id', $submission->id)
+                    ->where('state', 'included')
+                    ->exists();
+                $submission->update([
+                    'status' => $remainingIncluded ? 'partially_withdrawn' : 'withdrawn',
+                    'withdrawn_by' => $user->id,
+                    'withdrawn_at' => now(),
                 ]);
             }
-
-            $submission->sections()->updateExistingPivot($sectionIds, [
-                'state' => 'withdrawn',
-                'updated_at' => now(),
-            ]);
-            $remainingIncluded = DB::table('schedule_submission_sections')
-                ->where('schedule_submission_id', $submission->id)
-                ->where('state', 'included')
-                ->exists();
-            $submission->update([
-                'status' => $remainingIncluded ? 'partially_withdrawn' : 'withdrawn',
-                'withdrawn_by' => $user->id,
-                'withdrawn_at' => now(),
-            ]);
 
             return [
                 'completed' => $completed,
                 'revision' => $revision,
-                'instructors_released' => $released->count(),
+                'instructors_preserved' => $preserved->count(),
+                'submission_ids' => $affectedSubmissions->pluck('id')->map('intval')->values()->all(),
             ];
         });
 
-        // The assignment workspace caches its payload for five minutes and the
-        // withdrawn rows just left the statuses it lists, so serving the stale
-        // copy would still show instructors that were released above.
-        if ($updated['instructors_released'] > 0) {
-            ApiCache::forgetGroup('instructor_assignments.index');
-        }
+        // The assignment workspace caches its payload for five minutes. Withdrawn
+        // rows leave its visible statuses even though their faculty IDs persist.
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         $term = Terms::query()->find($this->activeTermId());
         if ($updated['revision'] > 0) {
@@ -761,9 +835,11 @@ class DepartmentScheduleController extends Controller
                 'schedules_updated' => $updated['revision'],
                 'sections_unlocked' => count($sectionIds),
                 'withdrawal_stage' => $withdrawalStage,
-                'instructors_released' => $updated['instructors_released'],
+                'instructors_preserved' => $updated['instructors_preserved'],
                 'selected_section_ids' => $sectionIds,
-            ], $submission->id);
+                'schedule_submission_ids' => $updated['submission_ids'],
+                'submission_section_ids' => $submissionSections->all(),
+            ], $primarySubmission?->id);
         }
         $this->notifications->notifyRoles(
             ['vpaa', 'dean', 'secretary', 'program_head'],
@@ -785,8 +861,9 @@ class DepartmentScheduleController extends Controller
                 'sections_unlocked' => count($sectionIds),
                 'selected_section_ids' => $sectionIds,
                 'withdrawal_stage' => $withdrawalStage,
-                'instructors_released' => $updated['instructors_released'],
-                'schedule_submission_id' => $submission->id,
+                'instructors_preserved' => $updated['instructors_preserved'],
+                'schedule_submission_id' => $primarySubmission?->id,
+                'schedule_submission_ids' => $updated['submission_ids'],
             ],
         );
 
@@ -796,8 +873,9 @@ class DepartmentScheduleController extends Controller
             'schedules_updated' => $updated['revision'],
             'sections_unlocked' => count($sectionIds),
             'withdrawal_stage' => $withdrawalStage,
-            'instructors_released' => $updated['instructors_released'],
-            'schedule_submission_id' => $submission->id,
+            'instructors_preserved' => $updated['instructors_preserved'],
+            'schedule_submission_id' => $primarySubmission?->id,
+            'schedule_submission_ids' => $updated['submission_ids'],
         ]);
     }
 

@@ -29,7 +29,6 @@ class ScheduleRequirementBuilderResolver
         ));
         if ($missingIds !== []) {
             $loaded = Course::query()
-                ->with('categories')
                 ->whereIn('id', $missingIds)
                 ->get();
             foreach ($loaded as $course) {

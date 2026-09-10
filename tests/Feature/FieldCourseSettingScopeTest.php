@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
@@ -152,11 +153,14 @@ class FieldCourseSettingScopeTest extends TestCase
             ['is_active' => true, 'is_enabled' => true],
         );
         $dept = Departments::create(['department_name' => "Dept {$code}", 'department_code' => $code]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $program = Program::create(['department_id' => $dept->id, 'code' => $code.'P', 'name' => "Program {$code}"]);
         Sections::create([
             'section_name' => "{$code}-1A", 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $dept->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $dept->id, 'program_id' => $program->id, 'term_id' => $term->id, 'status' => 'active',
         ]);
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]));
 
         return [$dept, $user];
     }

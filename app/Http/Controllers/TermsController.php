@@ -2,11 +2,16 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
+use App\Models\Schedule;
+use App\Models\SchedulingAuditLog;
+use App\Models\Sections;
 use App\Models\Terms;
+use App\Services\ScheduleTermArchiver;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Support\ApiCache;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class TermsController extends Controller
 {
@@ -16,8 +21,9 @@ class TermsController extends Controller
     public function index()
     {
         $terms = Cache::remember(ApiCache::key('terms.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Terms::orderBy('academic_year', 'desc')
-                      ->orderBy('semester', 'desc')
-                      ->get());
+            ->orderBy('semester', 'desc')
+            ->get());
+
         return response()->json($terms);
     }
 
@@ -32,38 +38,39 @@ class TermsController extends Controller
         ]);
 
         $academicYear = $request->academic_year;
-        if (!$academicYear) {
+        if (! $academicYear) {
             $currentYear = now()->month >= 6 ? now()->year : now()->year - 1;
             $nextYear = $currentYear + 1;
-            $academicYear = $currentYear . '-' . $nextYear;
+            $academicYear = $currentYear.'-'.$nextYear;
         }
 
         // Check for duplicates
         $exists = Terms::where('academic_year', $academicYear)
-                       ->where('semester', $request->semester)
-                       ->exists();
+            ->where('semester', $request->semester)
+            ->exists();
 
         if ($exists) {
             return response()->json([
-                'message' => 'This academic term already exists.'
+                'message' => 'This academic term already exists.',
             ], 422);
         }
 
         $term = Terms::create([
             'academic_year' => $academicYear,
-            'semester'      => $request->semester,
-            'is_active'     => false,
+            'semester' => $request->semester,
+            'is_active' => false,
         ]);
         ApiCache::forgetGroups([
             'terms.index',
             'terms.active',
             'sections.index',
             'sections.by_term',
+            'initial.data',
         ]);
 
         return response()->json([
             'message' => 'Term created successfully.',
-            'term' => $term
+            'term' => $term,
         ], 201);
     }
 
@@ -113,6 +120,7 @@ class TermsController extends Controller
             'terms.active',
             'sections.index',
             'sections.by_term',
+            'initial.data',
         ]);
 
         return response()->json([
@@ -127,6 +135,7 @@ class TermsController extends Controller
     public function show($id)
     {
         $term = Terms::findOrFail($id);
+
         return response()->json($term);
     }
 
@@ -139,7 +148,7 @@ class TermsController extends Controller
 
         if ($term->is_active) {
             return response()->json([
-                'message' => 'Cannot archive the active academic term. Please activate another term first.'
+                'message' => 'Cannot archive the active academic term. Please activate another term first.',
             ], 400);
         }
 
@@ -149,31 +158,82 @@ class TermsController extends Controller
             'terms.active',
             'sections.index',
             'sections.by_term',
+            'initial.data',
         ]);
 
         return response()->json([
-            'message' => 'Term archived successfully.'
+            'message' => 'Term archived successfully.',
         ]);
     }
 
     /**
      * Activate the specified term.
      */
-    public function activate($id)
+    public function activate($id, ScheduleTermArchiver $archiver)
     {
-        $term = Terms::findOrFail($id);
-        $term->is_active = true;
-        $term->save();
+        $actor = request()->user();
+        $resetSectionCount = 0;
+        $versions = DB::transaction(function () use ($id, $actor, $archiver, &$term, &$resetSectionCount) {
+            $term = Terms::query()->lockForUpdate()->findOrFail($id);
+            $previous = Terms::query()->where('is_active', true)->where('id', '!=', $term->id)->lockForUpdate()->first();
+            $versions = collect();
+
+            if ($previous) {
+                $schedules = Schedule::query()
+                    ->where('term_id', $previous->id)
+                    ->whereIn('status', ScheduleTermArchiver::VPAA_APPROVED_STATUSES)
+                    ->with(['section:id,section_name,year_level,semester,department_id,term_id', 'course:id,course_code,course_name,course_category,units,lecture_hours,lab_hours', 'faculty:id,first_name,last_name', 'room:id,room_code', 'department:id,department_name,department_code,logo', 'split'])
+                    ->get();
+                $versions = $archiver->archive($schedules, (int) $actor->id, (int) $previous->id);
+
+                Schedule::query()->where('term_id', $previous->id)->update(['deleted_at' => now()]);
+                $previous->is_active = false;
+                $previous->save();
+
+                // Term rows are reused as semesters and academic years change.
+                // Remove both operational section cycles so changing terms
+                // starts the newly active term as a clean workspace and the
+                // ended term cannot reappear with stale sections later.
+                Schedule::query()->where('term_id', $term->id)->update(['deleted_at' => now()]);
+                $resetSectionCount = Sections::query()
+                    ->whereIn('term_id', [$previous->id, $term->id])
+                    ->delete();
+            }
+
+            $term->is_active = true;
+            $term->save();
+
+            SchedulingAuditLog::create([
+                'user_id' => $actor->id,
+                'term_id' => $previous?->id,
+                'department_id' => null,
+                'action' => $versions->isNotEmpty() ? 'schedule_term_archived' : 'term_activated',
+                'history_version_id' => $versions->first()?->id,
+                'metadata' => [
+                    'activated_term_id' => $term->id,
+                    'history_version_ids' => $versions->pluck('id')->values()->all(),
+                    'reset_section_count' => $resetSectionCount,
+                ],
+                'created_at' => now(),
+            ]);
+
+            return $versions;
+        });
         ApiCache::forgetGroups([
             'terms.index',
             'terms.active',
             'sections.index',
             'sections.by_term',
+            'sections.by_department',
+            'departments.index',
+            'initial.data',
         ]);
 
         return response()->json([
-            'message' => 'Term activated successfully.',
-            'term' => $term
+            'message' => $versions->isNotEmpty() ? 'Term activated and previous schedules archived successfully.' : 'Term activated successfully.',
+            'term' => $term,
+            'history_version_ids' => $versions->pluck('id')->values()->all(),
+            'reset_section_count' => $resetSectionCount,
         ]);
     }
 
@@ -184,10 +244,44 @@ class TermsController extends Controller
     {
         $term = Cache::remember(ApiCache::key('terms.active'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Terms::where('is_active', true)->first());
 
-        if (!$term) {
+        if (! $term) {
             return response()->json(['message' => 'No active academic term found.'], 404);
         }
 
         return response()->json($term);
+    }
+
+    /**
+     * Return the durable term activation history used by the VPAA settings table.
+     */
+    public function activationHistory()
+    {
+        $logs = SchedulingAuditLog::query()
+            ->whereIn('action', ['term_activated', 'schedule_term_archived'])
+            ->whereNotNull('metadata')
+            ->latest('created_at')->latest('id')
+            ->get(['id', 'metadata', 'created_at']);
+
+        $termIds = $logs
+            ->map(fn (SchedulingAuditLog $log) => data_get($log->metadata, 'activated_term_id'))
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+        $terms = Terms::withTrashed()->whereIn('id', $termIds)->get()->keyBy('id');
+
+        return response()->json($logs->map(function (SchedulingAuditLog $log) use ($terms) {
+            $termId = (int) data_get($log->metadata, 'activated_term_id');
+            $term = $terms->get($termId);
+
+            return [
+                'id' => $log->id,
+                'term_id' => $termId,
+                'semester' => $term?->semester,
+                'academic_year' => $term?->academic_year,
+                'is_active' => (bool) $term?->is_active,
+                'activated_at' => $log->created_at?->toISOString(),
+            ];
+        })->filter(fn (array $entry) => $entry['term_id'] > 0 && $entry['semester'] !== null)->values());
     }
 }

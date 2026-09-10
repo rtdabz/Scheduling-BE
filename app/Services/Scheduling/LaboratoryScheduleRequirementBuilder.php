@@ -19,7 +19,7 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
             $courseId = (int) $course->id;
             $mode = (string) ($deliveryModes[$courseId] ?? $deliveryModes[(string) $courseId] ?? $defaultMode);
             $isLaboratory = SchedulingPolicy::isLaboratoryCourse($course);
-            $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
+            $isMajor = SchedulingPolicy::isMajorCourse($course);
             $hasLectureAndLaboratory = $overrideEnabled
                 && $isMajor
                 && in_array($courseId, $splitIds, true)
@@ -51,9 +51,17 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
 
             $componentType = match (true) {
                 $mode === 'online' => 'online',
-                SchedulingPolicy::isFieldCourse($course) || $mode === 'field' => 'field',
+                SchedulingPolicy::isFieldCourse($course, (int) $section->department_id) || $mode === 'field' => 'field',
                 $isLaboratory => 'laboratory',
                 default => 'lecture',
+            };
+            $isExplicitMode = array_key_exists($courseId, $deliveryModes)
+                || array_key_exists((string) $courseId, $deliveryModes);
+            $allowedModes = match ($componentType) {
+                'field' => ['field'],
+                'laboratory' => ['on-site'],
+                'online' => ['online'],
+                default => $isExplicitMode ? [$mode] : ['on-site', 'online'],
             };
             $roomTypes = match ($componentType) {
                 'online' => ['online'],
@@ -63,15 +71,9 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                 // save time, so offering one here would only produce previews
                 // that cannot be saved.
                 'laboratory' => ['laboratory'],
-                default => ['lecture', 'laboratory'],
-            };
-            $isExplicitMode = array_key_exists($courseId, $deliveryModes)
-                || array_key_exists((string) $courseId, $deliveryModes);
-            $allowedModes = match ($componentType) {
-                'field' => ['field'],
-                'laboratory' => ['on-site'],
-                'online' => ['online'],
-                default => $isExplicitMode ? [$mode] : ['on-site', 'online'],
+                default => in_array('online', $allowedModes, true)
+                    ? ['lecture', 'laboratory', 'online']
+                    : ['lecture', 'laboratory'],
             };
 
             $requirements[$courseId] = [

@@ -102,10 +102,10 @@ class MajorInstructorRestrictionTest extends TestCase
     public function test_a_minor_course_never_keeps_a_program(): void
     {
         $fixture = $this->fixture();
-        $secretary = User::factory()->create([
+        $secretary = $this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $fixture['department']->id,
-        ]);
+        ]));
 
         // The restriction is for majors only, so a minor is not program-bound even
         // when a program is sent for it.
@@ -129,10 +129,10 @@ class MajorInstructorRestrictionTest extends TestCase
     {
         $fixture = $this->fixture();
         $fixture['major']->update(['program_id' => $fixture['program']->id]);
-        $secretary = User::factory()->create([
+        $secretary = $this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $fixture['department']->id,
-        ]);
+        ]));
         $schedule = Schedule::create([
             'term_id' => $fixture['term']->id,
             'section_id' => $fixture['section']->id,
@@ -205,10 +205,10 @@ class MajorInstructorRestrictionTest extends TestCase
     public function test_course_program_must_belong_to_the_course_department(): void
     {
         $fixture = $this->fixture();
-        $secretary = User::factory()->create([
+        $secretary = $this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $fixture['department']->id,
-        ]);
+        ]));
         $outsideProgram = Program::create([
             'department_id' => $fixture['otherDepartment']->id,
             'code' => 'BSEE',
@@ -303,6 +303,7 @@ class MajorInstructorRestrictionTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $department->id,
+                'program_id' => $program->id,
                 'term_id' => $term->id,
                 'status' => 'active',
             ]),

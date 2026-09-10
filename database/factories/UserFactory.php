@@ -31,7 +31,7 @@ class UserFactory extends Factory
             'password' => static::$password ??= Hash::make('password'),
             'role' => 'secretary', // Default role
             'is_active' => true,
-            'allow_google_login' => false,
+            'allow_google_login' => true,
             'remember_token' => Str::random(10),
         ];
     }

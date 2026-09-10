@@ -47,7 +47,12 @@ class ScheduleHistoryTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
-        $secretary = User::factory()->create(['role' => 'secretary', 'department_id' => $departmentId]);
+        // The sibling test above covers the ungranted case; this one is about
+        // department scoping, so the account holds the capability to read.
+        $secretary = $this->grantCapabilities(
+            User::factory()->create(['role' => 'secretary', 'department_id' => $departmentId]),
+            ['schedule.view'],
+        );
         $version = ScheduleHistoryVersion::create(['department_id' => $departmentId, 'action' => 'updated']);
         ScheduleHistoryItem::create(['history_version_id' => $version->id, 'after_snapshot' => ['day' => 'Friday']]);
 

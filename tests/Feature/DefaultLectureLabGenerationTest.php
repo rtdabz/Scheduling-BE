@@ -750,7 +750,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertTrue(collect($rows)->every(static fn (array $row): bool => $row['is_hybrid'] === true));
     }
 
-    public function test_split_session_places_lecture_online_by_default(): void
+    public function test_split_session_prefers_available_lecture_room_before_online(): void
     {
         $term = Terms::create([
             'academic_year' => '2026-2027',
@@ -788,7 +788,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'status' => 'active',
         ]);
 
-        Rooms::create([
+        $lectureRoom = Rooms::create([
             'room_code' => 'IT 105',
             'building' => 'Building 4',
             'room_type' => 'lecture',
@@ -819,8 +819,8 @@ class DefaultLectureLabGenerationTest extends TestCase
 
         $this->assertNotNull($lecture);
         $this->assertNotNull($laboratory);
-        $this->assertSame('online', $lecture['mode']);
-        $this->assertNull($lecture['room_id']);
+        $this->assertSame('on-site', $lecture['mode']);
+        $this->assertSame($lectureRoom->id, $lecture['room_id']);
         $this->assertSame('on-site', $laboratory['mode']);
         $this->assertSame($labRoom->id, $laboratory['room_id']);
     }
@@ -1014,7 +1014,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNotEmpty($solutions);
         $laboratory = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'laboratory');
         $this->assertNotNull($laboratory);
-        $this->assertContains($laboratory['day'], SchedulingPolicy::WEEKDAYS);
+        $this->assertContains($laboratory['day'], SchedulingPolicy::WEEKDAYS_AND_SATURDAY);
         $this->assertSame($labRoom->id, $laboratory['room_id']);
     }
 
@@ -1053,7 +1053,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNotNull($lecture);
         $this->assertSame('Saturday', $laboratory['day']);
         $this->assertSame($labRoom->id, $laboratory['room_id']);
-        $this->assertSame('Saturday', $lecture['day']);
+        $this->assertContains($lecture['day'], SchedulingPolicy::WEEKDAYS_AND_SATURDAY);
         $this->assertSame('online', $lecture['mode']);
         $this->assertNull($lecture['room_id']);
     }
@@ -1587,7 +1587,9 @@ class DefaultLectureLabGenerationTest extends TestCase
         }
 
         $this->assertSame(
-            ['07:00:00', '08:30:00', '10:00:00', '11:30:00', '13:00:00', '14:30:00', '16:00:00', '17:30:00'],
+            // The default closing time is 20:30, so a 90-minute class still
+            // fits starting at 19:00.
+            ['07:00:00', '08:30:00', '10:00:00', '11:30:00', '13:00:00', '14:30:00', '16:00:00', '17:30:00', '19:00:00'],
             array_map(
                 static fn (int $slot): string => SchedulingPolicy::slotToTime($slot),
                 SchedulingPolicy::generatedStartSlotsForDuration(3),

@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\SchedulingPolicy;
+use App\Support\ApiCache;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,7 +23,26 @@ use Illuminate\Support\Facades\Schema;
 
 class InitialDataController extends Controller
 {
-    private ?bool $hasCourseCategories = null;
+    // Matches every other lookup group. The payload is explicitly invalidated by
+    // ApiCache::forgetGroups('initial.data') on each mutation, so a short TTL
+    // bought no extra freshness — it only churned ~1.7MB cache entries per miss.
+    private const CACHE_TTL_SECONDS = ApiCache::LOOKUP_TTL_SECONDS;
+
+    /**
+     * The optional collections a caller may ask for by name. Everything outside
+     * this list (the active term, the grid window, the readiness flags) is a
+     * handful of scalars and is always returned.
+     */
+    private const OPTIONAL_SECTIONS = [
+        'rooms',
+        'courses',
+        'faculties',
+        'sections',
+        'schedules',
+        'schedule_submissions',
+        'departments',
+        'users',
+    ];
 
     public function __construct(
         private readonly FacultyLoadService $facultyLoad,
@@ -31,6 +51,46 @@ class InitialDataController extends Controller
 
     public function __invoke(Request $request): JsonResponse
     {
+        $user = $request->user();
+        $include = $this->requestedSections($request);
+        $cacheKey = ApiCache::key('initial.data', [
+            'include' => $include,
+            'role' => (string) ($user?->role ?? ''),
+            'department_id' => $user?->isVpaa() || $user?->department_id === null
+                ? null
+                : (int) $user?->department_id,
+            'program_id' => $user?->role === 'program_head' ? (int) ($user?->program_id ?? 0) : null,
+            'per_page' => min(max((int) $request->query('per_page', 0), 0), 500),
+            'schedule_limit' => min(max((int) $request->query('schedule_limit', 500), 1), 2000),
+            'pages' => collect(['rooms', 'courses', 'sections', 'schedules', 'departments', 'users'])
+                ->mapWithKeys(fn (string $key): array => [$key => (int) $request->query($key.'_page', 1)])
+                ->all(),
+        ]);
+
+        // Cache the ENCODED payload, not the Eloquent collections that produce it.
+        // Storing models meant a cache hit still paid the full serialization cost:
+        // json_encode() walks every model's toArray(), casts and $appends, which
+        // measured ~433ms for the largest payload (the SQL it replaced was ~46ms).
+        // Caching the finished string turns a hit into a file read (~1ms).
+        $json = Cache::remember(
+            $cacheKey,
+            self::CACHE_TTL_SECONDS,
+            fn (): string => json_encode(
+                $this->buildPayload($request),
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+            ),
+        );
+
+        return JsonResponse::fromJsonString($json);
+    }
+
+    private function buildPayload(Request $request): array
+    {
+        // Null means "everything", matching the pre-`include` contract.
+        $include = $this->requestedSections($request);
+        $wants = static fn (string $section): bool => $include === null
+            || in_array($section, $include, true);
+
         $pageSize = min(max((int) $request->query('per_page', 0), 0), 500);
         $user = $request->user();
         $departmentId = $user->isVpaa() || $user->department_id === null
@@ -39,13 +99,13 @@ class InitialDataController extends Controller
         $viewerDepartmentId = $departmentId;
         $facultyDepartmentId = $user->role === 'program_head' ? $departmentId : null;
         $facultyProgramId = $user->role === 'program_head' ? (int) ($user->program_id ?? 0) : null;
-        $activeTerm = Cache::remember('scheduler:term:active', 300, fn () => Terms::query()->where('is_active', true)->first());
+        $activeTerm = Cache::remember(
+            ApiCache::key('terms.active'),
+            ApiCache::LOOKUP_TTL_SECONDS,
+            fn () => Terms::query()->where('is_active', true)->first(),
+        );
         $activeTermId = $activeTerm?->id;
-        // Cached per request: these hit information_schema, and the schema cannot
-        // change between the two reads below (audit finding #10).
-        $hasCourseCategories = $this->hasCourseCategoryTables();
-
-        $rooms = Rooms::query()
+        $rooms = ! $wants('rooms') ? collect() : Rooms::query()
             ->with('department')
             ->when($departmentId !== null, fn (Builder $query) => $query->where(
                 fn (Builder $scope) => $scope
@@ -61,20 +121,42 @@ class InitialDataController extends Controller
         $activeCurriculumList = $activeCurriculumQuery->get();
 
         $courseRelations = ['department', 'teachingDepartment', 'teachingProgram', 'program'];
-        if ($hasCourseCategories) {
-            $courseRelations[] = 'categories';
-        }
 
-        if ($activeCurriculumList->isNotEmpty()) {
+        if ($wants('courses') && $activeCurriculumList->isNotEmpty()) {
             $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
+            $activeSemester = match ($activeTerm?->semester) {
+                '1st' => 1,
+                '2nd' => 2,
+                'summer' => 3,
+                default => null,
+            };
+            $pivotData = \DB::table('curriculum_course')
+                ->whereIn('curriculum_id', $activeCurriculumList->pluck('id'))
+                ->when($activeSemester !== null, fn ($query) => $query->where('semester', $activeSemester))
+                ->get();
+            $activeSemesterCourseIds = $pivotData->pluck('course_id')->map('intval')->unique()->values();
+            $configuredFieldCodes = $departmentId === null
+                ? []
+                : \DB::table('field_course_settings')
+                    ->where('department_id', $departmentId)
+                    ->whereNotNull('course_code')
+                    ->pluck('course_code')
+                    ->map(static fn ($code): string => SchedulingPolicy::normalizeCourseCode((string) $code))
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->all();
 
             $courses = Course::with($courseRelations)
-                ->where(function ($outer) use ($activeCurriculumList, $departmentId) {
+                ->whereIn('courses.id', $activeSemesterCourseIds)
+                ->where(function ($outer) use ($activeCurriculumList, $departmentId, $configuredFieldCodes) {
                     $outer->where(function ($own) use ($activeCurriculumList, $departmentId) {
                         $own->whereHas('curriculum', function ($q) use ($activeCurriculumList) {
                             $q->whereIn('curriculum.id', $activeCurriculumList->pluck('id'));
                         })
-                            // Only include courses that belong to this department or are shared minors (null dept)
+                            // Keep configured field courses in scope even when their
+                            // owning department differs; the field setting explicitly
+                            // delegates them to this department's scheduler.
                             ->when($departmentId !== null, function ($q) use ($departmentId) {
                                 $q->where(function ($scope) use ($departmentId) {
                                     $scope->whereNull('department_id')
@@ -83,28 +165,20 @@ class InitialDataController extends Controller
                             });
                     });
 
-                    // Plus every course another college has delegated to this one to
-                    // teach. This has to sit outside *both* filters above: IT's GEC
-                    // 101 belongs to an IT curriculum and to the IT department, so a
-                    // CAS user matches neither — yet CAS is the college that assigns
-                    // its instructor and needs the course record to say so.
-                    //
-                    // Without this the client's `subjects.find(...)` misses, and a
-                    // missing course reads as "open to every department" rather than
-                    // "CAS only", so the picker would silently offer the wrong staff.
-                    if ($departmentId !== null) {
-                        $outer->orWhere('teaching_department_id', $departmentId);
+                    if ($configuredFieldCodes !== []) {
+                        $outer->orWhere(function ($field) use ($activeCurriculumList, $configuredFieldCodes) {
+                            $field->whereHas('curriculum', function ($q) use ($activeCurriculumList) {
+                                $q->whereIn('curriculum.id', $activeCurriculumList->pluck('id'));
+                            })->whereIn('course_code', $configuredFieldCodes);
+                        });
                     }
+
                 })
                 ->when($facultyProgramId !== null, fn (Builder $query) => $query->where(
                     fn (Builder $programScope) => $programScope
                         ->where('program_id', $facultyProgramId)
                         ->orWhere('teaching_program_id', $facultyProgramId),
                 ))
-                ->get();
-
-            $pivotData = \DB::table('curriculum_course')
-                ->whereIn('curriculum_id', $activeCurriculumList->pluck('id'))
                 ->get();
 
             $pivotMap = [];
@@ -149,24 +223,19 @@ class InitialDataController extends Controller
             // active curriculum. Shared minors (null dept) are not included here either,
             // because without a curriculum they have no term/year-level placement.
             //
-            // Courses delegated to this department are the exception: their placement
-            // comes from the owning college's curriculum, and this department has to
-            // assign their instructors whether or not it runs a curriculum of its own.
             $courses = $departmentId === null
                 ? collect()
-                : Course::with($courseRelations)
-                    ->where('teaching_department_id', $departmentId)
-                    ->when($facultyProgramId !== null, fn (Builder $query) => $query->where(
-                        fn (Builder $programScope) => $programScope
-                            ->where('program_id', $facultyProgramId)
-                            ->orWhere('teaching_program_id', $facultyProgramId),
-                    ))
-                    ->orderBy('course_code')
-                    ->get();
+                : collect();
         }
 
-        $sections = Sections::query()
-            ->with(['department', 'term'])
+        $sections = ! $wants('sections') ? collect() : Sections::query()
+            // The curriculum comes along so the generator can show which one a
+            // year level follows without a second round trip.
+            ->with(['department', 'program', 'term', 'curriculum'])
+            // A Department without a Program is not a schedulable academic scope.
+            // Keep legacy schedule rows readable below, but do not offer these
+            // sections to the active scheduler or generation workflows.
+            ->whereHas('program')
             ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
             ->when($activeTermId !== null, fn (Builder $query) => $query->where(function (Builder $q) use ($activeTermId, $activeTerm) {
                 $q->where('term_id', $activeTermId)
@@ -177,27 +246,29 @@ class InitialDataController extends Controller
             }))
             ->get();
 
-        $schedules = Schedule::query()
+        // Every relation below is duplicated onto each of the (up to 2,000) schedule
+        // rows, while the same records already ship normalised at the top level of
+        // this payload. Select only the columns the client actually reads off a
+        // nested schedule relation; the full records stay available in the
+        // top-level `rooms`/`courses`/`sections`/`departments` collections.
+        // Unbounded columns here (departments.logo, faculties.profile_picture) would
+        // otherwise be repeated once per meeting row.
+        $schedules = ! $wants('schedules') ? collect() : Schedule::query()
             ->with(array_filter([
-                'term',
-                'section',
-                $hasCourseCategories ? 'course.categories' : 'course',
-                'faculty',
-                'room',
-                'department',
+                'term:id,academic_year,semester',
+                'section:id,section_name,year_level,semester,department_id,program_id,term_id',
+                // teaching_department_id drives the delegated-assignment masking below.
+                'course:id,course_code,course_name,lecture_hours,lab_hours,units,course_category,room_type_required,year_level,semester,department_id,teaching_department_id,teaching_program_id,program_id',
+                'faculty:id,first_name,last_name,middle_name,department_id,program_id',
+                'room:id,room_code,building,room_type,allow_lecture_usage,department_id',
+                'department:id,department_name,department_code',
             ]))
             ->when($departmentId !== null, fn (Builder $query) => $query->where(
-                // Own offerings, plus those another college delegated to this one to
-                // teach. Auto-Assign works from these rows, so the teaching college
-                // cannot assign what it cannot see. An explicit override is the only
-                // thing that widens this — a course this department owns already
-                // matches on `department_id`.
+                // The Schedule Builder is scoped to this department's own offerings.
+                // Delegated courses and source-department rows belong to the
+                // dedicated Cross-Department assignment workflow instead.
                 fn (Builder $scope) => $scope
-                    ->where('department_id', $departmentId)
-                    ->orWhereHas(
-                        'course',
-                        fn ($course) => $course->where('teaching_department_id', $departmentId),
-                    ),
+                    ->where('department_id', $departmentId),
             ))
             ->when($facultyProgramId !== null, fn (Builder $query) => $query->whereHas(
                 'course',
@@ -213,7 +284,8 @@ class InitialDataController extends Controller
             ->limit(min(max((int) $request->query('schedule_limit', 500), 1), 2000))
             ->get();
 
-        $scheduleSubmissions = ScheduleSubmission::query()
+        $needsSubmissions = $wants('schedules') || $wants('schedule_submissions');
+        $scheduleSubmissions = ! $needsSubmissions ? collect() : ScheduleSubmission::query()
             ->with([
                 'sections:id,section_name,year_level,department_id,term_id',
                 'submitter:id,name',
@@ -274,8 +346,8 @@ class InitialDataController extends Controller
             }
         });
 
-        $departments = Departments::query()
-            ->withCount(['rooms', 'sections', 'faculties'])
+        $departments = ! $wants('departments') ? collect() : Departments::query()
+            ->withCount(['rooms', 'sections', 'faculties', 'programs'])
             ->with(['users' => fn ($query) => $query
                 ->where('role', 'dean')
                 ->select('id', 'name', 'department_id')])
@@ -298,11 +370,21 @@ class InitialDataController extends Controller
             // Department-wide schedulers may use the external-instructor tab. A
             // Program Head, however, owns one program roster and must never see
             // another program's instructors in Auto-Assign.
-            'faculties' => $this->facultyLoad->get($facultyDepartmentId, $activeTermId, $facultyProgramId),
+            'faculties' => $wants('faculties')
+                ? $this->facultyLoad->get($facultyDepartmentId, $activeTermId, $facultyProgramId)
+                : collect(),
             'sections' => $sections,
             'schedules' => $schedules,
             'schedule_submissions' => $scheduleSubmissions,
             'departments' => $departments,
+            'scheduling_ready' => $departmentId === null || Departments::query()->whereKey($departmentId)->whereHas('programs')->exists(),
+            // Submitting hands the schedules to a Dean, so the scheduler can
+            // block the action up front instead of letting the request fail.
+            'has_dean' => $departmentId === null || User::query()
+                ->where('role', 'dean')
+                ->where('department_id', $departmentId)
+                ->where('is_active', true)
+                ->exists(),
             'field_course_assignment_enabled' => SchedulingPolicy::fieldCourseSettingEnabled($departmentId),
             'field_course_codes' => array_keys(SchedulingPolicy::fieldCourseCodeMap($departmentId)),
             'resource_slot_limits' => $departmentId !== null
@@ -315,7 +397,7 @@ class InitialDataController extends Controller
             // The VPAA is a college-wide signatory with no department of their own,
             // so a department-scoped list would omit the very account the load
             // sheet's "Recommending Approval" line is stamped from.
-            'users' => User::query()
+            'users' => ! $wants('users') ? collect() : User::query()
                 ->when($departmentId !== null, fn (Builder $query) => $query->where(
                     fn (Builder $scope) => $scope
                         ->where('department_id', $departmentId)
@@ -342,18 +424,45 @@ class InitialDataController extends Controller
             }
         }
 
-        return response()->json($payload);
+        if ($include !== null) {
+            $payload = array_filter(
+                $payload,
+                static fn (string $key): bool => ! in_array($key, self::OPTIONAL_SECTIONS, true)
+                    || in_array($key, $include, true),
+                ARRAY_FILTER_USE_KEY,
+            );
+        }
+
+        return $payload;
     }
 
     /**
-     * Whether the optional course-category tables are present.
+     * The collections this request asked for, or null for the full payload.
      *
-     * Memoized for the request: two Schema::hasTable calls per request each hit
-     * information_schema, and the answer cannot change mid-request.
+     * `?include=rooms,departments,schedules` lets a page that renders one table
+     * skip the rest of the system. Unknown names are ignored rather than
+     * rejected, and an include listing nothing valid falls back to everything —
+     * a typo degrades to the old behaviour instead of returning a blank page.
      */
-    private function hasCourseCategoryTables(): bool
+    private function requestedSections(Request $request): ?array
     {
-        return $this->hasCourseCategories ??= Schema::hasTable('course_categories')
-            && Schema::hasTable('course_category_mapping');
+        $raw = $request->query('include');
+
+        if (! is_string($raw) || trim($raw) === '') {
+            return null;
+        }
+
+        $requested = collect(explode(',', $raw))
+            ->map(static fn (string $name): string => strtolower(trim($name)))
+            ->filter(static fn (string $name): bool => in_array($name, self::OPTIONAL_SECTIONS, true))
+            ->unique()
+            // Two requests for the same sections in a different order must hit
+            // the same cache entry.
+            ->sort()
+            ->values()
+            ->all();
+
+        return $requested === [] ? null : $requested;
     }
+
 }

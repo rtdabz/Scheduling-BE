@@ -46,6 +46,7 @@ class RoomsController extends Controller
         ApiCache::forgetGroups([
             'rooms.index',
             'departments.index',
+            'initial.data',
         ]);
 
         return response()->json([
@@ -92,6 +93,7 @@ class RoomsController extends Controller
         ApiCache::forgetGroups([
             'rooms.index',
             'departments.index',
+            'initial.data',
         ]);
 
         return response()->json([
@@ -110,6 +112,7 @@ class RoomsController extends Controller
         ApiCache::forgetGroups([
             'rooms.index',
             'departments.index',
+            'initial.data',
         ]);
 
         return response()->json([
@@ -134,6 +137,7 @@ class RoomsController extends Controller
         ApiCache::forgetGroups([
             'rooms.index',
             'departments.index',
+            'initial.data',
         ]);
 
         return response()->json([

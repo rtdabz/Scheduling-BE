@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Faculty;
+use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
@@ -320,6 +321,13 @@ class FacultyOverloadConfirmationTest extends TestCase
     private function fixture(array $facultyOverrides = []): array
     {
         $department = Departments::create(['department_name' => 'Load Dept', 'department_code' => 'LOD']);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $program = Program::create([
+            'department_id' => $department->id,
+            'code' => 'BSLOD',
+            'name' => 'Load Program',
+        ]);
         $term = Terms::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
@@ -329,6 +337,7 @@ class FacultyOverloadConfirmationTest extends TestCase
 
         $fixture = [
             'department' => $department,
+            'program' => $program,
             'term' => $term,
             'room' => Rooms::create([
                 'room_code' => 'LOD101',
@@ -336,7 +345,7 @@ class FacultyOverloadConfirmationTest extends TestCase
                 'status' => 'available',
                 'department_id' => $department->id,
             ]),
-            'user' => User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]),
+            'user' => $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id])),
         ];
 
         $fixture['faculty'] = $this->instructor($fixture, 'Load', $facultyOverrides);
@@ -413,6 +422,7 @@ class FacultyOverloadConfirmationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $fixture['department']->id,
+            'program_id' => $fixture['program']->id,
             'term_id' => $fixture['term']->id,
             'status' => 'active',
         ]);

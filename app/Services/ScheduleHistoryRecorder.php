@@ -65,10 +65,6 @@ class ScheduleHistoryRecorder
             ScheduleHistoryItem::create([
                 'history_version_id' => $version->id,
                 'original_schedule_id' => $id ?: null,
-                'section_id' => $this->value($snapshot, 'section_id'),
-                'course_id' => $this->value($snapshot, 'course_id'),
-                'faculty_id' => $this->value($snapshot, 'faculty_id'),
-                'room_id' => $this->value($snapshot, 'room_id'),
                 'before_snapshot' => $this->snapshot($beforeRow),
                 'after_snapshot' => $this->snapshot($afterRow),
                 'snapshot_metadata' => ['action' => $action, 'source' => $source],

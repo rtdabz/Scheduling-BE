@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\TimeslotOverride;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\TimeslotService;
+use App\Support\ApiCache;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -58,6 +59,7 @@ class TimeslotController extends Controller
             'slot_interval' => (int) $validated['slot_interval'],
         ]);
         SchedulingPolicy::clearTimeCache();
+        ApiCache::forgetGroup('initial.data');
 
         return response()->json([
             'message' => 'Timeslot settings updated successfully.',
@@ -79,6 +81,7 @@ class TimeslotController extends Controller
             'is_active' => (bool) ($validated['is_active'] ?? true),
         ]);
         SchedulingPolicy::clearTimeCache();
+        ApiCache::forgetGroup('initial.data');
 
         return response()->json([
             'message' => 'Timeslot override created successfully.',
@@ -103,6 +106,7 @@ class TimeslotController extends Controller
 
         $override->save();
         SchedulingPolicy::clearTimeCache();
+        ApiCache::forgetGroup('initial.data');
 
         return response()->json([
             'message' => 'Timeslot override updated successfully.',
@@ -115,6 +119,7 @@ class TimeslotController extends Controller
         $override = TimeslotOverride::query()->findOrFail($id);
         $override->delete();
         SchedulingPolicy::clearTimeCache();
+        ApiCache::forgetGroup('initial.data');
 
         return response()->json([
             'message' => 'Timeslot override archived successfully.',

@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
@@ -198,6 +199,9 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
     private function fixture(): array
     {
         $dept = Departments::create(['department_name' => 'Atomic Dept', 'department_code' => 'ATM']);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $program = Program::create(['department_id' => $dept->id, 'code' => 'ATMP', 'name' => 'Atomic Program']);
         $term = Terms::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
@@ -219,11 +223,12 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $dept->id,
+            'program_id' => $program->id,
             'term_id' => $term->id,
             'status' => 'active',
         ]);
 
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]));
 
         return [$dept, $term, $room, $course, $otherCourse, $section, $user];
     }

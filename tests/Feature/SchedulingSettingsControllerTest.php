@@ -19,11 +19,19 @@ class SchedulingSettingsControllerTest extends TestCase
     {
         $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'IT']);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $program = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'BSIT',
+            'name' => 'Information Technology',
+        ]);
         $section = Sections::create([
             'section_name' => 'IT 1A',
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
+            'program_id' => $program->id,
             'term_id' => $term->id,
             'status' => 'active',
         ]);
@@ -37,13 +45,16 @@ class SchedulingSettingsControllerTest extends TestCase
         $curriculum->courses()->attach($yearTwoCourse->id, ['year_level' => 2, 'semester' => 1]);
         $curriculum->courses()->attach($secondSemesterCourse->id, ['year_level' => 1, 'semester' => 2]);
 
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->getJson('/api/scheduling-settings?section_id='.$section->id);
 
         $response->assertOk();
-        $response->assertJsonPath('online_slot_limit', 3)
-            ->assertJsonPath('field_slot_limit', 3);
+        // Neither shared resource is capped unless a department sets a limit,
+        // so an unconfigured department reports null rather than a ceiling the
+        // scheduler does not apply.
+        $response->assertJsonPath('online_slot_limit', null)
+            ->assertJsonPath('field_slot_limit', null);
         $this->assertSame(['IT 101'], collect($response->json('forced_day_courses'))->pluck('code')->all());
         $this->assertSame(['IT 101'], collect($response->json('field_course_options'))->pluck('code')->all());
 

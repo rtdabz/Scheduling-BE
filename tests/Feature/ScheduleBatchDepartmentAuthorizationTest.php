@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleHistoryItem;
@@ -21,7 +22,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_batch_status_update_persists_action_history_version_and_item(): void
     {
         [$deptA, , $term, $roomA, , $courseA, , $sectionA] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $schedule = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, ['status' => 'draft']);
 
         $this->actingAs($user)->patchJson('/api/schedules/batch-status', [
@@ -44,7 +45,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_batch_update_uses_persisted_schedule_department_for_authorization(): void
     {
         [$deptA, $deptB, $term, $roomA, $roomB, $courseA, $courseB, $sectionA, $sectionB] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $foreignSchedule = $this->schedule($deptB, $term, $roomB, $courseB, $sectionB, ['status' => 'draft']);
 
         $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
@@ -74,7 +75,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_batch_delete_ids_use_persisted_schedule_department_for_authorization(): void
     {
         [$deptA, $deptB, $term, $roomA, $roomB, $courseA, $courseB, $sectionA, $sectionB] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $localSchedule = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, ['status' => 'draft']);
         $foreignSchedule = $this->schedule($deptB, $term, $roomB, $courseB, $sectionB);
 
@@ -107,7 +108,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_batch_can_delete_schedules_without_operations(): void
     {
         [$deptA, , $term, $roomA, , $courseA, , $sectionA] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $schedule = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA);
 
         $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
@@ -127,7 +128,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_batch_can_replace_editable_schedules_for_selected_sections(): void
     {
         [$deptA, , $term, $roomA, , $courseA, , $sectionA] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $oldDraft = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, ['status' => 'draft']);
         $oldRevision = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, [
             'day' => 'Tuesday',
@@ -172,7 +173,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_batch_replace_section_ids_use_section_department_for_authorization(): void
     {
         [$deptA, $deptB, $term, $roomA, , $courseA, , $sectionA, $sectionB] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
 
         $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
             'operations' => [[
@@ -198,7 +199,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_batch_can_update_existing_schedule_with_partial_operation(): void
     {
         [$deptA, , $term, $roomA, , $courseA, , $sectionA] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $schedule = $this->schedule($deptA, $term, $roomA, $courseA, $sectionA, [
             'status' => 'draft',
         ]);
@@ -221,7 +222,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_batch_normalizes_online_room_assignment_to_online_mode(): void
     {
         [$deptA, , $term, , , $courseA, , $sectionA] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $onlineRoom = Rooms::create([
             'room_code' => 'ONLINE',
             'room_type' => 'online',
@@ -255,7 +256,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     {
         [$deptA, , $term, , , , , ,] = $this->fixture();
         $deptA->update(['field_slot_limit' => 5]);
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $fieldRoom = Rooms::create([
             'room_code' => 'FIELD',
             'room_name' => 'Shared Field',
@@ -277,11 +278,13 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
             'department_id' => $deptA->id,
             'status' => 'active',
         ]);
+        $programId = Program::query()->where('department_id', $deptA->id)->value('id');
         $sections = collect(range(1, 4))->map(fn (int $number) => Sections::create([
             'section_name' => "A{$number}",
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $deptA->id,
+            'program_id' => $programId,
             'term_id' => $term->id,
             'status' => 'active',
         ]));
@@ -310,7 +313,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_split_validation_delete_ids_use_persisted_schedule_department_for_authorization(): void
     {
         [$deptA, $deptB, $term, $roomA, $roomB, $courseA, $courseB, $sectionA, $sectionB] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $foreignSchedule = $this->schedule($deptB, $term, $roomB, $courseB, $sectionB);
 
         $response = $this->actingAs($user)->postJson('/api/schedules/batch/validate-splits', [
@@ -340,7 +343,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     public function test_batch_status_uses_persisted_schedule_department_for_authorization(): void
     {
         [$deptA, $deptB, $term, , $roomB, , $courseB, , $sectionB] = $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
         $foreignSchedule = $this->schedule($deptB, $term, $roomB, $courseB, $sectionB, ['status' => 'draft']);
 
         $response = $this->actingAs($user)->patchJson('/api/schedules/batch-status', [
@@ -372,6 +375,10 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
     {
         $deptA = Departments::create(['department_name' => 'Department A', 'department_code' => 'DEPA']);
         $deptB = Departments::create(['department_name' => 'Department B', 'department_code' => 'DEPB']);
+        // Schedule capabilities and section scheduling both require the owning
+        // department to have a program.
+        $programA = Program::create(['department_id' => $deptA->id, 'code' => 'PA', 'name' => 'Program A']);
+        $programB = Program::create(['department_id' => $deptB->id, 'code' => 'PB', 'name' => 'Program B']);
         $term = Terms::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
@@ -414,6 +421,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $deptA->id,
+            'program_id' => $programA->id,
             'term_id' => $term->id,
             'status' => 'active',
         ]);
@@ -422,6 +430,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $deptB->id,
+            'program_id' => $programB->id,
             'term_id' => $term->id,
             'status' => 'active',
         ]);

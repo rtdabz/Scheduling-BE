@@ -3,15 +3,18 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Concerns\ConfirmsFacultyOverload;
-use App\Models\Faculty;
 use App\Models\Course;
+use App\Models\Faculty;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
+use App\Models\Sections;
 use App\Models\Terms;
+use App\Services\FacultyLoadService;
+use App\Services\ScheduleHistoryRecorder;
+use App\Services\Scheduling\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\RuleEngine;
 use App\Services\Scheduling\SchedulingPolicy;
 use App\Services\SystemNotificationService;
-use App\Services\ScheduleHistoryRecorder;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -29,10 +32,10 @@ class InstructorAssignmentController extends Controller
     public function __construct(
         private readonly RuleEngine $ruleEngine,
         private readonly SystemNotificationService $notifications,
-        private readonly \App\Services\FacultyLoadService $facultyLoad,
+        private readonly FacultyLoadService $facultyLoad,
+        private readonly ManualHybridFacultyAssignmentResolver $manualHybridAssignments,
         private readonly ScheduleHistoryRecorder $historyRecorder,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -60,7 +63,7 @@ class InstructorAssignmentController extends Controller
         $data = Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($departmentId, $programId) {
             $activeTerm = Terms::query()->where('is_active', true)->first();
 
-            if (!$activeTerm) {
+            if (! $activeTerm) {
                 return [
                     'active_term' => null,
                     'current_department_id' => $departmentId,
@@ -115,7 +118,7 @@ class InstructorAssignmentController extends Controller
                 ->orderBy('start_time')
                 ->get();
 
-             $faculties = Faculty::query()
+            $faculties = Faculty::query()
                 ->with(['department', 'program', 'availabilities'])
                 ->where('department_id', $departmentId)
                 ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
@@ -149,7 +152,7 @@ class InstructorAssignmentController extends Controller
     public function update(Request $request, Schedule $schedule): JsonResponse
     {
         $validated = $request->validate([
-            'faculty_id' => 'required|integer|exists:faculties,id',
+            'faculty_id' => 'present|nullable|integer|exists:faculties,id',
         ]);
 
         $departmentId = (int) ($request->user()?->department_id ?? 0);
@@ -161,7 +164,7 @@ class InstructorAssignmentController extends Controller
                 : SchedulingPolicy::assignedTeachingDepartmentId($schedule->course) ?? (int) $schedule->department_id)
             : null;
 
-        if (!$schedule->course) {
+        if (! $schedule->course) {
             return response()->json([
                 'message' => 'Only the college that offers this course can assign its instructor.',
             ], 403);
@@ -186,7 +189,7 @@ class InstructorAssignmentController extends Controller
             ], 403);
         }
 
-        if (!in_array($schedule->status, self::ASSIGNABLE_STATUSES, true)) {
+        if (! in_array($schedule->status, self::ASSIGNABLE_STATUSES, true)) {
             return response()->json([
                 'message' => $schedule->status === 'finalized'
                     ? 'A finalized schedule cannot be reassigned.'
@@ -194,8 +197,9 @@ class InstructorAssignmentController extends Controller
             ], 422);
         }
 
-        $faculty = Faculty::query()->findOrFail($validated['faculty_id']);
-        if ((int) $faculty->department_id !== $departmentId || $faculty->status !== 'active') {
+        $facultyId = $validated['faculty_id'] === null ? null : (int) $validated['faculty_id'];
+        $faculty = $facultyId === null ? null : Faculty::query()->findOrFail($facultyId);
+        if ($faculty !== null && ((int) $faculty->department_id !== $departmentId || $faculty->status !== 'active')) {
             return response()->json([
                 'message' => 'The selected instructor must be active and belong to the college that teaches this course.',
             ], 422);
@@ -203,6 +207,7 @@ class InstructorAssignmentController extends Controller
 
         if (
             $request->user()?->role === 'program_head'
+            && $faculty !== null
             && (int) $faculty->program_id !== (int) ($request->user()?->program_id ?? 0)
         ) {
             return response()->json([
@@ -213,7 +218,7 @@ class InstructorAssignmentController extends Controller
         // Checked here as well as in the rule engine so the workspace can say why
         // the instructor is ineligible instead of reporting a generic conflict.
         $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
-        if ($requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
+        if ($faculty !== null && $requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
             $schedule->course->loadMissing(['program', 'teachingProgram']);
             $requiredProgram = SchedulingPolicy::isMajorCourse($schedule->course)
                 ? $schedule->course->program
@@ -235,7 +240,7 @@ class InstructorAssignmentController extends Controller
 
         foreach ($linkedSchedules as $linkedSchedule) {
             $attempt = array_merge($linkedSchedule->toArray(), [
-                'faculty_id' => $faculty->id,
+                'faculty_id' => $facultyId,
                 'ignore_schedule_id' => $linkedScheduleIds,
             ]);
             $violations = array_merge($violations, $this->ruleEngine->validate($attempt));
@@ -252,23 +257,24 @@ class InstructorAssignmentController extends Controller
         // and then pro bono, so this asks rather than refuses — but it asks
         // before the write, so answering No leaves the schedule untouched.
         $activeTermId = $this->activeTermId();
-        $incoming = array_values(array_filter([$this->loadPairForSchedule($schedule)]));
+        if ($faculty !== null) {
+            $incoming = array_values(array_filter([$this->loadPairForSchedule($schedule)]));
+            $projection = $this->withAssignmentLabel(
+                $this->facultyLoad->projectLoad($faculty, $activeTermId, $incoming),
+                $this->assignmentLabelForSchedule($schedule),
+            );
 
-        $projection = $this->withAssignmentLabel(
-            $this->facultyLoad->projectLoad($faculty, $activeTermId, $incoming),
-            $this->assignmentLabelForSchedule($schedule),
-        );
+            $ceilingError = $this->facultyCeilingExceededResponse([$projection]);
+            if ($ceilingError !== null) {
+                return $ceilingError;
+            }
 
-        $ceilingError = $this->facultyCeilingExceededResponse([$projection]);
-        if ($ceilingError !== null) {
-            return $ceilingError;
-        }
+            if (! $request->boolean('confirm_overload')) {
+                $confirmation = $this->overloadConfirmationResponse([$projection]);
 
-        if (! $request->boolean('confirm_overload')) {
-            $confirmation = $this->overloadConfirmationResponse([$projection]);
-
-            if ($confirmation !== null) {
-                return $confirmation;
+                if ($confirmation !== null) {
+                    return $confirmation;
+                }
             }
         }
 
@@ -277,33 +283,32 @@ class InstructorAssignmentController extends Controller
             $request,
             $linkedSchedules,
             $linkedScheduleIds,
-            $faculty,
+            $facultyId,
             $previousFacultyId,
             $departmentId,
         ) {
             $before = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
             Schedule::query()
                 ->whereIn('id', $linkedScheduleIds)
-                ->update([
-                    'faculty_id' => $faculty->id,
-                    'status' => 'faculty_assignment',
-                ]);
+                ->update(['faculty_id' => $facultyId]);
 
             $after = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
-            $version = $this->historyRecorder->record('instructor_assigned', $before, $after, $request->user()?->id, $linkedSchedules->first()->term_id, $departmentId, 'instructor_assignment');
+            $action = $facultyId === null ? 'instructor_assignment_released' : 'instructor_assigned';
+            $version = $this->historyRecorder->record($action, $before, $after, $request->user()?->id, $linkedSchedules->first()->term_id, $departmentId, 'instructor_assignment');
             SchedulingAuditLog::create([
                 'user_id' => $request->user()?->id,
                 'term_id' => $linkedSchedules->first()->term_id,
                 'section_id' => $linkedSchedules->first()->section_id,
                 'department_id' => $departmentId,
-                'action' => 'instructor_assigned',
+                'action' => $action,
                 'history_version_id' => $version->id,
                 'metadata' => [
                     'schedule_id' => $linkedSchedules->first()->id,
                     'schedule_ids' => $linkedScheduleIds,
                     'course_id' => $linkedSchedules->first()->course_id,
                     'previous_faculty_id' => $previousFacultyId,
-                    'faculty_id' => $faculty->id,
+                    'faculty_id' => $facultyId,
+                    'reason' => $facultyId === null ? 'manual_removal' : 'manual_assignment',
                     'offering_department_id' => $linkedSchedules->first()->department_id,
                 ],
                 'created_at' => now(),
@@ -317,21 +322,126 @@ class InstructorAssignmentController extends Controller
                 ->get();
         });
 
-        ApiCache::forgetGroup('instructor_assignments.index');
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
-        if ($request->user()) {
+        if ($faculty !== null && $request->user()) {
             $this->notifications->notifyInstructorAssignmentProgress($updatedSchedules->first(), $request->user());
         }
 
         // Projected with nothing incoming, so it reports what the instructor
         // carries now that the assignment is committed.
-        $load = $this->facultyLoad->projectLoad($faculty->refresh(), $activeTermId, []);
+        $load = $faculty === null
+            ? null
+            : $this->facultyLoad->projectLoad($faculty->refresh(), $activeTermId, []);
 
         return response()->json([
             'schedule' => $updatedSchedules->first(),
             'schedules' => $updatedSchedules,
-            'warnings' => $this->loadWarnings($load),
+            'warnings' => $load === null ? [] : $this->loadWarnings($load),
             'load' => $load,
+        ]);
+    }
+
+    public function clearSection(Request $request, Sections $section): JsonResponse
+    {
+        $departmentId = (int) ($request->user()?->department_id ?? 0);
+        if ($departmentId === 0) {
+            return response()->json(['message' => 'Your account must belong to a department.'], 422);
+        }
+
+        $activeTermId = $this->activeTermId();
+        if ($activeTermId === null || (int) $section->term_id !== $activeTermId) {
+            return response()->json(['message' => 'Instructor assignments can only be cleared for the active term.'], 422);
+        }
+
+        $sectionSchedules = Schedule::query()
+            ->with('course')
+            ->where('term_id', $activeTermId)
+            ->where('section_id', $section->id)
+            ->whereIn('status', self::ASSIGNABLE_STATUSES)
+            ->where('faculty_assignment_done', false)
+            ->whereNotNull('faculty_id')
+            ->get();
+        $targetSchedules = $sectionSchedules
+            ->filter(fn (Schedule $schedule): bool => $this->userCanManageInstructor($request, $schedule, $departmentId))
+            ->values();
+
+        if ($targetSchedules->isEmpty()) {
+            return response()->json([
+                'message' => 'This section has no instructor assignments that your account can clear.',
+            ], 422);
+        }
+
+        $scheduleIds = $targetSchedules->pluck('id')->map('intval')->values()->all();
+        $facultyIds = $targetSchedules->pluck('faculty_id')->filter()->map('intval')->unique()->values();
+        $previousFacultyIds = $targetSchedules->mapWithKeys(
+            static fn (Schedule $schedule): array => [(string) $schedule->id => (int) $schedule->faculty_id]
+        )->all();
+
+        $updatedSchedules = DB::transaction(function () use (
+            $request,
+            $targetSchedules,
+            $scheduleIds,
+            $previousFacultyIds,
+            $facultyIds,
+            $departmentId,
+            $activeTermId,
+            $section,
+        ) {
+            $before = Schedule::query()->whereIn('id', $scheduleIds)->get();
+            Schedule::query()->whereIn('id', $scheduleIds)->update(['faculty_id' => null]);
+            $after = Schedule::query()->whereIn('id', $scheduleIds)->get();
+            $version = $this->historyRecorder->record(
+                'instructor_assignment_released',
+                $before,
+                $after,
+                $request->user()?->id,
+                $activeTermId,
+                $departmentId,
+                'instructor_assignment',
+            );
+            SchedulingAuditLog::create([
+                'user_id' => $request->user()?->id,
+                'term_id' => $activeTermId,
+                'section_id' => $section->id,
+                'department_id' => $departmentId,
+                'action' => 'instructor_assignment_released',
+                'history_version_id' => $version->id,
+                'metadata' => [
+                    'reason' => 'section_clear',
+                    'schedule_ids' => $scheduleIds,
+                    'course_ids' => $targetSchedules->pluck('course_id')->map('intval')->unique()->values()->all(),
+                    'previous_faculty_ids' => $previousFacultyIds,
+                    'faculty_ids' => $facultyIds->all(),
+                    'schedules_updated' => count($scheduleIds),
+                    'courses_cleared' => $targetSchedules->pluck('course_id')->unique()->count(),
+                    'offering_department_ids' => $targetSchedules->pluck('department_id')->map('intval')->unique()->values()->all(),
+                ],
+                'created_at' => now(),
+            ]);
+
+            return Schedule::query()
+                ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
+                ->whereIn('id', $scheduleIds)
+                ->orderBy('day')
+                ->orderBy('start_time')
+                ->get();
+        });
+
+        $affectedFaculties = Faculty::query()
+            ->with(['department', 'program', 'availabilities'])
+            ->whereIn('id', $facultyIds->all())
+            ->get();
+        $this->facultyLoad->decorateMany($affectedFaculties, $activeTermId);
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
+
+        return response()->json([
+            'message' => 'All eligible instructor assignments for the section were cleared.',
+            'section_id' => $section->id,
+            'schedules_updated' => $updatedSchedules->count(),
+            'courses_cleared' => $targetSchedules->pluck('course_id')->unique()->count(),
+            'schedules' => $updatedSchedules,
+            'faculties' => $affectedFaculties,
         ]);
     }
 
@@ -374,6 +484,14 @@ class InstructorAssignmentController extends Controller
      */
     private function linkedMeetingBlocks(Schedule $schedule)
     {
+        $hybridComponents = $this->manualHybridAssignments->resolve($schedule)
+            ->filter(fn (Schedule $component): bool => in_array($component->status, self::ASSIGNABLE_STATUSES, true))
+            ->values();
+
+        if ($hybridComponents->count() > 1) {
+            return $hybridComponents;
+        }
+
         return Schedule::query()
             ->where('term_id', $schedule->term_id)
             ->where('section_id', $schedule->section_id)
@@ -382,5 +500,28 @@ class InstructorAssignmentController extends Controller
             ->where('preferred_pattern', $schedule->preferred_pattern)
             ->whereIn('status', self::ASSIGNABLE_STATUSES)
             ->get();
+    }
+
+    private function userCanManageInstructor(Request $request, Schedule $schedule, int $departmentId): bool
+    {
+        if ($schedule->course === null) {
+            return false;
+        }
+
+        $teachingDepartmentId = SchedulingPolicy::isMajorCourse($schedule->course)
+            ? SchedulingPolicy::majorTeachingDepartmentId($schedule->course, (int) $schedule->department_id)
+            : SchedulingPolicy::assignedTeachingDepartmentId($schedule->course) ?? (int) $schedule->department_id;
+        if ((int) $teachingDepartmentId !== $departmentId) {
+            return false;
+        }
+
+        if ($request->user()?->role !== 'program_head') {
+            return true;
+        }
+
+        $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
+
+        return $requiredProgramId !== null
+            && $requiredProgramId === (int) ($request->user()?->program_id ?? 0);
     }
 }

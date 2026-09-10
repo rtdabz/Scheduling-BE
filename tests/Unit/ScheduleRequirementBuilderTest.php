@@ -29,7 +29,8 @@ class ScheduleRequirementBuilderTest extends TestCase
             new Collection([$course]),
         );
 
-        $this->assertSame(['lecture'], $requirements[10][0]['eligible_room_types']);
+        $this->assertSame(['lecture', 'online'], $requirements[10][0]['eligible_room_types']);
+        $this->assertNotContains('laboratory', $requirements[10][0]['eligible_room_types']);
         $this->assertFalse($requirements[10][0]['allow_lecture_laboratory_fallback']);
     }
 

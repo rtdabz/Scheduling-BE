@@ -6,6 +6,7 @@ use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Exceptions\YearLevelGenerationException;
 use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
+use App\Models\Terms;
 use App\Models\User;
 use App\Services\Scheduling\YearLevelScheduleGenerationService;
 use Illuminate\Bus\Queueable;
@@ -39,6 +40,22 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
 
     public function handle(YearLevelScheduleGenerationService $generator): void
     {
+        $claimed = ScheduleGenerationRun::query()
+            ->where('run_id', $this->runId)
+            ->where('status', 'queued')
+            ->whereNull('finished_at')
+            ->update([
+                'status' => 'running',
+                'started_at' => now(),
+                'error_message' => null,
+            ]);
+
+        // The polling endpoint may have already finalized an unclaimed run.
+        // Do not revive stale, cancelled, or otherwise terminal requests.
+        if ($claimed === 0) {
+            return;
+        }
+
         $run = ScheduleGenerationRun::query()->where('run_id', $this->runId)->firstOrFail();
         $requester = User::query()->find($run->requested_by);
         if (! $requester?->is_active || ($requester->role !== 'vpaa' && (int) $requester->department_id !== (int) $run->department_id)) {
@@ -46,13 +63,21 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
 
             return;
         }
-        $run->update(['status' => 'running', 'started_at' => now()]);
+        $term = Terms::query()->find($run->term_id);
+        if (! $term?->is_active) {
+            $run->update(['status' => 'cancelled', 'error_message' => 'The selected academic term is no longer active.', 'finished_at' => now()]);
 
+            return;
+        }
         try {
             $sections = Sections::query()
                 ->with('department')
                 ->whereIn('id', array_map('intval', $this->sectionIds))
+                ->where('term_id', $run->term_id)
                 ->where('department_id', $run->department_id)
+                ->where('year_level', (string) $run->year_level)
+                ->where('semester', (string) $term->semester)
+                ->where('status', 'active')
                 ->orderBy('section_name')
                 ->get()
                 ->all();
@@ -62,7 +87,12 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
             }
 
             $result = $generator->preview($sections, $this->configsBySectionId);
-            $run->update(['status' => 'completed', 'result' => $result, 'finished_at' => now()]);
+            $run->update([
+                'status' => 'completed',
+                'result' => $result,
+                'error_message' => null,
+                'finished_at' => now(),
+            ]);
         } catch (YearLevelGenerationException $exception) {
             $run->update([
                 'status' => 'failed',

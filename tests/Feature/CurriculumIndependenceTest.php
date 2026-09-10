@@ -23,6 +23,7 @@ class CurriculumIndependenceTest extends TestCase
             'password' => bcrypt('password'),
             'role' => 'vpaa',
         ]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
 
         $dept1 = Departments::create(['department_name' => 'Dept 1', 'department_code' => 'D1']);
@@ -71,17 +72,19 @@ class CurriculumIndependenceTest extends TestCase
             'password' => bcrypt('password'),
             'role' => 'vpaa',
         ]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
 
         $dept = Departments::create(['department_name' => 'Dept', 'department_code' => 'D']);
         $user->update(['department_id' => $dept->id]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
         $curr = Curriculum::create([
             'name' => 'Curriculum 1',
             'code' => 'CURR1',
             'department_id' => $dept->id,
             'effective_school_year' => '2026-2027',
-            'status' => 'draft',
+            'status' => 'deactivated',
         ]);
 
         $course = Course::create([
@@ -130,6 +133,7 @@ class CurriculumIndependenceTest extends TestCase
             'password' => bcrypt('password'),
             'role' => 'vpaa',
         ]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
 
         $dept1 = Departments::create(['department_name' => 'IT Dept', 'department_code' => 'IT']);
@@ -195,19 +199,21 @@ class CurriculumIndependenceTest extends TestCase
             'password' => bcrypt('password'),
             'role' => 'vpaa',
         ]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
 
         $itDept = Departments::create(['department_name' => 'IT Dept', 'department_code' => 'IT']);
         $baDept = Departments::create(['department_name' => 'BA Dept', 'department_code' => 'BA']);
 
         $user->update(['department_id' => $itDept->id]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
         $itCurriculum = Curriculum::create([
             'name' => 'IT Curriculum',
             'code' => 'IT-CURR',
             'department_id' => $itDept->id,
             'effective_school_year' => '2026-2027',
-            'status' => 'draft',
+            'status' => 'deactivated',
         ]);
 
         $baCourse = Course::create([
@@ -246,6 +252,7 @@ class CurriculumIndependenceTest extends TestCase
             'password' => bcrypt('password'),
             'role' => 'vpaa',
         ]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
 
         $hmDept = Departments::create(['department_name' => 'Hospitality Management', 'department_code' => 'HM']);
@@ -256,9 +263,10 @@ class CurriculumIndependenceTest extends TestCase
             'code' => 'HM-CURR-MINOR',
             'department_id' => $hmDept->id,
             'effective_school_year' => '2026-2027',
-            'status' => 'draft',
+            'status' => 'deactivated',
         ]);
         $user->update(['department_id' => $hmDept->id]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
 
         $itOwnedMinor = Course::create([
@@ -297,6 +305,7 @@ class CurriculumIndependenceTest extends TestCase
             'password' => bcrypt('password'),
             'role' => 'vpaa',
         ]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
 
         $hmDept = Departments::create(['department_name' => 'Hospitality Management', 'department_code' => 'HM']);
@@ -376,6 +385,7 @@ class CurriculumIndependenceTest extends TestCase
             'password' => bcrypt('password'),
             'role' => 'secretary',
         ]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
 
         $hmDept = Departments::create(['department_name' => 'Hospitality Management', 'department_code' => 'HM']);
@@ -439,17 +449,19 @@ class CurriculumIndependenceTest extends TestCase
             'password' => bcrypt('password'),
             'role' => 'vpaa',
         ]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
 
         $dept = Departments::create(['department_name' => 'IT Dept', 'department_code' => 'IT']);
         $user->update(['department_id' => $dept->id]);
+        $this->grantCapabilities($user, ['schedule.view']);
         $this->actingAs($user);
         $curriculum = Curriculum::create([
             'name' => 'IT Curriculum',
             'code' => 'IT-CURR-2',
             'department_id' => $dept->id,
             'effective_school_year' => '2026-2027',
-            'status' => 'draft',
+            'status' => 'deactivated',
         ]);
 
         $course = Course::create([

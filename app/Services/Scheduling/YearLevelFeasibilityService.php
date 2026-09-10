@@ -48,8 +48,282 @@ class YearLevelFeasibilityService
         // meeting on-site with Room TBA when no compatible lab slot exists.
         $blocking = [...$blocking, ...$this->checkFixedPatternCapacity($sections, $configsBySectionId, $courses, $department)];
         $blocking = [...$blocking, ...$this->checkOnlineCapacity($sections, $configsBySectionId, $courses, $department, $slotsPerDay)];
+        $blocking = [...$blocking, ...$this->checkForcedDayCapacity($sections, $configsBySectionId, $courses, $department)];
+        $blocking = [...$blocking, ...$this->checkComponentDurationsFitTheDay($sections, $configsBySectionId, $courses, $department)];
 
         return $blocking;
+    }
+
+    /**
+     * A meeting longer than the teaching day can never be placed.
+     *
+     * Laboratory units are converted at three hours each, so a six-unit
+     * laboratory becomes one eighteen-hour block against a day that is open for
+     * thirteen and a half. The generator produces no start time for it, the
+     * course's domain is empty before the search begins, and because year-level
+     * generation does not throw on an empty domain the whole run fails with the
+     * blame landing on some other course in the same section. Catching it here
+     * names the real course and says why.
+     *
+     * @param  list<Sections>  $sections
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @param  Collection<int, Course>  $courses
+     * @return list<array<string, mixed>>
+     */
+    private function checkComponentDurationsFitTheDay(
+        array $sections,
+        array $configsBySectionId,
+        Collection $courses,
+        Departments $department,
+    ): array {
+        $splitEnabled = (bool) ($department->lecture_lab_schedule_override_enabled ?? false);
+        $blocking = [];
+        $reported = [];
+
+        foreach ($sections as $section) {
+            $config = $configsBySectionId[(int) $section->id] ?? [];
+            $splitIds = array_map('intval', $config['selected_split_session_course_ids'] ?? []);
+
+            foreach ($this->configuredCourses($config, $courses) as $course) {
+                $courseId = (int) $course->id;
+                if (isset($reported[$courseId])) {
+                    continue;
+                }
+
+                $lectureUnits = (int) ($course->lecture_hours ?? 0);
+                $laboratoryUnits = (int) ($course->lab_hours ?? 0);
+                $isSplit = $splitEnabled
+                    && in_array($courseId, $splitIds, true)
+                    && $lectureUnits > 0
+                    && $laboratoryUnits > 0;
+
+                $components = $isSplit
+                    ? ['lecture' => $lectureUnits * 2, 'laboratory' => $laboratoryUnits * 6]
+                    : ['meeting' => $this->courseSlots($course)];
+
+                foreach ($components as $label => $slots) {
+                    if ($slots <= 0 || SchedulingPolicy::generatedStartSlotsForDuration($slots) !== []) {
+                        continue;
+                    }
+
+                    $reported[$courseId] = true;
+                    $blocking[] = [
+                        'code' => 'component_duration_exceeds_day',
+                        'message' => sprintf(
+                            '%s needs a %s block of %s, but the teaching day is only %s long, so it has no possible start time.',
+                            (string) ($course->course_code ?? $course->course_name ?? "Course {$courseId}"),
+                            $label,
+                            $this->describeHours($slots),
+                            $this->describeHours(SchedulingPolicy::totalSlots()),
+                        ),
+                        'suggested_action' => $isSplit
+                            ? sprintf(
+                                'Split %s across more than one weekly session, reduce its laboratory units, '
+                                .'or extend the operating hours so a block of %s fits.',
+                                (string) ($course->course_code ?? ''),
+                                $this->describeHours($slots),
+                            )
+                            : sprintf(
+                                'Reduce the units on %s or extend the operating hours so a block of %s fits.',
+                                (string) ($course->course_code ?? ''),
+                                $this->describeHours($slots),
+                            ),
+                        'context' => [
+                            'course_id' => $courseId,
+                            'course_code' => (string) ($course->course_code ?? ''),
+                            'component' => $label,
+                            'required_slots' => $slots,
+                            'available_slots_per_day' => SchedulingPolicy::totalSlots(),
+                            'lecture_units' => $lectureUnits,
+                            'laboratory_units' => $laboratoryUnits,
+                        ],
+                    ];
+
+                    break;
+                }
+            }
+        }
+
+        return $blocking;
+    }
+
+    private function describeHours(int $slots): string
+    {
+        $hours = ($slots * SchedulingPolicy::SLOT_MINUTES) / 60;
+
+        return rtrim(rtrim(number_format($hours, 1), '0'), '.').' hours';
+    }
+
+    /**
+     * A course pinned to one day can only be placed as many times as that day
+     * has room for it. Pinning is per department and per course, so this reads
+     * whatever has been configured and does nothing when nothing is pinned.
+     *
+     * The arithmetic is exact rather than heuristic. A course of a given
+     * duration has a fixed set of legal start times (the generator steps the
+     * start grid by the meeting length), and its room type has a fixed
+     * concurrency. Multiply the two, subtract what other year levels already
+     * hold on that day, and the result is the hard ceiling on how many sections
+     * can take that course. Without this the solver discovers the shortfall one
+     * section at a time and spends the whole run budget rediscovering it.
+     *
+     * @param  list<Sections>  $sections
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @param  Collection<int, Course>  $courses
+     * @return list<array<string, mixed>>
+     */
+    private function checkForcedDayCapacity(
+        array $sections,
+        array $configsBySectionId,
+        Collection $courses,
+        Departments $department,
+    ): array {
+        $forcedDays = SchedulingPolicy::forcedCourseDayMap((int) $department->id);
+        if ($forcedDays === []) {
+            return [];
+        }
+
+        $blocking = [];
+
+        foreach ($forcedDays as $courseId => $day) {
+            $course = $courses->get((int) $courseId);
+            if ($course === null) {
+                continue;
+            }
+
+            $demand = 0;
+            foreach ($sections as $section) {
+                $config = $configsBySectionId[(int) $section->id] ?? [];
+                if (in_array((int) $courseId, array_map('intval', $config['course_ids'] ?? []), true)) {
+                    $demand++;
+                }
+            }
+
+            if ($demand === 0) {
+                continue;
+            }
+
+            $durationSlots = $this->courseSlots($course);
+            $startCount = count($this->legalStartSlots($course, $department, $durationSlots));
+            if ($startCount === 0) {
+                continue;
+            }
+
+            $capacity = $this->forcedDayConcurrency($course, $department);
+            if ($capacity <= 0) {
+                continue;
+            }
+
+            $supply = ($startCount * $capacity) - $this->occupiedForcedDaySlots($sections, (int) $courseId, $day);
+            if ($demand <= $supply) {
+                continue;
+            }
+
+            $needed = (int) ceil($demand / max(1, $startCount));
+
+            $blocking[] = [
+                'code' => 'forced_day_capacity_exceeded',
+                'message' => sprintf(
+                    '%s is pinned to %s and needs %d placements, but %s offers only %d: %d start %s at a concurrency of %d.',
+                    (string) ($course->course_code ?? $course->course_name ?? "Course {$courseId}"),
+                    $day,
+                    $demand,
+                    $day,
+                    max(0, $supply),
+                    $startCount,
+                    $startCount === 1 ? 'time' : 'times',
+                    $capacity,
+                ),
+                'suggested_action' => sprintf(
+                    'Raise the concurrency for this room type to at least %d, add another room of that type, '
+                    .'or release the %s pin so the course can spread across more days.',
+                    $needed,
+                    $day,
+                ),
+                'context' => [
+                    'course_id' => (int) $courseId,
+                    'course_code' => (string) ($course->course_code ?? ''),
+                    'forced_day' => $day,
+                    'required_placements' => $demand,
+                    'available_placements' => max(0, $supply),
+                    'start_times' => $startCount,
+                    'concurrency' => $capacity,
+                    'required_concurrency' => $needed,
+                ],
+            ];
+        }
+
+        return $blocking;
+    }
+
+    /**
+     * Start slots the generator will actually offer this course.
+     *
+     * The start grid alone is not the answer: a field course must finish by the
+     * field day-end time unless the department allows evening field work, so a
+     * three-hour field course loses its late start even though the grid lists
+     * it. Counting the grid without that rule overstates supply and lets an
+     * impossible configuration through the pre-check.
+     *
+     * @return list<int>
+     */
+    private function legalStartSlots(Course $course, Departments $department, int $durationSlots): array
+    {
+        $startSlots = SchedulingPolicy::generatedStartSlotsForDuration($durationSlots);
+
+        if (! SchedulingPolicy::isFieldCourse($course, (int) $department->id)) {
+            return $startSlots;
+        }
+
+        if ((bool) ($department->field_evening_schedule_enabled ?? false)) {
+            return $startSlots;
+        }
+
+        return array_values(array_filter(
+            $startSlots,
+            static fn (int $slot): bool => SchedulingPolicy::slotToTime($slot + $durationSlots)
+                <= SchedulingPolicy::FIELD_DAY_END_TIME,
+        ));
+    }
+
+    /**
+     * How many sections can hold this course at the same time. Field and online
+     * resources are governed by the department slot limits; a physical room type
+     * is governed by how many such rooms exist and how many classes each takes.
+     */
+    private function forcedDayConcurrency(Course $course, Departments $department): int
+    {
+        $limits = app(DepartmentResourceSlotLimitService::class);
+
+        if (SchedulingPolicy::isFieldCourse($course, (int) $department->id)) {
+            return max(1, $limits->field((int) $department->id));
+        }
+
+        $roomType = SchedulingPolicy::isLaboratoryCourse($course) ? 'laboratory' : 'lecture';
+
+        return (int) $this->usableRooms($department, [$roomType])
+            ->sum(static fn (Rooms $room): int => max(1, (int) ($room->max_concurrent_classes ?? 1)));
+    }
+
+    /**
+     * Placements on the pinned day already held by schedules this run will not
+     * replace, so a partly-scheduled term is measured against what is left.
+     *
+     * @param  list<Sections>  $sections
+     */
+    private function occupiedForcedDaySlots(array $sections, int $courseId, string $day): int
+    {
+        $sectionIds = array_map(static fn (Sections $section): int => (int) $section->id, $sections);
+        $termId = (int) ($sections[array_key_first($sections)]->term_id ?? 0);
+
+        return Schedule::query()
+            ->where('term_id', $termId)
+            ->where('course_id', $courseId)
+            ->where('day', $day)
+            ->whereNotIn('section_id', $sectionIds)
+            ->whereNotIn('status', self::REPLACEABLE_STATUSES)
+            ->distinct()
+            ->count('section_id');
     }
 
     /**
@@ -71,7 +345,11 @@ class YearLevelFeasibilityService
         $demand = 0;
         foreach ($sections as $section) {
             $config = $configsBySectionId[(int) $section->id] ?? [];
-            $demand += $this->onSiteSlotDemand($config, $courses);
+            $demand += $this->onSiteSlotDemand(
+                $config,
+                $courses,
+                (int) $section->department_id,
+            );
         }
 
         if ($demand === 0) {
@@ -351,7 +629,6 @@ class YearLevelFeasibilityService
         }
 
         return Course::query()
-            ->with('categories')
             ->whereIn('id', array_values($courseIds))
             ->get()
             ->keyBy(static fn (Course $course): int => (int) $course->id);
@@ -379,7 +656,11 @@ class YearLevelFeasibilityService
      * @param  array<string, mixed>  $config
      * @param  Collection<int, Course>  $courses
      */
-    private function onSiteSlotDemand(array $config, Collection $courses): int
+    private function onSiteSlotDemand(
+        array $config,
+        Collection $courses,
+        int $departmentId,
+    ): int
     {
         $slots = 0;
         foreach ($this->configuredCourses($config, $courses) as $course) {
@@ -392,7 +673,7 @@ class YearLevelFeasibilityService
                 // laboratory slot is available; do not hard-block generation.
                 continue;
             }
-            if ($mode === 'field' || SchedulingPolicy::isFieldCourse($course)) {
+            if ($mode === 'field' || SchedulingPolicy::isFieldCourse($course, $departmentId)) {
                 continue;
             }
 
@@ -438,7 +719,17 @@ class YearLevelFeasibilityService
                 $query->whereNotIn('section_id', $sectionIds)
                     ->orWhereNotIn('status', self::REPLACEABLE_STATUSES);
             })
-            ->get(['start_time', 'end_time'])
+            ->get(['section_id', 'course_id', 'room_id', 'day', 'start_time', 'end_time', 'mode', 'status'])
+            ->unique(static fn (Schedule $schedule): string => implode('|', [
+                (int) $schedule->section_id,
+                (int) $schedule->course_id,
+                (int) $schedule->room_id,
+                (string) $schedule->day,
+                (string) $schedule->start_time,
+                (string) $schedule->end_time,
+                (string) $schedule->mode,
+                (string) $schedule->status,
+            ]))
             ->sum(function (Schedule $schedule): int {
                 $start = SchedulingPolicy::timeToMinutes((string) $schedule->start_time);
                 $end = SchedulingPolicy::timeToMinutes((string) $schedule->end_time);

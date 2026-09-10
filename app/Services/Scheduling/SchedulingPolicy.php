@@ -19,18 +19,15 @@ final class SchedulingPolicy
     public const FIELD_DAY_END_TIME = '17:00:00';
 
     private static ?string $cachedOpeningTime = null;
+
     private static ?string $cachedClosingTime = null;
 
     /** @var array<int, list<int>> */
     private static array $cachedStartSlotsByDuration = [];
 
-
     /** @var array<string, true>|null */
     /** @var array<string, array<string, true>> */
     private static array $cachedFieldCourseCodeMap = [];
-
-    /** @var array<int, array<string, true>>|null */
-    private static ?array $cachedCourseCategoryMap = null;
 
     public const DAYS = [
         'Monday',
@@ -72,13 +69,21 @@ final class SchedulingPolicy
     ];
 
     public const DELIVERY_MODES = ['on-site', 'online', 'field'];
+
     public const ROOM_TYPES = ['lecture', 'laboratory', 'field', 'online'];
+
     public const ROOM_STATUSES = ['available', 'not available'];
+
     public const COURSE_CATEGORIES = ['major', 'minor'];
+
     public const SUBJECT_CATEGORIES = ['major', 'minor'];
+
     public const YEAR_LEVELS = ['1', '2', '3', '4'];
+
     public const SEMESTERS = ['1st', '2nd', 'summer'];
+
     public const ACTIVE_STATUSES = ['active', 'inactive'];
+
     public const SCHEDULE_STATUSES = [
         'draft',
         'completed',
@@ -87,6 +92,7 @@ final class SchedulingPolicy
         'rejected_by_dean',
         'approved',
         'faculty_assignment',
+        'reassignment',
         'finalized',
         'rejected',
         'revision',
@@ -118,7 +124,7 @@ final class SchedulingPolicy
         self::LOAD_TIER_BEYOND_CEILING => 'Beyond ceiling',
     ];
 
-    public const INSTRUCTOR_ASSIGNABLE_STATUSES = ['approved', 'faculty_assignment'];
+    public const INSTRUCTOR_ASSIGNABLE_STATUSES = ['approved', 'faculty_assignment', 'reassignment'];
 
     /**
      * Statuses at which an existing instructor assignment counts as real: it is
@@ -126,7 +132,7 @@ final class SchedulingPolicy
      * that fell back to `draft`, `completed` or `revision` is no longer an
      * approved assignment, so it must not inflate anyone's load.
      */
-    public const INSTRUCTOR_ASSIGNED_STATUSES = ['approved', 'faculty_assignment', 'finalized'];
+    public const INSTRUCTOR_ASSIGNED_STATUSES = ['approved', 'faculty_assignment', 'reassignment', 'finalized'];
 
     /** @var array<string, array{0: string, 1: string}> */
     public const FIXED_MEETING_PATTERNS = [
@@ -134,41 +140,182 @@ final class SchedulingPolicy
         'TTh' => ['Tuesday', 'Thursday'],
     ];
 
+    /**
+     * Days preferred for a single-meeting class that occupies a real lecture
+     * room. Keeping those classes late in the week leaves Monday-Thursday
+     * lecture-room capacity for the MW and TTh split-session patterns above.
+     *
+     * This is a preference, not a restriction: Monday-Thursday stays available
+     * as a fallback, so a section whose single meetings cannot all fit on
+     * Friday and Saturday still generates.
+     */
+    public const SINGLE_MEETING_PREFERRED_DAYS = ['Friday', 'Saturday'];
+
+    /**
+     * Grid slots one unit of each component contributes. A lecture unit is one
+     * hour, a laboratory unit three, which is why a laboratory unit is worth
+     * three times a lecture unit on the timetable.
+     */
+    public const LECTURE_SLOTS_PER_UNIT = 2;
+
+    public const LABORATORY_SLOTS_PER_UNIT = 6;
+
+    /**
+     * The largest number of units a single component may carry and still fit
+     * inside one teaching day. A component longer than the day has no legal
+     * start time at all, so the course can never be scheduled.
+     */
+    public static function maxUnitsPerComponent(int $slotsPerUnit): int
+    {
+        return max(1, intdiv(self::totalSlots(), max(1, $slotsPerUnit)));
+    }
+
     public const CUSTOM_PATTERN_REGEX = '/^days:([0-6])-([0-6])$/';
 
-    public const MAX_CLASSES_PER_DAY = 3;
-
     public const SOFT_SATURDAY_PENALTY = 8;
+
     public const SOFT_LATE_START_AFTER_SLOT = 22;
+
     public const SOFT_LATE_SLOT_PENALTY = 2;
+
     public const SOFT_GAP_SLOT_PENALTY = 1200;
+
     public const SOFT_UNUSABLE_GAP_PENALTY = 5000;
+
     public const SOFT_ROOM_IDLE_GAP_SLOT_PENALTY = 90;
+
     public const SOFT_UNUSABLE_ROOM_GAP_PENALTY = 900;
+
     public const SOFT_FILLABLE_ROOM_GAP_BONUS_PENALTY = 450;
+
     public const SOFT_ROOM_CHANGE_PENALTY = 1;
+
     /**
      * Applied when a major course that prefers a laboratory room is assigned
      * to a lecture room because no laboratory was available for the department.
      */
     public const SOFT_LAB_FALLBACK_PENALTY = 15;
+
     /**
      * Applied when an on-site course is scheduled online as a fallback.
      */
     public const SOFT_ONLINE_FALLBACK_PENALTY = 1000;
+
     /** Prefer a feasible weekday physical placement over a weekend placement. */
     public const SOFT_WEEKDAY_PHYSICAL_MIGRATION_PENALTY = 6000;
+
     /** Prefer a feasible weekday physical placement over online delivery. */
     public const SOFT_WEEKDAY_ONLINE_MIGRATION_PENALTY = 12000;
 
     /**
-     * Canonical constraint catalog shared by RuleEngine, CSP, and request validation.
+     * Canonical inventory of scheduling constraints and workflow violations.
+     *
+     * The catalog remains the canonical metadata inventory. Phase 3 introduces a
+     * shadow executable kernel for selected rule families, while current validators
+     * and the solver remain authoritative until their migration phases complete.
      *
      * Severity:
      * - hard: invalid schedules are rejected or pruned from CSP domains.
+     * - warning: generation may proceed only after the user reviews the anomaly.
      * - soft: valid schedules are ranked lower by the CSP scorer.
      */
     public const CONSTRAINT_CATALOG = [
+        'required_field' => [
+            'severity' => 'hard',
+            'category' => 'input',
+            'description' => 'A schedule operation must include every field required to identify and place the meeting.',
+            'enforced_by' => ['request_validation', 'rule_engine'],
+        ],
+        'configuration_reference' => [
+            'severity' => 'hard',
+            'category' => 'configuration',
+            'description' => 'Every course-specific generation option must reference a course selected for the section.',
+            'enforced_by' => ['generation_configuration_validation'],
+        ],
+        'course_duration' => [
+            'severity' => 'hard',
+            'category' => 'configuration',
+            'description' => 'Every selected course must have a positive duration representable on the scheduling grid.',
+            'enforced_by' => ['schedule_generation_preflight', 'generation_configuration_validation', 'csp'],
+        ],
+        'department_profile_mismatch' => [
+            'severity' => 'hard',
+            'category' => 'configuration',
+            'description' => 'A standard scheduling profile cannot generate laboratory course components.',
+            'enforced_by' => ['schedule_generation_preflight', 'generation_configuration_validation'],
+        ],
+        'invalid_department_setting' => [
+            'severity' => 'hard',
+            'category' => 'configuration',
+            'description' => 'Department scheduling settings must be compatible with the selected scheduling profile.',
+            'enforced_by' => ['schedule_generation_preflight', 'generation_configuration_validation'],
+        ],
+        'no_physical_rooms' => [
+            'severity' => 'hard',
+            'category' => 'resource_capacity',
+            'description' => 'A configuration that requires physical lecture placement needs at least one eligible available physical room.',
+            'enforced_by' => ['generation_feasibility', 'generation_configuration_validation'],
+        ],
+        'forced_day_multi_meeting_conflict' => [
+            'severity' => 'hard',
+            'category' => 'configuration',
+            'description' => 'A forced single day cannot satisfy a course configuration that requires meetings on different days.',
+            'enforced_by' => ['generation_configuration_validation'],
+        ],
+        'forced_day_capacity_exceeded' => [
+            'severity' => 'hard',
+            'category' => 'resource_capacity',
+            'description' => 'Courses forced onto one day cannot require more section time than the operating-hours window provides.',
+            'enforced_by' => ['generation_configuration_validation'],
+        ],
+        'same_day_concentration' => [
+            'severity' => 'warning',
+            'category' => 'configuration_anomaly',
+            'description' => 'Multiple selected courses forced onto the same day create a concentrated but not necessarily impossible configuration.',
+            'enforced_by' => ['generation_configuration_validation'],
+        ],
+        'laboratory_room_unresolved' => [
+            'severity' => 'warning',
+            'category' => 'resource_availability',
+            'description' => 'Laboratory generation may proceed with Room TBA when no eligible laboratory room is available.',
+            'enforced_by' => ['generation_configuration_validation', 'csp'],
+        ],
+        'no_feasible_schedule' => [
+            'severity' => 'hard',
+            'category' => 'generation_result',
+            'description' => 'No candidate satisfies all hard constraints for the validated generation configuration.',
+            'enforced_by' => ['generate_schedule_plan'],
+        ],
+        'term_exists' => [
+            'severity' => 'hard',
+            'category' => 'relational_integrity',
+            'description' => 'The selected academic term must exist.',
+            'enforced_by' => ['request_validation', 'rule_engine'],
+        ],
+        'section_exists' => [
+            'severity' => 'hard',
+            'category' => 'relational_integrity',
+            'description' => 'The selected section must exist.',
+            'enforced_by' => ['request_validation', 'rule_engine'],
+        ],
+        'subject_exists' => [
+            'severity' => 'hard',
+            'category' => 'relational_integrity',
+            'description' => 'The selected course or subject must exist.',
+            'enforced_by' => ['request_validation', 'rule_engine'],
+        ],
+        'room_exists' => [
+            'severity' => 'hard',
+            'category' => 'relational_integrity',
+            'description' => 'A selected room must exist unless the configured placement explicitly permits an unresolved room.',
+            'enforced_by' => ['request_validation', 'rule_engine'],
+        ],
+        'faculty_exists' => [
+            'severity' => 'hard',
+            'category' => 'relational_integrity',
+            'description' => 'A selected instructor must exist.',
+            'enforced_by' => ['request_validation', 'rule_engine'],
+        ],
         'valid_day' => [
             'severity' => 'hard',
             'category' => 'calendar',
@@ -233,7 +380,19 @@ final class SchedulingPolicy
             'severity' => 'hard',
             'category' => 'resource_conflict',
             'description' => 'An assigned faculty member cannot teach overlapping classes in the same term.',
-            'enforced_by' => ['rule_engine'],
+            'enforced_by' => ['rule_engine', 'batch_conflict_validator'],
+        ],
+        'room_capacity_conflict' => [
+            'severity' => 'hard',
+            'category' => 'resource_capacity',
+            'description' => 'Concurrent use of a shared room or field resource cannot exceed its configured slot limit.',
+            'enforced_by' => ['rule_engine', 'batch_conflict_validator', 'csp'],
+        ],
+        'online_capacity_conflict' => [
+            'severity' => 'hard',
+            'category' => 'resource_capacity',
+            'description' => 'Concurrent online classes cannot exceed the department online slot limit.',
+            'enforced_by' => ['rule_engine', 'batch_conflict_validator', 'csp'],
         ],
         'room_type_match' => [
             'severity' => 'hard',
@@ -259,6 +418,12 @@ final class SchedulingPolicy
             'description' => 'When a meeting pattern is declared, all generated or saved days must belong to that pattern.',
             'enforced_by' => ['request_validation', 'rule_engine', 'csp'],
         ],
+        'forced_course_day' => [
+            'severity' => 'hard',
+            'category' => 'meeting_pattern',
+            'description' => 'A course with a department forced-day configuration must be scheduled on that day.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
         'delivery_mode' => [
             'severity' => 'hard',
             'category' => 'delivery',
@@ -277,10 +442,58 @@ final class SchedulingPolicy
             'description' => 'Field schedules cannot be marked hybrid.',
             'enforced_by' => ['request_validation', 'csp'],
         ],
+        'nstp_day_constraint' => [
+            'severity' => 'hard',
+            'category' => 'calendar',
+            'description' => 'NSTP courses use the institutional Monday-Sunday scheduling grid.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'field_day_constraint' => [
+            'severity' => 'hard',
+            'category' => 'calendar',
+            'description' => 'Non-NSTP field courses are limited to weekdays.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'minor_day_constraint' => [
+            'severity' => 'hard',
+            'category' => 'calendar',
+            'description' => 'Minor courses may be scheduled Monday through Saturday but not Sunday.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'major_sunday_mode_constraint' => [
+            'severity' => 'hard',
+            'category' => 'calendar',
+            'description' => 'Major Sunday meetings must be online when the department Sunday-online setting is enabled.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'field_evening_window' => [
+            'severity' => 'hard',
+            'category' => 'time',
+            'description' => 'Field courses must end by the configured daytime boundary unless evening field scheduling is enabled.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'section_online_limit' => [
+            'severity' => 'hard',
+            'category' => 'resource_capacity',
+            'description' => 'A section cannot exceed the configured maximum number of distinct online courses.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
         'subject_section_alignment' => [
             'severity' => 'hard',
             'category' => 'curriculum',
             'description' => 'CSP subjects must be active and match the section year level and semester.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'subject_section_semester_alignment' => [
+            'severity' => 'hard',
+            'category' => 'curriculum',
+            'description' => 'The course curriculum semester must match the section semester.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'subject_section_year_alignment' => [
+            'severity' => 'hard',
+            'category' => 'curriculum',
+            'description' => 'The course curriculum year level must match the section year level.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'schedule_department_alignment' => [
@@ -296,26 +509,32 @@ final class SchedulingPolicy
             'enforced_by' => ['rule_engine'],
         ],
         'major_faculty_department_alignment' => [
-            'severity'    => 'hard',
-            'category'    => 'faculty',
+            'severity' => 'hard',
+            'category' => 'faculty',
             'description' => 'A major subject must be assigned to an instructor from the department that offers it, and cannot be delegated to another department.',
             'enforced_by' => ['rule_engine'],
         ],
         'major_faculty_program_alignment' => [
-            'severity'    => 'hard',
-            'category'    => 'faculty',
+            'severity' => 'hard',
+            'category' => 'faculty',
             'description' => 'A major subject tied to a program must be assigned to an instructor belonging to that program.',
             'enforced_by' => ['rule_engine'],
         ],
         'service_subject_faculty_department_alignment' => [
-            'severity'    => 'hard',
-            'category'    => 'faculty',
+            'severity' => 'hard',
+            'category' => 'faculty',
             'description' => 'A GEC service subject must be assigned to an instructor from the college that offers it. Any other minor may be taught by an instructor from any department.',
             'enforced_by' => ['rule_engine'],
         ],
+        'service_subject_faculty_program_alignment' => [
+            'severity' => 'hard',
+            'category' => 'faculty',
+            'description' => 'A service subject tied to a teaching program must use an instructor assigned to that program.',
+            'enforced_by' => ['rule_engine'],
+        ],
         'part_time_faculty_availability' => [
-            'severity'    => 'hard',
-            'category'    => 'faculty',
+            'severity' => 'hard',
+            'category' => 'faculty',
             'description' => 'Part-time instructors can only be assigned from 5:00 PM onward on weekdays, or at any time on Saturdays or Sundays.',
             'enforced_by' => ['rule_engine'],
         ],
@@ -343,6 +562,72 @@ final class SchedulingPolicy
             'description' => 'Major subjects with a department must match the section department.',
             'enforced_by' => ['csp'],
         ],
+        'hybrid_component_count' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'A hybrid meeting group must contain exactly its required lecture and laboratory components.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'hybrid_components' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'A hybrid group must contain one lecture component and one laboratory component.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'hybrid_eligibility' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'Hybrid scheduling is limited to eligible lecture-and-laboratory courses under the department setting.',
+            'enforced_by' => ['rule_engine', 'csp', 'schedule_generation_preflight'],
+        ],
+        'hybrid_component_type' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'Every hybrid meeting must identify whether it is the lecture or laboratory component.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'hybrid_component_shape' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'Hybrid component duration, delivery mode, and resource type must match the generated meeting requirement.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'minor_split_component_count' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'A configured minor split session must contain exactly two linked meetings.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'minor_split_eligibility' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'Minor split sessions are available only for eligible minor courses under the department setting.',
+            'enforced_by' => ['rule_engine', 'csp', 'schedule_generation_preflight'],
+        ],
+        'minor_split_pattern' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'The days in a minor split group must match its configured meeting pattern.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'minor_split_duration' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'The combined duration of a minor split group must equal the course contact-hour requirement.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'split_group_day_separation' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'Linked split or hybrid components that require separate meetings cannot use the same day.',
+            'enforced_by' => ['schedule_batch_api', 'split_schedule_service', 'csp'],
+        ],
+        'split_unresolvable' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'A requested split cannot be persisted when no valid companion meeting can be resolved.',
+            'enforced_by' => ['schedule_batch_api', 'split_schedule_service'],
+        ],
         'recommendation_atomic_acceptance' => [
             'severity' => 'hard',
             'category' => 'transaction',
@@ -360,6 +645,48 @@ final class SchedulingPolicy
             'category' => 'audit',
             'description' => 'Recommendation generation, review, acceptance, and rejection must be recorded in scheduling audit history.',
             'enforced_by' => ['recommendation_api'],
+        ],
+        'duplicate_section_course' => [
+            'severity' => 'hard',
+            'category' => 'curriculum',
+            'description' => 'Recommendation acceptance cannot create a course already represented by a non-replaceable schedule for the section and term.',
+            'enforced_by' => ['recommendation_acceptance'],
+        ],
+        'concurrent_write' => [
+            'severity' => 'hard',
+            'category' => 'transaction',
+            'description' => 'A schedule write must fail when the scheduling scope lock cannot be acquired safely.',
+            'enforced_by' => ['schedule_batch_api', 'schedule_plan_commit'],
+        ],
+        'plan_not_commit_ready' => [
+            'severity' => 'hard',
+            'category' => 'transaction',
+            'description' => 'Only a complete, confirmed, resource-resolved schedule plan may enter persistence.',
+            'enforced_by' => ['schedule_plan_commit'],
+        ],
+        'schedule_plan_scope_mismatch' => [
+            'severity' => 'hard',
+            'category' => 'transaction',
+            'description' => 'Every committed plan row must match the configured term, department, section, and course scope.',
+            'enforced_by' => ['schedule_plan_commit'],
+        ],
+        'stale_schedule_plan' => [
+            'severity' => 'hard',
+            'category' => 'transaction',
+            'description' => 'A schedule plan must be regenerated when its scheduling snapshot fingerprint is stale.',
+            'enforced_by' => ['schedule_plan_commit'],
+        ],
+        'instructor_assignment_stage' => [
+            'severity' => 'hard',
+            'category' => 'workflow',
+            'description' => 'Instructor assignment is allowed only while the schedule is in an instructor-assignable workflow stage.',
+            'enforced_by' => ['schedule_api', 'instructor_assignment'],
+        ],
+        'missing_schedule' => [
+            'severity' => 'hard',
+            'category' => 'workflow',
+            'description' => 'A bulk workflow operation cannot proceed when one of its target schedules no longer exists.',
+            'enforced_by' => ['schedule_api'],
         ],
         'saturday_penalty' => [
             'severity' => 'soft',
@@ -549,16 +876,16 @@ final class SchedulingPolicy
 
     public static function openingTime(): string
     {
-        return self::$cachedOpeningTime ??= self::normalizeTime(
-            app(TimeslotService::class)->settings()->opening_time
-        );
+        self::loadOperatingHours();
+
+        return self::$cachedOpeningTime;
     }
 
     public static function closingTime(): string
     {
-        return self::$cachedClosingTime ??= self::normalizeTime(
-            app(TimeslotService::class)->settings()->closing_time
-        );
+        self::loadOperatingHours();
+
+        return self::$cachedClosingTime;
     }
 
     public static function clearTimeCache(): void
@@ -650,6 +977,15 @@ final class SchedulingPolicy
 
     public static function dayIndex(string $day): int
     {
+        // Called inside solver ranking loops, so resolve through a flipped
+        // lookup rather than scanning DAYS on every call.
+        static $indexes = null;
+        $indexes ??= array_flip(self::DAYS);
+
+        if (isset($indexes[$day])) {
+            return $indexes[$day];
+        }
+
         $index = array_search($day, self::DAYS, true);
 
         if ($index === false) {
@@ -714,6 +1050,7 @@ final class SchedulingPolicy
     {
         try {
             self::normalizePreferredPattern($preferredPattern);
+
             return true;
         } catch (InvalidArgumentException) {
             return false;
@@ -750,8 +1087,7 @@ final class SchedulingPolicy
     {
         return array_keys(array_filter(
             self::CONSTRAINT_CATALOG,
-            static fn (array $constraint): bool =>
-                $constraint['severity'] === $severity,
+            static fn (array $constraint): bool => $constraint['severity'] === $severity,
         ));
     }
 
@@ -760,8 +1096,8 @@ final class SchedulingPolicy
      */
     public static function isNstpCourse(Course $course): bool
     {
-        $code     = strtoupper((string) ($course->course_code ?? $course->subject_code ?? ''));
-        $name     = strtoupper((string) ($course->course_name ?? $course->subject_name ?? ''));
+        $code = strtoupper((string) ($course->course_code ?? $course->subject_code ?? ''));
+        $name = strtoupper((string) ($course->course_name ?? $course->subject_name ?? ''));
         $category = strtolower((string) ($course->course_category ?? $course->subject_category ?? ''));
 
         if (in_array($category, ['nstp', 'rotc', 'cwts', 'lts'], true)) {
@@ -780,12 +1116,8 @@ final class SchedulingPolicy
     /**
      * Returns true when the course requires a field room (PATHFIT, NSTP, etc.).
      */
-    public static function isFieldCourse(Course $course): bool
+    public static function isFieldCourse(Course $course, ?int $departmentId = null): bool
     {
-        if (self::courseHasCategory($course, 'Field')) {
-            return true;
-        }
-
         if ($course->room_type_required === 'field') {
             return true;
         }
@@ -796,7 +1128,7 @@ final class SchedulingPolicy
 
         // Configured field-course codes are per department. A course with no
         // owning department is a shared minor, whose field-ness is global.
-        $departmentId = $course->department_id === null ? null : (int) $course->department_id;
+        $departmentId ??= $course->department_id === null ? null : (int) $course->department_id;
         $code = self::normalizeCourseCode((string) ($course->course_code ?? $course->subject_code ?? ''));
 
         return isset(self::fieldCourseCodeMap($departmentId)[$code]);
@@ -804,10 +1136,6 @@ final class SchedulingPolicy
 
     public static function isCasServiceCourse(Course $course): bool
     {
-        if (self::courseHasCategory($course, 'GEC')) {
-            return true;
-        }
-
         $code = strtoupper(trim((string) $course->course_code));
         $normalized = preg_replace('/[^A-Z0-9]/', '', $code) ?? $code;
 
@@ -816,19 +1144,34 @@ final class SchedulingPolicy
 
     public static function isLaboratoryCourse(Course $course): bool
     {
-        return self::courseHasCategory($course, 'Laboratory')
-            || (int) ($course->lab_hours ?? 0) > 0
+        return (int) ($course->lab_hours ?? 0) > 0
             || (string) ($course->room_type_required ?? '') === 'laboratory';
     }
 
-    public static function effectiveRoomType(Course $course, ?string $meetingType = null): string
+    /**
+     * The room type a course component requires, in the scheduling department's
+     * terms.
+     *
+     * $departmentId is required rather than optional on purpose. Field-course
+     * codes are configured per department, while a shared minor carries a NULL
+     * department_id of its own, so resolving field-ness from the course alone
+     * silently misses a department's own configuration: the live data pins
+     * NSTP and PATHFIT as field courses for one department while both courses
+     * are department-less, and this method used to answer "not a field course"
+     * for them while the day rules said the opposite. Passing the scheduling
+     * department keeps one answer for one course in one run.
+     */
+    public static function effectiveRoomType(Course $course, ?int $departmentId, ?string $meetingType = null): string
     {
-        if ($meetingType !== null && in_array($meetingType, ['lecture', 'laboratory', 'field'], true)) {
-            return $meetingType;
+        // A field designation is a course-level invariant. Component metadata
+        // must not downgrade a field course to a regular lecture/laboratory
+        // room requirement.
+        if (self::isFieldCourse($course, $departmentId)) {
+            return 'field';
         }
 
-        if (self::isFieldCourse($course)) {
-            return 'field';
+        if ($meetingType !== null && in_array($meetingType, ['lecture', 'laboratory', 'field'], true)) {
+            return $meetingType;
         }
 
         return self::isLaboratoryCourse($course)
@@ -836,33 +1179,20 @@ final class SchedulingPolicy
             : ((string) ($course->room_type_required ?: 'lecture'));
     }
 
-    public static function allowsRoomTbaFallback(Course $course, ?string $meetingType = null): bool
+    public static function allowsRoomTbaFallback(Course $course, ?int $departmentId, ?string $meetingType = null): bool
     {
-        return self::effectiveRoomType($course, $meetingType) === 'laboratory';
+        return self::effectiveRoomType($course, $departmentId, $meetingType) === 'laboratory';
     }
 
-    public static function allowsOnlineRoomFallback(Course $course, ?string $meetingType = null): bool
+    public static function allowsOnlineRoomFallback(Course $course, ?int $departmentId, ?string $meetingType = null): bool
     {
-        return self::effectiveRoomType($course, $meetingType) === 'lecture'
-            && ! self::isFieldCourse($course)
+        return self::effectiveRoomType($course, $departmentId, $meetingType) === 'lecture'
+            && ! self::isFieldCourse($course, $departmentId)
             // A split course retains the parent course's laboratory metadata.
             // When the row explicitly identifies its lecture component, apply
             // the lecture delivery rule instead of rejecting it because another
             // component of the same course requires a laboratory.
             && ($meetingType === 'lecture' || ! self::isLaboratoryCourse($course));
-    }
-
-    public static function courseHasCategory(Course $course, string $categoryName): bool
-    {
-        $normalized = self::normalizeCategoryName($categoryName);
-
-        if ($course->relationLoaded('categories')) {
-            return $course->categories->contains(
-                static fn ($category): bool => self::normalizeCategoryName((string) $category->name) === $normalized,
-            );
-        }
-
-        return isset(self::courseCategoryMap()[(int) $course->id][$normalized]);
     }
 
     /**
@@ -908,9 +1238,9 @@ final class SchedulingPolicy
      */
     public static function isMajorCourse(Course $course): bool
     {
-        return self::normalizeCategoryName(
-            (string) ($course->course_category ?? $course->subject_category ?? 'major')
-        ) === 'major';
+        return strtolower(trim(
+            (string) ($course->course_category ?? $course->subject_category ?? '')
+        )) === 'major';
     }
 
     /**
@@ -967,7 +1297,7 @@ final class SchedulingPolicy
             return self::$cachedFieldCourseCodeMap[$bucket];
         }
 
-        if (!self::fieldCourseSettingsTableExists()) {
+        if (! self::fieldCourseSettingsTableExists()) {
             return self::$cachedFieldCourseCodeMap[$bucket] = [];
         }
 
@@ -986,6 +1316,30 @@ final class SchedulingPolicy
             ->all();
     }
 
+    /**
+     * Courses this department pins to a single day, as course id => day.
+     *
+     * Pinning is entirely per department and per course: a department that
+     * configures none gets an empty map and behaves exactly as before, and two
+     * departments may pin the same course to different days.
+     *
+     * @param  list<int>  $courseIds  Optional filter; all pinned courses when empty.
+     * @return array<int, string>
+     */
+    public static function forcedCourseDayMap(int $departmentId, array $courseIds = []): array
+    {
+        $query = DB::table('department_forced_course_days')
+            ->where('department_id', $departmentId);
+
+        if ($courseIds !== []) {
+            $query->whereIn('course_id', array_map('intval', $courseIds));
+        }
+
+        return $query->pluck('day', 'course_id')
+            ->mapWithKeys(static fn ($day, $courseId): array => [(int) $courseId => (string) $day])
+            ->all();
+    }
+
     public static function normalizeCourseCode(string $courseCode): string
     {
         return strtoupper(trim(preg_replace('/\s+/', ' ', $courseCode) ?? $courseCode));
@@ -996,52 +1350,6 @@ final class SchedulingPolicy
         self::$cachedFieldCourseCodeMap = [];
     }
 
-    public static function clearCourseCategoryCache(): void
-    {
-        self::$cachedCourseCategoryMap = null;
-    }
-
-    /**
-     * @return array<int, array<string, true>>
-     */
-    private static function courseCategoryMap(): array
-    {
-        if (self::$cachedCourseCategoryMap !== null) {
-            return self::$cachedCourseCategoryMap;
-        }
-
-        if (!self::courseCategoriesTableExists()) {
-            return self::$cachedCourseCategoryMap = [];
-        }
-
-        $map = [];
-        DB::table('course_category_mapping')
-            ->join('course_categories', 'course_categories.id', '=', 'course_category_mapping.category_id')
-            ->get(['course_category_mapping.course_id', 'course_categories.name'])
-            ->each(static function ($row) use (&$map): void {
-                $courseId = (int) $row->course_id;
-                $map[$courseId] ??= [];
-                $map[$courseId][self::normalizeCategoryName((string) $row->name)] = true;
-            });
-
-        return self::$cachedCourseCategoryMap = $map;
-    }
-
-    private static function normalizeCategoryName(string $categoryName): string
-    {
-        return strtolower(trim($categoryName));
-    }
-
-    private static function courseCategoriesTableExists(): bool
-    {
-        try {
-            return DB::getSchemaBuilder()->hasTable('course_categories')
-                && DB::getSchemaBuilder()->hasTable('course_category_mapping');
-        } catch (\Throwable) {
-            return false;
-        }
-    }
-
     private static function fieldCourseSettingsTableExists(): bool
     {
         try {
@@ -1049,5 +1357,16 @@ final class SchedulingPolicy
         } catch (\Throwable) {
             return false;
         }
+    }
+
+    private static function loadOperatingHours(): void
+    {
+        if (self::$cachedOpeningTime !== null && self::$cachedClosingTime !== null) {
+            return;
+        }
+
+        $settings = app(TimeslotService::class)->settings();
+        self::$cachedOpeningTime = self::normalizeTime($settings->opening_time);
+        self::$cachedClosingTime = self::normalizeTime($settings->closing_time);
     }
 }

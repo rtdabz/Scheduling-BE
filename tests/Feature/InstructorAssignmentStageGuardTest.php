@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
@@ -137,6 +138,9 @@ class InstructorAssignmentStageGuardTest extends TestCase
     private function fixture(): array
     {
         $department = Departments::create(['department_name' => 'Stage Dept', 'department_code' => 'STG']);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $program = Program::create(['department_id' => $department->id, 'code' => 'STGP', 'name' => 'Stage Program']);
         $term = Terms::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
@@ -171,6 +175,7 @@ class InstructorAssignmentStageGuardTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $department->id,
+                'program_id' => $program->id,
                 'term_id' => $term->id,
                 'status' => 'active',
             ]),
@@ -182,7 +187,7 @@ class InstructorAssignmentStageGuardTest extends TestCase
                 'department_id' => $department->id,
                 'status' => 'active',
             ]),
-            'user' => User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]),
+            'user' => $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id])),
         ];
     }
 

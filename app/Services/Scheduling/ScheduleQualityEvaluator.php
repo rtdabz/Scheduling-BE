@@ -155,7 +155,7 @@ class ScheduleQualityEvaluator
             'classroom_fragment_gaps' => $this->classroomFragmentGapPenalty($schedules, $roomTypesById),
         ];
         $weekdayPenalties = [
-            'weekend_usage' => $this->weekendPenalty($schedules, $configsBySectionId),
+            'weekend_usage' => $this->weekendPenalty($schedules, $configsBySectionId, $roomTypesById),
             'weekday_capacity_migration' => $this->weekdayCapacityMigrationPenalty(
                 $summary,
                 $fairness,
@@ -221,6 +221,7 @@ class ScheduleQualityEvaluator
                 $schedules,
                 $configsBySectionId,
             ),
+            'split_session_fallbacks' => $this->splitSessionFallbackPenalty($schedules),
         ];
 
         $resourcePenalty = array_sum($resourcePenalties);
@@ -384,10 +385,11 @@ class ScheduleQualityEvaluator
         )) * self::FULLY_ONLINE_SECTION_WEIGHT;
     }
 
-    private function weekendPenalty(array $schedules, array $configsBySectionId): int
+    private function weekendPenalty(array $schedules, array $configsBySectionId, array $roomTypesById = []): int
     {
         $saturday = 0;
         $sunday = 0;
+        $meetingCounts = $this->meetingCountsByCourse($schedules);
 
         foreach ($schedules as $row) {
             $day = (string) ($row['day'] ?? '');
@@ -397,11 +399,62 @@ class ScheduleQualityEvaluator
             if ($this->isRequiredDayPlacement($row, $configsBySectionId)) {
                 continue;
             }
+            // A single meeting in a lecture room belongs late in the week under
+            // department policy, so Saturday is not a penalty for it. Sunday
+            // still is, for every row.
+            if ($day === 'Saturday' && $this->isLateWeekPreferredRow($row, $meetingCounts, $roomTypesById)) {
+                continue;
+            }
 
             $day === 'Saturday' ? $saturday++ : $sunday++;
         }
 
         return ($sunday * self::SUNDAY_BLOCK_WEIGHT) + ($saturday * self::SATURDAY_BLOCK_WEIGHT);
+    }
+
+    /**
+     * Mirrors CspSolver::prefersLateWeekPlacement for persisted/preview rows:
+     * a course that meets once in the week and holds a real lecture room.
+     *
+     * @param  array<string, int>  $meetingCounts
+     * @param  array<int, string>  $roomTypesById
+     */
+    private function isLateWeekPreferredRow(array $row, array $meetingCounts, array $roomTypesById): bool
+    {
+        if (($meetingCounts[$this->courseMeetingKey($row)] ?? 0) !== 1) {
+            return false;
+        }
+
+        if ((string) ($row['mode'] ?? '') !== 'on-site') {
+            return false;
+        }
+
+        $roomId = $row['room_id'] ?? null;
+        if ($roomId === null) {
+            return false;
+        }
+
+        return ($roomTypesById[(int) $roomId] ?? '') === 'lecture';
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $schedules
+     * @return array<string, int>
+     */
+    private function meetingCountsByCourse(array $schedules): array
+    {
+        $counts = [];
+        foreach ($schedules as $row) {
+            $key = $this->courseMeetingKey($row);
+            $counts[$key] = ($counts[$key] ?? 0) + 1;
+        }
+
+        return $counts;
+    }
+
+    private function courseMeetingKey(array $row): string
+    {
+        return ((int) ($row['section_id'] ?? 0)).':'.((int) ($row['course_id'] ?? 0));
     }
 
     private function weekdayCapacityMigrationPenalty(
@@ -971,7 +1024,7 @@ class ScheduleQualityEvaluator
     private function sectionDaySpreadPenalty(array $schedules): int
     {
         $daysBySection = [];
-        $meetingsBySection = [];
+        $scheduledMinutesBySection = [];
 
         foreach ($schedules as $row) {
             $sectionId = (int) ($row['section_id'] ?? 0);
@@ -981,13 +1034,19 @@ class ScheduleQualityEvaluator
             }
 
             $daysBySection[$sectionId][$day] = true;
-            $meetingsBySection[$sectionId] = ($meetingsBySection[$sectionId] ?? 0) + 1;
+            $start = strtotime((string) ($row['start_time'] ?? ''));
+            $end = strtotime((string) ($row['end_time'] ?? ''));
+            if ($start !== false && $end !== false && $end > $start) {
+                $scheduledMinutesBySection[$sectionId] = ($scheduledMinutesBySection[$sectionId] ?? 0)
+                    + (int) (($end - $start) / 60);
+            }
         }
 
         $penalty = 0;
+        $dailyCapacityMinutes = SchedulingPolicy::totalSlots() * SchedulingPolicy::SLOT_MINUTES;
         foreach ($daysBySection as $sectionId => $days) {
             $minimumDays = (int) ceil(
-                (int) ($meetingsBySection[$sectionId] ?? 0) / SchedulingPolicy::MAX_CLASSES_PER_DAY,
+                (int) ($scheduledMinutesBySection[$sectionId] ?? 0) / max(1, $dailyCapacityMinutes),
             );
             $extraDays = max(0, count($days) - max(1, $minimumDays));
             $penalty += $extraDays * self::SECTION_EXTRA_DAY_WEIGHT;
@@ -1067,6 +1126,12 @@ class ScheduleQualityEvaluator
 
             foreach (array_map('intval', $config['balanced_split_course_ids'] ?? []) as $courseId) {
                 $courseRows = $sectionRows[$courseId] ?? [];
+                if (count($courseRows) === 1 && ! empty($courseRows[0]['split_session_fallback'])) {
+                    // This is the solver's controlled, lower-priority fallback:
+                    // the requested split was infeasible, but the single full
+                    // duration meeting remains valid under all hard rules.
+                    continue;
+                }
                 if (count($courseRows) < 2) {
                     $violations++;
 
@@ -1104,6 +1169,15 @@ class ScheduleQualityEvaluator
         }
 
         return $violations * self::CONFIGURATION_VIOLATION_WEIGHT;
+    }
+
+    /** @param list<array<string, mixed>> $schedules */
+    private function splitSessionFallbackPenalty(array $schedules): int
+    {
+        return count(array_filter(
+            $schedules,
+            static fn (array $row): bool => (bool) ($row['split_session_fallback'] ?? false),
+        )) * 3000;
     }
 
     private function rowsMatchPattern(array $rows, string $pattern): bool

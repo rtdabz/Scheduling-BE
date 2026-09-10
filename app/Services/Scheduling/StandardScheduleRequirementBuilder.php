@@ -17,7 +17,7 @@ class StandardScheduleRequirementBuilder implements ScheduleRequirementBuilder
             $mode = (string) ($deliveryModes[(int) $course->id] ?? $deliveryModes[(string) $course->id] ?? $defaultMode);
             $componentType = match (true) {
                 $mode === 'online' => 'online',
-                SchedulingPolicy::isFieldCourse($course) || $mode === 'field' => 'field',
+                SchedulingPolicy::isFieldCourse($course, (int) $section->department_id) || $mode === 'field' => 'field',
                 SchedulingPolicy::isLaboratoryCourse($course) => 'laboratory',
                 default => 'lecture',
             };
@@ -34,6 +34,14 @@ class StandardScheduleRequirementBuilder implements ScheduleRequirementBuilder
                 'laboratory' => ['on-site'],
                 'online' => ['online'],
                 default => $isExplicitMode ? [$mode] : ['on-site', 'online'],
+            };
+            $roomTypes = match ($componentType) {
+                'online' => ['online'],
+                'field' => ['field'],
+                'laboratory' => ['laboratory'],
+                default => in_array('online', $allowedModes, true)
+                    ? ['lecture', 'online']
+                    : ['lecture'],
             };
 
             $requirements[(int) $course->id] = [

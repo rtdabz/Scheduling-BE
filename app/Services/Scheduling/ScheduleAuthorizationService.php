@@ -6,6 +6,7 @@ namespace App\Services\Scheduling;
 
 use App\Models\Course;
 use App\Models\Schedule;
+use App\Models\Program;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -15,6 +16,10 @@ use Illuminate\Support\Facades\DB;
  */
 final class ScheduleAuthorizationService
 {
+    public function departmentHasProgram(int $departmentId): bool
+    {
+        return Program::query()->where('department_id', $departmentId)->exists();
+    }
     public function departmentScope(Request $request): ?int
     {
         $user = $request->user();

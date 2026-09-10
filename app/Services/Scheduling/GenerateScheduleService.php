@@ -8,9 +8,9 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleRecommendation;
 use App\Models\Sections;
+use App\Services\Scheduling\Domain\ScheduleRecommendationPayload;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class GenerateScheduleService
@@ -18,9 +18,8 @@ class GenerateScheduleService
     private const REPLACEABLE_SCHEDULE_STATUSES = ['draft', 'completed', 'revision'];
 
     public function __construct(
-        private readonly CSPSolver $solver,
+        private readonly GenerateSectionSchedulePlans $sectionGeneration,
         private readonly RuleEngine $ruleEngine,
-        private readonly ScheduleCandidateOptimizer $candidateOptimizer,
     ) {}
 
     /**
@@ -40,36 +39,20 @@ class GenerateScheduleService
         $solverInput = [
             'course_ids' => $courseIds,
             'mode' => 'on-site',
+            'max_solutions' => $maxSolutions,
         ];
-        $solutions = $this->candidateOptimizer->rankForSection(
-            $this->solver->solveRanked(
-                $sectionId,
-                $courseIds,
-                $maxSolutions,
-            ),
-            $section,
-            $solverInput,
-        );
+        $generated = $this->sectionGeneration->generate($section, $solverInput);
+        $solutions = $generated->solutions;
 
         if (empty($solutions)) {
             return [
                 'batch_id' => null,
                 'solutions' => [],
                 'solution_count' => 0,
-                'iterations' => $this->solver->iterationsUsed(),
-                'search_limit_reached' => $this->solver->searchLimitReached(),
+                'iterations' => (int) ($generated->generationMetrics['iterations'] ?? 0),
+                'search_limit_reached' => (bool) ($generated->generationMetrics['search_limit_reached'] ?? false),
             ];
         }
-
-        $coursesQuery = Course::query();
-        if ($this->courseCategoryTablesExist()) {
-            $coursesQuery->with('categories');
-        }
-
-        $coursesById = $coursesQuery
-            ->whereIn('id', $courseIds)
-            ->get()
-            ->keyBy('id');
 
         // Ties every recommendation row from this single generate() call
         // together, so accept() can find/reject siblings later.
@@ -78,7 +61,8 @@ class GenerateScheduleService
         $storedSolutions = [];
 
         foreach ($solutions as $rank => $solution) {
-            $meetings = $this->applyMode($solution['schedules'], $coursesById);
+            $meetings = $solution['schedules'];
+            $plan = collect($generated->plans)->first(fn ($candidate) => $candidate->planId === ($solution['plan_id'] ?? null));
 
             $recommendation = ScheduleRecommendation::create([
                 'batch_id' => $batchId,
@@ -89,8 +73,8 @@ class GenerateScheduleService
                 'rank' => $rank + 1,
                 'score' => $solution['score'] ?? 0,
                 'status' => 'pending',
-                'input_payload' => json_encode(['course_ids' => $courseIds]),
-                'recommended_schedules' => json_encode($meetings),
+                'input_payload' => ScheduleRecommendationPayload::fromPrepared($solverInput, $generated->preparedConfiguration, $plan)->toArray(),
+                'recommended_schedules' => $meetings,
             ]);
 
             $storedSolutions[] = [
@@ -105,8 +89,8 @@ class GenerateScheduleService
             'batch_id' => $batchId,
             'solutions' => $storedSolutions,
             'solution_count' => count($storedSolutions),
-            'iterations' => $this->solver->iterationsUsed(),
-            'search_limit_reached' => $this->solver->searchLimitReached(),
+            'iterations' => (int) ($generated->generationMetrics['iterations'] ?? 0),
+            'search_limit_reached' => (bool) ($generated->generationMetrics['search_limit_reached'] ?? false),
         ];
     }
 
@@ -207,10 +191,15 @@ class GenerateScheduleService
         return DB::transaction(function () use ($recommendation, $userId, $meetings) {
             // Replace the section's editable rows in the same transaction as
             // the new inserts. A failed insert must not erase the prior draft.
-            Schedule::where('section_id', $recommendation->section_id)
+            $replacedIds = Schedule::where('section_id', $recommendation->section_id)
                 ->where('term_id', $recommendation->term_id)
                 ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
-                ->delete();
+                ->pluck('id');
+
+            Schedule::whereIn('id', $replacedIds)->delete();
+            // A bulk delete fires no model events, so the split rows have to be
+            // retired explicitly or they outlive the schedules they describe.
+            Schedule::retireSplitsFor($replacedIds);
 
             $created = [];
             foreach ($meetings as $meeting) {
@@ -345,7 +334,10 @@ class GenerateScheduleService
 
         foreach ($meetings as &$meeting) {
             $course = $coursesById[$meeting['course_id']] ?? null;
-            $isField = $course !== null && SchedulingPolicy::isFieldCourse($course);
+            $isField = $course !== null && SchedulingPolicy::isFieldCourse(
+                $course,
+                isset($meeting['department_id']) ? (int) $meeting['department_id'] : null,
+            );
 
             if ($isField) {
                 $meeting['mode'] = 'field';
@@ -364,13 +356,4 @@ class GenerateScheduleService
         return $meetings;
     }
 
-    private function courseCategoryTablesExist(): bool
-    {
-        try {
-            return Schema::hasTable('course_categories')
-                && Schema::hasTable('course_category_mapping');
-        } catch (\Throwable) {
-            return false;
-        }
-    }
 }

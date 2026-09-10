@@ -2,15 +2,26 @@
 
 namespace Tests\Unit;
 
+use App\Enums\DepartmentSchedulingProfile;
 use App\Models\Sections;
 use App\Services\Scheduling\CSPSolver;
+use App\Services\Scheduling\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\ScheduleQualityEvaluator;
+use App\Services\Scheduling\ScheduleRequirementBuilderResolver;
+use App\Services\Scheduling\SchedulingSnapshotRepository;
 use App\Services\Scheduling\YearLevelScheduleGenerationService;
-use PHPUnit\Framework\TestCase;
+use App\Services\Scheduling\Solver\CspYearLevelSchedulingSolverAdapter;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Collection;
 use ReflectionMethod;
+use Tests\TestCase;
 
 class YearLevelScheduleFairnessScoreTest extends TestCase
 {
+    // The evaluator reads the institution's operating hours from
+    // schedule_settings, so scoring cannot be exercised without the schema.
+    use RefreshDatabase;
+
     public function test_balanced_candidate_scores_better_than_section_dominated_candidate(): void
     {
         $service = $this->service();
@@ -39,6 +50,27 @@ class YearLevelScheduleFairnessScoreTest extends TestCase
         $this->assertGreaterThan(0, $dominated['score_breakdown']['physical_distribution']);
         $this->assertGreaterThan(0, $dominated['score_breakdown']['laboratory_distribution']);
         $this->assertGreaterThan(0, $dominated['score_breakdown']['dominant_physical_share']);
+    }
+
+    public function test_unconfigured_online_rows_are_counted_as_last_resort(): void
+    {
+        $service = $this->service();
+        $method = new ReflectionMethod($service, 'unnecessaryOnlineCount');
+        $method->setAccessible(true);
+
+        $candidate = ['schedules' => [
+            $this->row(1, null, 'online', 'lecture'),
+            $this->row(1, null, 'online', 'lecture'),
+        ]];
+
+        $this->assertSame(2, $method->invoke($service, $candidate, [1 => [
+            'mode' => 'on-site',
+            'delivery_modes_by_course_id' => [],
+        ]]));
+        $this->assertSame(0, $method->invoke($service, $candidate, [1 => [
+            'mode' => 'online',
+            'delivery_modes_by_course_id' => [],
+        ]]));
     }
 
     public function test_room_concentration_is_penalized_when_other_rooms_are_available(): void
@@ -138,6 +170,49 @@ class YearLevelScheduleFairnessScoreTest extends TestCase
         $this->assertSame([2, 3, 1], $firstOrderSectionIds);
     }
 
+    public function test_section_hybrid_retry_can_be_applied_without_a_course_id(): void
+    {
+        $preflight = $this->createMock(ScheduleGenerationPreflightService::class);
+        $preflight->expects($this->once())
+            ->method('validate')
+            ->willReturn(DepartmentSchedulingProfile::LABORATORY_ENABLED);
+        $builders = $this->createMock(ScheduleRequirementBuilderResolver::class);
+        $builders->expects($this->once())
+            ->method('build')
+            ->willReturn([]);
+        $service = new YearLevelScheduleGenerationService(
+            new CspYearLevelSchedulingSolverAdapter($this->solverWithFairnessTargets()),
+            new ScheduleQualityEvaluator,
+            app(SchedulingSnapshotRepository::class),
+            requirementBuilders: $builders,
+            preflight: $preflight,
+        );
+        $section = $this->section(7);
+        $method = new ReflectionMethod($service, 'applyAdjustments');
+
+        $updated = $method->invoke(
+            $service,
+            [$section],
+            [7 => [
+                'course_ids' => [301, 302],
+                'department_profile' => 'laboratory_enabled',
+                'is_hybrid' => true,
+                'selected_split_session_course_ids' => [301, 302],
+            ]],
+            [[
+                'type' => 'disable_section_hybrid',
+                'section_id' => 7,
+                'course_id' => 0,
+                'value' => null,
+            ]],
+            new Collection,
+        );
+
+        $this->assertSame([], $updated[7]['selected_split_session_course_ids']);
+        $this->assertFalse($updated[7]['is_hybrid']);
+        $this->assertSame([], $updated[7]['requirements_by_course_id']);
+    }
+
     public function test_section_compactness_is_scored_separately_from_resource_fairness(): void
     {
         $service = $this->service();
@@ -235,8 +310,9 @@ class YearLevelScheduleFairnessScoreTest extends TestCase
     private function service(): YearLevelScheduleGenerationService
     {
         return new YearLevelScheduleGenerationService(
-            $this->solverWithFairnessTargets(),
+            new CspYearLevelSchedulingSolverAdapter($this->solverWithFairnessTargets()),
             new ScheduleQualityEvaluator,
+            app(SchedulingSnapshotRepository::class),
         );
     }
 

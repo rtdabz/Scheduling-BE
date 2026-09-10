@@ -21,13 +21,20 @@ class YearLevelScheduleGenerationTest extends TestCase
     {
         $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'IT']);
-        $sectionA = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active']);
-        $sectionB = Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active']);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
+        $sectionA = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
+        $sectionB = Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
         $course = Course::create(['course_code' => 'GEC 101', 'course_name' => 'Understanding the Self', 'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3, 'course_category' => 'minor', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => null, 'status' => 'active']);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
         $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
         Rooms::create(['room_code' => 'IT 101', 'building' => 'IT Building', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
             'term_id' => $term->id,
@@ -100,14 +107,21 @@ class YearLevelScheduleGenerationTest extends TestCase
             'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
-        $sectionA = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active']);
-        $sectionB = Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active']);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
+        $sectionA = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
+        $sectionB = Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
         $course = Course::create(['course_code' => 'IT 101', 'course_name' => 'Programming 1', 'lecture_hours' => 2, 'lab_hours' => 1, 'units' => 3, 'course_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'status' => 'active']);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
         $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
         Rooms::create(['room_code' => 'IT 101', 'building' => 'IT Building', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
         Rooms::create(['room_code' => 'LAB 101', 'building' => 'IT Building', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => $department->id]);
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
             'term_id' => $term->id,
@@ -138,6 +152,13 @@ class YearLevelScheduleGenerationTest extends TestCase
             'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
         $sections = [];
 
@@ -146,7 +167,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                 'section_name' => "IT 1{$index}",
                 'year_level' => '1',
                 'semester' => '1st',
-                'department_id' => $department->id,
+                'department_id' => $department->id, 'program_id' => $departmentProgram->id,
                 'term_id' => $term->id,
                 'status' => 'active',
             ]);
@@ -176,7 +197,7 @@ class YearLevelScheduleGenerationTest extends TestCase
             Rooms::create(['room_code' => "LAB {$index}01", 'building' => 'IT Building', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => $department->id]);
         }
 
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $courseIds = array_map(static fn (Course $course): int => (int) $course->id, $courses);
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
@@ -217,6 +238,13 @@ class YearLevelScheduleGenerationTest extends TestCase
             'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
         $curriculum = Curriculum::create([
             'name' => 'IT Curriculum',
             'department_id' => $department->id,
@@ -231,7 +259,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                 'section_name' => "IT 1{$index}",
                 'year_level' => '1',
                 'semester' => '1st',
-                'department_id' => $department->id,
+                'department_id' => $department->id, 'program_id' => $departmentProgram->id,
                 'term_id' => $term->id,
                 'status' => 'active',
             ]);
@@ -263,7 +291,7 @@ class YearLevelScheduleGenerationTest extends TestCase
             'status' => 'available',
             'department_id' => $department->id,
         ]);
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $courseIds = array_map(static fn (Course $course): int => (int) $course->id, $courses);
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
@@ -291,7 +319,10 @@ class YearLevelScheduleGenerationTest extends TestCase
             $term = Terms::create([
                 'academic_year' => "2026-2027-Y{$yearLevel}",
                 'semester' => '1st',
-                'is_active' => $yearLevel === 1,
+                // Generation is refused outside the active term, and each pass
+                // needs its own. Terms::created deactivates the previous one,
+                // so this stays the single active term for its iteration.
+                'is_active' => true,
                 'is_enabled' => true,
             ]);
             $department = Departments::create([
@@ -300,6 +331,13 @@ class YearLevelScheduleGenerationTest extends TestCase
                 'scheduling_profile' => 'laboratory_enabled',
                 'lecture_lab_schedule_override_enabled' => true,
                 'gec_split_schedule_override_enabled' => true,
+            ]);
+            // Schedule capabilities and section scheduling both require the
+            // department to own a program.
+            $departmentProgram = \App\Models\Program::create([
+                'department_id' => $department->id,
+                'code' => 'P'.$department->id,
+                'name' => 'Program '.$department->id,
             ]);
             $curriculum = Curriculum::create([
                 'name' => "IT Curriculum {$yearLevel}",
@@ -315,7 +353,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                     'section_name' => "IT {$yearLevel}{$sectionIndex}",
                     'year_level' => (string) $yearLevel,
                     'semester' => '1st',
-                    'department_id' => $department->id,
+                    'department_id' => $department->id, 'program_id' => $departmentProgram->id,
                     'term_id' => $term->id,
                     'status' => 'active',
                 ]);
@@ -360,7 +398,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                 Rooms::create(['room_code' => "LAB{$yearLevel}{$roomIndex}01", 'building' => 'IT Building', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => $department->id]);
             }
 
-            $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+            $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
             $majorCourseIds = array_map(static fn (Course $course): int => (int) $course->id, $majorCourses);
             $courseIds = [...$majorCourseIds, (int) $minorCourse->id];
 
@@ -392,6 +430,13 @@ class YearLevelScheduleGenerationTest extends TestCase
             'lecture_lab_schedule_override_enabled' => true,
             'gec_split_schedule_override_enabled' => true,
         ]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
 
         $sections = [];
@@ -400,7 +445,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                 'section_name' => "IT 1{$sectionIndex}",
                 'year_level' => '1',
                 'semester' => '1st',
-                'department_id' => $department->id,
+                'department_id' => $department->id, 'program_id' => $departmentProgram->id,
                 'term_id' => $term->id,
                 'status' => 'active',
             ]);
@@ -449,7 +494,7 @@ class YearLevelScheduleGenerationTest extends TestCase
             Rooms::create(['room_code' => "LAB {$roomIndex}01", 'building' => 'IT Building', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => $department->id]);
         }
 
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $majorCourseIds = array_map(static fn (Course $course): int => (int) $course->id, $majorCourses);
         $minorCourseIds = array_map(static fn (Course $course): int => (int) $course->id, $minorCourses);
         $courseIds = [...$majorCourseIds, ...$minorCourseIds];
@@ -489,10 +534,17 @@ class YearLevelScheduleGenerationTest extends TestCase
             'department_code' => 'IT',
             'gec_split_schedule_override_enabled' => true,
         ]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
         $sections = [
-            Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active']),
-            Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active']),
+            Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']),
+            Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']),
         ];
         $course = Course::create([
             'course_code' => 'PE 101',
@@ -511,7 +563,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         Rooms::create(['room_code' => 'IT 101', 'building' => 'IT Building', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
         Rooms::create(['room_code' => 'IT 102', 'building' => 'IT Building', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
 
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
             'term_id' => $term->id,
             'department_id' => $department->id,

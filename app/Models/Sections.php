@@ -14,14 +14,54 @@ class Sections extends Model
         'year_level',
         'semester',
         'department_id',
+        'program_id',
+        // The curriculum this cohort follows. A department mid-transition runs
+        // several at once, so this cannot be inferred from the department alone.
+        'curriculum_id',
         'term_id',
         'status',
     ];
     protected $table = 'sections';
 
+    protected static function booted(): void
+    {
+        static::creating(function (self $section): void {
+            if ($section->curriculum_id !== null || $section->department_id === null) {
+                return;
+            }
+
+            // Fill in the curriculum only when there is nothing to choose
+            // between. One selectable curriculum is not a guess — it is the only
+            // answer, and requiring the caller to restate it would break every
+            // department that is not mid-transition.
+            //
+            // Two or more and the column stays null on purpose: picking one
+            // would silently schedule a cohort against the wrong course list,
+            // which is the exact failure this column exists to prevent. The
+            // generator refuses such a section by name until somebody chooses.
+            $selectable = Curriculum::query()
+                ->selectableFor((int) $section->department_id, $section->program_id === null ? null : (int) $section->program_id)
+                ->pluck('id');
+
+            if ($selectable->count() === 1) {
+                $section->curriculum_id = (int) $selectable->first();
+            }
+        });
+    }
+
     public function department()
     {
         return $this->belongsTo(Departments::class, 'department_id');
+    }
+
+    public function program()
+    {
+        return $this->belongsTo(Program::class, 'program_id');
+    }
+
+    public function curriculum()
+    {
+        return $this->belongsTo(Curriculum::class, 'curriculum_id');
     }
 
     public function term()

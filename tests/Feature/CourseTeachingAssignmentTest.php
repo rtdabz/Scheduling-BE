@@ -6,9 +6,11 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
+use App\Models\Terms;
 use App\Models\User;
 use App\Services\Scheduling\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
@@ -62,10 +64,10 @@ class CourseTeachingAssignmentTest extends TestCase
     public function test_a_program_head_may_manage_the_same_assignment(): void
     {
         $fixture = $this->fixture();
-        $programHead = User::factory()->create([
+        $programHead = $this->grantCapabilities(User::factory()->create([
             'role' => 'program_head',
             'department_id' => $fixture['it']->id,
-        ]);
+        ]));
 
         $this->actingAs($programHead)
             ->getJson('/api/course-teaching-assignments')
@@ -99,11 +101,19 @@ class CourseTeachingAssignmentTest extends TestCase
         $this->assertFalse($programs->contains(fn (array $program): bool => $program['id'] === $fixture['program']->id));
     }
 
-    public function test_no_other_role_may_manage_teaching_assignments(): void
+    /**
+     * A dean holds only schedule.view and schedule.approve_dean, and an account
+     * granted nothing holds nothing, so neither reaches the endpoint.
+     *
+     * The VPAA is deliberately not in this list. config/capabilities.php gives
+     * the role the full permission set as the break-glass account, so it does
+     * reach the endpoint -- see the test below.
+     */
+    public function test_a_role_without_the_capability_may_not_manage_teaching_assignments(): void
     {
         $fixture = $this->fixture();
 
-        foreach (['vpaa', 'dean'] as $role) {
+        foreach (['dean', 'secretary'] as $role) {
             $user = User::factory()->create(['role' => $role, 'department_id' => $fixture['it']->id]);
 
             $this->actingAs($user)->getJson('/api/course-teaching-assignments')->assertStatus(403);
@@ -115,6 +125,16 @@ class CourseTeachingAssignmentTest extends TestCase
         }
 
         $this->assertNull($fixture['gec']->refresh()->teaching_department_id);
+    }
+
+    public function test_the_vpaa_holds_the_cross_department_capability_by_role(): void
+    {
+        $fixture = $this->fixture();
+        // The controller answers from the acting account's department, so the
+        // capability alone is not enough to produce a listing.
+        $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => $fixture['it']->id]);
+
+        $this->actingAs($vpaa)->getJson('/api/course-teaching-assignments')->assertOk();
     }
 
     /**
@@ -265,13 +285,20 @@ class CourseTeachingAssignmentTest extends TestCase
     }
 
     /**
-     * With a published curriculum the listing narrows to what that curriculum
-     * places, and the year level shown is the curriculum's — not the default stored
-     * on the course. The same shared minor sits in different years for different
-     * colleges, and the page's year tabs have to agree with the curriculum the
-     * department actually runs.
+     * The listing is what the department's active curricula place, and the year
+     * level shown is the curriculum's — not the default stored on the course. The
+     * same shared minor sits in different years for different colleges, and the
+     * page's year tabs have to agree with the curriculum the department runs.
+     *
+     * A department mid-transition runs several curricula at once, so the listing
+     * is their union: a cohort still on the old curriculum is still taking its
+     * courses, and those courses still need delegating. Where the two place the
+     * same course differently, the newest curriculum's placement is shown — this
+     * page's year tabs follow the curriculum the department is moving to.
+     * Nothing schedules from this scalar; a cohort's placements are resolved
+     * through its own section's curriculum.
      */
-    public function test_an_active_curriculum_scopes_the_listing_and_sets_each_year_level(): void
+    public function test_active_curricula_scope_the_listing_and_set_each_year_level(): void
     {
         $fixture = $this->fixture();
         $shared = $this->course('GEC 102', 'minor', null);
@@ -288,13 +315,44 @@ class CourseTeachingAssignmentTest extends TestCase
                 ->json('courses'),
         )->keyBy('course_code');
 
-        // Both courses record year_level '1'; the curriculum placement overrides it.
+        // Both courses record year_level '1'; the curriculum placement overrides
+        // it. GEC 101 sits at year 1 in the fixture's curriculum and year 3 in
+        // the newer one, and the newer placement is the one reported.
         $this->assertSame(3, $courses['GEC 101']['year_level']);
         $this->assertSame(2, $courses['GEC 102']['year_level']);
 
-        // Not placed by the curriculum, so not something this department offers —
-        // including IT's own PATH FIT 1 and its major.
-        $this->assertEqualsCanonicalizing(['GEC 101', 'GEC 102'], $courses->keys()->all());
+        // GEC 103 is placed by neither curriculum, so the department does not
+        // offer it. PATH FIT 1 and IT 101 are placed by the older curriculum,
+        // which is still active and still teaching upper years.
+        $this->assertEqualsCanonicalizing(
+            ['GEC 101', 'GEC 102', 'IT 101', 'PATH FIT 1'],
+            $courses->keys()->all(),
+        );
+    }
+
+    /**
+     * Retiring the older curriculum narrows the listing to the survivor, which is
+     * the pre-transition behaviour: what a department offers is what its active
+     * curricula place, no more.
+     */
+    public function test_the_listing_narrows_once_the_superseded_curriculum_is_retired(): void
+    {
+        $fixture = $this->fixture();
+        $shared = $this->course('GEC 102', 'minor', null);
+
+        $curriculum = $this->curriculum($fixture['it']->id, 'active');
+        $this->place($curriculum, $fixture['gec'], '3');
+        $this->place($curriculum, $shared, '2');
+        $fixture['curriculum']->update(['status' => 'archived']);
+
+        $codes = collect(
+            $this->actingAs($fixture['itSecretary'])
+                ->getJson('/api/course-teaching-assignments')
+                ->assertOk()
+                ->json('courses'),
+        )->pluck('course_code')->all();
+
+        $this->assertEqualsCanonicalizing(['GEC 101', 'GEC 102'], $codes);
     }
 
     /**
@@ -383,12 +441,123 @@ class CourseTeachingAssignmentTest extends TestCase
     public function test_an_account_without_a_department_cannot_list_courses(): void
     {
         $this->fixture();
-        $user = User::factory()->create(['role' => 'secretary', 'department_id' => null]);
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => null]));
 
         $this->actingAs($user)
             ->getJson('/api/course-teaching-assignments')
             ->assertStatus(422)
             ->assertJsonPath('message', 'Your account must belong to a department.');
+    }
+
+    /**
+     * Delegation is decided one semester at a time, so the listing is the active
+     * term's, not the whole curriculum's. A course the curriculum places in the
+     * second semester is not this term's work and is not offered while the first
+     * semester runs.
+     */
+    public function test_the_listing_offers_only_the_active_terms_semester(): void
+    {
+        $fixture = $this->fixture();
+        $this->activateTerm('1st');
+
+        $secondSemester = $this->course('GEC 201', 'minor', $fixture['it']->id);
+        $this->place($fixture['curriculum'], $secondSemester, '1', 2);
+
+        $courses = collect(
+            $this->actingAs($fixture['itSecretary'])
+                ->getJson('/api/course-teaching-assignments')
+                ->assertOk()
+                ->json('courses'),
+        )->keyBy('course_code');
+
+        $this->assertEqualsCanonicalizing(['GEC 101', 'PATH FIT 1', 'IT 101'], $courses->keys()->all());
+        $this->assertArrayNotHasKey('GEC 201', $courses->all());
+    }
+
+    /**
+     * The page has to name the term it narrowed to; an empty year level is otherwise
+     * indistinguishable from a curriculum missing its courses.
+     */
+    public function test_the_listing_reports_the_term_it_is_scoped_to(): void
+    {
+        $fixture = $this->fixture();
+        $this->activateTerm('1st');
+
+        $this->actingAs($fixture['itSecretary'])
+            ->getJson('/api/course-teaching-assignments')
+            ->assertOk()
+            ->assertJsonPath('active_term.semester', '1st')
+            ->assertJsonPath('active_term.academic_year', '2026-2027');
+    }
+
+    /**
+     * Switching the active term switches the list, rather than the second semester's
+     * courses being permanently invisible.
+     */
+    public function test_the_second_semester_is_offered_once_its_term_is_active(): void
+    {
+        $fixture = $this->fixture();
+        $this->activateTerm('2nd');
+
+        $secondSemester = $this->course('GEC 201', 'minor', $fixture['it']->id);
+        $this->place($fixture['curriculum'], $secondSemester, '3', 2);
+
+        $courses = collect(
+            $this->actingAs($fixture['itSecretary'])
+                ->getJson('/api/course-teaching-assignments')
+                ->assertOk()
+                ->json('courses'),
+        )->keyBy('course_code');
+
+        // The fixture's three are all first-semester placements, so only the second
+        // semester's course survives — at the year level that placement gives it.
+        $this->assertSame(['GEC 201'], $courses->keys()->all());
+        $this->assertSame(3, $courses['GEC 201']['year_level']);
+    }
+
+    /**
+     * With no term active there is nothing to narrow to, and the whole curriculum is
+     * offered rather than nothing at all — a blank page would be the worse failure.
+     */
+    public function test_no_active_term_leaves_the_listing_unnarrowed(): void
+    {
+        $fixture = $this->fixture();
+        $secondSemester = $this->course('GEC 201', 'minor', $fixture['it']->id);
+        $this->place($fixture['curriculum'], $secondSemester, '1', 2);
+
+        $response = $this->actingAs($fixture['itSecretary'])
+            ->getJson('/api/course-teaching-assignments')
+            ->assertOk()
+            ->assertJsonPath('active_term', null);
+
+        $this->assertEqualsCanonicalizing(
+            ['GEC 101', 'PATH FIT 1', 'IT 101', 'GEC 201'],
+            collect($response->json('courses'))->pluck('course_code')->all(),
+        );
+    }
+
+    /**
+     * The incoming list is scoped the same way, against whichever curriculum places
+     * the course — its owner's, not the receiving college's.
+     */
+    public function test_an_incoming_course_from_another_semester_is_not_reported(): void
+    {
+        $fixture = $this->fixture();
+        $this->activateTerm('1st');
+
+        $secondSemester = $this->course('GEC 201', 'minor', $fixture['it']->id);
+        $this->place($fixture['curriculum'], $secondSemester, '1', 2);
+        $secondSemester->update(['teaching_department_id' => $fixture['cas']->id]);
+        $fixture['gec']->update(['teaching_department_id' => $fixture['cas']->id]);
+
+        $incoming = collect(
+            $this->actingAs($fixture['casSecretary'])
+                ->getJson('/api/course-teaching-assignments')
+                ->assertOk()
+                ->json('incoming_cross_department_courses'),
+        )->pluck('course_code');
+
+        $this->assertSame(['GEC 101'], $incoming->all());
     }
 
     /** @return array<string, mixed> */
@@ -406,6 +575,14 @@ class CourseTeachingAssignmentTest extends TestCase
             'department_id' => $it->id,
             'code' => 'BSIT',
             'name' => 'Information Technology',
+        ]);
+        // CapabilityMiddleware withholds every schedule capability except
+        // schedule.view from a department that owns no program, so the CAS
+        // secretary needs one before it can act on anything.
+        Program::create([
+            'department_id' => $cas->id,
+            'code' => 'BACAS',
+            'name' => 'Arts and Sciences',
         ]);
 
         $gec = $this->course('GEC 101', 'minor', $it->id);
@@ -428,8 +605,8 @@ class CourseTeachingAssignmentTest extends TestCase
             'gec' => $gec,
             'minor' => $minor,
             'major' => $major,
-            'itSecretary' => User::factory()->create(['role' => 'secretary', 'department_id' => $it->id]),
-            'casSecretary' => User::factory()->create(['role' => 'secretary', 'department_id' => $cas->id]),
+            'itSecretary' => $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $it->id])),
+            'casSecretary' => $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $cas->id])),
         ];
     }
 
@@ -451,14 +628,35 @@ class CourseTeachingAssignmentTest extends TestCase
         ]);
     }
 
-    private function place(Curriculum $curriculum, Course $course, string $yearLevel): void
+    /**
+     * `curriculum_course.semester` is the tinyint 1|2|3, not the '1st'|'2nd'|'summer'
+     * enum that `terms` and `courses` carry. Placements default to the first
+     * semester, which is what the fixture's term runs.
+     */
+    private function place(Curriculum $curriculum, Course $course, string $yearLevel, int $semester = 1): void
     {
         DB::table('curriculum_course')->insert([
             'curriculum_id' => $curriculum->id,
             'course_id' => $course->id,
             'year_level' => $yearLevel,
-            'semester' => '1',
+            'semester' => $semester,
         ]);
+    }
+
+    /**
+     * The listing reads the active term through a cache the term endpoints normally
+     * clear, so a test that switches terms has to clear it too.
+     */
+    private function activateTerm(string $semester): Terms
+    {
+        $term = Terms::create([
+            'academic_year' => '2026-2027',
+            'semester' => $semester,
+            'is_active' => true,
+        ]);
+        Cache::flush();
+
+        return $term;
     }
 
     private function course(string $code, string $category, ?int $departmentId, ?int $programId = null): Course

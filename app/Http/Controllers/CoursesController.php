@@ -3,8 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Models\Course;
-use Illuminate\Http\Request;
+use App\Models\Curriculum;
 use App\Services\Scheduling\ScheduleAuthorizationService;
+use App\Support\ApiCache;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use App\Services\Scheduling\SchedulingPolicy;
+use Illuminate\Validation\Rule;
 
 class CoursesController extends Controller
 {
@@ -12,111 +17,167 @@ class CoursesController extends Controller
 
     public function index(Request $request)
     {
-        if ($this->authorization->rejectsRequestedDepartment($request, $request->query('department_id'))) return response()->json(['message' => 'You can only view courses for your department.'], 403);
+        if ($this->authorization->rejectsRequestedDepartment($request, $request->query('department_id'))) {
+            return response()->json(['message' => 'You can only view courses for your department.'], 403);
+        }
         $deptId = $this->authorization->requestedDepartment($request, $request->query('department_id'));
         $bypassActiveCurriculum = $request->query('all') === 'true' || $request->query('catalog') === 'true';
+        // Callers that know which curriculum a cohort follows say so. Without it
+        // this endpoint can only return the union of the department's active
+        // curricula, which is ambiguous the moment two of them place the same
+        // course at different year levels — see the placements note below.
+        $curriculumId = $request->query('curriculum_id') !== null
+            ? (int) $request->query('curriculum_id')
+            : null;
 
-        if (!$bypassActiveCurriculum) {
-            // 1. Query for active curriculum records scoped to the department if requested
-            $curriculumQuery = \App\Models\Curriculum::where('status', 'active');
+        $cacheKey = ApiCache::key('courses.index', [
+            'department_id' => $deptId,
+            'curriculum_id' => $curriculumId,
+            'all' => $bypassActiveCurriculum,
+            'status' => $request->query('status'),
+        ]);
 
-            if ($deptId) {
-                $curriculumQuery->where('department_id', $deptId);
-            }
+        return response()->json(Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($request, $deptId, $bypassActiveCurriculum, $curriculumId) {
+            if (! $bypassActiveCurriculum) {
+                // 1. Query for active curriculum records scoped to the department if requested
+                $curriculumQuery = Curriculum::where('status', 'active');
 
-            $activeCurriculumIds = $curriculumQuery->pluck('id');
-
-            if ($activeCurriculumIds->isNotEmpty()) {
-                // 2. Fetch all courses belonging to these active curriculum records
-                $courses = Course::with('department')
-                    ->whereHas('curriculum', function ($q) use ($activeCurriculumIds) {
-                        $q->whereIn('curriculum.id', $activeCurriculumIds);
-                    })
-                    ->when($deptId, function ($q) use ($deptId) {
-                        $q->where(function ($courseQuery) use ($deptId) {
-                            $courseQuery->whereNull('department_id')
-                                ->orWhere('department_id', $deptId);
-                        });
-                    })
-                    ->when($request->has('status') && $request->query('status'), function ($q) use ($request) {
-                        $q->where('status', $request->query('status'));
-                    })
-                    ->get();
-
-                // 3. Load pivot data for year_level and semester mapping
-                $pivotData = \DB::table('curriculum_course')
-                    ->whereIn('curriculum_id', $activeCurriculumIds)
-                    ->get();
-
-                $pivotMap = [];
-                foreach ($pivotData as $p) {
-                    if (!isset($pivotMap[$p->course_id])) {
-                        $pivotMap[$p->course_id] = $p;
-                    }
+                if ($deptId) {
+                    $curriculumQuery->where('department_id', $deptId);
                 }
 
-                $courses->transform(function ($course) use ($pivotMap) {
-                    if (isset($pivotMap[$course->id])) {
-                        $p = $pivotMap[$course->id];
-                        $course->year_level = (string)$p->year_level;
-                        $course->semester = $p->semester == 1 ? '1st' : ($p->semester == 2 ? '2nd' : 'summer');
+                if ($curriculumId !== null) {
+                    $curriculumQuery->where('id', $curriculumId);
+                }
+
+                $activeCurriculumIds = $curriculumQuery->pluck('id');
+
+                if ($activeCurriculumIds->isNotEmpty()) {
+                    // 2. Fetch all courses belonging to these active curriculum records
+                    $courses = Course::with('department')
+                        ->whereHas('curriculum', function ($q) use ($activeCurriculumIds) {
+                            $q->whereIn('curriculum.id', $activeCurriculumIds);
+                        })
+                        ->when($deptId, function ($q) use ($deptId) {
+                            $q->where(function ($courseQuery) use ($deptId) {
+                                $courseQuery->whereNull('department_id')
+                                    ->orWhere('department_id', $deptId);
+                            });
+                        })
+                        ->when($request->has('status') && $request->query('status'), function ($q) use ($request) {
+                            $q->where('status', $request->query('status'));
+                        })
+                        ->get();
+
+                    // 3. Load pivot data for year_level and semester mapping
+                    $pivotData = \DB::table('curriculum_course')
+                        ->join('curriculum', 'curriculum.id', '=', 'curriculum_course.curriculum_id')
+                        ->whereIn('curriculum_course.curriculum_id', $activeCurriculumIds)
+                        // Newest curriculum first; the flattening below keeps the
+                        // first placement it sees for each course.
+                        ->orderByDesc('curriculum.effective_school_year')
+                        ->orderByDesc('curriculum_course.curriculum_id')
+                        ->get([
+                            'curriculum_course.course_id',
+                            'curriculum_course.curriculum_id',
+                            'curriculum_course.year_level',
+                            'curriculum_course.semester',
+                        ]);
+
+                    // A course can sit at different year levels in an old and a
+                    // new curriculum, so "the" placement only exists once a
+                    // curriculum is named. Every placement stays on the record
+                    // for callers that need to disambiguate; the flattened
+                    // year_level/semester below is the newest curriculum's, and
+                    // is a display default only — the scheduler never reads it,
+                    // it resolves through the section's own curriculum.
+                    $placements = [];
+                    foreach ($pivotData as $p) {
+                        $placements[$p->course_id][] = [
+                            'curriculum_id' => (int) $p->curriculum_id,
+                            'year_level' => (string) $p->year_level,
+                            'semester' => $p->semester == 1 ? '1st' : ($p->semester == 2 ? '2nd' : 'summer'),
+                        ];
                     }
-                    return $course;
-                });
 
-                // Sort logically: Year Level ASC, Semester ASC, Category (Major first), Course Code ASC
-                $courses = $courses->sort(function ($a, $b) {
-                    $yA = (int) ($a->year_level ?? 0);
-                    $yB = (int) ($b->year_level ?? 0);
-                    if ($yA !== $yB) return $yA <=> $yB;
+                    $courses->transform(function ($course) use ($placements) {
+                        $rows = $placements[$course->id] ?? [];
+                        $course->setAttribute('curriculum_placements', $rows);
 
-                    $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
-                    $sA = $semOrder[$a->semester ?? ''] ?? 99;
-                    $sB = $semOrder[$b->semester ?? ''] ?? 99;
-                    if ($sA !== $sB) return $sA <=> $sB;
+                        if ($rows !== []) {
+                            $course->year_level = $rows[0]['year_level'];
+                            $course->semester = $rows[0]['semester'];
+                        }
 
-                    $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
-                    $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
-                    if ($catA !== $catB) return $catA <=> $catB;
+                        return $course;
+                    });
 
-                    return strcmp($a->course_code ?? '', $b->course_code ?? '');
-                })->values();
+                    // Sort logically: Year Level ASC, Semester ASC, Category (Major first), Course Code ASC
+                    $courses = $courses->sort(function ($a, $b) {
+                        $yA = (int) ($a->year_level ?? 0);
+                        $yB = (int) ($b->year_level ?? 0);
+                        if ($yA !== $yB) {
+                            return $yA <=> $yB;
+                        }
 
-                return response()->json($courses);
-            } else {
-                return response()->json([]);
+                        $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
+                        $sA = $semOrder[$a->semester ?? ''] ?? 99;
+                        $sB = $semOrder[$b->semester ?? ''] ?? 99;
+                        if ($sA !== $sB) {
+                            return $sA <=> $sB;
+                        }
+
+                        $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
+                        $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
+                        if ($catA !== $catB) {
+                            return $catA <=> $catB;
+                        }
+
+                        return strcmp($a->course_code ?? '', $b->course_code ?? '');
+                    })->values();
+
+                    return $courses;
+                } else {
+                    return collect();
+                }
             }
-        }
 
-        // Fallback: If no active curriculum exists, return courses table records
-        $query = Course::with('department');
+            // Fallback: If no active curriculum exists, return courses table records
+            $query = Course::with('department');
 
-        if ($deptId) {
-            $query->where('department_id', $deptId);
-        }
+            if ($deptId) {
+                $query->where('department_id', $deptId);
+            }
 
-        if ($request->has('status') && $request->query('status')) {
-            $query->where('status', $request->query('status'));
-        }
+            if ($request->has('status') && $request->query('status')) {
+                $query->where('status', $request->query('status'));
+            }
 
-        $courses = $query->get()->sort(function ($a, $b) {
-            $yA = (int) ($a->year_level ?? 0);
-            $yB = (int) ($b->year_level ?? 0);
-            if ($yA !== $yB) return $yA <=> $yB;
+            $courses = $query->get()->sort(function ($a, $b) {
+                $yA = (int) ($a->year_level ?? 0);
+                $yB = (int) ($b->year_level ?? 0);
+                if ($yA !== $yB) {
+                    return $yA <=> $yB;
+                }
 
-            $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
-            $sA = $semOrder[$a->semester ?? ''] ?? 99;
-            $sB = $semOrder[$b->semester ?? ''] ?? 99;
-            if ($sA !== $sB) return $sA <=> $sB;
+                $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
+                $sA = $semOrder[$a->semester ?? ''] ?? 99;
+                $sB = $semOrder[$b->semester ?? ''] ?? 99;
+                if ($sA !== $sB) {
+                    return $sA <=> $sB;
+                }
 
-            $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
-            $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
-            if ($catA !== $catB) return $catA <=> $catB;
+                $catA = strtolower($a->course_category ?? '') === 'major' ? 1 : 2;
+                $catB = strtolower($b->course_category ?? '') === 'major' ? 1 : 2;
+                if ($catA !== $catB) {
+                    return $catA <=> $catB;
+                }
 
-            return strcmp($a->course_code ?? '', $b->course_code ?? '');
-        })->values();
+                return strcmp($a->course_code ?? '', $b->course_code ?? '');
+            })->values();
 
-        return response()->json($courses);
+            return $courses;
+        }));
     }
 
     public function store(Request $request)
@@ -131,13 +192,13 @@ class CoursesController extends Controller
             'course_code' => [
                 'required',
                 'string',
-                \Illuminate\Validation\Rule::unique('courses', 'course_code')->where(function ($query) use ($request) {
+                Rule::unique('courses', 'course_code')->where(function ($query) use ($request) {
                     return $query->where('department_id', $request->department_id);
-                })
+                }),
             ],
             'course_name' => 'required|string',
-            'lecture_hours' => 'required|integer|min:0',
-            'lab_hours' => 'required|integer|min:0',
+            'lecture_hours' => 'required|integer|min:0|max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LECTURE_SLOTS_PER_UNIT),
+            'lab_hours' => 'required|integer|min:0|max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LABORATORY_SLOTS_PER_UNIT),
             'units' => 'required|integer|min:0',
             'course_category' => 'required|in:major,minor',
             'room_type_required' => 'required|in:lecture,laboratory,field,online',
@@ -156,18 +217,25 @@ class CoursesController extends Controller
         $validated = $this->clearProgramForNonMajor($validated, $validated['course_category'] ?? null);
 
         $course = Course::create($validated);
+        ApiCache::forgetGroups(['courses.index', 'initial.data']);
+
         return response()->json($course->load(['department', 'program']), 201);
     }
 
     public function show(Request $request, Course $course)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
         return response()->json($course->load(['department', 'program']));
     }
 
     public function update(Request $request, Course $course)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
         if ($request->has('course_code')) {
             $request->merge([
                 'course_code' => $this->normalizeCourseCode($request->input('course_code')),
@@ -179,16 +247,17 @@ class CoursesController extends Controller
                 'sometimes',
                 'required',
                 'string',
-                \Illuminate\Validation\Rule::unique('courses', 'course_code')
+                Rule::unique('courses', 'course_code')
                     ->ignore($course->id)
                     ->where(function ($query) use ($request, $course) {
                         $deptId = $request->has('department_id') ? $request->department_id : $course->department_id;
+
                         return $query->where('department_id', $deptId);
-                    })
+                    }),
             ],
             'course_name' => 'sometimes|required|string',
-            'lecture_hours' => 'sometimes|required|integer|min:0',
-            'lab_hours' => 'sometimes|required|integer|min:0',
+            'lecture_hours' => 'sometimes|required|integer|min:0|max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LECTURE_SLOTS_PER_UNIT),
+            'lab_hours' => 'sometimes|required|integer|min:0|max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LABORATORY_SLOTS_PER_UNIT),
             'units' => 'sometimes|required|integer|min:0',
             'course_category' => 'sometimes|required|in:major,minor',
             'room_type_required' => 'sometimes|required|in:lecture,laboratory,field,online',
@@ -207,6 +276,7 @@ class CoursesController extends Controller
         );
 
         $course->update($validated);
+        ApiCache::forgetGroups(['courses.index', 'initial.data']);
 
         return response()->json($course->load(['department', 'program']));
     }
@@ -245,7 +315,7 @@ class CoursesController extends Controller
         return [
             'nullable',
             'integer',
-            \Illuminate\Validation\Rule::exists('programs', 'id')->where(
+            Rule::exists('programs', 'id')->where(
                 fn ($query) => $query->where('department_id', (int) $departmentId),
             ),
         ];
@@ -253,8 +323,12 @@ class CoursesController extends Controller
 
     public function destroy(Request $request, Course $course)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) return response()->json(['message' => 'Forbidden.'], 403);
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
         $course->delete();
+        ApiCache::forgetGroups(['courses.index', 'initial.data']);
+
         return response()->json(['message' => 'Course archived successfully']);
     }
 

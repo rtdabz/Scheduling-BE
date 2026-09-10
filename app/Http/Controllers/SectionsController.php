@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Curriculum;
+use App\Models\Program;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Services\Scheduling\ScheduleAuthorizationService;
@@ -9,6 +11,8 @@ use App\Services\Scheduling\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class SectionsController extends Controller
 {
@@ -17,12 +21,28 @@ class SectionsController extends Controller
     // Get all sections
     public function index()
     {
-        $sections = Cache::remember(ApiCache::key('sections.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'term'])
+        $sections = Cache::remember(ApiCache::key('sections.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'term', 'curriculum'])
             ->latest()
             ->get());
 
         return response()->json($sections);
     }
+
+    /**
+     * The curricula a section may follow: its own department's active ones,
+     * either program-wide or scoped to the section's program.
+     *
+     * A department mid-transition runs several, so this cannot be answered by
+     * "the active curriculum" — the caller has to choose.
+     */
+    private function selectableCurriculumIds(int $departmentId, ?int $programId): \Illuminate\Support\Collection
+    {
+        return Curriculum::query()
+            ->selectableFor($departmentId, $programId)
+            ->pluck('id')
+            ->map('intval');
+    }
+
 
     private function getActiveSystemTerm(): Terms
     {
@@ -36,15 +56,27 @@ class SectionsController extends Controller
     {
         $activeTerm = $this->getActiveSystemTerm();
         $validated = $request->validate([
-            'section_name'       => 'required|string|max:255',
-            'year_level'         => SchedulingPolicy::allowedYearLevelsRule('required'),
-            'department_id'      => 'required|exists:departments,id',
+            'section_name' => 'required|string|max:255',
+            'year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
+            'department_id' => 'required|exists:departments,id',
+            'program_id' => ['required', 'integer', Rule::exists('programs', 'id')->where(fn ($q) => $q->where('department_id', $request->input('department_id')))],
+            'curriculum_id' => 'nullable|integer|exists:curriculum,id',
         ]);
 
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only manage sections for your department.'], 403);
         }
 
+        $curriculumId = $validated['curriculum_id'] ?? null;
+        if ($curriculumId !== null
+            && ! $this->selectableCurriculumIds((int) $validated['department_id'], (int) $validated['program_id'])->contains((int) $curriculumId)) {
+            return response()->json(['message' => 'The selected curriculum is not available to this department and program.'], 422);
+        }
+
+        // A null here is deliberate: the Sections model fills it in when the
+        // department runs exactly one curriculum, and leaves it unset when there
+        // is a real choice to make.
+        $validated['curriculum_id'] = $curriculumId;
         $validated['term_id'] = $activeTerm->id;
         $validated['semester'] = $activeTerm->semester;
         $validated['status'] = 'active';
@@ -55,9 +87,10 @@ class SectionsController extends Controller
             'sections.by_term',
             'sections.by_department',
             'departments.index',
+            'initial.data',
         ]);
 
-        return response()->json($section->load(['department', 'term']), 201);
+        return response()->json($section->load(['department', 'program', 'term', 'curriculum']), 201);
     }
 
     // Create batch sections
@@ -65,10 +98,12 @@ class SectionsController extends Controller
     {
         $activeTerm = $this->getActiveSystemTerm();
         $validated = $request->validate([
-            'sections'                      => 'required|array|min:1|max:50',
-            'sections.*.section_name'       => 'required|string|max:255',
-            'sections.*.year_level'         => SchedulingPolicy::allowedYearLevelsRule('required'),
-            'sections.*.department_id'      => 'required|exists:departments,id',
+            'sections' => 'required|array|min:1|max:50',
+            'sections.*.section_name' => 'required|string|max:255',
+            'sections.*.year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
+            'sections.*.department_id' => 'required|exists:departments,id',
+            'sections.*.program_id' => 'required|integer|exists:programs,id',
+            'sections.*.curriculum_id' => 'nullable|integer|exists:curriculum,id',
         ]);
 
         $departmentIds = collect($validated['sections'])
@@ -79,15 +114,27 @@ class SectionsController extends Controller
             return response()->json(['message' => 'You can only manage sections for your department.'], 403);
         }
 
-        $created = \Illuminate\Support\Facades\DB::transaction(function () use ($validated, $activeTerm) {
+        foreach ($validated['sections'] as $data) {
+            if (! Program::whereKey($data['program_id'])->where('department_id', $data['department_id'])->exists()) {
+                return response()->json(['message' => 'Each program must belong to its department.'], 422);
+            }
+
+            if (($data['curriculum_id'] ?? null) !== null
+                && ! $this->selectableCurriculumIds((int) $data['department_id'], (int) $data['program_id'])->contains((int) $data['curriculum_id'])) {
+                return response()->json(['message' => 'A selected curriculum is not available to its department and program.'], 422);
+            }
+        }
+
+        $created = DB::transaction(function () use ($validated, $activeTerm) {
             $list = [];
             foreach ($validated['sections'] as $data) {
                 $data['term_id'] = $activeTerm->id;
                 $data['semester'] = $activeTerm->semester;
                 $data['status'] = 'active';
                 $section = Sections::create($data);
-                $list[] = $section->load(['department', 'term']);
+                $list[] = $section->load(['department', 'program', 'term', 'curriculum']);
             }
+
             return $list;
         });
 
@@ -96,10 +143,11 @@ class SectionsController extends Controller
             'sections.by_term',
             'sections.by_department',
             'departments.index',
+            'initial.data',
         ]);
 
         return response()->json([
-            'message'  => count($created) . ' sections created successfully.',
+            'message' => count($created).' sections created successfully.',
             'sections' => $created,
         ], 201);
     }
@@ -107,7 +155,7 @@ class SectionsController extends Controller
     // Get single section
     public function show(Sections $section)
     {
-        return response()->json($section->load(['department', 'term']));
+        return response()->json($section->load(['department', 'program', 'term', 'curriculum']));
     }
 
     // Update section
@@ -118,16 +166,31 @@ class SectionsController extends Controller
         }
 
         $validated = $request->validate([
-            'section_name'       => 'sometimes|string|max:255',
-            'year_level'         => SchedulingPolicy::allowedYearLevelsRule('sometimes'),
-            'semester'           => SchedulingPolicy::allowedSemestersRule('sometimes'),
-            'department_id'      => 'sometimes|exists:departments,id',
-            'term_id'            => 'sometimes|exists:terms,id',
-            'status'             => SchedulingPolicy::allowedActiveStatusesRule('sometimes'),
+            'section_name' => 'sometimes|string|max:255',
+            'year_level' => SchedulingPolicy::allowedYearLevelsRule('sometimes'),
+            'semester' => SchedulingPolicy::allowedSemestersRule('sometimes'),
+            'department_id' => 'sometimes|exists:departments,id',
+            'program_id' => ['sometimes', 'integer', Rule::exists('programs', 'id')->where(fn ($q) => $q->where('department_id', $request->input('department_id', $section->department_id)))],
+            'term_id' => 'sometimes|exists:terms,id',
+            'curriculum_id' => 'sometimes|nullable|integer|exists:curriculum,id',
+            'status' => SchedulingPolicy::allowedActiveStatusesRule('sometimes'),
         ]);
 
         if (isset($validated['department_id']) && ! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only move sections within your department.'], 403);
+        }
+
+        if (isset($validated['program_id']) && ! Program::whereKey($validated['program_id'])->where('department_id', $validated['department_id'] ?? $section->department_id)->exists()) {
+            return response()->json(['message' => 'The selected program must belong to the section department.'], 422);
+        }
+
+        if (array_key_exists('curriculum_id', $validated) && $validated['curriculum_id'] !== null) {
+            $targetDepartment = (int) ($validated['department_id'] ?? $section->department_id);
+            $targetProgram = $validated['program_id'] ?? $section->program_id;
+            if (! $this->selectableCurriculumIds($targetDepartment, $targetProgram === null ? null : (int) $targetProgram)
+                ->contains((int) $validated['curriculum_id'])) {
+                return response()->json(['message' => 'The selected curriculum is not available to this department and program.'], 422);
+            }
         }
 
         $section->update($validated);
@@ -136,9 +199,104 @@ class SectionsController extends Controller
             'sections.by_term',
             'sections.by_department',
             'departments.index',
+            'initial.data',
+            'curriculum.index',
         ]);
 
-        return response()->json($section->load(['department', 'term']));
+        return response()->json($section->load(['department', 'program', 'term', 'curriculum']));
+    }
+
+    /**
+     * Point a whole year level at one curriculum.
+     *
+     * This is the write behind the generator's curriculum step: the user picks
+     * "Year 1 follows the new curriculum" once, rather than editing each section.
+     * It is a separate endpoint from update() so the choice is persisted before
+     * generation runs, which keeps every other consumer — course lists, teaching
+     * assignments, printing — agreeing with what the generator used.
+     */
+    public function assignCurriculumToYearLevel(Request $request)
+    {
+        $validated = $request->validate([
+            'term_id' => 'required|integer|exists:terms,id',
+            'department_id' => 'required|integer|exists:departments,id',
+            'year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
+            'curriculum_id' => 'required|integer|exists:curriculum,id',
+            // Optional narrowing: a single section moving ahead of its year level.
+            'section_ids' => 'sometimes|array|min:1',
+            'section_ids.*' => 'integer|exists:sections,id',
+        ]);
+
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
+            return response()->json(['message' => 'You can only manage sections for your department.'], 403);
+        }
+
+        $curriculum = Curriculum::query()->find((int) $validated['curriculum_id']);
+        if ($curriculum === null
+            || (int) $curriculum->department_id !== (int) $validated['department_id']
+            || (string) $curriculum->status !== 'active') {
+            return response()->json(['message' => 'Choose an active curriculum belonging to this department.'], 422);
+        }
+
+        $sections = Sections::query()
+            ->where('term_id', (int) $validated['term_id'])
+            ->where('department_id', (int) $validated['department_id'])
+            ->where('year_level', (string) $validated['year_level'])
+            ->where('status', 'active')
+            ->when(
+                isset($validated['section_ids']),
+                fn ($scope) => $scope->whereIn('id', array_map('intval', $validated['section_ids'])),
+            )
+            ->get();
+
+        if ($sections->isEmpty()) {
+            return response()->json(['message' => 'No active sections were found for the selected year level.'], 422);
+        }
+
+        // A program-scoped curriculum cannot be handed to a section of another
+        // program, so refuse the whole batch rather than half-applying it.
+        if ($curriculum->program_id !== null) {
+            $mismatched = $sections->filter(
+                static fn (Sections $section): bool => (int) $section->program_id !== (int) $curriculum->program_id,
+            );
+
+            if ($mismatched->isNotEmpty()) {
+                return response()->json([
+                    'message' => sprintf(
+                        'Curriculum "%s" belongs to a different program than %s.',
+                        (string) $curriculum->name,
+                        $mismatched->pluck('section_name')->implode(', '),
+                    ),
+                ], 422);
+            }
+        }
+
+        DB::transaction(function () use ($sections, $curriculum): void {
+            Sections::whereIn('id', $sections->pluck('id'))
+                ->update(['curriculum_id' => (int) $curriculum->id]);
+        });
+
+        ApiCache::forgetGroups([
+            'sections.index',
+            'sections.by_term',
+            'sections.by_department',
+            'departments.index',
+            'initial.data',
+            'curriculum.index',
+            'courses.index',
+        ]);
+
+        return response()->json([
+            'message' => sprintf(
+                '%d section%s now follow%s "%s".',
+                $sections->count(),
+                $sections->count() === 1 ? '' : 's',
+                $sections->count() === 1 ? 's' : '',
+                (string) $curriculum->name,
+            ),
+            'curriculum_id' => (int) $curriculum->id,
+            'section_ids' => $sections->pluck('id')->map('intval')->values(),
+        ]);
     }
 
     // Delete section
@@ -154,14 +312,16 @@ class SectionsController extends Controller
             'sections.by_term',
             'sections.by_department',
             'departments.index',
+            'initial.data',
         ]);
+
         return response()->json(['message' => 'Section archived successfully']);
     }
 
     // Get sections by term
     public function byTerm($termId)
     {
-        $sections = Cache::remember(ApiCache::key('sections.by_term', ['term_id' => $termId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department'])
+        $sections = Cache::remember(ApiCache::key('sections.by_term', ['term_id' => $termId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'curriculum'])
             ->where('term_id', $termId)
             ->get());
 
@@ -171,7 +331,7 @@ class SectionsController extends Controller
     // Get sections by department
     public function byDepartment($departmentId)
     {
-        $sections = Cache::remember(ApiCache::key('sections.by_department', ['department_id' => $departmentId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['term'])
+        $sections = Cache::remember(ApiCache::key('sections.by_department', ['department_id' => $departmentId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['program', 'term', 'curriculum'])
             ->where('department_id', $departmentId)
             ->get());
 

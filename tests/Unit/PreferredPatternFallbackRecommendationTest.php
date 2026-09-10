@@ -97,6 +97,8 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
         $this->assertEquals('on-site', $schedules[1]['mode']);
         $this->assertEquals($this->lectureRoom->id, $schedules[0]['room_id']);
         $this->assertEquals($this->lectureRoom->id, $schedules[1]['room_id']);
+        $this->assertSame($schedules[0]['start_time'], $schedules[1]['start_time']);
+        $this->assertSame($schedules[0]['end_time'], $schedules[1]['end_time']);
     }
 
     public function test_recommends_alternative_split_pattern_when_preferred_pattern_is_occupied(): void
@@ -205,6 +207,53 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
         $start = strtotime($schedules[0]['start_time']);
         $end = strtotime($schedules[0]['end_time']);
         $this->assertEquals(180, ($end - $start) / 60, 'Single session must have full 3 hours duration');
+    }
+
+    public function test_automatic_split_session_falls_back_to_one_day_when_both_patterns_are_occupied(): void
+    {
+        $otherSection = Sections::create([
+            'section_name' => 'BSIT 2B',
+            'department_id' => $this->department->id,
+            'year_level' => '2',
+            'semester' => '1st',
+            'term_id' => $this->section->term_id,
+            'status' => 'active',
+        ]);
+
+        // Block every day used by the automatic split-session domain.
+        foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday'] as $day) {
+            Schedule::create([
+                'section_id' => $otherSection->id,
+                'course_id' => $this->course->id,
+                'room_id' => $this->lectureRoom->id,
+                'department_id' => $this->department->id,
+                'term_id' => $this->section->term_id,
+                'day' => $day,
+                'start_time' => '07:00:00',
+                'end_time' => '19:00:00',
+                'mode' => 'on-site',
+                'status' => 'draft',
+            ]);
+        }
+
+        $solutions = $this->solver->solveRankedFromSchema([
+            'section_id' => (int) $this->section->id,
+            'course_ids' => [(int) $this->course->id],
+            'mode' => 'on-site',
+            'is_hybrid' => false,
+            'balanced_split_course_ids' => [(int) $this->course->id],
+            // No preferred pattern means the generator chooses MW or TTh.
+            'preferred_patterns' => [],
+            'delivery_modes_by_course_id' => [],
+            'seed' => 12345,
+            'max_solutions' => 1,
+        ]);
+
+        $this->assertNotEmpty($solutions);
+        $schedules = $solutions[0]['schedules'];
+        $this->assertCount(1, $schedules, 'Automatic Split Session should use a single meeting when both split patterns are unavailable.');
+        $this->assertTrue((bool) ($schedules[0]['split_session_fallback'] ?? false));
+        $this->assertNull($schedules[0]['split_group_id'] ?? null);
     }
 
     public function test_falls_back_to_online_when_all_physical_rooms_are_occupied(): void

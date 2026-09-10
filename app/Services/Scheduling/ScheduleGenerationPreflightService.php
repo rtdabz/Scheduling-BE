@@ -5,17 +5,16 @@ namespace App\Services\Scheduling;
 use App\Enums\DepartmentSchedulingProfile;
 use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Models\Course;
-use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 
 class ScheduleGenerationPreflightService
 {
     public function __construct(
         private readonly DepartmentSchedulingProfileResolver $profiles,
+        private readonly SectionCurriculumResolver $curricula,
     ) {}
 
     /**
@@ -29,7 +28,6 @@ class ScheduleGenerationPreflightService
         $department = $section->department ?: Departments::query()->findOrFail((int) $section->department_id);
         $profile = $this->profiles->resolve($department);
         $courses = Course::query()
-            ->with('categories')
             ->whereIn('id', array_values(array_unique(array_map('intval', $courseIds))))
             ->orderBy('course_code')
             ->get();
@@ -122,22 +120,23 @@ class ScheduleGenerationPreflightService
         return $issues;
     }
 
+    /**
+     * Placements as the *section's own* curriculum defines them.
+     *
+     * This used to read the department's first active curriculum, which silently
+     * validated an old-curriculum cohort against the new course list once a
+     * department ran both.
+     */
     private function curriculumPeriods(Sections $section, Collection $courses): Collection
     {
-        $curriculumId = Curriculum::query()
-            ->where('department_id', (int) $section->department_id)
-            ->where('status', 'active')
-            ->value('id');
-
-        if ($curriculumId === null || $courses->isEmpty()) {
+        if ($courses->isEmpty()) {
             return collect();
         }
 
-        return DB::table('curriculum_course')
-            ->where('curriculum_id', (int) $curriculumId)
-            ->whereIn('course_id', $courses->pluck('id')->map(static fn ($id): int => (int) $id)->all())
-            ->get(['course_id', 'year_level', 'semester'])
-            ->keyBy(static fn (object $period): int => (int) $period->course_id);
+        return $this->curricula->periods(
+            (int) $this->curricula->forSection($section)->id,
+            $courses->pluck('id')->map(static fn ($id): int => (int) $id)->all(),
+        );
     }
 
     private function semesterPivotValue(string $semester): int
@@ -185,7 +184,7 @@ class ScheduleGenerationPreflightService
             }
         }
 
-        if ($this->requiresPhysicalLectureRoom($courses, $options) && ! $this->hasRoom($section, 'lecture')) {
+        if ($this->requiresPhysicalLectureRoom($courses, $options, (int) $section->department_id) && ! $this->hasRoom($section, 'lecture')) {
             $issues[] = $this->issue(
                 'missing_lecture_room',
                 "No eligible lecture room is available for standard department {$department->department_code}.",
@@ -209,15 +208,17 @@ class ScheduleGenerationPreflightService
         return $issues;
     }
 
-    private function requiresPhysicalLectureRoom(Collection $courses, array $options): bool
+    private function requiresPhysicalLectureRoom(Collection $courses, array $options, int $departmentId): bool
     {
         $defaultMode = (string) ($options['mode'] ?? 'on-site');
         $deliveryModes = array_map('strval', $options['delivery_modes_by_course_id'] ?? []);
 
-        return $courses->contains(function (Course $course) use ($defaultMode, $deliveryModes): bool {
+        return $courses->contains(function (Course $course) use ($defaultMode, $deliveryModes, $departmentId): bool {
             $mode = $deliveryModes[(string) $course->id] ?? $deliveryModes[(int) $course->id] ?? $defaultMode;
 
-            return $mode === 'on-site' && ! SchedulingPolicy::isFieldCourse($course) && ! SchedulingPolicy::isLaboratoryCourse($course);
+            return $mode === 'on-site'
+                && ! SchedulingPolicy::isFieldCourse($course, $departmentId)
+                && ! SchedulingPolicy::isLaboratoryCourse($course);
         });
     }
 

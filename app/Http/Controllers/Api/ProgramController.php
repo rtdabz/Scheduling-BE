@@ -55,7 +55,7 @@ class ProgramController extends Controller
             'code' => strtoupper(trim($validated['code'])),
             'name' => isset($validated['name']) && trim($validated['name']) !== '' ? trim($validated['name']) : null,
         ]);
-        ApiCache::forgetGroup('departments.index');
+        ApiCache::forgetGroups(['departments.index', 'courses.index', 'initial.data']);
 
         return response()->json([
             'message' => 'Program created successfully.',
@@ -86,7 +86,7 @@ class ProgramController extends Controller
                 ? (isset($validated['name']) && trim($validated['name']) !== '' ? trim($validated['name']) : null)
                 : $program->name,
         ]);
-        ApiCache::forgetGroup('departments.index');
+        ApiCache::forgetGroups(['departments.index', 'courses.index', 'initial.data']);
 
         return response()->json([
             'message' => 'Program updated successfully.',
@@ -103,7 +103,7 @@ class ProgramController extends Controller
         }
 
         $program->delete();
-        ApiCache::forgetGroup('departments.index');
+        ApiCache::forgetGroups(['departments.index', 'courses.index', 'initial.data']);
 
         return response()->json(['message' => 'Program archived successfully.']);
     }

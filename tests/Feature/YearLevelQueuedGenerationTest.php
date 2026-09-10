@@ -143,6 +143,66 @@ class YearLevelQueuedGenerationTest extends TestCase
             ->assertJsonPath('status', 'failed');
     }
 
+    public function test_active_run_lookup_recovers_generation_started_before_a_reload(): void
+    {
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        $runId = (string) Str::uuid();
+        ScheduleGenerationRun::create([
+            'run_id' => $runId,
+            'requested_by' => $user->id,
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 2,
+            'status' => 'running',
+            'started_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->getJson("/api/schedule-recommendations/active-generation-run?department_id={$department->id}&term_id={$term->id}")
+            ->assertOk()
+            ->assertJsonPath('run.run_id', $runId)
+            ->assertJsonPath('run.year_level', 2);
+    }
+
+    public function test_active_run_lookup_reports_no_run_for_an_orphaned_generation(): void
+    {
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        ScheduleGenerationRun::create([
+            'run_id' => (string) Str::uuid(),
+            'requested_by' => $user->id,
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 2,
+            'status' => 'running',
+            'started_at' => now()->subSeconds(181),
+        ]);
+
+        $this->actingAs($user)
+            ->getJson("/api/schedule-recommendations/active-generation-run?department_id={$department->id}&term_id={$term->id}")
+            ->assertOk()
+            ->assertJsonPath('run', null);
+    }
+
+    public function test_active_run_lookup_ignores_a_finished_run(): void
+    {
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        ScheduleGenerationRun::create([
+            'run_id' => (string) Str::uuid(),
+            'requested_by' => $user->id,
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 2,
+            'status' => 'completed',
+            'result' => ['schedules' => []],
+            'finished_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->getJson("/api/schedule-recommendations/active-generation-run?department_id={$department->id}&term_id={$term->id}")
+            ->assertOk()
+            ->assertJsonPath('run', null);
+    }
+
     /** @return array{Terms, Departments, Sections, Course, User} */
     private function generationFixture(): array
     {
@@ -156,11 +216,18 @@ class YearLevelQueuedGenerationTest extends TestCase
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
         ]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $departmentProgram = \App\Models\Program::create([
+            'department_id' => $department->id,
+            'code' => 'P'.$department->id,
+            'name' => 'Program '.$department->id,
+        ]);
         $section = Sections::create([
             'section_name' => 'IT 1A',
             'year_level' => '1',
             'semester' => '1st',
-            'department_id' => $department->id,
+            'department_id' => $department->id, 'program_id' => $departmentProgram->id,
             'term_id' => $term->id,
             'status' => 'active',
         ]);
@@ -192,11 +259,11 @@ class YearLevelQueuedGenerationTest extends TestCase
             'status' => 'available',
             'department_id' => $department->id,
         ]);
-        $user = User::factory()->create([
+        $user = $this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
             'is_active' => true,
-        ]);
+        ]));
 
         return [$term, $department, $section, $course, $user];
     }

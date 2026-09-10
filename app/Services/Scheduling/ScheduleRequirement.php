@@ -20,6 +20,20 @@ final readonly class ScheduleRequirement
         public bool $isSplitComponent = false,
     ) {}
 
+    /** @param array<string, mixed> $payload */
+    public static function fromArray(array $payload): self
+    {
+        return new self(
+            courseId: (int) ($payload['course_id'] ?? 0),
+            componentType: (string) ($payload['component_type'] ?? 'lecture'),
+            durationSlots: (int) ($payload['duration_slots'] ?? 0),
+            eligibleRoomTypes: array_values(array_map('strval', (array) ($payload['eligible_room_types'] ?? []))),
+            allowedDeliveryModes: array_values(array_map('strval', (array) ($payload['allowed_delivery_modes'] ?? []))),
+            allowLectureLaboratoryFallback: (bool) ($payload['allow_lecture_laboratory_fallback'] ?? false),
+            isSplitComponent: (bool) ($payload['is_split_component'] ?? false),
+        );
+    }
+
     /** @return array<string, mixed> */
     public function toArray(): array
     {

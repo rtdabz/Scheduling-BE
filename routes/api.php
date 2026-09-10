@@ -54,6 +54,9 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('role:vpaa')->group(function () {
         Route::get('/activity-log', [ActivityLogController::class, 'index']);
         Route::get('/user', [UserController::class, 'index']);
+        Route::get('/user/permissions', [UserController::class, 'permissions']);
+        Route::get('/user/{user}/permissions', [UserController::class, 'userPermissions']);
+        Route::patch('/user/{user}/permissions', [UserController::class, 'updatePermissions']);
         Route::post('/user', [UserController::class, 'store']);
         Route::put('/user/{user}', [UserController::class, 'update']);
         Route::delete('/user/{user}', [UserController::class, 'destroy']);
@@ -69,13 +72,14 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::apiResource('terms', TermsController::class)->except(['index', 'show']);
         Route::patch('/institution-settings', [InstitutionSettingsController::class, 'update']);
         Route::patch('terms/{id}/activate', [TermsController::class, 'activate']);
+        Route::get('terms/activation-history', [TermsController::class, 'activationHistory']);
         Route::apiResource('programs', ProgramController::class)->only(['store', 'update', 'destroy']);
     });
 
-    Route::middleware('role:vpaa,dean,secretary,program_head')->get('/schedule-history', [ScheduleHistoryController::class, 'index']);
+    Route::middleware('capability:schedule.view')->get('/schedule-history', [ScheduleHistoryController::class, 'index']);
 
     // Common readable & scheduling administration routes across all roles.
-    Route::middleware('role:vpaa,dean,secretary,program_head')->group(function () {
+    Route::middleware('capability:schedule.view')->group(function () {
         Route::get('departments', [DepartmentsController::class, 'index']);
         Route::get('departments/{department}', [DepartmentsController::class, 'show']);
 
@@ -127,27 +131,48 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('faculties/{faculty}/availabilities', [FacultyAvailabilityController::class, 'index']);
     });
 
-    // Department schedule authors may create and edit schedules, submit them for
-    // review, and manage instructor-assignment state. Dean is intentionally
-    // excluded: the Dean only reviews and approves submitted schedules.
-    Route::middleware('role:vpaa,secretary,program_head')->group(function () {
-        Route::post('departments/{id}/submit-schedules', [DepartmentScheduleController::class, 'submitSchedules']);
-        Route::post('departments/{id}/withdraw-submission', [DepartmentScheduleController::class, 'withdrawSubmission']);
+    // Schedule mutation routes are separated by capability so a user can be
+    // granted instructor assignment without also becoming a schedule author.
+    Route::middleware('capability:schedule.create')->group(function () {
         Route::post('schedules/batch/validate-splits', [ScheduleController::class, 'validateSplits']);
         Route::post('schedules/batch', [ScheduleController::class, 'batch']);
-        Route::patch('schedules/batch-status', [ScheduleController::class, 'batchStatus']);
-        Route::patch('schedules/batch-faculty', [ScheduleController::class, 'batchFaculty']);
-        Route::patch('schedules/batch-faculty-done', [ScheduleController::class, 'batchFacultyDone']);
-        Route::apiResource('schedules', ScheduleController::class)->except(['index', 'show']);
-        Route::apiResource('schedule-splits', ScheduleSplitController::class)->except(['index', 'show']);
+        Route::post('schedules', [ScheduleController::class, 'store']);
+        Route::post('schedule-splits', [ScheduleSplitController::class, 'store']);
     });
 
-    Route::middleware('role:dean,vpaa')->group(function () {
+    Route::middleware('capability:schedule.update')->group(function () {
+        Route::patch('schedules/batch-status', [ScheduleController::class, 'batchStatus']);
+        Route::match(['put', 'patch'], 'schedules/{schedule}', [ScheduleController::class, 'update'])
+            ->whereNumber('schedule');
+        Route::match(['put', 'patch'], 'schedule-splits/{scheduleSplit}', [ScheduleSplitController::class, 'update']);
+    });
+
+    Route::middleware('capability:schedule.delete')->group(function () {
+        Route::delete('schedules/{schedule}', [ScheduleController::class, 'destroy']);
+        Route::delete('schedule-splits/{scheduleSplit}', [ScheduleSplitController::class, 'destroy']);
+    });
+
+    Route::middleware('capability:schedule.submit')->post(
+        'departments/{id}/submit-schedules',
+        [DepartmentScheduleController::class, 'submitSchedules']
+    );
+
+    Route::middleware('capability:schedule.withdraw')->post(
+        'departments/{id}/withdraw-submission',
+        [DepartmentScheduleController::class, 'withdrawSubmission']
+    );
+
+    Route::middleware('capability:schedule.assign_instructor')->group(function () {
+        Route::patch('schedules/batch-faculty', [ScheduleController::class, 'batchFaculty']);
+        Route::patch('schedules/batch-faculty-done', [ScheduleController::class, 'batchFacultyDone']);
+    });
+
+    Route::middleware('capability:schedule.approve_dean')->group(function () {
         Route::post('departments/{id}/approve-by-dean', [DepartmentScheduleController::class, 'approveByDean']);
         Route::post('departments/{id}/return-by-dean', [DepartmentScheduleController::class, 'returnByDean']);
     });
 
-    Route::middleware('role:vpaa')->group(function () {
+    Route::middleware('capability:schedule.approve_vpaa')->group(function () {
         Route::post('departments/{id}/approve-by-vpaa', [DepartmentScheduleController::class, 'approveByVpaa']);
         Route::post('departments/{id}/return-by-vpaa', [DepartmentScheduleController::class, 'returnByVpaa']);
     });
@@ -185,23 +210,31 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
     // Courses & Sections — writable by VPAA, Secretary and Program Head.
     // Recommendation workflow is limited to schedule-building roles.
-    Route::middleware('role:secretary,program_head')->group(function () {
+    Route::middleware('capability:schedule.assign_instructor')->group(function () {
         Route::get('instructor-assignments', [InstructorAssignmentController::class, 'index']);
+        Route::delete('instructor-assignments/sections/{section}', [InstructorAssignmentController::class, 'clearSection']);
         Route::patch('instructor-assignments/{schedule}', [InstructorAssignmentController::class, 'update']);
 
-        // Which college teaches a course, when it is not the one that owns it.
-        // Any secretary or program head may decide this for a delegable course;
-        // majors are refused by the controller.
+    });
+
+    // Which college teaches a course, when it is not the one that owns it.
+    // Held apart from plain instructor assignment: an account may be trusted
+    // with its own department's faculty without being trusted to move a course
+    // between colleges. Majors are refused by the controller either way.
+    Route::middleware('capability:schedule.assign_instructor_cross_department')->group(function () {
         Route::get('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'index']);
         Route::post('course-teaching-assignments/batch', [CourseTeachingAssignmentController::class, 'batch']);
         Route::match(['put', 'patch'], 'course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'update']);
         Route::delete('course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'destroy']);
+    });
 
+    Route::middleware('capability:schedule.generate')->group(function () {
         Route::post('schedule-recommendations/auto-generate', [ScheduleRecommendationController::class, 'autoGenerateAndApply']);
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
         Route::post('schedule-recommendations/preview/queue', [ScheduleRecommendationController::class, 'queuePreview'])->middleware('throttle:10,1');
         Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview'])->middleware('throttle:5,1');
         Route::post('schedule-recommendations/year-level-preview/queue', [ScheduleRecommendationController::class, 'queueYearLevelPreview'])->middleware('throttle:5,1');
+        Route::get('schedule-recommendations/active-generation-run', [ScheduleRecommendationController::class, 'activeGenerationRun']);
         Route::get('schedule-recommendations/generation-runs/{runId}', [ScheduleRecommendationController::class, 'generationRun']);
         Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
         Route::post('schedule-recommendations/recommend-split', [ScheduleRecommendationController::class, 'recommendSplit']);
@@ -215,13 +248,16 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::patch('scheduling-settings', [SchedulingSettingsController::class, 'update']);
     });
 
-    Route::middleware('role:vpaa,secretary,program_head')->group(function () {
+    Route::middleware('capability:schedule.create')->group(function () {
         Route::post('courses', [CoursesController::class, 'store']);
         Route::match(['put', 'patch'], 'courses/{course}', [CoursesController::class, 'update']);
         Route::delete('courses/{course}', [CoursesController::class, 'destroy']);
 
         Route::post('sections', [SectionsController::class, 'store']);
         Route::post('sections/batch', [SectionsController::class, 'batchStore']);
+        // Registered before sections/{section} so "assign-curriculum" is never
+        // captured as a section route-model binding.
+        Route::post('sections/assign-curriculum', [SectionsController::class, 'assignCurriculumToYearLevel']);
         Route::match(['put', 'patch'], 'sections/{section}', [SectionsController::class, 'update']);
         Route::delete('sections/{section}', [SectionsController::class, 'destroy']);
 

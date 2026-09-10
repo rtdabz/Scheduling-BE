@@ -53,12 +53,6 @@ class Course extends Model
         return $this->belongsTo(Program::class, 'program_id');
     }
 
-    public function categories()
-    {
-        return $this->belongsToMany(CourseCategory::class, 'course_category_mapping', 'course_id', 'category_id')
-            ->withTimestamps();
-    }
-
     public function schedules()
     {
         return $this->hasMany(Schedule::class, 'course_id');

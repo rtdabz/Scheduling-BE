@@ -10,12 +10,16 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Laravel\Sanctum\HasApiTokens;
+use Spatie\Permission\Models\Role;
 use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes;
+
+    /** Spatie roles and permissions are API-authenticated resources. */
+    protected string $guard_name = 'api';
 
     /**
      * The attributes that are mass assignable.
@@ -24,6 +28,9 @@ class User extends Authenticatable
      */
     protected $fillable = [
         'name',
+        'first_name',
+        'middle_initial',
+        'last_name',
         'username',
         'email',
         'password',
@@ -38,6 +45,39 @@ class User extends Authenticatable
         'profile_picture',
         'program_id',
     ];
+
+    /**
+     * Keeps the Spatie role in step with the `role` column.
+     *
+     * Authorization reads Spatie's tables (CapabilityMiddleware ->
+     * hasCapability -> hasPermissionTo), but the column is what the rest of the
+     * application writes and reads. Only UserController synced the two, so a
+     * user created by any other path carried the column with no Spatie role
+     * and was denied every capability-guarded route. Syncing here makes the
+     * column the single source of truth and removes the drift for good.
+     */
+    protected static function booted(): void
+    {
+        static::saved(function (User $user): void {
+            if (! $user->wasRecentlyCreated && ! $user->wasChanged('role')) {
+                return;
+            }
+
+            $role = (string) $user->role;
+            if ($role === '') {
+                return;
+            }
+
+            // A role row is missing only when the seeder has not run (or the
+            // column holds a value that is not a real role). Syncing would
+            // throw; leaving the roles untouched keeps the save itself intact.
+            if (! Role::query()->where('name', $role)->where('guard_name', 'api')->exists()) {
+                return;
+            }
+
+            $user->syncRoles([$role]);
+        });
+    }
 
     public function department()
     {
@@ -93,6 +133,16 @@ class User extends Authenticatable
     public function isSecretary(): bool
     {
         return $this->role === 'secretary';
+    }
+
+    public function hasCapability(string $capability): bool
+    {
+        return $this->hasPermissionTo($capability, 'api');
+    }
+
+    public function capabilityNames(): array
+    {
+        return $this->getAllPermissions()->pluck('name')->values()->all();
     }
 
     public function sendPasswordResetNotification($token): void

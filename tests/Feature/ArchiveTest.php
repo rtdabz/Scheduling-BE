@@ -65,7 +65,8 @@ class ArchiveTest extends TestCase
         ]);
 
         $user = $this->actingAs($vpaa, 'sanctum')->postJson('/api/user', [
-            'name' => 'Department Secretary',
+            'first_name' => 'Department',
+            'last_name' => 'Secretary',
             'username' => 'department.secretary',
             'email' => 'secretary@example.com',
             'password' => 'StrongPass123',

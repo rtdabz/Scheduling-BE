@@ -69,6 +69,11 @@ return [
 
     'performance_logging' => env('PERFORMANCE_LOGGING', false),
 
+    'solver_constraint_shadow' => env('SOLVER_CONSTRAINT_SHADOW', false),
+    // Production solver entry points must receive the immutable snapshot.
+    // PHPUnit explicitly disables this for low-level compatibility tests.
+    'require_scheduling_snapshot' => env('REQUIRE_SCHEDULING_SNAPSHOT', true),
+
     /*
     |--------------------------------------------------------------------------
     | Application Locale Configuration

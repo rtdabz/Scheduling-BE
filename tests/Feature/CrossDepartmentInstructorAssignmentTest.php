@@ -64,11 +64,11 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             'code' => 'BEED',
             'name' => 'Elementary Education',
         ]);
-        $head = User::factory()->create([
+        $head = $this->grantCapabilities(User::factory()->create([
             'role' => 'program_head',
             'department_id' => $fixture['cas']->id,
             'program_id' => $bped->id,
-        ]);
+        ]));
         $fixture['gec']->update(['teaching_program_id' => $bped->id]);
         $fixture['casInstructor']->update(['program_id' => $bped->id]);
         $otherInstructor = Faculty::create([
@@ -357,13 +357,21 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
     {
         $fixture = $this->fixture();
         $blocks = $this->meetingBlocks($fixture);
-        $outsider = User::factory()->create([
-            'role' => 'secretary',
-            'department_id' => Departments::create([
-                'department_name' => 'Engineering',
-                'department_code' => 'COE',
-            ])->id,
+        $engineering = Departments::create([
+            'department_name' => 'Engineering',
+            'department_code' => 'COE',
         ]);
+        // Fully configured on purpose: the refusal under test is the domain
+        // rule about who may claim the course, not a missing capability.
+        \App\Models\Program::create([
+            'department_id' => $engineering->id,
+            'code' => 'BSCE',
+            'name' => 'Civil Engineering',
+        ]);
+        $outsider = $this->grantCapabilities(User::factory()->create([
+            'role' => 'secretary',
+            'department_id' => $engineering->id,
+        ]));
 
         $this->actingAs($outsider)
             ->patchJson('/api/schedules/batch-faculty', [
@@ -578,6 +586,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $fixture['cas']->id,
+            'program_id' => $fixture['casProgram']->id,
             'term_id' => $fixture['term']->id,
             'status' => 'active',
         ]);
@@ -608,6 +617,19 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             'department_name' => 'College of Arts and Sciences',
             'department_code' => 'CAS',
         ]);
+        // CapabilityMiddleware withholds every schedule capability except
+        // schedule.view from a department that owns no program, and a section
+        // cannot be scheduled until it belongs to one.
+        $itProgram = \App\Models\Program::create([
+            'department_id' => $it->id,
+            'code' => 'BSIT',
+            'name' => 'Information Technology',
+        ]);
+        $casProgram = \App\Models\Program::create([
+            'department_id' => $cas->id,
+            'code' => 'BACAS',
+            'name' => 'Arts and Sciences',
+        ]);
         $term = Terms::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
@@ -631,11 +653,14 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
                 'status' => 'available',
                 'department_id' => $cas->id,
             ]),
+            'itProgram' => $itProgram,
+            'casProgram' => $casProgram,
             'section' => Sections::create([
                 'section_name' => 'BSIT 1A',
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $it->id,
+                'program_id' => $itProgram->id,
                 'term_id' => $term->id,
                 'status' => 'active',
             ]),
@@ -657,8 +682,8 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             'casInstructor' => $this->instructor('Arts', $cas->id),
             'casInactiveInstructor' => $this->instructor('Retired', $cas->id, ['status' => 'inactive']),
             'itInstructor' => $this->instructor('Tech', $it->id),
-            'itSecretary' => User::factory()->create(['role' => 'secretary', 'department_id' => $it->id]),
-            'casSecretary' => User::factory()->create(['role' => 'secretary', 'department_id' => $cas->id]),
+            'itSecretary' => $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $it->id])),
+            'casSecretary' => $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $cas->id])),
         ];
     }
 

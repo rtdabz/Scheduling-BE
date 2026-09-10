@@ -118,7 +118,8 @@ class ProgramManagementTest extends TestCase
         ]);
 
         $response = $this->actingAs($vpaa, 'sanctum')->postJson('/api/user', [
-            'name' => 'BPED Program Head',
+            'first_name' => 'BPED',
+            'last_name' => 'Head',
             'username' => 'bped.head',
             'email' => 'bped.head@example.com',
             'password' => 'StrongPass123',

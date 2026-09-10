@@ -40,7 +40,7 @@ class InstitutionSettingsController extends Controller
         }
 
         $settings->save();
-        ApiCache::forgetGroup('institution.settings');
+        ApiCache::forgetGroups(['institution.settings', 'initial.data']);
 
         return response()->json([
             'message' => 'Signatory updated successfully.',

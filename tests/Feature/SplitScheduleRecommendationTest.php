@@ -25,6 +25,7 @@ class SplitScheduleRecommendationTest extends TestCase
             'password' => bcrypt('password'),
             'role' => 'secretary',
         ]);
+        $this->grantCapabilities($user);
         $this->actingAs($user);
 
         // 1. Setup Term
@@ -39,6 +40,13 @@ class SplitScheduleRecommendationTest extends TestCase
         $dept = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
+        ]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $deptProgram = \App\Models\Program::create([
+            'department_id' => $dept->id,
+            'code' => 'P'.$dept->id,
+            'name' => 'Program '.$dept->id,
         ]);
 
         // 3. Setup Course
@@ -61,7 +69,7 @@ class SplitScheduleRecommendationTest extends TestCase
             'section_name' => 'IT 1A',
             'year_level' => '1',
             'semester' => '1st',
-            'department_id' => $dept->id,
+            'department_id' => $dept->id, 'program_id' => $deptProgram->id,
             'term_id' => $term->id,
             'status' => 'active',
         ]);
@@ -70,7 +78,7 @@ class SplitScheduleRecommendationTest extends TestCase
             'section_name' => 'IT 1B',
             'year_level' => '1',
             'semester' => '1st',
-            'department_id' => $dept->id,
+            'department_id' => $dept->id, 'program_id' => $deptProgram->id,
             'term_id' => $term->id,
             'status' => 'active',
         ]);
@@ -175,6 +183,7 @@ class SplitScheduleRecommendationTest extends TestCase
             'name' => 'TBA User', 'username' => 'tba-user', 'email' => 'tba@example.com',
             'password' => bcrypt('password'), 'role' => 'secretary',
         ]);
+        $this->grantCapabilities($user);
         $this->actingAs($user);
 
         $term = Terms::create([
@@ -183,6 +192,13 @@ class SplitScheduleRecommendationTest extends TestCase
         ]);
         $dept = Departments::create([
             'department_name' => 'College of Information Technology', 'department_code' => 'CIT',
+        ]);
+        // Schedule capabilities and section scheduling both require the
+        // department to own a program.
+        $deptProgram = \App\Models\Program::create([
+            'department_id' => $dept->id,
+            'code' => 'P'.$dept->id,
+            'name' => 'Program '.$dept->id,
         ]);
         $course = Course::create([
             'course_code' => 'ITL201', 'course_name' => 'Laboratory Practice',
@@ -193,7 +209,7 @@ class SplitScheduleRecommendationTest extends TestCase
         ]);
         $section = Sections::create([
             'section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $dept->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $dept->id, 'program_id' => $deptProgram->id, 'term_id' => $term->id, 'status' => 'active',
         ]);
 
         $response = $this->postJson('/api/schedule-recommendations/recommend-split', [

@@ -19,9 +19,10 @@ class ApiCache
     public static function forgetGroup(string $name): void
     {
         $versionKey = self::versionKey($name);
-        $currentVersion = (int) Cache::get($versionKey, 1);
-
-        Cache::forever($versionKey, $currentVersion + 1);
+        // Seed the key once, then increment atomically so concurrent writes
+        // cannot overwrite one another's invalidation version.
+        Cache::add($versionKey, 1);
+        Cache::increment($versionKey);
     }
 
     public static function forgetGroups(array $names): void

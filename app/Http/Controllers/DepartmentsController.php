@@ -21,8 +21,8 @@ class DepartmentsController extends Controller
             ->with([
                 'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
                 'users' => fn ($query) => $query
-                ->where('role', 'dean')
-                ->select('id', 'name', 'department_id')
+                    ->whereIn('role', ['dean', 'secretary', 'program_head'])
+                    ->select('id', 'name', 'role', 'department_id'),
             ])
             ->latest()
             ->get());
@@ -43,13 +43,13 @@ class DepartmentsController extends Controller
         ]);
 
         $department = Departments::create($validated);
-        ApiCache::forgetGroup('departments.index');
+        ApiCache::forgetGroups(['departments.index', 'initial.data']);
 
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
             'users' => fn ($query) => $query
-                ->where('role', 'dean')
-                ->select('id', 'name', 'department_id'),
+                ->whereIn('role', ['dean', 'secretary', 'program_head'])
+                ->select('id', 'name', 'role', 'department_id'),
         ]), 201);
     }
 
@@ -61,8 +61,8 @@ class DepartmentsController extends Controller
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
             'users' => fn ($query) => $query
-                ->where('role', 'dean')
-                ->select('id', 'name', 'department_id'),
+                ->whereIn('role', ['dean', 'secretary', 'program_head'])
+                ->select('id', 'name', 'role', 'department_id'),
         ]));
     }
 
@@ -72,8 +72,8 @@ class DepartmentsController extends Controller
     public function update(Request $request, Departments $department)
     {
         $validated = $request->validate([
-            'department_name' => 'sometimes|required|string|max:255|unique:departments,department_name,' . $department->id,
-            'department_code' => 'sometimes|required|string|max:20|unique:departments,department_code,' . $department->id,
+            'department_name' => 'sometimes|required|string|max:255|unique:departments,department_name,'.$department->id,
+            'department_code' => 'sometimes|required|string|max:20|unique:departments,department_code,'.$department->id,
             'scheduling_profile' => 'sometimes|in:standard,laboratory_enabled',
             'logo' => 'nullable|string',
         ]);
@@ -101,7 +101,7 @@ class DepartmentsController extends Controller
         }
 
         $department->update($validated);
-        ApiCache::forgetGroup('departments.index');
+        ApiCache::forgetGroups(['departments.index', 'initial.data']);
 
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
@@ -117,7 +117,8 @@ class DepartmentsController extends Controller
     public function destroy(Departments $department)
     {
         $department->delete();
-        ApiCache::forgetGroup('departments.index');
+        ApiCache::forgetGroups(['departments.index', 'initial.data']);
+
         return response()->json(['message' => 'Department archived successfully']);
     }
 
@@ -127,6 +128,7 @@ class DepartmentsController extends Controller
     public function trash()
     {
         $departments = Departments::onlyTrashed()->latest()->paginate(10);
+
         return view('departments.trash', compact('departments'));
     }
 
@@ -150,7 +152,6 @@ class DepartmentsController extends Controller
             ->first();
 
         return $curriculum?->courses()
-            ->with('categories')
             ->get()
             ->contains(fn ($course): bool => SchedulingPolicy::isLaboratoryCourse($course)) ?? false;
     }

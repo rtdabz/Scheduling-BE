@@ -18,7 +18,7 @@ return new class extends Migration
                 ->default('07:00:00');
 
             $table->time('closing_time')
-                ->default('19:00:00');
+                ->default('20:30:00');
 
             $table->integer('slot_interval')
                 ->default(30);
