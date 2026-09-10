@@ -177,7 +177,11 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('departments/{id}/return-by-vpaa', [DepartmentScheduleController::class, 'returnByVpaa']);
     });
 
-    Route::middleware('role:vpaa,dean,secretary,program_head,admin')->group(function () {
+    // The three timeslot reads describe the grid every scheduling screen draws
+    // against; none of them writes. Listing role names here meant a role added
+    // later (director) was locked out of the grid no matter what the VPAA
+    // granted it, and 'admin' named a role that does not exist.
+    Route::middleware('capability:schedule.view')->group(function () {
         Route::get('timeslots', [TimeslotController::class, 'index']);
         Route::post('timeslots/generate', [TimeslotController::class, 'generateSlots']);
         Route::get('timeslots/available/{duration}', [TimeslotController::class, 'getAvailableSlots'])
@@ -200,10 +204,14 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::delete('faculties/{faculty}', [FacultyController::class, 'destroy']);
     });
 
-    // The secretary maintains the teaching load allowances and the weekly
-    // availability windows they schedule against; FacultyController::update
-    // narrows a secretary to the load fields alone.
-    Route::middleware('role:vpaa,secretary')->group(function () {
+    // Teaching load allowances and the weekly availability windows the
+    // scheduler places against are instructor-assignment data, so they follow
+    // the assignment capability rather than a role name. Gating them on
+    // 'role:vpaa,secretary' meant a Program Head the VPAA had granted every
+    // capability still got a 403 from the editors their own Instructors page
+    // renders. FacultyController::update narrows everyone but the VPAA -- who
+    // owns the roster -- to the load fields alone.
+    Route::middleware('capability:schedule.assign_instructor')->group(function () {
         Route::match(['put', 'patch'], 'faculties/{faculty}', [FacultyController::class, 'update']);
         Route::put('faculties/{faculty}/availabilities', [FacultyAvailabilityController::class, 'replace']);
     });

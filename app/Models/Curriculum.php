@@ -54,6 +54,29 @@ class Curriculum extends Model
         return $this->hasMany(Sections::class, 'curriculum_id');
     }
 
+    /**
+     * Cohorts that do not merely point at this curriculum but have a timetable
+     * plotted from it.
+     *
+     * Assignment alone is undone with a dropdown and strands nothing, so it is
+     * not a reason to refuse retirement. Generated schedule rows are: they were
+     * built from this curriculum's course list and would outlive it.
+     *
+     * The nested clause is correlated to the section rather than to a literal
+     * curriculum id so the relation also works under withCount(), where no
+     * parent key is bound yet. Rows predating schedules.curriculum_id carry
+     * null; fall back to the cohort's own assignment for those.
+     */
+    public function scheduledSections()
+    {
+        return $this->sections()->whereHas('schedules', function ($schedules): void {
+            $schedules->where(function ($scope): void {
+                $scope->whereColumn('schedules.curriculum_id', 'sections.curriculum_id')
+                    ->orWhereNull('schedules.curriculum_id');
+            });
+        });
+    }
+
     public function courses()
     {
         return $this->belongsToMany(Course::class, 'curriculum_course', 'curriculum_id', 'course_id')

@@ -135,10 +135,13 @@ class InstructorManagementTest extends TestCase
         $this->actingAs($f['vpaa'])->postJson('/api/faculties', $this->payload($f))->assertCreated();
     }
 
-    public function test_secretary_may_update_the_load_allowances_only(): void
+    public function test_a_granted_account_may_update_the_load_allowances_only(): void
     {
         $f = $this->fixture();
-        $secretary = User::factory()->create(['role' => 'secretary', 'department_id' => $f['department']->id]);
+        $secretary = $this->grantCapabilities(
+            User::factory()->create(['role' => 'secretary', 'department_id' => $f['department']->id]),
+            ['schedule.view', 'schedule.assign_instructor'],
+        );
 
         $this->actingAs($secretary)
             ->patchJson("/api/faculties/{$f['faculty']->id}", [
@@ -159,7 +162,7 @@ class InstructorManagementTest extends TestCase
         $this->assertSame('Instructor', $f['faculty']->refresh()->last_name);
     }
 
-    public function test_program_head_can_no_longer_write(): void
+    public function test_an_account_without_the_assignment_capability_cannot_write(): void
     {
         $f = $this->fixture();
         $head = User::factory()->create(['role' => 'program_head', 'department_id' => $f['department']->id]);
@@ -224,18 +227,28 @@ class InstructorManagementTest extends TestCase
             ->assertJsonValidationErrors('availabilities.0.end_time');
     }
 
-    public function test_availability_is_writable_by_secretary_but_not_program_head(): void
+    /**
+     * Availability follows the assignment capability, not the role name. Both
+     * accounts below are secretaries: what separates them is the grant.
+     */
+    public function test_availability_is_writable_only_with_the_assignment_capability(): void
     {
         $f = $this->fixture();
         $window = ['availabilities' => [['day_index' => 3, 'start_time' => '08:00', 'end_time' => '10:00']]];
 
-        $secretary = User::factory()->create(['role' => 'secretary', 'department_id' => $f['department']->id]);
-        $this->actingAs($secretary)
+        $granted = $this->grantCapabilities(
+            User::factory()->create(['role' => 'secretary', 'department_id' => $f['department']->id]),
+            ['schedule.view', 'schedule.assign_instructor'],
+        );
+        $this->actingAs($granted)
             ->putJson("/api/faculties/{$f['faculty']->id}/availabilities", $window)
             ->assertOk();
 
-        $head = User::factory()->create(['role' => 'program_head', 'department_id' => $f['department']->id]);
-        $this->actingAs($head)
+        $viewerOnly = $this->grantCapabilities(
+            User::factory()->create(['role' => 'secretary', 'department_id' => $f['department']->id]),
+            ['schedule.view'],
+        );
+        $this->actingAs($viewerOnly)
             ->putJson("/api/faculties/{$f['faculty']->id}/availabilities", $window)
             ->assertForbidden();
     }

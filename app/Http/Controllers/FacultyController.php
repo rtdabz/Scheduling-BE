@@ -264,12 +264,20 @@ class FacultyController extends Controller
     }
 
     /**
-     * The secretary maintains the load allowances only. Anyone else who reaches a
-     * write route is a full roster editor.
+     * The VPAA owns the roster -- it is the only account that may create or
+     * archive an instructor -- so it is the only full roster editor. Every
+     * other account that reaches a write route maintains the load allowances
+     * alone and may not reach an instructor's identity, department or program.
+     *
+     * This used to name the secretary, which was equivalent only while the
+     * route was gated on 'role:vpaa,secretary'. Now that the gate is the
+     * assignment capability, naming the one privileged role is what keeps a
+     * newly granted Program Head or Dean from silently becoming a roster
+     * editor.
      */
     private function isLoadOnlyEditor(Request $request): bool
     {
-        return $request->user()?->role === 'secretary';
+        return ! ($request->user()?->isVpaa() ?? false);
     }
 
     /**

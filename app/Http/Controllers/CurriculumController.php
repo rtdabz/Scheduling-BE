@@ -19,8 +19,12 @@ class CurriculumController extends Controller
         $query = Curriculum::with(['department', 'program'])
             ->withCount('courses')
             // How many cohorts still follow this curriculum. Drives the "in use"
-            // badge and the guard that refuses to archive one out from under them.
-            ->withCount(['sections as active_sections_count' => fn ($scope) => $scope->where('sections.status', 'active')]);
+            // badge; informational only, since an assignment on its own is
+            // undone with a dropdown.
+            ->withCount(['sections as active_sections_count' => fn ($scope) => $scope->where('sections.status', 'active')])
+            // The subset of those that have a timetable plotted from it. This
+            // is what the retirement guard keys on.
+            ->withCount(['scheduledSections as scheduled_sections_count' => fn ($scope) => $scope->where('sections.status', 'active')]);
 
         if ($this->authorization->rejectsRequestedDepartment($request, $request->query('department_id'))) {
             return response()->json(['message' => 'You can only view curriculum for your department.'], 403);
@@ -94,16 +98,22 @@ class CurriculumController extends Controller
     }
 
     /**
-     * Refuses to retire a curriculum that active sections still follow.
+     * Refuses to retire a curriculum that active cohorts have already been
+     * scheduled from.
      *
      * Nothing else stops it: sections.curriculum_id is restrictOnDelete, but a
      * status change is not a delete, and a section pointed at a deactivated or
      * archived curriculum would fail generation with a confusing error far from
      * the action that caused it. Answer here instead, naming the cohorts.
+     *
+     * The bar is a plotted schedule, not a year-level assignment. A cohort that
+     * is merely pointed at this curriculum has nothing to strand -- reassigning
+     * it is one dropdown -- and blocking on that alone made it impossible to
+     * retire a curriculum nobody had generated against.
      */
     private function rejectIfStillInUse(Curriculum $curriculum, string $targetStatus): ?\Illuminate\Http\JsonResponse
     {
-        $sections = $curriculum->sections()
+        $sections = $curriculum->scheduledSections()
             ->where('sections.status', 'active')
             ->orderBy('year_level')
             ->orderBy('section_name')
@@ -119,11 +129,11 @@ class CurriculumController extends Controller
 
         return response()->json([
             'message' => sprintf(
-                'Cannot %s this curriculum: %d active section%s still follow%s it (%s%s). Move them to another curriculum first.',
+                'Cannot %s this curriculum: %d active section%s already ha%s a schedule plotted from it (%s%s). Archive or clear those schedules first.',
                 strtolower($verb),
                 $sections->count(),
                 $sections->count() === 1 ? '' : 's',
-                $sections->count() === 1 ? 's' : '',
+                $sections->count() === 1 ? 's' : 've',
                 $names,
                 $overflow,
             ),
@@ -180,6 +190,7 @@ class CurriculumController extends Controller
         }
         $curriculum->loadCount('courses');
         $curriculum->loadCount(['sections as active_sections_count' => fn ($scope) => $scope->where('sections.status', 'active')]);
+        $curriculum->loadCount(['scheduledSections as scheduled_sections_count' => fn ($scope) => $scope->where('sections.status', 'active')]);
         $curriculum->load(['department', 'program']);
         $this->annotateAgainstSiblings($curriculum);
 

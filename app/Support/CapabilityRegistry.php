@@ -26,6 +26,15 @@ class CapabilityRegistry
         return is_array($definition) ? $definition : null;
     }
 
+    /**
+     * Whether the capability can only be exercised once the holder's department
+     * owns a program. Declared per capability in config/capabilities.php.
+     */
+    public function requiresProgram(string $name): bool
+    {
+        return (bool) ($this->definition($name)['requires_program'] ?? false);
+    }
+
     public function isAssignableTo(User $user, string $name): bool
     {
         return $this->isAssignableToRole((string) $user->role, $name);
@@ -62,6 +71,7 @@ class CapabilityRegistry
                 'title' => $definition['title'],
                 'description' => $definition['description'],
                 'assignable' => $this->isAssignableToRole($role, $name),
+                'requires_program' => $this->requiresProgram($name),
             ];
         }, array_keys($this->definitions()), array_values($this->definitions()));
     }

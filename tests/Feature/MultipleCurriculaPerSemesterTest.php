@@ -7,6 +7,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Rooms;
+use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
@@ -194,9 +195,40 @@ class MultipleCurriculaPerSemesterTest extends TestCase
             ->assertJsonPath('message', 'Choose an active curriculum belonging to this department.');
     }
 
-    public function test_a_curriculum_cohorts_still_follow_cannot_be_deactivated(): void
+    /**
+     * The bar for "still in use" is a plotted schedule, not an assignment. A
+     * cohort pointed at a curriculum nobody has generated against is repointed
+     * with a dropdown, so it must not lock the curriculum in service.
+     */
+    public function test_a_curriculum_assigned_to_a_year_level_but_never_scheduled_can_be_deactivated(): void
     {
         $fixture = $this->fixture();
+
+        // IT 2A follows the old curriculum, and no schedule exists for it.
+        $this->assertSame($fixture['old']->id, $fixture['year2']->refresh()->curriculum_id);
+
+        $this->actingAs($fixture['vpaa'])
+            ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'deactivated'])
+            ->assertOk();
+
+        $this->assertSame('deactivated', $fixture['old']->refresh()->status);
+    }
+
+    public function test_a_curriculum_assigned_to_a_year_level_but_never_scheduled_can_be_archived(): void
+    {
+        $fixture = $this->fixture();
+
+        $this->actingAs($fixture['vpaa'])
+            ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'archived'])
+            ->assertOk();
+
+        $this->assertSame('archived', $fixture['old']->refresh()->status);
+    }
+
+    public function test_a_curriculum_with_a_plotted_schedule_cannot_be_deactivated(): void
+    {
+        $fixture = $this->fixture();
+        $this->plot($fixture, $fixture['year2'], $fixture['old'], $fixture['oldCourse']);
 
         $this->actingAs($fixture['vpaa'])
             ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'deactivated'])
@@ -206,9 +238,10 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $this->assertSame('active', $fixture['old']->refresh()->status);
     }
 
-    public function test_a_curriculum_cohorts_still_follow_cannot_be_archived(): void
+    public function test_a_curriculum_with_a_plotted_schedule_cannot_be_archived(): void
     {
         $fixture = $this->fixture();
+        $this->plot($fixture, $fixture['year2'], $fixture['old'], $fixture['oldCourse']);
 
         // Curriculum ownership sits with the VPAA portal; a secretary can read
         // curricula but not retire one.
@@ -218,6 +251,58 @@ class MultipleCurriculaPerSemesterTest extends TestCase
             ->assertJsonPath('blocking_sections.0.section_name', 'IT 2A');
 
         $this->assertSame('active', $fixture['old']->refresh()->status);
+    }
+
+    /**
+     * A schedule that has been discarded is not a plotted schedule. Soft-deleted
+     * rows must stop blocking, or a curriculum would be locked in service by a
+     * timetable nobody can see any more.
+     */
+    public function test_a_deleted_schedule_no_longer_blocks_deactivation(): void
+    {
+        $fixture = $this->fixture();
+        $schedule = $this->plot($fixture, $fixture['year2'], $fixture['old'], $fixture['oldCourse']);
+        $schedule->delete();
+
+        $this->actingAs($fixture['vpaa'])
+            ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'deactivated'])
+            ->assertOk();
+    }
+
+    /**
+     * A schedule plotted from the new curriculum says nothing about the old one,
+     * even though both cohorts sit in the same department and term.
+     */
+    public function test_a_schedule_from_another_curriculum_does_not_block_deactivation(): void
+    {
+        $fixture = $this->fixture();
+        $this->plot($fixture, $fixture['year1'], $fixture['new'], $fixture['newCourse']);
+
+        $this->actingAs($fixture['vpaa'])
+            ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'deactivated'])
+            ->assertOk();
+    }
+
+    /**
+     * The list endpoint feeds the card's disabled-button state, so it has to
+     * separate "assigned" from "scheduled" the same way the guard does.
+     */
+    public function test_the_list_reports_assigned_and_scheduled_cohorts_separately(): void
+    {
+        $fixture = $this->fixture();
+        $this->plot($fixture, $fixture['year1'], $fixture['new'], $fixture['newCourse']);
+
+        $rows = collect(
+            $this->actingAs($fixture['secretary'])
+                ->getJson('/api/curriculum?department_id='.$fixture['department']->id)
+                ->assertOk()
+                ->json(),
+        )->keyBy('id');
+
+        $this->assertSame(1, $rows[$fixture['old']->id]['active_sections_count']);
+        $this->assertSame(0, $rows[$fixture['old']->id]['scheduled_sections_count']);
+        $this->assertSame(1, $rows[$fixture['new']->id]['active_sections_count']);
+        $this->assertSame(1, $rows[$fixture['new']->id]['scheduled_sections_count']);
     }
 
     public function test_a_curriculum_no_cohort_follows_can_be_archived_while_active(): void
@@ -381,6 +466,28 @@ class MultipleCurriculaPerSemesterTest extends TestCase
             'course_id' => $course->id,
             'year_level' => $yearLevel,
             'semester' => $semester,
+        ]);
+    }
+
+    /**
+     * The minimum that counts as a plotted schedule: one live schedules row for
+     * this cohort, stamped with the curriculum it was generated from.
+     */
+    private function plot(array $fixture, Sections $section, Curriculum $curriculum, Course $course): Schedule
+    {
+        return Schedule::create([
+            'term_id' => $fixture['term']->id,
+            'section_id' => $section->id,
+            'curriculum_id' => $curriculum->id,
+            'course_id' => $course->id,
+            'room_id' => Rooms::query()->firstOrFail()->id,
+            'department_id' => $fixture['department']->id,
+            'program_id' => $fixture['program']->id,
+            'day' => 'Monday',
+            'start_time' => '08:00:00',
+            'end_time' => '09:00:00',
+            'mode' => 'on-site',
+            'status' => 'draft',
         ]);
     }
 

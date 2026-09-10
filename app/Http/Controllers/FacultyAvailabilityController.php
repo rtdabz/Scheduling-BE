@@ -169,6 +169,13 @@ class FacultyAvailabilityController extends Controller
             return response()->json(['message' => 'Faculty member not found in your department.'], 404);
         }
 
+        // A Program Head sees one program's roster, so their availability
+        // writes are scoped the same way FacultyController::guardDepartment
+        // scopes their roster writes.
+        if ($user->role === 'program_head' && (int) $faculty->program_id !== (int) ($user->program_id ?? 0)) {
+            return response()->json(['message' => 'Faculty member not found in your program.'], 404);
+        }
+
         return null;
     }
 }

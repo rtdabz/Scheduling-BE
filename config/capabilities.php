@@ -1,5 +1,15 @@
 <?php
 
+/*
+ * `requires_program` marks a capability a department cannot exercise until it
+ * owns at least one program -- you cannot build, submit or delegate a timetable
+ * for programs that do not exist yet. CapabilityMiddleware used to infer this
+ * from the `schedule.` name prefix, which swept in capabilities that have
+ * nothing to do with programs: an account granted instructor assignment was
+ * refused the teaching-load and availability editors, and the timeslot grid,
+ * purely because its department had no program row. Declaring it per capability
+ * keeps the rule where it can be read.
+ */
 return [
     'permissions' => [
         'schedule.view' => [
@@ -9,21 +19,25 @@ return [
         ],
         'schedule.create' => [
             'module' => 'schedule_workspace',
+            'requires_program' => true,
             'title' => 'Create Schedules',
             'description' => 'Place new classes, schedule splits, and batch schedule placements.',
         ],
         'schedule.update' => [
             'module' => 'schedule_workspace',
+            'requires_program' => true,
             'title' => 'Update Schedules',
             'description' => 'Modify existing schedule slots, timeslots, and room allocations.',
         ],
         'schedule.delete' => [
             'module' => 'schedule_workspace',
+            'requires_program' => true,
             'title' => 'Delete Schedules',
             'description' => 'Remove schedules and drop timetable placements from sections.',
         ],
         'schedule.generate' => [
             'module' => 'recommendations',
+            'requires_program' => true,
             'title' => 'Generate Recommendations',
             'description' => 'Run the automated recommendation engine and review proposals.',
         ],
@@ -34,16 +48,19 @@ return [
         ],
         'schedule.assign_instructor_cross_department' => [
             'module' => 'instructor_assignment',
+            'requires_program' => true,
             'title' => 'Cross-Department Assignment',
             'description' => 'Decide which college teaches a delegable course owned by another department.',
         ],
         'schedule.submit' => [
             'module' => 'submission_workflow',
+            'requires_program' => true,
             'title' => 'Submit Schedules',
             'description' => 'Submit completed department schedules for administrative approval.',
         ],
         'schedule.withdraw' => [
             'module' => 'submission_workflow',
+            'requires_program' => true,
             'title' => 'Withdraw Submission',
             'description' => 'Recall pending department schedule submissions for further editing.',
         ],
