@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Domain;
 
-use App\Services\Scheduling\ScheduleRequirement;
+use App\Services\Scheduling\Generation\ScheduleRequirement;
 use InvalidArgumentException;
 
 final readonly class MeetingGroup implements SchedulingContract

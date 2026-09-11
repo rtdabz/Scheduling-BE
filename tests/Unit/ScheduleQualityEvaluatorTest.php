@@ -3,7 +3,7 @@
 namespace Tests\Unit;
 
 use App\Models\Sections;
-use App\Services\Scheduling\ScheduleQualityEvaluator;
+use App\Services\Scheduling\Generation\ScheduleQualityEvaluator;
 use PHPUnit\Framework\TestCase;
 
 class ScheduleQualityEvaluatorTest extends TestCase

@@ -7,7 +7,7 @@ use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Services\ScheduleTermArchiver;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;

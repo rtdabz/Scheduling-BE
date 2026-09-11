@@ -5,8 +5,8 @@ namespace Tests\Unit;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Sections;
-use App\Services\Scheduling\LaboratoryScheduleRequirementBuilder;
-use App\Services\Scheduling\StandardScheduleRequirementBuilder;
+use App\Services\Scheduling\Generation\LaboratoryScheduleRequirementBuilder;
+use App\Services\Scheduling\Generation\StandardScheduleRequirementBuilder;
 use Illuminate\Database\Eloquent\Collection;
 use Tests\TestCase;
 

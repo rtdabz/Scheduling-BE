@@ -6,7 +6,7 @@ namespace Tests\Feature;
 
 use App\Models\ScheduleSetting;
 use App\Models\User;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 

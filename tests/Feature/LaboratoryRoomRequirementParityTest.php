@@ -7,7 +7,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
 use App\Models\Terms;
-use App\Services\Scheduling\RuleEngine;
+use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 

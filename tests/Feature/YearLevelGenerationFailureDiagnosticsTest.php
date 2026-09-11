@@ -10,8 +10,8 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
-use App\Services\Scheduling\CSPSolver;
-use App\Services\Scheduling\RuleEngine;
+use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 

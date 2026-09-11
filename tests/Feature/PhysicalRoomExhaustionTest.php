@@ -11,8 +11,8 @@ use App\Models\Sections;
 use App\Models\Terms;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulePlan;
-use App\Services\Scheduling\GenerateSchedulePlan;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Generation\GenerateSchedulePlan;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -130,7 +130,7 @@ class PhysicalRoomExhaustionTest extends TestCase
             'department_id' => $department->id,
         ]);
 
-        $solutions = app(\App\Services\Scheduling\CspSolver::class)->solveRanked(
+        $solutions = app(\App\Services\Scheduling\Engine\CspSolver::class)->solveRanked(
             sectionId: $section->id,
             courseIds: [$course->id],
             maxSolutions: 1,

@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Curriculum;
 use App\Models\Departments;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;

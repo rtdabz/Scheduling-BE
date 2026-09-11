@@ -4,17 +4,17 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\CspSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use DateTimeImmutable;
-use App\Services\Scheduling\Solver\LegacyCspDomainCompiler;
-use App\Services\Scheduling\Solver\CspSchedulingSolverAdapter;
-use App\Services\Scheduling\Solver\SchedulingSolver;
-use App\Services\Scheduling\Solver\SolverDomainCompilation;
-use App\Services\Scheduling\Solver\SolverDomainParityReporter;
-use App\Services\Scheduling\Solver\SolverResultMapper;
-use App\Services\Scheduling\Solver\SolverVariableDomain;
+use App\Services\Scheduling\Engine\Solver\LegacyCspDomainCompiler;
+use App\Services\Scheduling\Engine\Solver\CspSchedulingSolverAdapter;
+use App\Services\Scheduling\Engine\Solver\SchedulingSolver;
+use App\Services\Scheduling\Engine\Solver\SolverDomainCompilation;
+use App\Services\Scheduling\Engine\Solver\SolverDomainParityReporter;
+use App\Services\Scheduling\Engine\Solver\SolverResultMapper;
+use App\Services\Scheduling\Engine\Solver\SolverVariableDomain;
 use Tests\TestCase;
 
 class SolverDomainContractsTest extends TestCase

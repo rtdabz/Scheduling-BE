@@ -8,7 +8,7 @@ use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Terms;
 use App\Models\User;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;

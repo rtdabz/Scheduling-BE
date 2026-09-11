@@ -2,7 +2,7 @@
 
 namespace App\Console\Commands;
 
-use App\Services\Scheduling\DepartmentSchedulingAuditService;
+use App\Services\Scheduling\Department\DepartmentSchedulingAuditService;
 use Illuminate\Console\Command;
 
 class AuditDepartmentSchedulingCommand extends Command

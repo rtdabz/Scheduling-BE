@@ -9,7 +9,7 @@ use App\Models\Program;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;

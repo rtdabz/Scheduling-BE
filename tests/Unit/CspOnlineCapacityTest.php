@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\CSPSolver;
-use App\Services\Scheduling\DepartmentResourceSlotLimitService;
+use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Models\Rooms;
 use Illuminate\Database\Eloquent\Collection;
 use PHPUnit\Framework\TestCase;

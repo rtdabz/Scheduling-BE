@@ -8,7 +8,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
 use App\Models\Terms;
-use App\Services\Scheduling\CspSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 

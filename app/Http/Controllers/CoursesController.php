@@ -4,11 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Models\Course;
 use App\Models\Curriculum;
-use App\Services\Scheduling\ScheduleAuthorizationService;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Validation\Rule;
 
 class CoursesController extends Controller

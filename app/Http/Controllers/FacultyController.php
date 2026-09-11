@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Faculty;
 use App\Models\Terms;
 use App\Services\FacultyLoadService;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;

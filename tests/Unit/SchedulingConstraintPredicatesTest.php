@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\Constraints\SchedulingConstraintKernel;
-use App\Services\Scheduling\Constraints\SchedulingConstraintParityReporter;
-use App\Services\Scheduling\Constraints\SchedulingConstraintPredicates;
+use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintKernel;
+use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintParityReporter;
+use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
 use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleRow;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use PHPUnit\Framework\TestCase;
 
 class SchedulingConstraintPredicatesTest extends TestCase

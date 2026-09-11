@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use App\Services\Scheduling\Domain\SchedulingGenerationMetrics;
-use App\Services\Scheduling\SchedulingMetricsReporter;
+use App\Services\Scheduling\Support\SchedulingMetricsReporter;
 use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 

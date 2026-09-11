@@ -4,11 +4,11 @@ namespace App\Providers;
 
 use App\Services\Scheduling\Lock\DatabaseSchedulingScopeLock;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
-use App\Services\Scheduling\SchedulingQueryCounter;
-use App\Services\Scheduling\Solver\CspYearLevelSchedulingSolverAdapter;
-use App\Services\Scheduling\Solver\CspSchedulingSolverAdapter;
-use App\Services\Scheduling\Solver\SchedulingSolver;
-use App\Services\Scheduling\Solver\YearLevelSchedulingSolver;
+use App\Services\Scheduling\Support\SchedulingQueryCounter;
+use App\Services\Scheduling\Engine\Solver\CspYearLevelSchedulingSolverAdapter;
+use App\Services\Scheduling\Engine\Solver\CspSchedulingSolverAdapter;
+use App\Services\Scheduling\Engine\Solver\SchedulingSolver;
+use App\Services\Scheduling\Engine\Solver\YearLevelSchedulingSolver;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
@@ -22,7 +22,7 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->bind(SchedulingSolver::class, CspSchedulingSolverAdapter::class);
         $this->app->bind(YearLevelSchedulingSolver::class, static function ($app): YearLevelSchedulingSolver {
-            return new CspYearLevelSchedulingSolverAdapter($app->make(\App\Services\Scheduling\CspSolver::class));
+            return new CspYearLevelSchedulingSolverAdapter($app->make(\App\Services\Scheduling\Engine\CspSolver::class));
         });
         $this->app->bind(SchedulingScopeLock::class, DatabaseSchedulingScopeLock::class);
         $this->app->singleton(SchedulingQueryCounter::class);

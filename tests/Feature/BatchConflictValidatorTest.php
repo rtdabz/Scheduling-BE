@@ -8,8 +8,8 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Terms;
-use App\Services\Scheduling\BatchConflict;
-use App\Services\Scheduling\BatchConflictValidator;
+use App\Services\Scheduling\Schedule\BatchConflict;
+use App\Services\Scheduling\Schedule\BatchConflictValidator;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 

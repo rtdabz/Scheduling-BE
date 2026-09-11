@@ -8,7 +8,7 @@ use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
-use App\Services\Scheduling\YearLevelScheduleGenerationService;
+use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;

@@ -3,10 +3,10 @@
 namespace Tests\Unit;
 
 use App\Models\Course;
-use App\Services\Scheduling\Constraints\SchedulingConstraintPredicates;
-use App\Services\Scheduling\ScheduleRequirementBuilderResolver;
-use App\Services\Scheduling\SchedulingPolicy;
-use App\Services\Scheduling\YearLevelFeasibilityService;
+use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
+use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
+use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Services\Scheduling\YearLevel\YearLevelFeasibilityService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;

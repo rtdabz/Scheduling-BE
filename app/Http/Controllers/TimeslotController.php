@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\TimeslotOverride;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\TimeslotService;
 use App\Support\ApiCache;
 use Carbon\Carbon;

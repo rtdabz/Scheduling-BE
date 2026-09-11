@@ -8,7 +8,7 @@ use App\Models\Schedule;
 use App\Models\SystemNotification;
 use App\Models\Terms;
 use App\Models\User;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
 class SystemNotificationService

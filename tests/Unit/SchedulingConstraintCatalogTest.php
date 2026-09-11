@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\BatchConflict;
-use App\Services\Scheduling\SchedulingPolicy;
+use App\Services\Scheduling\Schedule\BatchConflict;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -29,7 +29,7 @@ class SchedulingConstraintCatalogTest extends TestCase
     public function test_literal_runtime_rule_ids_are_registered_in_the_catalog(): void
     {
         $paths = [
-            app_path('Services/Scheduling/RuleEngine.php'),
+            app_path('Services/Scheduling/Engine/RuleEngine.php'),
             app_path('Http/Controllers/ScheduleController.php'),
             app_path('Http/Controllers/ScheduleRecommendationController.php'),
             app_path('Http/Controllers/InstructorAssignmentController.php'),

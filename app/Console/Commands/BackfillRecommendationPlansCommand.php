@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
-use App\Services\Scheduling\RecommendationPlanBackfillService;
+use App\Services\Scheduling\Schedule\RecommendationPlanBackfillService;
 use Illuminate\Console\Command;
 
 final class BackfillRecommendationPlansCommand extends Command

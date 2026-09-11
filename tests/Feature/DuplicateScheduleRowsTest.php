@@ -11,7 +11,7 @@ use App\Models\ScheduleSplit;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
-use App\Services\Scheduling\SchedulingSnapshotRepository;
+use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;

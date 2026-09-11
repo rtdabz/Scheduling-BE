@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\YearLevelScheduleGenerationService;
+use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ReflectionMethod;

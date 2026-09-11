@@ -11,9 +11,9 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
-use App\Services\Scheduling\CSPSolver;
-use App\Services\Scheduling\DepartmentSchedulingAuditService;
-use App\Services\Scheduling\ScheduleRequirementBuilderResolver;
+use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Department\DepartmentSchedulingAuditService;
+use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 

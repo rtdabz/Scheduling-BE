@@ -12,7 +12,7 @@ use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
-use App\Services\Scheduling\YearLevelScheduleGenerationService;
+use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;

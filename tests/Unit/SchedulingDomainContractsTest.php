@@ -10,7 +10,7 @@ use App\Services\Scheduling\Domain\SchedulePlan;
 use App\Services\Scheduling\Domain\SchedulePlanStatus;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
-use App\Services\Scheduling\ScheduleRequirement;
+use App\Services\Scheduling\Generation\ScheduleRequirement;
 use DateTimeImmutable;
 use Error;
 use InvalidArgumentException;
@@ -112,7 +112,7 @@ class SchedulingDomainContractsTest extends TestCase
             ScheduleRow::fromArray(['term_id' => 2, 'section_id' => 3, 'department_id' => 5, 'course_id' => 4, 'day' => 'Monday', 'start_time' => '13:00', 'end_time' => '16:00', 'mode' => 'on-site', 'is_hybrid' => true, 'meeting_type' => 'laboratory']),
         ];
 
-        $violations = app(\App\Services\Scheduling\Constraints\ValidateScheduleCandidate::class)
+        $violations = app(\App\Services\Scheduling\Engine\Constraints\ValidateScheduleCandidate::class)
             ->validate(new ScheduleCandidate($rows), $configuration, $snapshot);
 
         $this->assertContains('split_group_day_separation', array_map(static fn ($violation): string => $violation->ruleId, $violations));

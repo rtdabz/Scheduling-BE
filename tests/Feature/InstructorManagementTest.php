@@ -264,7 +264,7 @@ class InstructorManagementTest extends TestCase
             'end_time' => '17:00:00',
         ]);
 
-        $violations = app(\App\Services\Scheduling\RuleEngine::class)->validate([
+        $violations = app(\App\Services\Scheduling\Engine\RuleEngine::class)->validate([
             'term_id' => $f['term']->id,
             'section_id' => $f['section']->id,
             'course_id' => $f['course']->id,
@@ -294,7 +294,7 @@ class InstructorManagementTest extends TestCase
         $f = $this->fixture();
         $f['faculty']->update(['employment_type' => 'part-time']);
 
-        $violations = app(\App\Services\Scheduling\RuleEngine::class)->validate([
+        $violations = app(\App\Services\Scheduling\Engine\RuleEngine::class)->validate([
             'term_id' => $f['term']->id,
             'section_id' => $f['section']->id,
             'course_id' => $f['course']->id,
@@ -320,7 +320,7 @@ class InstructorManagementTest extends TestCase
             'end_time' => '17:00:00',
         ]);
 
-        $violations = app(\App\Services\Scheduling\RuleEngine::class)->validate([
+        $violations = app(\App\Services\Scheduling\Engine\RuleEngine::class)->validate([
             'term_id' => $f['term']->id,
             'section_id' => $f['section']->id,
             'course_id' => $f['course']->id,
