@@ -11,9 +11,11 @@
 
 1. `RuleEngine` and scheduling policy continue to define hard constraints.
 2. `CSPSolver` produces a pool of valid, diverse candidates.
-3. `ScheduleQualityEvaluator` scores each complete candidate.
-4. `ScheduleCandidateOptimizer` ranks candidates by descending quality score.
-5. Only the highest-quality candidate is selected; final Rule Engine validation remains unchanged.
+3. `ScheduleQualityEvaluator` scores each complete candidate and ranks them by
+   descending quality score. Callers invoke `ScheduleQualityEvaluator::rank`
+   directly; the former `ScheduleCandidateOptimizer` wrapper was removed once
+   generation stopped routing through it.
+4. Only the highest-quality candidate is selected; final Rule Engine validation remains unchanged.
 
 The evaluator does not generate meetings, assign rooms, or relax constraints. A candidate must first be valid according to the existing CSP and Rule Engine behavior.
 
