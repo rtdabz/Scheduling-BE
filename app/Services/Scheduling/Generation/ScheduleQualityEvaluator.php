@@ -142,6 +142,7 @@ class ScheduleQualityEvaluator
         array $fairness = [],
         array $roomTypesById = [],
         bool $includeCompleteTimetableRefinements = true,
+        bool $sundayIsRegularTeachingDay = false,
     ): array {
         $summary = $this->buildSectionSummary($schedules, $sections);
 
@@ -157,7 +158,12 @@ class ScheduleQualityEvaluator
             'classroom_fragment_gaps' => $this->classroomFragmentGapPenalty($schedules, $roomTypesById),
         ];
         $weekdayPenalties = [
-            'weekend_usage' => $this->weekendPenalty($schedules, $configsBySectionId, $roomTypesById),
+            'weekend_usage' => $this->weekendPenalty(
+                $schedules,
+                $configsBySectionId,
+                $roomTypesById,
+                $sundayIsRegularTeachingDay,
+            ),
             'weekday_capacity_migration' => $this->weekdayCapacityMigrationPenalty(
                 $summary,
                 $fairness,
@@ -279,6 +285,7 @@ class ScheduleQualityEvaluator
         array $fairness = [],
         array $roomTypesById = [],
         bool $includeCompleteTimetableRefinements = true,
+        bool $sundayIsRegularTeachingDay = false,
     ): array {
         $evaluated = array_map(function (array $candidate) use (
             $sections,
@@ -286,6 +293,7 @@ class ScheduleQualityEvaluator
             $fairness,
             $roomTypesById,
             $includeCompleteTimetableRefinements,
+            $sundayIsRegularTeachingDay,
         ): array {
             $evaluation = $this->evaluate(
                 $candidate['schedules'] ?? [],
@@ -294,6 +302,7 @@ class ScheduleQualityEvaluator
                 $fairness,
                 $roomTypesById,
                 $includeCompleteTimetableRefinements,
+                $sundayIsRegularTeachingDay,
             );
 
             $evaluation['csp_score'] = (int) ($candidate['score'] ?? 0);
@@ -387,8 +396,12 @@ class ScheduleQualityEvaluator
         )) * self::FULLY_ONLINE_SECTION_WEIGHT;
     }
 
-    private function weekendPenalty(array $schedules, array $configsBySectionId, array $roomTypesById = []): int
-    {
+    private function weekendPenalty(
+        array $schedules,
+        array $configsBySectionId,
+        array $roomTypesById = [],
+        bool $sundayIsRegularTeachingDay = false,
+    ): int {
         $saturday = 0;
         $sunday = 0;
         $meetingCounts = $this->meetingCountsByCourse($schedules);
@@ -401,14 +414,19 @@ class ScheduleQualityEvaluator
             if ($this->isRequiredDayPlacement($row, $configsBySectionId)) {
                 continue;
             }
+            // Sunday is a fallback day only while the department keeps Sunday
+            // Online Only on. Once it is off, Sunday is a teaching day like
+            // Saturday, so it earns Saturday's weight and Saturday's late-week
+            // exemption instead of the fallback penalty.
+            $isFallbackSunday = $day === 'Sunday' && ! $sundayIsRegularTeachingDay;
             // A single meeting in a lecture room belongs late in the week under
-            // department policy, so Saturday is not a penalty for it. Sunday
-            // still is, for every row.
-            if ($day === 'Saturday' && $this->isLateWeekPreferredRow($row, $meetingCounts, $roomTypesById)) {
+            // department policy, so a regular weekend day is not a penalty for
+            // it. A fallback Sunday still is, for every row.
+            if (! $isFallbackSunday && $this->isLateWeekPreferredRow($row, $meetingCounts, $roomTypesById)) {
                 continue;
             }
 
-            $day === 'Saturday' ? $saturday++ : $sunday++;
+            $isFallbackSunday ? $sunday++ : $saturday++;
         }
 
         return ($sunday * self::SUNDAY_BLOCK_WEIGHT) + ($saturday * self::SATURDAY_BLOCK_WEIGHT);

@@ -31,8 +31,19 @@ class DepartmentSchedulingAuditService
     private function auditDepartment(Departments $department): array
     {
         $profile = $this->profiles->resolve($department);
-        $curriculum = Curriculum::query()->where('department_id', $department->id)->where('status', 'active')->first();
-        $courses = $curriculum?->courses()->get(['courses.id', 'course_code', 'lab_hours', 'room_type_required', 'course_category', 'status']) ?? collect();
+        // Across every active curriculum. Reading only the first one made
+        // profile_mismatch a false negative for exactly the departments this
+        // report exists to catch -- those running two curricula at once.
+        $curriculumIds = Curriculum::query()
+            ->where('department_id', $department->id)
+            ->where('status', 'active')
+            ->pluck('id');
+        $courses = $curriculumIds->isEmpty()
+            ? collect()
+            : Course::query()
+                ->whereHas('curriculum', fn ($scope) => $scope->whereIn('curriculum.id', $curriculumIds))
+                ->where('status', 'active')
+                ->get(['courses.id', 'course_code', 'lab_hours', 'room_type_required', 'course_category', 'status']);
         $laboratoryCourses = $courses->filter(fn (Course $course): bool => SchedulingPolicy::isLaboratoryCourse($course));
 
         return [
@@ -40,7 +51,7 @@ class DepartmentSchedulingAuditService
             'department_code' => (string) $department->department_code,
             'department_name' => (string) $department->department_name,
             'profile' => $profile->value,
-            'active_curriculum' => $curriculum !== null,
+            'active_curriculum' => $curriculumIds->isNotEmpty(),
             'active_course_count' => $courses->count(),
             'laboratory_course_count' => $laboratoryCourses->count(),
             'available_lecture_rooms' => $this->roomCount($department, 'lecture'),
@@ -51,6 +62,10 @@ class DepartmentSchedulingAuditService
                 || (bool) $department->custom_lab_duration_6_hours_enabled
                 || (bool) $department->custom_lab_duration_5_hours_enabled
                 || (bool) $department->custom_lab_duration_other_enabled,
+            // Reported so a reviewer can see why a course meets twice a week
+            // without having to open the department's settings page.
+            'balanced_split_settings_enabled' => (bool) $department->gec_split_schedule_override_enabled
+                || (bool) $department->major_lecture_split_schedule_override_enabled,
         ];
     }
 

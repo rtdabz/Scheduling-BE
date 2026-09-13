@@ -50,20 +50,16 @@ class CSPSolver
     private const TIME_PREFERENCE_SOFT_PENALTY = 250;
 
     /**
-     * The teaching periods a section can be restricted to, as [from, to) in
-     * 30-minute slots counted from 07:00.
+     * The teaching periods a section can be restricted to are defined once, on
+     * SchedulingPolicy::PREFERRED_PERIOD_WINDOWS.
      *
-     * Unlike the per-course time preference above, this is a hard window: a
-     * section assigned to a period is only ever offered candidates that fit
-     * inside it, so the generator cannot place an 8:00 AM class for an
-     * afternoon cohort. A window that cannot hold the section's courses fails
-     * the run rather than quietly spilling outside it.
+     * Unlike the per-course time preference above, a period is a hard window: a
+     * section assigned to one is only ever offered candidates that fit inside it,
+     * so the generator cannot place an 8:00 AM class for an afternoon cohort. A
+     * window that cannot hold the section's courses fails the run rather than
+     * quietly spilling outside it, which is why the feasibility pre-check reads
+     * the same definition and refuses up front.
      */
-    private const PREFERRED_PERIOD_WINDOWS = [
-        'morning' => ['07:00', '11:30'],
-        'afternoon' => ['11:30', '16:00'],
-        'evening' => ['16:00', '20:30'],
-    ];
 
     private const CLASSROOM_GAP_LEFTOVER_SLOT_SOFT_PENALTY = 7000;
 
@@ -172,6 +168,20 @@ class CSPSolver
     /** The section's hard teaching window, or null when it may use any time. */
     private ?string $preferredPeriod = null;
 
+    /**
+     * True when the department turned Sunday Online Only off, which opens Sunday
+     * to physical classes.
+     *
+     * Sunday is otherwise a last-resort day: its candidates sit in a search tier
+     * the solver only opens when Monday-Saturday cannot complete a timetable, and
+     * the day-balance ranking charges a flat penalty for using it at all. A
+     * department that teaches on Sunday does not want either, so once the setting
+     * is off Sunday is ranked like any other teaching day. It stays a legal-day
+     * question for the rule engine either way -- this flag only changes
+     * preference, never what is allowed.
+     */
+    private bool $sundayIsRegularTeachingDay = false;
+
     /** @var array<int, Course> */
     private array $loadedCoursesById = [];
 
@@ -188,6 +198,17 @@ class CSPSolver
     private array $domainCache = [];
 
     private ?SchedulingSnapshot $inputSnapshot = null;
+
+    /**
+     * The solving department's settings, as Custom Lab Duration needs them.
+     *
+     * Held for the length of one solve so every split laboratory component --
+     * domain, total duration and the meeting type inferred back off a block --
+     * measures the laboratory half the same way.
+     *
+     * @var array<string, mixed>|Departments|null
+     */
+    private array|Departments|null $departmentLabSettings = null;
 
     /**
      * Exposes the prepared department-level fairness targets to coordinators
@@ -655,8 +676,10 @@ class CSPSolver
             : [];
         $department = $settings === [] ? Departments::query()->find((int) $section->department_id) : null;
         $lectureLabScheduleOverrideEnabled = (bool) ($settings['lecture_lab_schedule_override_enabled'] ?? $department?->lecture_lab_schedule_override_enabled ?? false);
+        $this->departmentLabSettings = $settings !== [] ? $settings : $department;
         $fieldEveningScheduleEnabled = (bool) ($settings['field_evening_schedule_enabled'] ?? $department?->field_evening_schedule_enabled ?? false);
         $sundayOnlineOnlyEnabled = (bool) ($settings['sunday_online_only_enabled'] ?? $department?->sunday_online_only_enabled ?? true);
+        $this->sundayIsRegularTeachingDay = ! $sundayOnlineOnlyEnabled;
         $forcedDaysByCourseId = $this->forcedDaysByCourseId((int) $section->department_id, $courseIds);
         $this->generationForcedDaysByCourseId = $forcedDaysByCourseId;
 
@@ -1114,7 +1137,9 @@ class CSPSolver
      *   0 - the preferred days for this candidate
      *   1 - Monday-Thursday for a single meeting holding a lecture room, which
      *       department policy keeps free for MW/TTh split sessions
-     *   2 - Sunday, always a last resort
+     *   2 - Sunday, a last resort -- unless the department turned Sunday Online
+     *       Only off, which moves Sunday into the tiers above with every other
+     *       teaching day
      * Tier 1 and 2 are only opened when the earlier tiers cannot complete a
      * timetable, so the preference never removes a legal placement.
      *
@@ -1191,14 +1216,22 @@ class CSPSolver
         // Saturday cannot complete the timetable -- so this reorders the search
         // without ever removing a placement.
         $prefersLateWeek = $this->prefersLateWeekPlacement($candidate);
+        // A department that teaches on Sunday has Sunday as the true end of its
+        // week, so it serves the same purpose Friday and Saturday do here.
+        $lateWeekDays = $this->sundayIsRegularTeachingDay
+            ? [...SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS, 'Sunday']
+            : SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS;
 
         foreach ($candidate['blocks'] ?? [] as $block) {
             $day = (string) ($block['day'] ?? '');
-            if ($day === 'Sunday') {
+            // Tier 2 is the fallback tier the search only opens after
+            // Monday-Saturday fails. A department that teaches physically on
+            // Sunday gets it ranked with the rest of the week instead.
+            if ($day === 'Sunday' && ! $this->sundayIsRegularTeachingDay) {
                 return 2;
             }
 
-            if ($prefersLateWeek && ! in_array($day, SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS, true)) {
+            if ($prefersLateWeek && ! in_array($day, $lateWeekDays, true)) {
                 $tier = 1;
             }
             // Saturday is otherwise part of the normal physical search range.
@@ -1296,9 +1329,11 @@ class CSPSolver
     }
 
     /**
-     * Prefer the least-loaded Monday-Saturday day, with a rotating tie-breaker.
-     * The tie-breaker is deterministic per section/course so retries remain
-     * reproducible while different sections do not all claim Monday first.
+     * Prefer the least-loaded teaching day, with a rotating tie-breaker. The
+     * teaching week is Monday-Saturday, or Monday-Sunday for a department that
+     * turned Sunday Online Only off. The tie-breaker is deterministic per
+     * section/course so retries remain reproducible while different sections do
+     * not all claim Monday first.
      *
      * @param  array<string, int>  $dayLoads
      */
@@ -1321,13 +1356,16 @@ class CSPSolver
         }
 
         $courseId = (int) ($candidate['course_id'] ?? 0);
-        $anchor = abs(($sectionId * 17) + ($courseId * 31)) % 6;
+        // A department that teaches on Sunday balances across a seven-day week,
+        // so the rotating tie-breaker rotates over seven days too.
+        $cycle = $this->sundayIsRegularTeachingDay ? 7 : 6;
+        $anchor = abs(($sectionId * 17) + ($courseId * 31)) % $cycle;
         $penalty = 0;
 
         foreach ($blocks as $block) {
             $day = (string) ($block['day'] ?? '');
             $dayIndex = $this->dayIndex($day);
-            if ($dayIndex >= 6) {
+            if ($dayIndex >= 6 && ! $this->sundayIsRegularTeachingDay) {
                 // Sunday is only a fallback for the modes allowed by the
                 // existing policy; it should never outrank Mon-Sat.
                 $penalty += 5000;
@@ -1336,7 +1374,7 @@ class CSPSolver
             }
 
             $penalty += (($dayLoads[$day] ?? 0) * 700);
-            $distance = ($dayIndex - $anchor + 6) % 6;
+            $distance = ($dayIndex - $anchor + $cycle) % $cycle;
             $penalty += $distance * 8;
         }
 
@@ -1614,7 +1652,8 @@ class CSPSolver
             $requiresBalancedSplit = in_array((int) $course->id, $balancedSplitCourseIds, true);
 
             if ($hasBothComponents) {
-                $durationSlots = ($lecHours * 2) + ($labHours * 6);
+                $durationSlots = ($lecHours * SchedulingPolicy::LECTURE_SLOTS_PER_UNIT)
+                    + $this->laboratoryComponentSlots($course);
             } else {
                 $durationSlots = $this->getDurationSlots($course);
             }
@@ -2218,49 +2257,18 @@ class CSPSolver
      */
     private function preferredPeriodSlots(string $period): array
     {
-        [$fromTime, $toTime] = self::PREFERRED_PERIOD_WINDOWS[$period];
-        $openingMinutes = $this->clockMinutes(SchedulingPolicy::openingTime());
-        $totalSlots = SchedulingPolicy::totalSlots();
-
-        $from = (int) ceil(
-            ($this->clockMinutes($fromTime) - $openingMinutes) / SchedulingPolicy::SLOT_MINUTES,
-        );
-        $to = (int) floor(
-            ($this->clockMinutes($toTime) - $openingMinutes) / SchedulingPolicy::SLOT_MINUTES,
-        );
-
-        return [
-            max(0, min($totalSlots, $from)),
-            max(0, min($totalSlots, $to)),
-        ];
-    }
-
-    private function clockMinutes(string $time): int
-    {
-        $parts = explode(':', $time);
-
-        return ((int) ($parts[0] ?? 0) * 60) + (int) ($parts[1] ?? 0);
+        return SchedulingPolicy::preferredPeriodSlotRange($period);
     }
 
     private function normalizePreferredPeriod(mixed $period): ?string
     {
-        if (! is_string($period)) {
-            return null;
-        }
-
-        $normalized = strtolower(trim($period));
-
-        return array_key_exists($normalized, self::PREFERRED_PERIOD_WINDOWS)
-            ? $normalized
-            : null;
+        return SchedulingPolicy::normalizePreferredPeriod($period);
     }
 
     /** Human wording for the window, used when it leaves nothing to place. */
     private function preferredPeriodLabel(string $period): string
     {
-        [$from, $to] = self::PREFERRED_PERIOD_WINDOWS[$period];
-
-        return sprintf('%s (%s-%s)', ucfirst($period), $from, $to);
+        return SchedulingPolicy::preferredPeriodLabel($period);
     }
 
     private function forcedDaysByCourseId(int $departmentId, array $courseIds): array
@@ -2299,8 +2307,8 @@ class CSPSolver
             return [];
         }
 
-        $lectureSlots = (int) ($course->lecture_hours ?? 0) * 2;
-        $labSlots = (int) ($course->lab_hours ?? 0) * 6;
+        $lectureSlots = (int) ($course->lecture_hours ?? 0) * SchedulingPolicy::LECTURE_SLOTS_PER_UNIT;
+        $labSlots = $this->laboratoryComponentSlots($course);
 
         if ($lectureSlots <= 0 || $labSlots <= 0) {
             return [];
@@ -4003,9 +4011,9 @@ class CSPSolver
                         $row['meeting_type'] = $block['meeting_type'];
                     } elseif ($courseObj && $courseObj->lab_hours > 0) {
                         $blockSlots = $block['end_slot'] - $block['start_slot'];
-                        if ($blockSlots === $courseObj->lab_hours * 6) {
+                        if ($blockSlots === $this->laboratoryComponentSlots($courseObj)) {
                             $row['meeting_type'] = 'laboratory';
-                        } elseif ($blockSlots === $courseObj->lecture_hours * 2) {
+                        } elseif ($blockSlots === (int) $courseObj->lecture_hours * SchedulingPolicy::LECTURE_SLOTS_PER_UNIT) {
                             $row['meeting_type'] = 'lecture';
                         } else {
                             $row['meeting_type'] = ($index === 0) ? 'lecture' : 'laboratory';
@@ -4660,6 +4668,18 @@ class CSPSolver
         return SchedulingPolicy::isLaboratoryCourse($course);
     }
 
+    /**
+     * The laboratory half of this course's split, in slots.
+     *
+     * Reads the department resolved for the current solve, so a department
+     * running Custom Lab Duration generates the length it configured instead
+     * of the unit-derived default the RuleEngine would otherwise reject.
+     */
+    private function laboratoryComponentSlots(Course $course): int
+    {
+        return SchedulingPolicy::laboratoryComponentSlots($course, $this->departmentLabSettings);
+    }
+
     private function hasLectureAndLabHours(Course $course): bool
     {
         return (int) ($course->lecture_hours ?? 0) > 0
@@ -4744,8 +4764,11 @@ class CSPSolver
                 $onlineTier = 14;
             }
 
+            // The extra step is the Sunday surcharge. A department that teaches
+            // on Sunday ranks it with Saturday instead.
             return $this->candidateContainsWeekendBlock($candidate)
                 && ! $this->candidateContainsSaturdayBlock($candidate)
+                && ! $this->sundayIsRegularTeachingDay
                 ? $onlineTier + 1
                 : $onlineTier;
         }

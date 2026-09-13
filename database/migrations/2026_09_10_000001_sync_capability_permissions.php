@@ -26,6 +26,13 @@ return new class extends Migration
             return;
         }
 
+        // The permission cache lives outside the database transaction that
+        // wraps this migration. A failed run therefore rolls back the rows it
+        // inserted while leaving their ids in the cache, and every retry then
+        // syncs roles against permission ids that no longer exist -- a foreign
+        // key violation that repeats forever. Start from the stored rows.
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+
         $registry = app(CapabilityRegistry::class);
 
         foreach ($registry->names() as $capability) {

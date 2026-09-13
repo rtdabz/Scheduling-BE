@@ -28,11 +28,14 @@ class SchedulingSettingsController extends Controller
         $validated = $request->validate([
             'lecture_lab_schedule_override_enabled' => 'sometimes|required|boolean',
             'custom_lab_duration_override_enabled' => 'sometimes|required|boolean',
-            'custom_lab_duration_minutes' => 'nullable|integer|min:30|max:720',
+            'custom_lab_duration_minutes' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES
+                .'|max:'.(SchedulingPolicy::totalSlots() * SchedulingPolicy::SLOT_MINUTES)
+                .'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
             'custom_lab_duration_6_hours_enabled' => 'sometimes|required|boolean',
             'custom_lab_duration_5_hours_enabled' => 'sometimes|required|boolean',
             'custom_lab_duration_other_enabled' => 'sometimes|required|boolean',
             'gec_split_schedule_override_enabled' => 'sometimes|required|boolean',
+            'major_lecture_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'field_evening_schedule_enabled' => 'sometimes|required|boolean',
             'sunday_online_only_enabled' => 'sometimes|required|boolean',
             // Null clears the ceiling: neither resource is a room, so an
@@ -71,24 +74,83 @@ class SchedulingSettingsController extends Controller
                 ], 422);
             }
             $department->lecture_lab_schedule_override_enabled = (bool) $validated['lecture_lab_schedule_override_enabled'];
+            if (! $department->lecture_lab_schedule_override_enabled) {
+                // Nothing left for a laboratory length to describe.
+                $department->custom_lab_duration_override_enabled = false;
+            }
         }
         if (array_key_exists('custom_lab_duration_override_enabled', $validated)) {
-            $department->custom_lab_duration_override_enabled = (bool) $validated['custom_lab_duration_override_enabled'];
+            // Custom Lab Duration only ever changes the laboratory half of a
+            // lecture/laboratory split, so without that override there is no
+            // component for it to resize. Refusing here keeps the setting from
+            // being stored in a state where it silently does nothing.
+            $wantsCustomLab = (bool) $validated['custom_lab_duration_override_enabled'];
+            $splitEnabled = array_key_exists('lecture_lab_schedule_override_enabled', $validated)
+                ? (bool) $validated['lecture_lab_schedule_override_enabled']
+                : (bool) $department->lecture_lab_schedule_override_enabled;
+            if ($wantsCustomLab && ! $splitEnabled) {
+                return response()->json([
+                    'message' => 'Custom Lab Duration applies to Lecture + Laboratory splits. Enable Apply Hybrid first.',
+                ], 422);
+            }
+            $department->custom_lab_duration_override_enabled = $wantsCustomLab;
         }
         if (array_key_exists('custom_lab_duration_minutes', $validated)) {
             $department->custom_lab_duration_minutes = $validated['custom_lab_duration_minutes'];
         }
-        if (array_key_exists('custom_lab_duration_6_hours_enabled', $validated)) {
-            $department->custom_lab_duration_6_hours_enabled = (bool) $validated['custom_lab_duration_6_hours_enabled'];
+        // The three presets are stored separately but describe a single
+        // choice of laboratory length, and SchedulingPolicy resolves them in a
+        // fixed order. Enabling one therefore clears the other two, so what the
+        // generator uses is always the option the secretary just picked.
+        $durationChoiceKeys = [
+            'custom_lab_duration_6_hours_enabled',
+            'custom_lab_duration_5_hours_enabled',
+            'custom_lab_duration_other_enabled',
+        ];
+        $chosenDuration = collect($durationChoiceKeys)
+            ->first(fn (string $key): bool => array_key_exists($key, $validated) && (bool) $validated[$key]);
+        foreach ($durationChoiceKeys as $key) {
+            if ($chosenDuration !== null) {
+                $department->{$key} = $key === $chosenDuration;
+
+                continue;
+            }
+            if (array_key_exists($key, $validated)) {
+                $department->{$key} = (bool) $validated[$key];
+            }
         }
-        if (array_key_exists('custom_lab_duration_5_hours_enabled', $validated)) {
-            $department->custom_lab_duration_5_hours_enabled = (bool) $validated['custom_lab_duration_5_hours_enabled'];
+
+        // Whatever turned the override off -- this request, or the split
+        // being switched off above -- no preset survives it. The audit and the
+        // standard-profile guard both read these flags, so a preset left true
+        // under a disabled override reads as a laboratory setting still in use.
+        if (! (bool) $department->custom_lab_duration_override_enabled) {
+            foreach ($durationChoiceKeys as $key) {
+                $department->{$key} = false;
+            }
         }
-        if (array_key_exists('custom_lab_duration_other_enabled', $validated)) {
-            $department->custom_lab_duration_other_enabled = (bool) $validated['custom_lab_duration_other_enabled'];
+
+        if ((bool) $department->custom_lab_duration_override_enabled
+            && (bool) $department->custom_lab_duration_other_enabled
+            && SchedulingPolicy::customLaboratoryDurationSlots($department) === null) {
+            return response()->json([
+                'message' => 'Enter a custom laboratory duration in whole half-hours that fits inside the teaching day.',
+            ], 422);
         }
         if (array_key_exists('gec_split_schedule_override_enabled', $validated)) {
             $department->gec_split_schedule_override_enabled = (bool) $validated['gec_split_schedule_override_enabled'];
+        }
+        if (array_key_exists('major_lecture_split_schedule_override_enabled', $validated)) {
+            // Refused rather than stored when the department runs no lecture-only
+            // major: the setting would be on with nothing for it to apply to, and
+            // the audit would report a split policy the generator never uses.
+            if ((bool) $validated['major_lecture_split_schedule_override_enabled']
+                && ! $this->hasMajorLectureOnlyCourses($department)) {
+                return response()->json([
+                    'message' => 'Major Lecture Split Sessions is only available for departments with major courses that have lecture units and no laboratory units.',
+                ], 422);
+            }
+            $department->major_lecture_split_schedule_override_enabled = (bool) $validated['major_lecture_split_schedule_override_enabled'];
         }
         if (array_key_exists('field_evening_schedule_enabled', $validated)) {
             $department->field_evening_schedule_enabled = (bool) $validated['field_evening_schedule_enabled'];
@@ -139,6 +201,7 @@ class SchedulingSettingsController extends Controller
             'custom_lab_duration_5_hours_enabled' => (bool) $department->custom_lab_duration_5_hours_enabled,
             'custom_lab_duration_other_enabled' => (bool) $department->custom_lab_duration_other_enabled,
             'gec_split_schedule_override_enabled' => (bool) $department->gec_split_schedule_override_enabled,
+            'major_lecture_split_schedule_override_enabled' => (bool) $department->major_lecture_split_schedule_override_enabled,
             'field_evening_schedule_enabled' => (bool) $department->field_evening_schedule_enabled,
             'sunday_online_only_enabled' => (bool) ($department->sunday_online_only_enabled ?? true),
             // NULL is surfaced as-is so the UI can show "no limit" rather than
@@ -146,6 +209,7 @@ class SchedulingSettingsController extends Controller
             'online_slot_limit' => $department->online_slot_limit === null ? null : max(1, (int) $department->online_slot_limit),
             'field_slot_limit' => $department->field_slot_limit === null ? null : max(1, (int) $department->field_slot_limit),
             'lecture_lab_available' => $lectureLabAvailable,
+            'major_lecture_split_available' => $this->hasMajorLectureOnlyCourses($department),
             'generation_period' => $section ? [
                 'section_id' => (int) $section->id,
                 'semester' => (string) $section->semester,
@@ -201,6 +265,31 @@ class SchedulingSettingsController extends Controller
             ->where('course_category', 'major')
             ->where('lecture_hours', '>', 0)
             ->where('lab_hours', '>', 0)
+            ->exists();
+    }
+
+    /**
+     * Whether any active curriculum this department runs has a major course that
+     * is pure lecture. Those are the only majors a balanced split can apply to:
+     * once laboratory units are folded into the unit count, the split's
+     * total-duration rule no longer describes the lecture load.
+     */
+    private function hasMajorLectureOnlyCourses(Departments $department): bool
+    {
+        $activeCurriculumIds = Curriculum::query()
+            ->where('department_id', $department->id)
+            ->where('status', 'active')
+            ->pluck('id');
+
+        if ($activeCurriculumIds->isEmpty()) {
+            return false;
+        }
+
+        return Course::query()
+            ->whereHas('curriculum', fn ($scope) => $scope->whereIn('curriculum.id', $activeCurriculumIds))
+            ->where('course_category', 'major')
+            ->where('lecture_hours', '>', 0)
+            ->where(fn ($scope) => $scope->where('lab_hours', 0)->orWhereNull('lab_hours'))
             ->exists();
     }
 

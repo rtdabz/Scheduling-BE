@@ -21,14 +21,17 @@ class GenerateSectionSchedulePreview implements ShouldQueue
 
     public int $timeout = 60;
 
-    public int $tries = 3;
+    /**
+     * A preview run is claimed exactly once: handle() flips the durable run
+     * from queued to running, so every later attempt short-circuits and does
+     * no work. Retrying therefore never re-runs generation - it only keeps the
+     * caller watching a "queued" spinner through the whole backoff ladder when
+     * a job fails before handle() is entered (a container or boot error).
+     * Fail on the first attempt so failed() records the real cause at once.
+     */
+    public int $tries = 1;
 
     public bool $failOnTimeout = true;
-
-    public function backoff(): array
-    {
-        return [10, 30, 60];
-    }
 
     public function __construct(
         public readonly string $runId,
@@ -52,22 +55,46 @@ class GenerateSectionSchedulePreview implements ShouldQueue
 
             return;
         }
-        $run->update(['status' => 'running', 'started_at' => now()]);
+        $claimed = ScheduleGenerationRun::query()
+            ->where('run_id', $this->runId)
+            ->where('status', 'queued')
+            ->whereNull('finished_at')
+            ->update(['status' => 'running', 'started_at' => now(), 'error_message' => null]);
+
+        // The run was already finalized - cancelled, or expired by polling.
+        // Do not revive it.
+        if ($claimed === 0) {
+            return;
+        }
 
         try {
             $result = $controller->runAsyncSectionPreview($this->sectionId, $this->input);
-            $run->update(['status' => 'completed', 'result' => $result, 'finished_at' => now()]);
+            $this->finalize(['status' => 'completed', 'result' => $result]);
         } catch (GenerationConfigurationConfirmationException $exception) {
-            $run->update([
+            $this->finalize([
                 'status' => 'failed',
                 'result' => $exception->payload(),
                 'error_message' => $exception->getMessage(),
-                'finished_at' => now(),
             ]);
         } catch (Throwable $exception) {
-            $run->update(['status' => 'failed', 'error_message' => $exception->getMessage(), 'finished_at' => now()]);
+            $this->finalize(['status' => 'failed', 'error_message' => $exception->getMessage()]);
             throw $exception;
         }
+    }
+
+    /**
+     * Write a terminal outcome only while the run is still active. A run the
+     * cancel endpoint already finalized must not be revived as completed or
+     * failed by work that was in flight when the user stopped it.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function finalize(array $attributes): void
+    {
+        ScheduleGenerationRun::query()
+            ->where('run_id', $this->runId)
+            ->whereIn('status', ['queued', 'running'])
+            ->update($attributes + ['finished_at' => now()]);
     }
 
     /** Keep the durable run from remaining active after a worker-level failure. */

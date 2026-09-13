@@ -7,13 +7,16 @@ use App\Jobs\GenerateYearLevelSchedulePreview;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
+use App\Services\Scheduling\Support\GenerationCancellationToken;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Mockery;
@@ -203,6 +206,139 @@ class YearLevelQueuedGenerationTest extends TestCase
             ->assertJsonPath('run', null);
     }
 
+    public function test_cancelling_a_running_run_marks_it_cancelled(): void
+    {
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        $runId = (string) Str::uuid();
+        ScheduleGenerationRun::create([
+            'run_id' => $runId,
+            'requested_by' => $user->id,
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'status' => 'running',
+            'started_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/schedule-recommendations/generation-runs/{$runId}/cancel")
+            ->assertOk()
+            ->assertJsonPath('status', 'cancelled');
+
+        $run = ScheduleGenerationRun::query()->where('run_id', $runId)->firstOrFail();
+        $this->assertNotNull($run->finished_at);
+    }
+
+    public function test_cancelling_a_queued_run_removes_its_unreserved_queue_job(): void
+    {
+        // The real queue table is what the cancel endpoint prunes, so this
+        // case cannot run on the synchronous test driver.
+        config(['queue.default' => 'database']);
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+
+        $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview/queue', [
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'section_configs' => [[
+                'section_id' => $section->id,
+                'course_ids' => [$course->id],
+            ]],
+        ]);
+        $runId = (string) $response->assertAccepted()->json('run_id');
+        $this->assertSame(1, DB::table('jobs')->where('queue', 'scheduling')->count());
+
+        $this->actingAs($user)
+            ->postJson("/api/schedule-recommendations/generation-runs/{$runId}/cancel")
+            ->assertOk()
+            ->assertJsonPath('status', 'cancelled');
+
+        $this->assertSame(0, DB::table('jobs')->where('queue', 'scheduling')->count());
+    }
+
+    public function test_cancelling_a_finished_run_is_a_no_op(): void
+    {
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        $runId = (string) Str::uuid();
+        ScheduleGenerationRun::create([
+            'run_id' => $runId,
+            'requested_by' => $user->id,
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'status' => 'completed',
+            'result' => ['schedules' => []],
+            'finished_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->postJson("/api/schedule-recommendations/generation-runs/{$runId}/cancel")
+            ->assertOk()
+            ->assertJsonPath('status', 'completed');
+    }
+
+    public function test_another_user_cannot_cancel_a_run(): void
+    {
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        $runId = (string) Str::uuid();
+        ScheduleGenerationRun::create([
+            'run_id' => $runId,
+            'requested_by' => $user->id,
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'status' => 'running',
+            'started_at' => now(),
+        ]);
+        $other = $this->grantCapabilities(User::factory()->create([
+            'role' => 'secretary',
+            'department_id' => $department->id,
+            'is_active' => true,
+        ]));
+
+        $this->actingAs($other)
+            ->postJson("/api/schedule-recommendations/generation-runs/{$runId}/cancel")
+            ->assertForbidden();
+
+        $this->assertDatabaseHas('schedule_generation_runs', ['run_id' => $runId, 'status' => 'running']);
+    }
+
+    public function test_a_cancelled_run_is_not_overwritten_by_the_worker(): void
+    {
+        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        $runId = (string) Str::uuid();
+        ScheduleGenerationRun::create([
+            'run_id' => $runId,
+            'requested_by' => $user->id,
+            'term_id' => $term->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'status' => 'queued',
+        ]);
+
+        // The generator notices the cancellation at its next placement
+        // boundary and unwinds; the worker must leave the run terminal.
+        $generator = Mockery::mock(YearLevelScheduleGenerationService::class);
+        $generator->shouldReceive('preview')
+            ->once()
+            ->andReturnUsing(function (array $sections, array $configs, GenerationCancellationToken $cancellation) use ($runId) {
+                ScheduleGenerationRun::query()->where('run_id', $runId)->update(['status' => 'cancelled']);
+                $cancellation->abortIfCancelled();
+
+                return [];
+            });
+
+        (new GenerateYearLevelSchedulePreview(
+            $runId,
+            [(int) $section->id],
+            [(int) $section->id => ['course_ids' => [(int) $course->id]]],
+        ))->handle($generator);
+
+        $run = ScheduleGenerationRun::query()->where('run_id', $runId)->firstOrFail();
+        $this->assertSame('cancelled', $run->status);
+        $this->assertNotNull($run->finished_at);
+    }
+
     /** @return array{Terms, Departments, Sections, Course, User} */
     private function generationFixture(): array
     {
@@ -218,7 +354,7 @@ class YearLevelQueuedGenerationTest extends TestCase
         ]);
         // Schedule capabilities and section scheduling both require the
         // department to own a program.
-        $departmentProgram = \App\Models\Program::create([
+        $departmentProgram = Program::create([
             'department_id' => $department->id,
             'code' => 'P'.$department->id,
             'name' => 'Program '.$department->id,

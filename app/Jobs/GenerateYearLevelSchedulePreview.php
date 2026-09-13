@@ -2,12 +2,14 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\GenerationCancelledException;
 use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Exceptions\YearLevelGenerationException;
 use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
+use App\Services\Scheduling\Support\GenerationCancellationToken;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -22,15 +24,18 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
 
     public int $timeout = 180;
 
-    public int $tries = 3;
+    /**
+     * A preview run is claimed exactly once: handle() flips the durable run
+     * from queued to running, so every later attempt short-circuits and does
+     * no work. Retrying therefore never re-runs generation - it only keeps the
+     * caller watching a "queued" spinner through the whole backoff ladder when
+     * a job fails before handle() is entered (a container or boot error).
+     * Fail on the first attempt so failed() records the real cause at once.
+     */
+    public int $tries = 1;
 
     /** A timeout is a terminal generation failure, not a retryable preview. */
     public bool $failOnTimeout = true;
-
-    public function backoff(): array
-    {
-        return [10, 30, 60];
-    }
 
     public function __construct(
         public readonly string $runId,
@@ -86,31 +91,57 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
                 throw new \RuntimeException('The sections for this generation run no longer exist.');
             }
 
-            $result = $generator->preview($sections, $this->configsBySectionId);
-            $run->update([
+            $result = $generator->preview(
+                $sections,
+                $this->configsBySectionId,
+                new GenerationCancellationToken(fn (): bool => ScheduleGenerationRun::query()
+                    ->where('run_id', $this->runId)
+                    ->where('status', 'cancelled')
+                    ->exists()),
+            );
+            $this->finalize([
                 'status' => 'completed',
                 'result' => $result,
                 'error_message' => null,
-                'finished_at' => now(),
             ]);
+        } catch (GenerationCancelledException) {
+            // The cancel endpoint already made the run terminal. Unwind
+            // without reporting a generation failure the user did not hit.
+            ScheduleGenerationRun::query()
+                ->where('run_id', $this->runId)
+                ->whereNull('finished_at')
+                ->update(['finished_at' => now()]);
         } catch (YearLevelGenerationException $exception) {
-            $run->update([
+            $this->finalize([
                 'status' => 'failed',
                 'result' => $exception->payload(),
                 'error_message' => $exception->getMessage(),
-                'finished_at' => now(),
             ]);
         } catch (ScheduleGenerationPreflightException $exception) {
-            $run->update([
+            $this->finalize([
                 'status' => 'failed',
                 'result' => $exception->payload(),
                 'error_message' => $exception->getMessage(),
-                'finished_at' => now(),
             ]);
         } catch (Throwable $exception) {
-            $run->update(['status' => 'failed', 'error_message' => $exception->getMessage(), 'finished_at' => now()]);
+            $this->finalize(['status' => 'failed', 'error_message' => $exception->getMessage()]);
             throw $exception;
         }
+    }
+
+    /**
+     * Write a terminal outcome only while the run is still active. A run the
+     * cancel endpoint already finalized must not be revived as completed or
+     * failed by work that was in flight when the user stopped it.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function finalize(array $attributes): void
+    {
+        ScheduleGenerationRun::query()
+            ->where('run_id', $this->runId)
+            ->whereIn('status', ['queued', 'running'])
+            ->update($attributes + ['finished_at' => now()]);
     }
 
     /**

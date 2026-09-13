@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services\Scheduling\Schedule;
 
 use App\Models\Course;
+use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
@@ -71,7 +72,7 @@ final class SplitScheduleService
 
         $course  = Course::findOrFail($courseId);
         $section = Sections::with('term')->findOrFail($sectionId);
-        $meetingType ??= $this->inferMeetingType($course, $durationSlots);
+        $meetingType ??= $this->inferMeetingType($course, $durationSlots, $departmentId);
 
         $targetRoomType = match (true) {
             $mode === 'online' => 'online',
@@ -222,10 +223,15 @@ final class SplitScheduleService
         return false;
     }
 
-    private function inferMeetingType(Course $course, int $durationSlots): ?string
+    private function inferMeetingType(Course $course, int $durationSlots, int $departmentId): ?string
     {
-        $lectureSlots = max(0, (int) ($course->lecture_hours ?? 0) * 2);
-        $labSlots = max(0, (int) ($course->lab_hours ?? 0) * 6);
+        $lectureSlots = max(0, (int) ($course->lecture_hours ?? 0) * SchedulingPolicy::LECTURE_SLOTS_PER_UNIT);
+        // The department's Custom Lab Duration decides how long the laboratory
+        // half of a split runs, so a block only reads as 'laboratory' when it
+        // matches the length this department actually generates.
+        $labSlots = (int) ($course->lab_hours ?? 0) > 0
+            ? SchedulingPolicy::laboratoryComponentSlots($course, Departments::find($departmentId))
+            : 0;
 
         if ($lectureSlots > 0 && $durationSlots === $lectureSlots) {
             return 'lecture';

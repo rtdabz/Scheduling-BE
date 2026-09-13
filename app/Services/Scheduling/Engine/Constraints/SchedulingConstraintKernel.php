@@ -120,11 +120,10 @@ final class SchedulingConstraintKernel
                     ['split_group_id' => $group->groupId],
                 );
             } else {
-                if (! (bool) ($snapshot->departmentSettings['gec_split_schedule_override_enabled'] ?? false)
-                    || SchedulingConstraintPredicates::isMajorCourse($course)) {
+                if (! SchedulingPolicy::balancedSplitEligible($course, $snapshot->departmentSettings)) {
                     $violations[] = $this->violation(
                         'minor_split_eligibility',
-                        'Split Session is available only for minor courses when Minor Course Split Sessions is enabled.',
+                        'Split Session is available only for minor courses, or lecture-only majors once Major Lecture Split Sessions is enabled.',
                         'meeting_group',
                         ['split_group_id' => $group->groupId],
                     );
@@ -172,7 +171,7 @@ final class SchedulingConstraintKernel
 
         $expected = match ($row->meetingType) {
             'lecture' => ['mode' => 'online', 'minutes' => (int) $course['lecture_hours'] * 60],
-            'laboratory' => ['mode' => 'on-site', 'minutes' => (int) $course['lab_hours'] * 180],
+            'laboratory' => ['mode' => 'on-site', 'minutes' => SchedulingPolicy::laboratoryComponentSlotsForArray($course, $snapshot->departmentSettings) * SchedulingPolicy::SLOT_MINUTES],
             default => null,
         };
         if ($expected === null) {

@@ -81,9 +81,12 @@ class CspPreferredPeriodTest extends TestCase
         $solver = new CSPSolver;
         $label = new ReflectionMethod($solver, 'preferredPeriodLabel');
 
-        $this->assertSame('Morning (07:00-11:30)', $label->invoke($solver, 'morning'));
-        $this->assertSame('Afternoon (11:30-16:00)', $label->invoke($solver, 'afternoon'));
-        $this->assertSame('Evening (16:00-20:30)', $label->invoke($solver, 'evening'));
+        // One wording for the window everywhere it is shown: the solver's
+        // failure message, the year-level recommendation and the Preferred
+        // Meetings board used to print three different formats.
+        $this->assertSame('Morning (7:00 AM - 11:30 AM)', $label->invoke($solver, 'morning'));
+        $this->assertSame('Afternoon (11:30 AM - 4:00 PM)', $label->invoke($solver, 'afternoon'));
+        $this->assertSame('Evening (4:00 PM - 8:30 PM)', $label->invoke($solver, 'evening'));
     }
 
     /** @return array<string, mixed> */

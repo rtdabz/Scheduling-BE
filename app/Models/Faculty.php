@@ -14,6 +14,7 @@ class Faculty extends Model
     protected $fillable = [
         'user_id',
         'administrative_role',
+        'designation_id',
         'first_name',
         'last_name',
         'middle_name',
@@ -27,6 +28,11 @@ class Faculty extends Model
         'status',
         'profile_picture',
     ];
+
+    public function designation()
+    {
+        return $this->belongsTo(Designation::class, 'designation_id');
+    }
 
     public function department()
     {

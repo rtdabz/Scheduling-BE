@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -144,15 +145,29 @@ class DepartmentsController extends Controller
             ->with('success', 'Department restored successfully.');
     }
 
+    /**
+     * Whether any curriculum this department runs still teaches a laboratory.
+     *
+     * Every active curriculum counts, not just the first one the query
+     * returns. A department running two curricula would otherwise be allowed
+     * onto the standard profile whenever its laboratories happened to live in
+     * the curriculum that sorted second, and every section on that curriculum
+     * would then fail preflight with department_profile_mismatch.
+     */
     private function hasLaboratoryCourses(Departments $department): bool
     {
-        $curriculum = Curriculum::query()
+        $activeCurriculumIds = Curriculum::query()
             ->where('department_id', $department->id)
             ->where('status', 'active')
-            ->first();
+            ->pluck('id');
 
-        return $curriculum?->courses()
-            ->get()
-            ->contains(fn ($course): bool => SchedulingPolicy::isLaboratoryCourse($course)) ?? false;
+        if ($activeCurriculumIds->isEmpty()) {
+            return false;
+        }
+
+        return Course::query()
+            ->whereHas('curriculum', fn ($scope) => $scope->whereIn('curriculum.id', $activeCurriculumIds))
+            ->get(['id', 'lab_hours', 'room_type_required'])
+            ->contains(fn (Course $course): bool => SchedulingPolicy::isLaboratoryCourse($course));
     }
 }

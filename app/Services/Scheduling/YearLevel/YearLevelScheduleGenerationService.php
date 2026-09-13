@@ -13,6 +13,7 @@ use App\Services\Scheduling\Engine\Solver\YearLevelSchedulingSolver;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleQualityEvaluator;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
+use App\Services\Scheduling\Support\GenerationCancellationToken;
 use App\Services\Scheduling\Support\SchedulingMetricsReporter;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
@@ -46,12 +47,6 @@ class YearLevelScheduleGenerationService
     private const BASELINE_BUDGET_SHARE = 0.6;
 
     /** Wall-clock wording for the hard teaching windows, for failure messages. */
-    private const PREFERRED_PERIOD_LABELS = [
-        'morning' => 'Morning (7:00 AM - 11:30 AM)',
-        'afternoon' => 'Afternoon (11:30 AM - 4:00 PM)',
-        'evening' => 'Evening (4:00 PM - 8:30 PM)',
-    ];
-
     /** A retry below this is not worth starting. */
     private const MIN_RETRY_SECONDS = 8.0;
 
@@ -84,6 +79,9 @@ class YearLevelScheduleGenerationService
 
     private ?SchedulingSnapshot $generationSnapshot = null;
 
+    /** Cooperative cancellation for the run in progress. */
+    private GenerationCancellationToken $cancellation;
+
     public function __construct(
         private readonly YearLevelSchedulingSolver $solver,
         private readonly ScheduleQualityEvaluator $evaluator,
@@ -96,6 +94,7 @@ class YearLevelScheduleGenerationService
         private ?SchedulingMetricsReporter $metricsReporter = null,
     ) {
         $this->loadedCourses = collect();
+        $this->cancellation = GenerationCancellationToken::none();
     }
 
     /**
@@ -105,9 +104,13 @@ class YearLevelScheduleGenerationService
      *
      * @throws YearLevelGenerationException when no valid timetable can be produced
      */
-    public function preview(array $sections, array $configsBySectionId): array
-    {
+    public function preview(
+        array $sections,
+        array $configsBySectionId,
+        ?GenerationCancellationToken $cancellation = null,
+    ): array {
         $this->resetMetrics();
+        $this->cancellation = $cancellation ?? GenerationCancellationToken::none();
 
         if ($sections === []) {
             throw new RuntimeException('No active sections were found for the selected year level.');
@@ -226,6 +229,7 @@ class YearLevelScheduleGenerationService
         $pending = count($strategies);
 
         foreach ($strategies as $strategy) {
+            $this->cancellation->abortIfCancelled();
             $pending--;
             $key = (string) ($strategy['key'] ?? 'retry');
             $label = (string) ($strategy['label'] ?? 'Retry');
@@ -332,9 +336,8 @@ class YearLevelScheduleGenerationService
         int $seedOffset,
         array &$failures,
     ): ?array {
-        $candidates = [];
-
         foreach ($this->candidateOrders($sections, $configsBySectionId, $orderOffset) as $order) {
+            $this->cancellation->abortIfCancelled();
             if (microtime(true) >= $deadline) {
                 break;
             }
@@ -342,22 +345,23 @@ class YearLevelScheduleGenerationService
             $failure = null;
             $candidate = $this->generateForOrder($order, $configsBySectionId, $deadline, $seedOffset, $failure);
             if ($candidate !== null) {
-                $candidates[] = $candidate;
-            } elseif ($failure !== null) {
+                // Alternative orderings exist to recover from an ordering that
+                // could not be completed, not to shop for a marginally better
+                // score. Each one costs a full set of section solves, so
+                // continuing past the first success doubled the wall time of
+                // every run that was going to succeed anyway. generateForOrder
+                // has already ranked every complete candidate this ordering
+                // produced, so the quality choice is still made - just within
+                // the ordering the heuristic put first.
+                return $candidate;
+            }
+
+            if ($failure !== null) {
                 $failures[] = $failure;
             }
         }
 
-        if ($candidates === []) {
-            return null;
-        }
-
-        usort($candidates, fn (array $left, array $right): int => ($this->unnecessaryOnlineCount($left, $configsBySectionId) <=> $this->unnecessaryOnlineCount($right, $configsBySectionId))
-            ?: ((int) $right['quality_score'] <=> (int) $left['quality_score'])
-            ?: ((int) ($left['csp_score'] ?? 0) <=> (int) ($right['csp_score'] ?? 0))
-        );
-
-        return $candidates[0];
+        return null;
     }
 
     /**
@@ -503,7 +507,8 @@ class YearLevelScheduleGenerationService
         return [
             'section_id' => $sectionId,
             'section_name' => $sectionName !== '' ? $sectionName : 'This section',
-            'period_label' => self::PREFERRED_PERIOD_LABELS[$period] ?? ucfirst($period),
+            // One definition of the window, on SchedulingPolicy.
+            'period_label' => SchedulingPolicy::preferredPeriodLabel($period),
         ];
     }
 
@@ -824,6 +829,7 @@ class YearLevelScheduleGenerationService
                 $candidate['configs'],
                 $this->solver->departmentRoomFairness(),
                 $roomTypesById,
+                sundayIsRegularTeachingDay: $this->sundayIsRegularTeachingDay(),
             ),
             $completeCandidates,
         );
@@ -896,6 +902,8 @@ class YearLevelScheduleGenerationService
             return;
         }
 
+        $this->cancellation->abortIfCancelled();
+
         $section = $sections[$index];
         $config = $configsBySectionId[(int) $section->id];
         $remainingSections = max(1, count($sections) - $index);
@@ -938,6 +946,7 @@ class YearLevelScheduleGenerationService
             $this->solver->departmentRoomFairness(),
             $roomTypesById,
             count($nextScheduledSections) === count($sections),
+            $this->sundayIsRegularTeachingDay(),
         );
 
         foreach ($ranked as $candidate) {
@@ -1331,6 +1340,20 @@ class YearLevelScheduleGenerationService
             $schedules,
             $sections,
             fairness: $this->solver->departmentRoomFairness(),
+            sundayIsRegularTeachingDay: $this->sundayIsRegularTeachingDay(),
+        );
+    }
+
+    /**
+     * True when this department teaches physically on Sunday, i.e. it turned
+     * Sunday Online Only off. The quality ranking then weighs a Sunday meeting
+     * like a Saturday one instead of charging the fallback-day penalty, so a
+     * department that genuinely uses Sunday is not pushed off it.
+     */
+    private function sundayIsRegularTeachingDay(): bool
+    {
+        return ! (bool) (
+            $this->generationSnapshot?->departmentSettings['sunday_online_only_enabled'] ?? true
         );
     }
 }

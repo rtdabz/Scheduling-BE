@@ -2,11 +2,18 @@
 
 namespace App\Notifications;
 
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class WicarsAccountCreatedNotification extends Notification
+// Queued so account creation does not hold the HTTP response open for the
+// SMTP session. A send to smtp.gmail.com measured ~4s of round trips, which
+// was ~85% of the POST /api/user request time.
+class WicarsAccountCreatedNotification extends Notification implements ShouldQueue
 {
+    use Queueable;
+
     public function via(object $notifiable): array
     {
         return ['mail'];

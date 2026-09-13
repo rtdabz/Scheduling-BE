@@ -33,7 +33,7 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                     (new ScheduleRequirement(
                         courseId: $courseId,
                         componentType: 'lecture',
-                        durationSlots: (int) $course->lecture_hours * 2,
+                        durationSlots: (int) $course->lecture_hours * SchedulingPolicy::LECTURE_SLOTS_PER_UNIT,
                         eligibleRoomTypes: ['online'],
                         allowedDeliveryModes: ['online'],
                         isSplitComponent: true,
@@ -41,7 +41,7 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                     (new ScheduleRequirement(
                         courseId: $courseId,
                         componentType: 'laboratory',
-                        durationSlots: (int) $course->lab_hours * 6,
+                        durationSlots: SchedulingPolicy::laboratoryComponentSlots($course, $section->department),
                         eligibleRoomTypes: ['laboratory'],
                         allowedDeliveryModes: ['on-site'],
                         isSplitComponent: true,

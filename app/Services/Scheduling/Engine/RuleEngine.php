@@ -1036,10 +1036,13 @@ class RuleEngine
             $section = $sectionId > 0
                 ? $this->remember('section:'.$sectionId, fn () => Sections::with('department')->find($sectionId))
                 : null;
-            if (! $section?->department?->gec_split_schedule_override_enabled || SchedulingPolicy::isMajorCourse($course)) {
+            if (! SchedulingPolicy::balancedSplitEligible(
+                $course,
+                SchedulingPolicy::balancedSplitSettings($section?->department),
+            )) {
                 $violations[] = [
                     'rule' => 'minor_split_eligibility',
-                    'message' => 'Split Session is available only for minor courses when Minor Course Split Sessions is enabled.',
+                    'message' => 'Split Session is available only for minor courses, or lecture-only majors once Major Lecture Split Sessions is enabled.',
                     'split_group_id' => $groupId,
                 ];
                 continue;
@@ -1102,7 +1105,7 @@ class RuleEngine
         $meetingType = $attempt['meeting_type'] ?? null;
         $expected = match ($meetingType) {
             'lecture' => ['mode' => 'online', 'minutes' => (int) $course->lecture_hours * 60],
-            'laboratory' => ['mode' => 'on-site', 'minutes' => (int) $course->lab_hours * 180],
+            'laboratory' => ['mode' => 'on-site', 'minutes' => SchedulingPolicy::laboratoryComponentMinutes($course, $section->department)],
             default => null,
         };
         if ($expected === null) {

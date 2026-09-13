@@ -16,30 +16,27 @@ class StandardScheduleRequirementBuilder implements ScheduleRequirementBuilder
 
         foreach ($courses as $course) {
             $mode = (string) ($deliveryModes[(int) $course->id] ?? $deliveryModes[(string) $course->id] ?? $defaultMode);
+            // A standard department has no laboratory components at all: both
+            // the preflight and ValidateGenerationConfiguration reject a
+            // laboratory course here before a requirement is ever built. This
+            // builder therefore knows only lecture, field and online, and says
+            // so rather than carrying a laboratory branch that contradicts the
+            // profile it exists to enforce.
             $componentType = match (true) {
                 $mode === 'online' => 'online',
                 SchedulingPolicy::isFieldCourse($course, (int) $section->department_id) || $mode === 'field' => 'field',
-                SchedulingPolicy::isLaboratoryCourse($course) => 'laboratory',
                 default => 'lecture',
-            };
-            $roomTypes = match ($componentType) {
-                'online' => ['online'],
-                'field' => ['field'],
-                'laboratory' => ['laboratory'],
-                default => ['lecture'],
             };
             $isExplicitMode = array_key_exists((int) $course->id, $deliveryModes)
                 || array_key_exists((string) $course->id, $deliveryModes);
             $allowedModes = match ($componentType) {
                 'field' => ['field'],
-                'laboratory' => ['on-site'],
                 'online' => ['online'],
                 default => $isExplicitMode ? [$mode] : ['on-site', 'online'],
             };
             $roomTypes = match ($componentType) {
                 'online' => ['online'],
                 'field' => ['field'],
-                'laboratory' => ['laboratory'],
                 default => in_array('online', $allowedModes, true)
                     ? ['lecture', 'online']
                     : ['lecture'],

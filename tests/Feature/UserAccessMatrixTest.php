@@ -128,6 +128,51 @@ class UserAccessMatrixTest extends TestCase
         $this->assertFalse($this->secretary->fresh()->hasDirectPermission('schedule.create'));
     }
 
+    /**
+     * A secretary granted instructor assignment alone could open the
+     * Cross-Department page and the dashboard, then watch both fail: every
+     * endpoint behind them is guarded by `schedule.view`.
+     */
+    public function test_granting_a_capability_pulls_in_its_prerequisites(): void
+    {
+        Sanctum::actingAs($this->vpaa, ['*']);
+
+        $response = $this->patchJson("/api/user/{$this->secretary->id}/permissions", [
+            'permissions' => ['schedule.assign_instructor'],
+        ]);
+
+        $response->assertOk();
+        $this->assertTrue($this->secretary->fresh()->hasDirectPermission('schedule.view'));
+
+        Sanctum::actingAs($this->secretary->fresh(), ['*']);
+        $this->getJson("/api/departments/{$this->department->id}/schedule-status")->assertOk();
+    }
+
+    public function test_a_prerequisite_cannot_be_dropped_while_a_dependent_is_kept(): void
+    {
+        $this->secretary->syncPermissions(['schedule.view', 'schedule.assign_instructor']);
+
+        Sanctum::actingAs($this->vpaa, ['*']);
+
+        $this->patchJson("/api/user/{$this->secretary->id}/permissions", [
+            'permissions' => ['schedule.assign_instructor'],
+        ])->assertOk();
+
+        $this->assertTrue($this->secretary->fresh()->hasDirectPermission('schedule.view'));
+    }
+
+    public function test_revoking_the_dependent_releases_the_prerequisite(): void
+    {
+        $this->secretary->syncPermissions(['schedule.view', 'schedule.assign_instructor']);
+
+        Sanctum::actingAs($this->vpaa, ['*']);
+
+        $this->patchJson("/api/user/{$this->secretary->id}/permissions", [
+            'permissions' => [],
+        ])->assertOk();
+
+        $this->assertSame([], $this->secretary->fresh()->getDirectPermissions()->pluck('name')->all());
+    }
     public function test_invalid_permission_names_are_rejected(): void
     {
         Sanctum::actingAs($this->vpaa, ['*']);

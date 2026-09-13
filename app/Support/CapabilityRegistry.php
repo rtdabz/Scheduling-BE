@@ -35,6 +35,52 @@ class CapabilityRegistry
         return (bool) ($this->definition($name)['requires_program'] ?? false);
     }
 
+    /**
+     * The capabilities this one cannot be exercised without, declared as
+     * `requires` in config/capabilities.php.
+     *
+     * @return list<string>
+     */
+    public function prerequisites(string $name): array
+    {
+        $requires = $this->definition($name)['requires'] ?? [];
+
+        return is_array($requires) ? array_values($requires) : [];
+    }
+
+    /**
+     * The given grant plus every capability it depends on, transitively.
+     *
+     * Saving a grant through this is what keeps `schedule.view` from being
+     * dropped out from under the screens that read the timetable. Unknown
+     * names pass through untouched so validating them stays the caller's job,
+     * and the original order is kept with prerequisites appended.
+     *
+     * @param  iterable<string>  $names
+     * @return list<string>
+     */
+    public function expand(iterable $names): array
+    {
+        $resolved = [];
+        $queue = [];
+        foreach ($names as $name) {
+            $queue[] = (string) $name;
+        }
+
+        while ($queue !== []) {
+            $name = array_shift($queue);
+            if (isset($resolved[$name])) {
+                continue;
+            }
+            $resolved[$name] = true;
+            foreach ($this->prerequisites($name) as $prerequisite) {
+                $queue[] = $prerequisite;
+            }
+        }
+
+        return array_keys($resolved);
+    }
+
     public function isAssignableTo(User $user, string $name): bool
     {
         return $this->isAssignableToRole((string) $user->role, $name);
@@ -72,6 +118,7 @@ class CapabilityRegistry
                 'description' => $definition['description'],
                 'assignable' => $this->isAssignableToRole($role, $name),
                 'requires_program' => $this->requiresProgram($name),
+                'requires' => $this->prerequisites($name),
             ];
         }, array_keys($this->definitions()), array_values($this->definitions()));
     }
@@ -103,6 +150,7 @@ class CapabilityRegistry
                         'description' => $definition['description'],
                         'granted' => isset($effective[$permission]),
                         'assignable' => $this->isAssignableToRole($role, $permission),
+                        'requires' => $this->prerequisites($permission),
                     ];
                 })
                 ->values()

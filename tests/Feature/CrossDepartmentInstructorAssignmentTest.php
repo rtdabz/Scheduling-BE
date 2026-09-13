@@ -541,6 +541,41 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
      * @param  array<string, mixed>  $fixture
      * @return \Illuminate\Support\Collection<int, Schedule>
      */
+    /**
+     * The dashboard cannot see this work from its own schedule rows -- the class
+     * lives in IT's section -- so the count travels on the status payload the
+     * dashboard already fetches.
+     */
+    public function test_schedule_status_counts_delegated_classes_awaiting_an_instructor(): void
+    {
+        $fixture = $this->fixture();
+        $this->meetingBlocks($fixture);
+
+        // One class across three meeting rows, counted once.
+        $this->actingAs($fixture['casSecretary'])
+            ->getJson("/api/departments/{$fixture['cas']->id}/schedule-status")
+            ->assertOk()
+            ->assertJsonPath('cross_department_pending', 1);
+
+        // The college that owns the offering is not the one that has to staff it.
+        $this->actingAs($fixture['itSecretary'])
+            ->getJson("/api/departments/{$fixture['it']->id}/schedule-status")
+            ->assertOk()
+            ->assertJsonPath('cross_department_pending', 0);
+    }
+
+    public function test_an_assigned_delegated_class_is_no_longer_counted(): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        Schedule::whereIn('id', $blocks->pluck('id'))
+            ->update(['faculty_id' => $fixture['casInstructor']->id]);
+
+        $this->actingAs($fixture['casSecretary'])
+            ->getJson("/api/departments/{$fixture['cas']->id}/schedule-status")
+            ->assertOk()
+            ->assertJsonPath('cross_department_pending', 0);
+    }
     private function meetingBlocks(array $fixture)
     {
         return collect(['Monday', 'Wednesday', 'Friday'])->map(fn (string $day): Schedule => Schedule::create([

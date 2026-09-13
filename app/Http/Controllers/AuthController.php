@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\AuthenticationAuditService;
 use App\Support\CapabilityRegistry;
 use Illuminate\Auth\Events\PasswordReset;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -104,6 +105,13 @@ class AuthController extends Controller
                 ->get('https://openidconnect.googleapis.com/v1/userinfo')
                 ->throw()
                 ->json();
+        } catch (ConnectionException $exception) {
+            // Google was never reached -- DNS, proxy, or a dropped link. That is
+            // an operator problem, not a rejected sign-in, and saying so saves
+            // the user from re-entering credentials that were never at fault.
+            report($exception);
+
+            return $this->googleErrorRedirect($frontendUrl, 'Could not reach Google. Check the server network connection and try again.');
         } catch (Throwable $exception) {
             report($exception);
 

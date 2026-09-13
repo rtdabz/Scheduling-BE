@@ -543,6 +543,41 @@ class ScheduleQualityEvaluatorTest extends TestCase
         $this->assertGreaterThan(0, $ranked[1]['score_breakdown']['configuration_violations']);
     }
 
+    public function test_a_sunday_meeting_costs_what_a_saturday_one_does_once_the_department_teaches_on_sunday(): void
+    {
+        $sections = [$this->section(1, '1')];
+        // Two meetings for the course, so the late-week single-meeting exemption
+        // does not apply and the weekend weight itself is what is compared.
+        $saturday = [
+            $this->row(1, 101, 11, 'on-site', 'lecture', '08:00', '10:00', 'Saturday'),
+            $this->row(1, 101, 11, 'on-site', 'lecture', '10:00', '12:00', 'Monday'),
+        ];
+        $sunday = [
+            $this->row(1, 101, 11, 'on-site', 'lecture', '08:00', '10:00', 'Sunday'),
+            $this->row(1, 101, 11, 'on-site', 'lecture', '10:00', '12:00', 'Monday'),
+        ];
+
+        $gatedSaturday = $this->evaluator->evaluate($saturday, $sections);
+        $gatedSunday = $this->evaluator->evaluate($sunday, $sections);
+        $openSunday = $this->evaluator->evaluate(
+            $sunday,
+            $sections,
+            sundayIsRegularTeachingDay: true,
+        );
+
+        // Default: Sunday is a fallback day and costs far more than Saturday.
+        $this->assertGreaterThan(
+            $gatedSaturday['score_breakdown']['weekend_usage'],
+            $gatedSunday['score_breakdown']['weekend_usage'],
+        );
+        // Opened: Sunday carries Saturday's weight, so the ranking stops pushing
+        // a Sunday-teaching department off Sunday.
+        $this->assertSame(
+            $gatedSaturday['score_breakdown']['weekend_usage'],
+            $openSunday['score_breakdown']['weekend_usage'],
+        );
+    }
+
     private function section(int $id, string $yearLevel): Sections
     {
         $section = new Sections;

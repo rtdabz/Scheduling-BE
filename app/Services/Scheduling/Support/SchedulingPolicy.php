@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services\Scheduling\Support;
 
 use App\Models\Course;
+use App\Models\Departments;
 use App\Services\TimeslotService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -152,6 +153,104 @@ final class SchedulingPolicy
     public const SINGLE_MEETING_PREFERRED_DAYS = ['Friday', 'Saturday'];
 
     /**
+     * The teaching periods a section can be pinned to on the Preferred Meetings
+     * board, as wall-clock windows.
+     *
+     * A section assigned to one of these is only ever offered candidates that fit
+     * inside it: it is a hard window, not a preference, and no retry strategy can
+     * widen it. That makes the width the binding constraint on what a pinned
+     * section can be given -- a meeting longer than the window has no start time
+     * at all -- so the solver, the feasibility pre-check and the UI must all read
+     * the same definition. They used to carry three separate copies.
+     */
+    public const PREFERRED_PERIOD_WINDOWS = [
+        'morning' => ['07:00', '11:30'],
+        'afternoon' => ['11:30', '16:00'],
+        'evening' => ['16:00', '20:30'],
+    ];
+
+    /** @return list<string> */
+    public static function preferredPeriods(): array
+    {
+        return array_keys(self::PREFERRED_PERIOD_WINDOWS);
+    }
+
+    public static function normalizePreferredPeriod(mixed $period): ?string
+    {
+        if (! is_string($period)) {
+            return null;
+        }
+
+        $normalized = strtolower(trim($period));
+
+        return array_key_exists($normalized, self::PREFERRED_PERIOD_WINDOWS)
+            ? $normalized
+            : null;
+    }
+
+    /**
+     * The window as grid slots, clamped to the institution's operating hours.
+     *
+     * Clamping matters: the windows are fixed wall-clock ranges while the grid is
+     * a stored setting, so a campus that closes before 8:30 PM has a shorter
+     * evening than the window names. The clamp keeps every caller agreeing on the
+     * width that is actually bookable.
+     *
+     * @return array{0: int, 1: int}
+     */
+    public static function preferredPeriodSlotRange(string $period): array
+    {
+        [$fromTime, $toTime] = self::PREFERRED_PERIOD_WINDOWS[$period]
+            ?? [self::openingTime(), self::closingTime()];
+        $openingMinutes = self::timeToMinutes(self::openingTime());
+        $totalSlots = self::totalSlots();
+
+        $from = (int) ceil((self::timeToMinutes($fromTime) - $openingMinutes) / self::SLOT_MINUTES);
+        $to = (int) floor((self::timeToMinutes($toTime) - $openingMinutes) / self::SLOT_MINUTES);
+
+        return [
+            max(0, min($totalSlots, $from)),
+            max(0, min($totalSlots, $to)),
+        ];
+    }
+
+    /** Bookable slots inside the window, i.e. the longest meeting it can hold. */
+    public static function preferredPeriodSlotCount(string $period): int
+    {
+        [$from, $to] = self::preferredPeriodSlotRange($period);
+
+        return max(0, $to - $from);
+    }
+
+    /** Human wording for the window, e.g. 'Morning (7:00 AM - 11:30 AM)'. */
+    public static function preferredPeriodLabel(string $period): string
+    {
+        [$from, $to] = self::PREFERRED_PERIOD_WINDOWS[$period] ?? [null, null];
+
+        if ($from === null) {
+            return ucfirst($period);
+        }
+
+        return sprintf(
+            '%s (%s - %s)',
+            ucfirst($period),
+            self::formatClockLabel($from),
+            self::formatClockLabel($to),
+        );
+    }
+
+    private static function formatClockLabel(string $time): string
+    {
+        $minutes = self::timeToMinutes($time);
+        $hour = intdiv($minutes, 60);
+        $minute = $minutes % 60;
+        $suffix = $hour >= 12 ? 'PM' : 'AM';
+        $hour12 = $hour % 12 === 0 ? 12 : $hour % 12;
+
+        return sprintf('%d:%02d %s', $hour12, $minute, $suffix);
+    }
+
+    /**
      * Grid slots one unit of each component contributes. A lecture unit is one
      * hour, a laboratory unit three, which is why a laboratory unit is worth
      * three times a lecture unit on the timetable.
@@ -266,6 +365,12 @@ final class SchedulingPolicy
             'severity' => 'hard',
             'category' => 'resource_capacity',
             'description' => 'Courses forced onto one day cannot require more section time than the operating-hours window provides.',
+            'enforced_by' => ['generation_configuration_validation'],
+        ],
+        'forced_day_room_pressure' => [
+            'severity' => 'warning',
+            'category' => 'resource_capacity',
+            'description' => 'Courses forced onto one day can demand more room-time of a room type than that day supplies, so some meetings will fall back to online or Room TBA.',
             'enforced_by' => ['generation_configuration_validation'],
         ],
         'same_day_concentration' => [
@@ -598,10 +703,15 @@ final class SchedulingPolicy
             'description' => 'A configured minor split session must contain exactly two linked meetings.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
+        // The 'minor_split_' prefix is historical: these rules now govern every
+        // balanced two-day split, which since Major Lecture Split Sessions
+        // includes lecture-only majors. The codes are persisted in violation
+        // payloads and in the audit trail, so they are left alone on purpose --
+        // {@see balancedSplitEligible} is the rule they actually express.
         'minor_split_eligibility' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
-            'description' => 'Minor split sessions are available only for eligible minor courses under the department setting.',
+            'description' => 'Balanced split sessions are available only for eligible minor courses, or lecture-only majors, under the matching department setting.',
             'enforced_by' => ['rule_engine', 'csp', 'schedule_generation_preflight'],
         ],
         'minor_split_pattern' => [
@@ -1149,6 +1259,86 @@ final class SchedulingPolicy
     }
 
     /**
+     * The laboratory half of a lecture/laboratory split, in 30-minute slots.
+     *
+     * The lecture half always follows the curriculum: one hour per lecture
+     * unit. The laboratory half derives from units the same way until a
+     * department turns on Custom Lab Duration, which *replaces* the derived
+     * length with a fixed one rather than scaling it -- a two-unit laboratory
+     * set to five hours meets for five hours, not ten. Only the split
+     * component is affected; an ordinary laboratory course keeps its
+     * unit-derived duration.
+     *
+     * @param  array<string, mixed>|Departments|null  $settings
+     */
+    public static function laboratoryComponentSlots(Course $course, array|Departments|null $settings = null): int
+    {
+        return self::customLaboratoryDurationSlots($settings)
+            ?? max(0, (int) ($course->lab_hours ?? 0)) * self::LABORATORY_SLOTS_PER_UNIT;
+    }
+
+    /** @param array<string, mixed>|Departments|null $settings */
+    public static function laboratoryComponentMinutes(Course $course, array|Departments|null $settings = null): int
+    {
+        return self::laboratoryComponentSlots($course, $settings) * self::SLOT_MINUTES;
+    }
+
+    /**
+     * The laboratory half for a course already reduced to an array, as the
+     * snapshot-backed constraint kernel holds it.
+     *
+     * @param  array<string, mixed>  $course
+     * @param  array<string, mixed>|Departments|null  $settings
+     */
+    public static function laboratoryComponentSlotsForArray(array $course, array|Departments|null $settings = null): int
+    {
+        return self::customLaboratoryDurationSlots($settings)
+            ?? max(0, (int) ($course['lab_hours'] ?? 0)) * self::LABORATORY_SLOTS_PER_UNIT;
+    }
+
+    /**
+     * The configured Custom Lab Duration in slots, or null when the department
+     * has not set one.
+     *
+     * The three presets are stored as separate booleans for historical reasons
+     * but describe a single choice, so they resolve in a fixed order and the
+     * settings endpoint keeps at most one of them enabled. A length that is not
+     * a whole number of slots cannot be placed on the grid at all and is
+     * ignored; a length that merely exceeds the teaching day is honoured here
+     * and reported against the course by YearLevelFeasibilityService, which
+     * names it, rather than silently generating some other duration.
+     *
+     * @param  array<string, mixed>|Departments|null  $settings
+     */
+    public static function customLaboratoryDurationSlots(array|Departments|null $settings): ?int
+    {
+        if ($settings === null) {
+            return null;
+        }
+
+        $read = $settings instanceof Departments
+            ? static fn (string $key): mixed => $settings->{$key}
+            : static fn (string $key): mixed => $settings[$key] ?? null;
+
+        if (! (bool) $read('custom_lab_duration_override_enabled')) {
+            return null;
+        }
+
+        $minutes = match (true) {
+            (bool) $read('custom_lab_duration_6_hours_enabled') => 360,
+            (bool) $read('custom_lab_duration_5_hours_enabled') => 300,
+            (bool) $read('custom_lab_duration_other_enabled') => (int) $read('custom_lab_duration_minutes'),
+            default => 0,
+        };
+
+        if ($minutes <= 0 || $minutes % self::SLOT_MINUTES !== 0) {
+            return null;
+        }
+
+        return intdiv($minutes, self::SLOT_MINUTES);
+    }
+
+    /**
      * The room type a course component requires, in the scheduling department's
      * terms.
      *
@@ -1179,6 +1369,13 @@ final class SchedulingPolicy
             : ((string) ($course->room_type_required ?: 'lecture'));
     }
 
+    /**
+     * Room TBA belongs to laboratories alone. A laboratory has no substitute
+     * delivery mode -- online is not a lab -- so when no laboratory room is
+     * free the meeting stays on campus with the room left for a human to
+     * assign. A lecture is never left unresolved: its fallback is online
+     * delivery, which is a real placement rather than a pending decision.
+     */
     public static function allowsRoomTbaFallback(Course $course, ?int $departmentId, ?string $meetingType = null): bool
     {
         return self::effectiveRoomType($course, $departmentId, $meetingType) === 'laboratory';
@@ -1241,6 +1438,57 @@ final class SchedulingPolicy
         return strtolower(trim(
             (string) ($course->course_category ?? $course->subject_category ?? '')
         )) === 'major';
+    }
+
+    /**
+     * Whether this course may be split into two balanced meetings (the group the
+     * engine still labels 'minor_split').
+     *
+     * The one place this question is answered. The generator, the configuration
+     * validator, the rule engine and the constraint kernel all read it, because a
+     * placement one of them allows and another refuses is not a candidate — it is
+     * an unexplained generation failure.
+     *
+     * A minor is eligible under the department's minor-split setting. A major is
+     * eligible under the separate major-lecture setting and only when it is pure
+     * lecture: `minor_split_duration` asserts the two meetings add up to
+     * units * 60 minutes, and that holds only while no laboratory units are
+     * folded into the course's unit count. A major carrying laboratory units is
+     * the Lecture + Laboratory override's business instead, which also keeps the
+     * two settings from ever claiming the same course.
+     *
+     * @param  array<string, mixed>|Course  $course
+     * @param  array<string, mixed>  $departmentSettings
+     */
+    public static function balancedSplitEligible(array|Course $course, array $departmentSettings): bool
+    {
+        $isMajor = $course instanceof Course
+            ? self::isMajorCourse($course)
+            : strtolower(trim((string) ($course['course_category'] ?? $course['subject_category'] ?? ''))) === 'major';
+
+        if (! $isMajor) {
+            return (bool) ($departmentSettings['gec_split_schedule_override_enabled'] ?? false);
+        }
+
+        $lectureHours = (int) ($course instanceof Course ? ($course->lecture_hours ?? 0) : ($course['lecture_hours'] ?? 0));
+        $labHours = (int) ($course instanceof Course ? ($course->lab_hours ?? 0) : ($course['lab_hours'] ?? 0));
+
+        return (bool) ($departmentSettings['major_lecture_split_schedule_override_enabled'] ?? false)
+            && $lectureHours > 0
+            && $labHours === 0;
+    }
+
+    /**
+     * The department settings shape {@see balancedSplitEligible} expects, read off
+     * a department model. Callers holding a snapshot pass its settings array
+     * directly instead.
+     */
+    public static function balancedSplitSettings(?Departments $department): array
+    {
+        return [
+            'gec_split_schedule_override_enabled' => (bool) ($department?->gec_split_schedule_override_enabled ?? false),
+            'major_lecture_split_schedule_override_enabled' => (bool) ($department?->major_lecture_split_schedule_override_enabled ?? false),
+        ];
     }
 
     /**

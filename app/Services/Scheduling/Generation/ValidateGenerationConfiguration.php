@@ -231,11 +231,23 @@ final class ValidateGenerationConfiguration
                 $recommendations[] = $this->disableSplitRecommendation($configuration, $course, 'disable_lecture_lab_split');
             }
 
-            if ($isMinorSplit && (! (bool) ($snapshot->departmentSettings['gec_split_schedule_override_enabled'] ?? false)
-                || SchedulingConstraintPredicates::isMajorCourse($course))) {
+            if ($isMinorSplit && ! SchedulingPolicy::balancedSplitEligible($course, $snapshot->departmentSettings)) {
                 $violations[] = $this->violation(
                     'minor_split_eligibility',
-                    'Minor split sessions require an eligible minor course and the department setting.',
+                    'Balanced split sessions require an eligible minor or lecture-only major course and the matching department setting.',
+                    $this->courseContext($course),
+                );
+                $recommendations[] = $this->disableSplitRecommendation($configuration, $course, 'disable_minor_split');
+            }
+
+            // A course cannot be two kinds of split at once. The lecture-only
+            // restriction on a major's balanced split already makes this
+            // unreachable, so reaching it means one of the two eligibility gates
+            // was widened without the other being reconsidered.
+            if ($isMinorSplit && $isLectureLabSplit) {
+                $violations[] = $this->violation(
+                    'minor_split_eligibility',
+                    'A course cannot use both lecture/laboratory splitting and balanced split sessions.',
                     $this->courseContext($course),
                 );
                 $recommendations[] = $this->disableSplitRecommendation($configuration, $course, 'disable_minor_split');
@@ -442,7 +454,211 @@ final class ValidateGenerationConfiguration
                 );
                 $recommendations[] = $this->forcedDayRecommendation($configuration, $snapshot, $day, $singleMeetingIds, 'Release enough forced-day rules to fit the section within operating hours.');
             }
+
+            $this->validateForcedDayRoomPressure(
+                $configuration,
+                $snapshot,
+                (string) $day,
+                $singleMeetingIds,
+                $violations,
+                $recommendations,
+            );
         }
+    }
+
+    /**
+     * The capacity check above asks whether the forced courses fit in the day's
+     * clock. This one asks whether they fit in its rooms.
+     *
+     * The section's own demand is never enough to exhaust a room type on its
+     * own: a section meets in one room at a time, so the check above already
+     * caps its demand at one day's length, which is exactly what a single room
+     * supplies. What makes a forced day run out of rooms is everyone else --
+     * the sections already placed on that day, competing for the same pool. So
+     * supply is (rooms of a type) x (slots in the operating window), and demand
+     * is this section's forced-day load plus the room-time those existing
+     * schedules have already taken.
+     *
+     * When demand exceeds supply the run still succeeds -- the solver sends the
+     * overflow online or to Room TBA -- but that degradation is invisible until
+     * the timetable comes back, so it is raised here as a warning the user must
+     * acknowledge first.
+     *
+     * This bounds room-time, it does not simulate placement: it ignores whether
+     * the competing meetings actually overlap the hours this section needs. A
+     * configuration that clears the check can still produce fallbacks; one that
+     * fails it cannot avoid them.
+     *
+     * @param  list<int>  $courseIds
+     * @param  list<ConstraintViolation>  $violations
+     * @param  list<GenerationConfigurationRecommendation>  $recommendations
+     */
+    private function validateForcedDayRoomPressure(
+        GenerationConfiguration $configuration,
+        SchedulingSnapshot $snapshot,
+        string $day,
+        array $courseIds,
+        array &$violations,
+        array &$recommendations,
+    ): void {
+        $dailySlots = $this->dailySlots($snapshot);
+        if ($courseIds === [] || $dailySlots <= 0) {
+            return;
+        }
+
+        $roomCounts = $this->availableRoomCountsByType($snapshot);
+        $demand = ['lecture' => 0, 'laboratory' => 0];
+        $demandCourseIds = ['lecture' => [], 'laboratory' => []];
+
+        foreach ($courseIds as $courseId) {
+            $course = $snapshot->coursesById[$courseId] ?? null;
+            if (! is_array($course)) {
+                continue;
+            }
+
+            // Online delivery consumes no room, and a field course draws on
+            // department-scoped field capacity rather than these room pools.
+            $mode = $configuration->deliveryModesByCourseId[$courseId] ?? $configuration->deliveryMode;
+            if ($mode === 'online' || SchedulingConstraintPredicates::isFieldCourse($course, $snapshot->fieldCourseCodes)) {
+                continue;
+            }
+
+            $roomType = SchedulingConstraintPredicates::isLaboratoryCourse($course) ? 'laboratory' : 'lecture';
+            $demand[$roomType] += $this->courseSlots($course);
+            $demandCourseIds[$roomType][] = $courseId;
+        }
+
+        $committed = $this->committedRoomSlotsByType($snapshot, $day, $configuration->sectionId);
+
+        foreach ($demand as $roomType => $requiredSlots) {
+            if ($requiredSlots <= 0) {
+                continue;
+            }
+
+            $roomCount = $roomCounts[$roomType] ?? 0;
+            $availableSlots = $roomCount * $dailySlots;
+            $committedSlots = $committed[$roomType] ?? 0;
+            if ($requiredSlots + $committedSlots <= $availableSlots) {
+                continue;
+            }
+
+            // The two room types degrade differently. A laboratory has no
+            // substitute delivery mode, so its overflow can only become Room
+            // TBA. A lecture is never left unresolved: it goes online, and a
+            // lecture pinned to on-site delivery has nowhere to go at all --
+            // it fails the section rather than degrading, which is the more
+            // urgent thing to say here.
+            $fallback = $roomType === 'laboratory'
+                ? 'Room TBA'
+                : 'online delivery, and any lecture pinned to on-site delivery will fail to generate';
+
+            $violations[] = $this->violation(
+                'forced_day_room_pressure',
+                sprintf(
+                    '%s supplies %d %s room slots across %s, existing schedules use %d, and the courses forced to %s need %d more. The overflow will fall back to %s.',
+                    $day,
+                    $availableSlots,
+                    $roomType,
+                    $roomCount === 1 ? "{$roomCount} room" : "{$roomCount} rooms",
+                    $committedSlots,
+                    $day,
+                    $requiredSlots,
+                    $fallback,
+                ),
+                [
+                    'day' => $day,
+                    'room_type' => $roomType,
+                    'course_ids' => $demandCourseIds[$roomType],
+                    'required_slots' => $requiredSlots,
+                    'committed_slots' => $committedSlots,
+                    'available_slots' => $availableSlots,
+                    'room_count' => $roomCount,
+                ],
+            );
+
+            $recommendations[] = $this->forcedDayRecommendation(
+                $configuration,
+                $snapshot,
+                $day,
+                $demandCourseIds[$roomType],
+                sprintf(
+                    'Release some %s forced-day rules, add %s room capacity, or accept the %s fallback for the overflow.',
+                    $day,
+                    $roomType,
+                    $roomType === 'laboratory' ? 'Room TBA' : 'online',
+                ),
+            );
+        }
+    }
+
+    /**
+     * Room-time already booked on one day, per room type, by everyone except
+     * the section being generated. The section's own rows are excluded because
+     * this run replaces them -- counting them would charge it twice for the
+     * meetings it is about to regenerate.
+     *
+     * @return array<string, int>
+     */
+    private function committedRoomSlotsByType(
+        SchedulingSnapshot $snapshot,
+        string $day,
+        int $sectionId,
+    ): array {
+        $committed = ['lecture' => 0, 'laboratory' => 0];
+        $slotMinutes = max(1, (int) ($snapshot->operatingHours['slot_minutes'] ?? SchedulingPolicy::SLOT_MINUTES));
+
+        foreach ($snapshot->persistedSchedules as $row) {
+            if (! is_array($row)
+                || (string) ($row['day'] ?? '') !== $day
+                || (int) ($row['section_id'] ?? 0) === $sectionId) {
+                continue;
+            }
+
+            // Only a real physical room booking consumes this pool. An online
+            // or field meeting, or one already sitting on Room TBA, does not.
+            $roomId = $row['room_id'] ?? null;
+            if ($roomId === null || in_array((string) ($row['mode'] ?? 'on-site'), ['online', 'field'], true)) {
+                continue;
+            }
+
+            $room = $snapshot->roomsById[(int) $roomId] ?? null;
+            $roomType = is_array($room) ? (string) ($room['room_type'] ?? '') : '';
+            if (! array_key_exists($roomType, $committed)) {
+                continue;
+            }
+
+            $minutes = SchedulingPolicy::timeToMinutes((string) ($row['end_time'] ?? '00:00'))
+                - SchedulingPolicy::timeToMinutes((string) ($row['start_time'] ?? '00:00'));
+            if ($minutes > 0) {
+                $committed[$roomType] += intdiv($minutes, $slotMinutes);
+            }
+        }
+
+        return $committed;
+    }
+
+    /** @return array<string, int> */
+    private function availableRoomCountsByType(SchedulingSnapshot $snapshot): array
+    {
+        $counts = ['lecture' => 0, 'laboratory' => 0];
+
+        foreach ($snapshot->roomsById as $room) {
+            if (! is_array($room) || (string) ($room['status'] ?? '') !== 'available') {
+                continue;
+            }
+
+            if (($room['department_id'] ?? null) !== null
+                && (int) $room['department_id'] !== $snapshot->departmentId) {
+                continue;
+            }
+
+            $roomType = (string) ($room['room_type'] ?? '');
+            if (array_key_exists($roomType, $counts)) {
+                $counts[$roomType]++;
+            }
+        }
+
+        return $counts;
     }
 
     /**

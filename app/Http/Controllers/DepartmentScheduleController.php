@@ -11,6 +11,9 @@ use App\Models\Sections;
 use App\Models\Terms;
 use App\Models\User;
 use App\Services\ScheduleHistoryRecorder;
+use App\Services\Scheduling\Department\DepartmentScheduleStatusDeriver;
+use App\Services\Scheduling\Department\ScheduleOverviewService;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
@@ -23,6 +26,8 @@ class DepartmentScheduleController extends Controller
     public function __construct(
         private readonly SystemNotificationService $notifications,
         private readonly ScheduleHistoryRecorder $historyRecorder,
+        private readonly DepartmentScheduleStatusDeriver $statusDeriver,
+        private readonly ScheduleOverviewService $scheduleOverviews,
     ) {}
 
     private function activeTermId(): ?int
@@ -106,6 +111,33 @@ class DepartmentScheduleController extends Controller
         });
     }
 
+    /**
+     * Drop the cached reads a workflow transition invalidates.
+     *
+     * Every approval screen is built from `/initial-data`, which caches its
+     * encoded payload for five minutes. Without this, a Dean approval returned
+     * "approved" while the very next load of the queue replayed the cached
+     * payload -- the submission still `pending_dean`, its meetings still
+     * `submitted` -- so an approved schedule sat in the Pending tab until the
+     * entry expired.
+     *
+     * Only the two collections a transition actually rewrites are bumped;
+     * `rooms`/`courses`/`users` keep their cached payloads.
+     *
+     * @param  bool  $affectsAssignments  True when the transition moves meetings
+     *                                    into or out of the instructor-assignable
+     *                                    statuses, which the assignment
+     *                                    workspace caches separately.
+     */
+    private function forgetWorkflowCaches(bool $affectsAssignments = false): void
+    {
+        ApiCache::forgetGroups([
+            'initial.data.schedules',
+            'initial.data.schedule_submissions',
+            ...($affectsAssignments ? ['instructor_assignments.index'] : []),
+        ]);
+    }
+
     private function ensureRoleCanActOnDepartment(Request $request, int $departmentId, array $roles): ?JsonResponse
     {
         $user = $request->user();
@@ -130,50 +162,7 @@ class DepartmentScheduleController extends Controller
      */
     private function deriveStatus(array $scheduleStatuses): string
     {
-        // A finalized meeting belongs to a completed approval cohort. Legacy
-        // duplicate draft rows must not pull that section back into drafting or
-        // cause it to be included in a later revision submission.
-        if (in_array('finalized', $scheduleStatuses, true)) {
-            return 'approved';
-        }
-
-        $rank = [
-            'draft' => 0,
-            'revision' => 0,
-            'completed' => 1,
-            'submitted' => 2,
-            'approved_by_dean' => 3,
-            'conditionally_approved' => 3,
-            'approved' => 4,
-        ];
-
-        if (empty($scheduleStatuses)) {
-            return 'draft';
-        }
-
-        $minRank = PHP_INT_MAX;
-        $result = 'draft';
-
-        foreach ($scheduleStatuses as $raw) {
-            // Normalise extended statuses to the 4 canonical ones
-            $normalised = match (true) {
-                in_array($raw, ['faculty_assignment', 'reassignment', 'finalized']) => 'approved',
-                $raw === 'conditionally_approved' => 'conditionally_approved',
-                $raw === 'approved_by_dean' => 'approved_by_dean',
-                $raw === 'submitted' => 'submitted',
-                $raw === 'completed' => 'completed',
-                $raw === 'revision' => 'revision',
-                default => 'draft', // draft, rejected, rejected_by_dean
-            };
-
-            $r = $rank[$normalised] ?? 0;
-            if ($r < $minRank) {
-                $minRank = $r;
-                $result = $normalised;
-            }
-        }
-
-        return $result;
+        return $this->statusDeriver->derive($scheduleStatuses);
     }
 
     /**
@@ -237,7 +226,71 @@ class DepartmentScheduleController extends Controller
             // Lets the UI disable Submit and explain why, instead of letting the
             // request fail. The backend still enforces it on submit.
             'has_dean' => $this->departmentHasDean((int) $department->id),
+            // Delegated work the dashboard cannot see: these classes sit in other
+            // departments' sections, so they are absent from the schedule rows the
+            // dashboard loads for its own department.
+            'cross_department_pending' => $this->crossDepartmentPendingCount((int) $department->id, $activeTermId),
         ]);
+    }
+
+    /**
+     * Classes another department owns that this one has to staff, still without
+     * an instructor.
+     *
+     * Counted over distinct section + course pairs rather than schedule rows: a
+     * row is one meeting, so an MWF class would otherwise read as three items of
+     * outstanding work. A class counts as pending while any of its meetings is
+     * unassigned.
+     */
+    private function crossDepartmentPendingCount(int $departmentId, ?int $activeTermId): int
+    {
+        if ($activeTermId === null) {
+            return 0;
+        }
+
+        return Schedule::query()
+            ->where('term_id', $activeTermId)
+            ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES)
+            ->whereNull('faculty_id')
+            ->where('department_id', '!=', $departmentId)
+            ->whereHas('course', fn ($course) => $course
+                ->where('status', 'active')
+                ->where('teaching_department_id', $departmentId))
+            ->distinct()
+            ->get(['section_id', 'course_id'])
+            ->count();
+    }
+
+    /**
+     * GET /api/departments/schedule-overview
+     *
+     * Every department's schedule rolled up for the All Schedules screen, with
+     * its sections nested so the drill-down needs no second request.
+     *
+     * This exists because the screen used to build the same numbers by counting
+     * the schedule rows `/initial-data` happened to return, which is capped.
+     * The counts here are aggregated in SQL over the whole active term.
+     *
+     * Only a VPAA sees the institution. Everyone else is scoped to the
+     * department they are assigned to, and an unassigned account sees nothing
+     * rather than everything.
+     */
+    public function scheduleOverview(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if ($user->role === 'vpaa') {
+            return response()->json($this->scheduleOverviews->overview());
+        }
+
+        $departmentId = $user->department_id !== null ? (int) $user->department_id : null;
+        if ($departmentId === null) {
+            return response()->json([
+                'message' => 'Your account is not assigned to a department.',
+            ], 403);
+        }
+
+        return response()->json($this->scheduleOverviews->overview($departmentId));
     }
 
     /**
@@ -428,6 +481,7 @@ class DepartmentScheduleController extends Controller
         });
         $updated = $result['updated'];
         $submission = $result['submission'];
+        $this->forgetWorkflowCaches();
 
         if ($updated > 0) {
             $term = Terms::query()->find($this->activeTermId());
@@ -501,6 +555,7 @@ class DepartmentScheduleController extends Controller
 
             return $updated;
         });
+        $this->forgetWorkflowCaches();
 
         if ($updated > 0) {
             $this->recordWorkflowAudit($request, 'schedule_approved_by_dean', $department->id, $this->activeTermId(), [
@@ -575,6 +630,7 @@ class DepartmentScheduleController extends Controller
 
             return $updated;
         });
+        $this->forgetWorkflowCaches();
 
         if ($updated > 0) {
             $this->recordWorkflowAudit($request, 'schedule_returned_by_dean', $department->id, $this->activeTermId(), [
@@ -916,6 +972,10 @@ class DepartmentScheduleController extends Controller
 
             return $updated;
         });
+        // VPAA approval is what moves meetings into `faculty_assignment`, the
+        // first instructor-assignable status, so the assignment workspace's own
+        // cached payload has to go with it.
+        $this->forgetWorkflowCaches(affectsAssignments: true);
 
         if ($updated > 0) {
             $this->recordWorkflowAudit($request, 'schedule_approved_by_vpaa', $department->id, $this->activeTermId(), [
@@ -991,6 +1051,7 @@ class DepartmentScheduleController extends Controller
 
             return $updated;
         });
+        $this->forgetWorkflowCaches(affectsAssignments: true);
 
         if ($updated > 0) {
             $this->recordWorkflowAudit($request, 'schedule_returned_by_vpaa', $department->id, $this->activeTermId(), [

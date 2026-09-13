@@ -15,23 +15,24 @@ use App\Models\ScheduleRecommendation;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Terms;
-use App\Services\Scheduling\Schedule\CommitSchedulePlan;
 use App\Services\Scheduling\Domain\PreparedGenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulePlan;
 use App\Services\Scheduling\Domain\ScheduleRecommendationPayload;
 use App\Services\Scheduling\Generation\GenerateSectionSchedulePlans;
-use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
-use App\Services\Scheduling\Support\SchedulingMetricsReporter;
-use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Services\Scheduling\Schedule\CommitSchedulePlan;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
 use App\Services\Scheduling\Schedule\SplitScheduleService;
+use App\Services\Scheduling\Support\SchedulingMetricsReporter;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\YearLevel\YearLevelGenerationEligibilityService;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use App\Services\SystemNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
@@ -756,6 +757,50 @@ class ScheduleRecommendationController extends Controller
     }
 
     /**
+     * Stop a run the caller owns.
+     *
+     * Cancellation is cooperative: this marks the durable run terminal, and
+     * the worker notices at its next placement boundary and unwinds. A run
+     * still waiting on the queue is also removed from the queue table so no
+     * worker picks up work whose result is already discarded.
+     */
+    public function cancelGenerationRun(Request $request, string $runId): JsonResponse
+    {
+        $run = ScheduleGenerationRun::query()->where('run_id', $runId)->firstOrFail();
+        if ($request->user()->role !== 'vpaa' && (int) $run->requested_by !== (int) $request->user()->id) {
+            return $this->departmentForbiddenResponse();
+        }
+
+        // Cancelling a run that already finished is a no-op, not an error: the
+        // user clicked while the last poll was still in flight.
+        if (! in_array($run->status, ['queued', 'running'], true)) {
+            return response()->json($run);
+        }
+
+        $wasQueued = $run->status === 'queued';
+        $cancelled = ScheduleGenerationRun::query()
+            ->where('run_id', $runId)
+            ->whereIn('status', ['queued', 'running'])
+            ->update([
+                'status' => 'cancelled',
+                'error_message' => 'Generation was cancelled by the requester.',
+                'finished_at' => now(),
+            ]);
+
+        // Only an unreserved job is safe to delete; a reserved one belongs to a
+        // worker that will stop on its own at the next cancellation check.
+        if ($cancelled > 0 && $wasQueued) {
+            DB::table('jobs')
+                ->where('queue', 'scheduling')
+                ->whereNull('reserved_at')
+                ->where('payload', 'like', '%'.$runId.'%')
+                ->delete();
+        }
+
+        return response()->json($run->refresh());
+    }
+
+    /**
      * The newest still-active run the caller owns for a department and term.
      *
      * Progress tracking lives outside the generator modal, so a reload or a
@@ -1199,8 +1244,8 @@ class ScheduleRecommendationController extends Controller
      * while another user has the wizard open, silently generating against the
      * new curriculum would produce a timetable for courses that user never saw.
      *
-     * @param  \Illuminate\Support\Collection<int, Sections>  $sections
-     * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $configs
+     * @param  Collection<int, Sections>  $sections
+     * @param  Collection<int, array<string, mixed>>  $configs
      */
     private function rejectStaleCurriculumSelection($sections, $configs): ?JsonResponse
     {
@@ -1279,7 +1324,9 @@ class ScheduleRecommendationController extends Controller
 
     private function resolveMinorSplitCourseIds(Sections $section, array $requestedCourseIds, array $validCourseIds): array
     {
-        if (! (bool) ($section->department?->gec_split_schedule_override_enabled ?? false)) {
+        $splitSettings = SchedulingPolicy::balancedSplitSettings($section->department);
+
+        if (! in_array(true, array_map('boolval', $splitSettings), true)) {
             return [];
         }
 
@@ -1294,7 +1341,8 @@ class ScheduleRecommendationController extends Controller
 
         return Course::query()
             ->whereIn('id', $candidateIds)
-            ->where('course_category', 'minor')
+            ->get()
+            ->filter(static fn (Course $course): bool => SchedulingPolicy::balancedSplitEligible($course, $splitSettings))
             ->pluck('id')
             ->map(static fn ($courseId): int => (int) $courseId)
             ->values()
@@ -1457,6 +1505,7 @@ class ScheduleRecommendationController extends Controller
                     $committedPlan = $this->planCommitter->commit($bestPlan, $user?->id);
                     $createdIds = array_values(array_map('intval', $committedPlan->metadata['created_schedule_ids'] ?? []));
                     $recommendation->update(['status' => 'accepted', 'accepted_by' => $user?->id, 'accepted_at' => now()]);
+
                     return [$committedPlan, $recommendation, $createdIds];
                 });
 

@@ -70,7 +70,7 @@ class UserController extends Controller
             ]);
             $this->facultyProfiles->createFor($user);
             $user->syncRoles([$user->role]);
-            $user->syncPermissions($validated['permissions'] ?? []);
+            $user->syncPermissions($this->capabilities->expand($validated['permissions'] ?? []));
             $this->audit->record($request, 'user_created', $user, [
                 'role' => $user->role,
                 'google_login_allowed' => $user->allow_google_login,
@@ -80,7 +80,18 @@ class UserController extends Controller
             return $user;
         });
         $user->notify(new WicarsAccountCreatedNotification);
-        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
+        // A brand-new account cannot appear on an existing timetable, so the
+        // `schedules`/`courses`/`sections` portions of the initial-data payload
+        // are untouched and only the sections below need rebuilding.
+        //
+        // `has_dean` is the exception: it sits outside OPTIONAL_SECTIONS and so
+        // ships in *every* initial-data response, including the ones that ask
+        // for no user data at all. An active dean therefore still has to
+        // invalidate the whole group.
+        $initialDataGroups = $user->role === 'dean' && $user->is_active
+            ? ['initial.data']
+            : ['initial.data.users', 'initial.data.faculties', 'initial.data.departments'];
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', ...$initialDataGroups]);
 
         return response()->json([
             'message' => 'User created successfully.',
@@ -136,7 +147,7 @@ class UserController extends Controller
             $user->syncRoles([$user->role]);
             $this->facultyProfiles->sync($user);
             if (array_key_exists('permissions', $validated)) {
-                $user->syncPermissions($validated['permissions']);
+                $user->syncPermissions($this->capabilities->expand($validated['permissions']));
             }
 
             if (! $user->is_active) {
@@ -246,9 +257,11 @@ class UserController extends Controller
             'permissions.*' => ['string', Rule::in($this->capabilities->names())],
         ]);
 
-        $newDirect = array_values(array_unique($validated['permissions']));
+        $requested = array_values(array_unique($validated['permissions']));
         $assignmentErrors = [];
-        foreach ($newDirect as $index => $permission) {
+        // Validated against what was asked for, so the error index still points
+        // at the offending entry in the request.
+        foreach ($requested as $index => $permission) {
             if (! $this->capabilities->isAssignableTo($user, $permission)) {
                 $assignmentErrors["permissions.$index"] = [
                     "The {$permission} capability is not assignable to the {$user->role} role.",
@@ -258,6 +271,10 @@ class UserController extends Controller
         if ($assignmentErrors !== []) {
             throw ValidationException::withMessages($assignmentErrors);
         }
+        // Expanded so a capability is never saved without the reads it depends
+        // on: an account granted instructor assignment but not `schedule.view`
+        // reached a page it was allowed to open and 403'd fetching its data.
+        $newDirect = $this->capabilities->expand($requested);
         $previousDirect = $user->getDirectPermissions()->pluck('name')->values()->all();
 
         $added = array_values(array_diff($newDirect, $previousDirect));

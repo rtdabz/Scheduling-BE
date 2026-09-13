@@ -15,11 +15,13 @@ use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
+use Closure;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\DB;
 
 class InitialDataController extends Controller
 {
@@ -53,7 +55,16 @@ class InitialDataController extends Controller
     {
         $user = $request->user();
         $include = $this->requestedSections($request);
-        $cacheKey = ApiCache::key('initial.data', [
+        // Versioned per requested section as well as by the group as a whole, so
+        // a write that only touches one collection (a new account changes
+        // `users`/`faculties`) no longer discards the cached payload of a page
+        // that asked for none of it (`?include=rooms,departments,schedules`).
+        // Writes that cannot be narrowed still bump `initial.data` itself.
+        $sectionGroups = array_map(
+            static fn (string $section): string => 'initial.data.'.$section,
+            $include ?? self::OPTIONAL_SECTIONS,
+        );
+        $cacheKey = ApiCache::compositeKey('initial.data', $sectionGroups, [
             'include' => $include,
             'role' => (string) ($user?->role ?? ''),
             'department_id' => $user?->isVpaa() || $user?->department_id === null
@@ -82,6 +93,46 @@ class InitialDataController extends Controller
         );
 
         return JsonResponse::fromJsonString($json);
+    }
+
+    /**
+     * A course this department offers through a curriculum of its own: one
+     * placed in an active curriculum and either owned by the department or a
+     * shared minor, plus any course its field-course setting has delegated to
+     * it regardless of owner.
+     *
+     * @param  Collection<int, Curriculum>  $activeCurriculumList
+     * @param  list<string>  $configuredFieldCodes
+     */
+    private function curricularCourseScope(
+        Collection $activeCurriculumList,
+        ?int $departmentId,
+        array $configuredFieldCodes,
+    ): Closure {
+        return function ($outer) use ($activeCurriculumList, $departmentId, $configuredFieldCodes): void {
+            $outer->where(function ($own) use ($activeCurriculumList, $departmentId) {
+                $own->whereHas('curriculum', function ($q) use ($activeCurriculumList) {
+                    $q->whereIn('curriculum.id', $activeCurriculumList->pluck('id'));
+                })
+                    ->when($departmentId !== null, function ($q) use ($departmentId) {
+                        $q->where(function ($scope) use ($departmentId) {
+                            $scope->whereNull('department_id')
+                                ->orWhere('department_id', $departmentId);
+                        });
+                    });
+            });
+
+            // Keep configured field courses in scope even when their owning
+            // department differs; the field setting explicitly delegates them to
+            // this department's scheduler.
+            if ($configuredFieldCodes !== []) {
+                $outer->orWhere(function ($field) use ($activeCurriculumList, $configuredFieldCodes) {
+                    $field->whereHas('curriculum', function ($q) use ($activeCurriculumList) {
+                        $q->whereIn('curriculum.id', $activeCurriculumList->pluck('id'));
+                    })->whereIn('course_code', $configuredFieldCodes);
+                });
+            }
+        };
     }
 
     private function buildPayload(Request $request): array
@@ -130,14 +181,14 @@ class InitialDataController extends Controller
                 'summer' => 3,
                 default => null,
             };
-            $pivotData = \DB::table('curriculum_course')
+            $pivotData = DB::table('curriculum_course')
                 ->whereIn('curriculum_id', $activeCurriculumList->pluck('id'))
                 ->when($activeSemester !== null, fn ($query) => $query->where('semester', $activeSemester))
                 ->get();
             $activeSemesterCourseIds = $pivotData->pluck('course_id')->map('intval')->unique()->values();
             $configuredFieldCodes = $departmentId === null
                 ? []
-                : \DB::table('field_course_settings')
+                : DB::table('field_course_settings')
                     ->where('department_id', $departmentId)
                     ->whereNotNull('course_code')
                     ->pluck('course_code')
@@ -148,32 +199,22 @@ class InitialDataController extends Controller
                     ->all();
 
             $courses = Course::with($courseRelations)
-                ->whereIn('courses.id', $activeSemesterCourseIds)
-                ->where(function ($outer) use ($activeCurriculumList, $departmentId, $configuredFieldCodes) {
-                    $outer->where(function ($own) use ($activeCurriculumList, $departmentId) {
-                        $own->whereHas('curriculum', function ($q) use ($activeCurriculumList) {
-                            $q->whereIn('curriculum.id', $activeCurriculumList->pluck('id'));
-                        })
-                            // Keep configured field courses in scope even when their
-                            // owning department differs; the field setting explicitly
-                            // delegates them to this department's scheduler.
-                            ->when($departmentId !== null, function ($q) use ($departmentId) {
-                                $q->where(function ($scope) use ($departmentId) {
-                                    $scope->whereNull('department_id')
-                                        ->orWhere('department_id', $departmentId);
-                                });
-                            });
-                    });
-
-                    if ($configuredFieldCodes !== []) {
-                        $outer->orWhere(function ($field) use ($activeCurriculumList, $configuredFieldCodes) {
-                            $field->whereHas('curriculum', function ($q) use ($activeCurriculumList) {
-                                $q->whereIn('curriculum.id', $activeCurriculumList->pluck('id'));
-                            })->whereIn('course_code', $configuredFieldCodes);
-                        });
-                    }
-
-                })
+                // Everything this department teaches, in two disjoint halves.
+                ->where(fn ($scope) => $scope
+                    // Its own curriculum offerings for the active semester.
+                    ->where(fn ($curricular) => $curricular
+                        ->whereIn('courses.id', $activeSemesterCourseIds)
+                        ->where($this->curricularCourseScope($activeCurriculumList, $departmentId, $configuredFieldCodes)))
+                    // Plus every course another college has delegated to it.
+                    // This sits outside *both* filters above on purpose: IT's GEC
+                    // 101 belongs to an IT curriculum and to the IT department, so
+                    // a CAS user matches neither -- yet CAS is the college that
+                    // assigns its instructor and needs the course record to say
+                    // so. Without it the client's `subjects.find(...)` misses, and
+                    // a missing course reads as "open to every department" rather
+                    // than "CAS only", so the picker offers the wrong staff.
+                    ->when($departmentId !== null, fn ($delegated) => $delegated
+                        ->orWhere('teaching_department_id', $departmentId)))
                 ->when($facultyProgramId !== null, fn (Builder $query) => $query->where(
                     fn (Builder $programScope) => $programScope
                         ->where('program_id', $facultyProgramId)
@@ -218,14 +259,26 @@ class InitialDataController extends Controller
                 return strcmp($a->course_code ?? '', $b->course_code ?? '');
             })->values();
         } else {
-            // No active curriculum exists for this department scope.
-            // Return an empty list — courses are only meaningful in the context of an
-            // active curriculum. Shared minors (null dept) are not included here either,
-            // because without a curriculum they have no term/year-level placement.
+            // No active curriculum exists for this department scope. Its own
+            // courses are only meaningful in the context of an active curriculum,
+            // and shared minors (null dept) have no term/year-level placement
+            // without one either, so neither is returned.
             //
-            $courses = $departmentId === null
+            // Courses delegated to this department are the exception: their
+            // placement comes from the owning college's curriculum, and this
+            // department has to assign their instructors whether or not it runs a
+            // curriculum of its own.
+            $courses = ! $wants('courses') || $departmentId === null
                 ? collect()
-                : collect();
+                : Course::with($courseRelations)
+                    ->where('teaching_department_id', $departmentId)
+                    ->when($facultyProgramId !== null, fn (Builder $query) => $query->where(
+                        fn (Builder $programScope) => $programScope
+                            ->where('program_id', $facultyProgramId)
+                            ->orWhere('teaching_program_id', $facultyProgramId),
+                    ))
+                    ->orderBy('course_code')
+                    ->get();
         }
 
         $sections = ! $wants('sections') ? collect() : Sections::query()
@@ -264,11 +317,19 @@ class InitialDataController extends Controller
                 'department:id,department_name,department_code',
             ]))
             ->when($departmentId !== null, fn (Builder $query) => $query->where(
-                // The Schedule Builder is scoped to this department's own offerings.
-                // Delegated courses and source-department rows belong to the
-                // dedicated Cross-Department assignment workflow instead.
+                // This department's own offerings, plus every meeting another
+                // college has delegated to it to teach. The delegated half is
+                // what the Cross-Department Auto-Assign wizard assigns: IT owns
+                // GEC 101 and offers it to an IT section, but CAS teaches it, so
+                // a CAS user has to receive IT's rows to be able to staff them.
+                // Dropping this scoped the payload to `department_id` alone and
+                // left that wizard with nothing to assign.
                 fn (Builder $scope) => $scope
-                    ->where('department_id', $departmentId),
+                    ->where('department_id', $departmentId)
+                    ->orWhereHas(
+                        'course',
+                        fn ($course) => $course->where('teaching_department_id', $departmentId),
+                    ),
             ))
             ->when($facultyProgramId !== null, fn (Builder $query) => $query->whereHas(
                 'course',

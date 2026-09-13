@@ -211,6 +211,16 @@ class ScheduleGenerationPreflightService
         return $issues;
     }
 
+    /**
+     * Whether some course in this batch needs a physical lecture room.
+     *
+     * A standard department is held to a stricter rule than a laboratory one
+     * on purpose: its lectures have only online to fall back on, so a run with
+     * no lecture room at all is reported here rather than quietly generating
+     * an all-online timetable nobody asked for. ValidateGenerationConfiguration
+     * raises the same case as `no_physical_rooms` and offers the switch to
+     * online delivery as a recommendation.
+     */
     private function requiresPhysicalLectureRoom(Collection $courses, array $options, int $departmentId): bool
     {
         $defaultMode = (string) ($options['mode'] ?? 'on-site');
@@ -222,18 +232,6 @@ class ScheduleGenerationPreflightService
             return $mode === 'on-site'
                 && ! SchedulingPolicy::isFieldCourse($course, $departmentId)
                 && ! SchedulingPolicy::isLaboratoryCourse($course);
-        });
-    }
-
-    private function requiresPhysicalLaboratoryRoom(Collection $courses, array $options): bool
-    {
-        $defaultMode = (string) ($options['mode'] ?? 'on-site');
-        $deliveryModes = array_map('strval', $options['delivery_modes_by_course_id'] ?? []);
-
-        return $courses->contains(function (Course $course) use ($defaultMode, $deliveryModes): bool {
-            $mode = $deliveryModes[(string) $course->id] ?? $deliveryModes[(int) $course->id] ?? $defaultMode;
-
-            return $mode === 'on-site' && SchedulingPolicy::isLaboratoryCourse($course);
         });
     }
 

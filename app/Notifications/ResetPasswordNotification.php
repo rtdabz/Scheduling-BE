@@ -3,10 +3,13 @@
 namespace App\Notifications;
 
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class ResetPasswordNotification extends Notification
+// `use Queueable` alone does not defer the send; ShouldQueue is what moves the
+// SMTP session off the request. See WicarsAccountCreatedNotification.
+class ResetPasswordNotification extends Notification implements ShouldQueue
 {
     use Queueable;
 

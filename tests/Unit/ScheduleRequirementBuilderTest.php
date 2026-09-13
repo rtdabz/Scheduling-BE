@@ -84,4 +84,100 @@ class ScheduleRequirementBuilderTest extends TestCase
         $this->assertTrue($requirements[20][0]['is_split_component']);
         $this->assertTrue($requirements[20][1]['is_split_component']);
     }
+
+    public function test_laboratory_builder_keeps_the_unit_derived_lab_length_without_the_override(): void
+    {
+        $requirements = $this->splitRequirements(new Departments([
+            'lecture_lab_schedule_override_enabled' => true,
+        ]));
+
+        // 2 lecture units -> 2 hours; 1 laboratory unit -> 3 hours.
+        $this->assertSame(4, $requirements[20][0]['duration_slots']);
+        $this->assertSame(6, $requirements[20][1]['duration_slots']);
+    }
+
+    public function test_custom_lab_duration_resizes_only_the_laboratory_half(): void
+    {
+        $requirements = $this->splitRequirements(new Departments([
+            'lecture_lab_schedule_override_enabled' => true,
+            'custom_lab_duration_override_enabled' => true,
+            'custom_lab_duration_5_hours_enabled' => true,
+        ]));
+
+        $this->assertSame(4, $requirements[20][0]['duration_slots'], 'the lecture half still follows lecture units');
+        $this->assertSame(10, $requirements[20][1]['duration_slots'], 'five hours is ten slots');
+    }
+
+    public function test_custom_lab_duration_accepts_an_entered_number_of_hours(): void
+    {
+        $requirements = $this->splitRequirements(new Departments([
+            'lecture_lab_schedule_override_enabled' => true,
+            'custom_lab_duration_override_enabled' => true,
+            'custom_lab_duration_other_enabled' => true,
+            'custom_lab_duration_minutes' => 210,
+        ]));
+
+        $this->assertSame(7, $requirements[20][1]['duration_slots'], 'three and a half hours is seven slots');
+    }
+
+    public function test_custom_lab_duration_replaces_rather_than_scales_the_unit_derived_length(): void
+    {
+        $requirements = $this->splitRequirements(
+            new Departments([
+                'lecture_lab_schedule_override_enabled' => true,
+                'custom_lab_duration_override_enabled' => true,
+                'custom_lab_duration_6_hours_enabled' => true,
+            ]),
+            labUnits: 2,
+        );
+
+        // Two laboratory units would derive twelve hours. The override is the
+        // whole component's length, not a per-unit rate.
+        $this->assertSame(12, $requirements[20][1]['duration_slots']);
+    }
+
+    public function test_a_custom_lab_duration_off_the_slot_grid_is_ignored(): void
+    {
+        $requirements = $this->splitRequirements(new Departments([
+            'lecture_lab_schedule_override_enabled' => true,
+            'custom_lab_duration_override_enabled' => true,
+            'custom_lab_duration_other_enabled' => true,
+            'custom_lab_duration_minutes' => 200,
+        ]));
+
+        $this->assertSame(6, $requirements[20][1]['duration_slots'], 'falls back to the unit-derived length');
+    }
+
+    public function test_custom_lab_duration_does_nothing_while_the_override_is_off(): void
+    {
+        $requirements = $this->splitRequirements(new Departments([
+            'lecture_lab_schedule_override_enabled' => true,
+            'custom_lab_duration_override_enabled' => false,
+            'custom_lab_duration_6_hours_enabled' => true,
+        ]));
+
+        $this->assertSame(6, $requirements[20][1]['duration_slots']);
+    }
+
+    /** @return array<int, list<array<string, mixed>>> */
+    private function splitRequirements(Departments $department, int $labUnits = 1): array
+    {
+        $section = new Sections;
+        $section->setRelation('department', $department);
+        $course = new Course([
+            'id' => 20,
+            'units' => 3,
+            'lecture_hours' => 2,
+            'lab_hours' => $labUnits,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+        ]);
+        $course->id = 20;
+
+        return app(LaboratoryScheduleRequirementBuilder::class)->build(
+            $section,
+            new Collection([$course]),
+            ['selected_split_session_course_ids' => [20]],
+        );
+    }
 }

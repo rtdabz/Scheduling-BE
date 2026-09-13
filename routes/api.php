@@ -1,36 +1,33 @@
 <?php
 
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\AuthController;
-use App\Http\Controllers\DepartmentsController;
-use App\Http\Controllers\DepartmentScheduleController;
-use App\Http\Controllers\RoomsController;
-use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\Api\ProgramController;
-
-use App\Http\Controllers\FacultyAvailabilityController;
-use App\Http\Controllers\FacultyController;
-
+use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\ArchiveController;
+use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CoursesController;
 use App\Http\Controllers\CourseTeachingAssignmentController;
-
-use App\Http\Controllers\SectionsController;
-
-use App\Http\Controllers\ScheduleController;
-use App\Http\Controllers\ScheduleSplitController;
-use App\Http\Controllers\ScheduleRecommendationController;
-use App\Http\Controllers\InstructorAssignmentController;
-use App\Http\Controllers\SystemNotificationController;
-use App\Http\Controllers\TermsController;
+use App\Http\Controllers\CurriculumController;
+use App\Http\Controllers\DepartmentScheduleController;
+use App\Http\Controllers\DepartmentsController;
+use App\Http\Controllers\DesignationController;
+use App\Http\Controllers\FacultyAvailabilityController;
+use App\Http\Controllers\FacultyController;
 use App\Http\Controllers\InitialDataController;
 use App\Http\Controllers\InstitutionSettingsController;
-use App\Http\Controllers\CurriculumController;
-use App\Http\Controllers\SchedulingSettingsController;
-use App\Http\Controllers\TimeslotController;
-use App\Http\Controllers\ActivityLogController;
+use App\Http\Controllers\InstructorAssignmentController;
+use App\Http\Controllers\RoomsController;
+use App\Http\Controllers\ScheduleController;
 use App\Http\Controllers\ScheduleHistoryController;
-use App\Http\Controllers\ArchiveController;
+use App\Http\Controllers\ScheduleRecommendationController;
+use App\Http\Controllers\ScheduleSplitController;
+use App\Http\Controllers\SchedulingSettingsController;
+use App\Http\Controllers\SectionsController;
+use App\Http\Controllers\SystemNotificationController;
+use App\Http\Controllers\TermsController;
+use App\Http\Controllers\TimeslotController;
+use App\Http\Controllers\VpaaDashboardController;
+use Illuminate\Support\Facades\Route;
 
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
@@ -53,6 +50,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     // VPAA-only administration
     Route::middleware('role:vpaa')->group(function () {
         Route::get('/activity-log', [ActivityLogController::class, 'index']);
+        // Institution-wide aggregates for the VPAA dashboard. Separate from
+        // /initial-data because that payload caps its schedule rows, which
+        // silently understates campus-wide utilisation and hides clashes.
+        Route::get('/vpaa/dashboard-insights', VpaaDashboardController::class);
         Route::get('/user', [UserController::class, 'index']);
         Route::get('/user/permissions', [UserController::class, 'permissions']);
         Route::get('/user/{user}/permissions', [UserController::class, 'userPermissions']);
@@ -81,6 +82,11 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     // Common readable & scheduling administration routes across all roles.
     Route::middleware('capability:schedule.view')->group(function () {
         Route::get('departments', [DepartmentsController::class, 'index']);
+
+        // Registered before `departments/{department}` so the literal segment is
+        // not matched as a department id.
+        Route::get('departments/schedule-overview', [DepartmentScheduleController::class, 'scheduleOverview']);
+
         Route::get('departments/{department}', [DepartmentsController::class, 'show']);
 
         // Which program an instructor or a major belongs to decides who may teach
@@ -124,6 +130,11 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
         Route::apiResource('schedules', ScheduleController::class)->only(['index', 'show']);
         Route::apiResource('schedule-splits', ScheduleSplitController::class)->only(['index', 'show']);
+
+        // Designations are a lookup every roster screen renders a badge from,
+        // so the list follows the same read gate as the roster itself.
+        Route::get('designations', [DesignationController::class, 'index']);
+        Route::get('designations/{designation}', [DesignationController::class, 'show']);
 
         // Faculties Read-only
         Route::get('faculties', [FacultyController::class, 'index']);
@@ -197,6 +208,15 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
             ->whereNumber('id');
     });
 
+    // Maintaining the designation list is its own capability rather than a role
+    // gate, so the VPAA can delegate it through Manage Access without a code
+    // change. Reads stay open to every scheduling role above.
+    Route::middleware('capability:faculty.manage_designations')->group(function () {
+        Route::post('designations', [DesignationController::class, 'store']);
+        Route::match(['put', 'patch'], 'designations/{designation}', [DesignationController::class, 'update']);
+        Route::delete('designations/{designation}', [DesignationController::class, 'destroy']);
+    });
+
     // Instructor roster — the VPAA owns who exists, so creating and deleting an
     // instructor profile is VPAA-only.
     Route::middleware('role:vpaa')->group(function () {
@@ -244,6 +264,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('schedule-recommendations/year-level-preview/queue', [ScheduleRecommendationController::class, 'queueYearLevelPreview'])->middleware('throttle:5,1');
         Route::get('schedule-recommendations/active-generation-run', [ScheduleRecommendationController::class, 'activeGenerationRun']);
         Route::get('schedule-recommendations/generation-runs/{runId}', [ScheduleRecommendationController::class, 'generationRun']);
+        Route::post('schedule-recommendations/generation-runs/{runId}/cancel', [ScheduleRecommendationController::class, 'cancelGenerationRun']);
         Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
         Route::post('schedule-recommendations/recommend-split', [ScheduleRecommendationController::class, 'recommendSplit']);
         Route::get('schedule-recommendations', [ScheduleRecommendationController::class, 'index']);
