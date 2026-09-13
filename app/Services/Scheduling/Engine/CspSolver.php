@@ -4017,6 +4017,12 @@ class CSPSolver
                     $row['split_session_fallback'] = true;
                 }
 
+                // The assignment flag covers both halves of a lecture/lab
+                // pair; only the half that actually went online was moved.
+                if (($assignment['_lecture_online_fallback'] ?? false) && $row['mode'] === 'online') {
+                    $row['lecture_online_fallback'] = true;
+                }
+
                 if ($hasMultipleBlocks) {
                     $row['split_group_id'] = $splitGroupId;
                     $row['meeting_index'] = $index + 1;

@@ -120,7 +120,9 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             ->assertJsonPath('applied_adjustments.0.type', 'set_pattern')
             ->assertJsonPath('applied_adjustments.0.value', 'TTh')
             ->assertJsonPath('applied_adjustments.0.course_id', (int) $course->id)
-            ->assertJsonPath('applied_adjustments.0.section_id', (int) $section->id);
+            ->assertJsonPath('applied_adjustments.0.section_id', (int) $section->id)
+            ->assertJsonPath('generation_changes.0.kind', 'preference_relaxed')
+            ->assertJsonPath('generation_changes.0.items.0.course_code', 'GEC 101');
 
         $outcomes = collect($response->json('generation_attempts'))->pluck('outcome', 'strategy')->all();
         $this->assertSame('failed', $outcomes['preflight_pattern'] ?? null);
@@ -189,7 +191,8 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             ->assertJsonPath('applied_strategy', null)
             ->assertJsonPath('applied_adjustments', [])
             ->assertJsonPath('generation_attempts.0.strategy', 'baseline')
-            ->assertJsonPath('generation_attempts.0.outcome', 'succeeded');
+            ->assertJsonPath('generation_attempts.0.outcome', 'succeeded')
+            ->assertJsonPath('generation_changes', []);
         $this->assertSame(0, Schedule::query()->count());
     }
 

@@ -32,6 +32,23 @@ class AuditDatabaseIntegrityCommand extends Command
             'generation_run_statuses' => DB::table('schedule_generation_runs')->select('status', DB::raw('COUNT(*) AS count'))->groupBy('status')->pluck('count', 'status')->all(),
             'history_versions' => DB::table('schedule_history_versions')->count(),
             'history_items' => DB::table('schedule_history_items')->count(),
+            // An account created before accounts could link to an existing
+            // instructor got its own profile, leaving the same person on the
+            // roster twice. Reported, never merged: which row holds the real
+            // schedules and loads is a human call.
+            'account_faculty_duplicating_roster_entry' => DB::table('faculties AS linked')
+                ->join('faculties AS roster', function ($join) {
+                    $join->on('roster.department_id', '=', 'linked.department_id')
+                        ->on('roster.id', '!=', 'linked.id')
+                        ->whereRaw('LOWER(roster.first_name) = LOWER(linked.first_name)')
+                        ->whereRaw('LOWER(roster.last_name) = LOWER(linked.last_name)')
+                        ->whereNull('roster.user_id')
+                        ->whereNull('roster.deleted_at');
+                })
+                ->whereNotNull('linked.user_id')
+                ->whereNull('linked.deleted_at')
+                ->select('linked.id AS account_faculty_id', 'roster.id AS roster_faculty_id', 'linked.user_id', 'linked.first_name', 'linked.last_name', 'linked.department_id')
+                ->get()->map(fn ($r) => (array) $r)->values()->all(),
             'unlinked_scheduling_audits' => DB::table('scheduling_audit_logs')->whereNull('history_version_id')->count(),
         ];
 

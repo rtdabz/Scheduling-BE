@@ -47,11 +47,21 @@ class UserController extends Controller
                 Rule::requiredIf(fn () => $request->input('role') === 'program_head'),
                 Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id'))),
             ],
+            // Defaults to `create` so existing API clients keep their behaviour.
+            'faculty_mode' => ['sometimes', 'string', Rule::in(UserFacultyProfileService::MODES)],
+            'faculty_id' => [
+                Rule::requiredIf(fn () => $request->input('faculty_mode') === UserFacultyProfileService::MODE_LINK),
+                'nullable',
+                'integer',
+            ],
+            'designation_id' => ['nullable', 'integer', Rule::exists('designations', 'id')->whereNull('deleted_at')->where('status', 'active')],
         ]);
         $this->ensureRoleDepartmentHierarchy($validated['role'], (int) $validated['department_id']);
         $this->validatePermissionAssignments($validated['permissions'] ?? [], $validated['role']);
+        $facultyMode = $validated['faculty_mode'] ?? UserFacultyProfileService::MODE_CREATE;
+        $designationId = isset($validated['designation_id']) ? (int) $validated['designation_id'] : null;
 
-        $user = DB::transaction(function () use ($validated, $request) {
+        $user = DB::transaction(function () use ($validated, $request, $facultyMode, $designationId) {
             $user = User::create([
                 'name' => $this->displayName($validated),
                 'first_name' => trim($validated['first_name']),
@@ -68,13 +78,18 @@ class UserController extends Controller
                 'profile_picture' => $validated['profile_picture'] ?? null,
                 'program_id' => $validated['role'] === 'program_head' ? $validated['program_id'] : null,
             ]);
-            $this->facultyProfiles->createFor($user);
+            $faculty = match ($facultyMode) {
+                UserFacultyProfileService::MODE_LINK => $this->facultyProfiles->linkTo($user, (int) $validated['faculty_id'], $designationId),
+                UserFacultyProfileService::MODE_CREATE => $this->facultyProfiles->createFor($user, $designationId),
+                default => null,
+            };
             $user->syncRoles([$user->role]);
             $user->syncPermissions($this->capabilities->expand($validated['permissions'] ?? []));
             $this->audit->record($request, 'user_created', $user, [
                 'role' => $user->role,
                 'google_login_allowed' => $user->allow_google_login,
-                'faculty_profile_created' => true,
+                'faculty_profile_mode' => $facultyMode,
+                'faculty_profile_id' => $faculty?->id,
             ]);
 
             return $user;
@@ -145,7 +160,7 @@ class UserController extends Controller
                 'program_id' => $validated['role'] === 'program_head' ? $validated['program_id'] : null,
             ]);
             $user->syncRoles([$user->role]);
-            $this->facultyProfiles->sync($user);
+            $syncedProfile = $this->facultyProfiles->sync($user);
             if (array_key_exists('permissions', $validated)) {
                 $user->syncPermissions($this->capabilities->expand($validated['permissions']));
             }
@@ -156,7 +171,7 @@ class UserController extends Controller
             $this->audit->record($request, 'user_updated', $user, [
                 'active' => $user->is_active,
                 'google_login_allowed' => $user->allow_google_login,
-                'faculty_profile_synced' => true,
+                'faculty_profile_synced' => $syncedProfile !== null,
             ]);
         });
         ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
@@ -208,6 +223,19 @@ class UserController extends Controller
             'message' => 'Google account unlinked successfully.',
             'data' => $user->fresh()->load(['department', 'program']),
         ]);
+    }
+
+    /**
+     * Unlinked instructors in a department, so the Create User form can attach
+     * an account to an existing roster entry instead of duplicating it.
+     */
+    public function linkableFaculty(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'department_id' => 'required|integer|exists:departments,id',
+        ]);
+
+        return response()->json($this->facultyProfiles->linkableIn((int) $validated['department_id']));
     }
 
     public function index(): JsonResponse

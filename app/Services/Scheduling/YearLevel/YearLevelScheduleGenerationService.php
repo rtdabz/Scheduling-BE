@@ -397,6 +397,13 @@ class YearLevelScheduleGenerationService
             'impact' => (string) ($strategy['impact'] ?? 'medium'),
         ];
         $candidate['applied_adjustments'] = [...$existingAdjustments, ...$splitFallbacks];
+        $candidate['generation_changes'] = (new YearLevelGenerationChangeReport)->build(
+            $strategy,
+            $splitFallbacks,
+            $candidate['schedules'] ?? [],
+            collect($sections)->mapWithKeys(static fn (Sections $section): array => [(int) $section->id => (string) $section->section_name])->all(),
+            $this->loadedCourses->mapWithKeys(static fn ($course): array => [(int) $course->id => (string) $course->course_code])->all(),
+        );
         $candidate['generation_metrics'] = $this->reportedMetrics($attempts);
 
         return $candidate;

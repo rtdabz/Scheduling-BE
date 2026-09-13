@@ -23,8 +23,39 @@ class Sections extends Model
     ];
     protected $table = 'sections';
 
+    /**
+     * The form a section name is stored and compared in: surrounding space
+     * trimmed, inner runs collapsed, upper-cased. "bsit  1a" and "BSIT 1A" are
+     * the same cohort, so they must not be able to exist side by side.
+     */
+    public static function normalizeName(string $name): string
+    {
+        return mb_strtoupper(trim((string) preg_replace('/\s+/u', ' ', $name)));
+    }
+
+    /**
+     * Whether a live section already uses this name in the department for the
+     * semester. Archived (soft-deleted) sections do not count, so a name frees up
+     * once its section is archived; restoring that section checks again.
+     */
+    public static function nameTaken(int $departmentId, int $semesterId, string $name, ?int $ignoreId = null): bool
+    {
+        return static::query()
+            ->where('department_id', $departmentId)
+            ->where('semester_id', $semesterId)
+            ->whereRaw('UPPER(TRIM(section_name)) = ?', [static::normalizeName($name)])
+            ->when($ignoreId !== null, fn ($query) => $query->whereKeyNot($ignoreId))
+            ->exists();
+    }
+
     protected static function booted(): void
     {
+        static::saving(function (self $section): void {
+            if ($section->isDirty('section_name') && $section->section_name !== null) {
+                $section->section_name = static::normalizeName((string) $section->section_name);
+            }
+        });
+
         static::creating(function (self $section): void {
             if ($section->curriculum_id !== null || $section->department_id === null) {
                 return;

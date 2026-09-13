@@ -59,6 +59,15 @@ class ArchiveController extends Controller
 
         $record = $modelClass::onlyTrashed()->findOrFail($id);
 
+        // Sections have no unique index to trip below (archived rows would
+        // collide with it), so a restored name is checked by hand.
+        if ($record instanceof Sections
+            && Sections::nameTaken((int) $record->department_id, (int) $record->semester_id, (string) $record->section_name)) {
+            return response()->json([
+                'message' => 'This section cannot be restored because an active section in the same department and semester is already named '.$record->section_name.'.',
+            ], 422);
+        }
+
         try {
             $record->restore();
         } catch (QueryException) {

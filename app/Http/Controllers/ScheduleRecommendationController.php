@@ -637,6 +637,7 @@ class ScheduleRecommendationController extends Controller
             'applied_strategy' => $result['applied_strategy'] ?? null,
             'applied_adjustments' => $result['applied_adjustments'] ?? [],
             'generation_attempts' => $result['generation_attempts'] ?? [],
+            'generation_changes' => $result['generation_changes'] ?? [],
             'generation_metrics' => $result['generation_metrics'] ?? null,
             'sections' => $sections->map(fn (Sections $section): array => [
                 'id' => (int) $section->id,
