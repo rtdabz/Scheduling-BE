@@ -9,7 +9,7 @@ class ScheduleRecommendation extends Model
     protected $table = 'schedule_recommendations';
 
     protected $fillable = [
-        'term_id',
+        'semester_id',
         'section_id',
         'department_id',
         'generation_run_id',
@@ -33,9 +33,9 @@ class ScheduleRecommendation extends Model
         'rejected_at' => 'datetime',
     ];
 
-    public function term()
+    public function academicSemester()
     {
-        return $this->belongsTo(Terms::class);
+        return $this->belongsTo(Semester::class, 'semester_id');
     }
 
     public function section()

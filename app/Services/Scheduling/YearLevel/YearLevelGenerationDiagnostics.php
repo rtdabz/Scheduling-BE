@@ -234,7 +234,7 @@ class YearLevelGenerationDiagnostics
             'detected_cause' => (string) ($bottleneck['detected_cause'] ?? ''),
             'suggested_adjustment' => $bottleneck['type'] === self::TYPE_LABORATORY_ROOM
                 ? 'Add or re-enable a laboratory room for the department, or move a laboratory course to a different year-level run.'
-                : 'Delete stale draft schedules for other year levels in this term, or add an available room, then generate again.',
+                : 'Delete stale draft schedules for other year levels in this semester, or add an available room, then generate again.',
             'section_id' => ($bottleneck['section_id'] ?? 0) > 0 ? (int) $bottleneck['section_id'] : null,
             'section_name' => ($bottleneck['section_name'] ?? '') !== '' ? (string) $bottleneck['section_name'] : null,
             'course_id' => $bottleneck['course_id'] ?? null,

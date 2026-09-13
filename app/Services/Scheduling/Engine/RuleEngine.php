@@ -10,7 +10,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -26,7 +26,7 @@ class RuleEngine
      * Per-instance memo for reference-entity lookups.
      *
      * `validate()` is called once per operation in a batch save, and a batch
-     * almost always reuses the same term, section, room and department. Without
+     * almost always reuses the same semester, section, room and department. Without
      * this, a 40-operation batch re-ran the same handful of primary-key lookups
      * 40 times (audit finding #8). The engine is resolved per request, so the
      * memo cannot outlive the data it caches.
@@ -58,7 +58,7 @@ class RuleEngine
 
     public function checkRoomConflict(
         int $roomId,
-        int $termId,
+        int $semesterId,
         string $day,
         string $startTime,
         string $endTime,
@@ -71,7 +71,7 @@ class RuleEngine
 
         if (($room?->room_type ?? null) === 'field' && $capacity > 1) {
             $overlaps = Schedule::where('room_id', $roomId)
-                ->where('term_id', $termId)
+                ->where('semester_id', $semesterId)
                 ->where('day', $day)
                 ->when($departmentId !== null, fn ($q) => $q->where('department_id', $departmentId))
                 ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
@@ -95,7 +95,7 @@ class RuleEngine
         }
 
         $conflict = Schedule::where('room_id', $roomId)
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('day', $day)
             ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
             ->where('start_time', '<', $endTime)
@@ -168,7 +168,7 @@ class RuleEngine
 
     public function checkFacultyConflict(
         int $facultyId,
-        int $termId,
+        int $semesterId,
         string $day,
         string $startTime,
         string $endTime,
@@ -177,7 +177,7 @@ class RuleEngine
         $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
 
         $conflict = Schedule::where('faculty_id', $facultyId)
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('day', $day)
             ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
             ->where('start_time', '<', $endTime)
@@ -199,7 +199,7 @@ class RuleEngine
 
     public function checkSectionConflict(
         int $sectionId,
-        int $termId,
+        int $semesterId,
         string $day,
         string $startTime,
         string $endTime,
@@ -208,7 +208,7 @@ class RuleEngine
         $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
 
         $conflict = Schedule::where('section_id', $sectionId)
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('day', $day)
             ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
             ->where('start_time', '<', $endTime)
@@ -230,13 +230,13 @@ class RuleEngine
 
     /**
      * Online sections taking the same subject must use different overlapping
-     * time windows in a term. Physical and field delivery remain governed by
+     * time windows in a semester. Physical and field delivery remain governed by
      * their room, capacity, section, and faculty constraints.
      */
     public function checkSubjectSectionConflict(
         int $courseId,
         int $sectionId,
-        int $termId,
+        int $semesterId,
         string $day,
         string $startTime,
         string $endTime,
@@ -252,7 +252,7 @@ class RuleEngine
         $conflict = Schedule::query()
             ->where('course_id', $courseId)
             ->where('section_id', '!=', $sectionId)
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('mode', 'online')
             ->where('day', $day)
             ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
@@ -326,7 +326,7 @@ class RuleEngine
      * $departmentId is the scheduling department, not the course's owner. Field
      * course codes are configured per department and shared minors carry no
      * department of their own, so the room-type rule must be asked in the same
-     * terms as the day rules below or one course gets two answers in one run.
+     * semesters as the day rules below or one course gets two answers in one run.
      */
     public function checkRoomTypeMatch(
         int $courseId,
@@ -473,7 +473,7 @@ class RuleEngine
     {
         $violations = [];
 
-        $term = $this->remember('term:'.$attempt['term_id'], fn () => Terms::find($attempt['term_id']));
+        $semester = $this->remember('semester:'.$attempt['semester_id'], fn () => Semester::find($attempt['semester_id']));
         $section = $this->remember('section:'.$attempt['section_id'], fn () => Sections::find($attempt['section_id']));
         $courseId = $attempt['course_id'] ?? $attempt['subject_id'] ?? null;
         $course = $courseId ? $this->remember('course:'.$courseId, fn () => Course::find($courseId)) : null;
@@ -492,10 +492,10 @@ class RuleEngine
             ? $this->remember('faculty:'.$attempt['faculty_id'], fn () => Faculty::find($attempt['faculty_id']))
             : null;
 
-        if (! $term) {
+        if (! $semester) {
             $violations[] = [
-                'rule' => 'term_exists',
-                'message' => 'Selected academic term does not exist.',
+                'rule' => 'semester_exists',
+                'message' => 'Selected academic semester does not exist.',
             ];
         }
 
@@ -527,7 +527,7 @@ class RuleEngine
             ];
         }
 
-        if (! $term || ! $section || ! $course || (! $room && $mode !== 'online' && ! $allowsLabTba) || (! empty($attempt['faculty_id']) && ! $faculty)) {
+        if (! $semester || ! $section || ! $course || (! $room && $mode !== 'online' && ! $allowsLabTba) || (! empty($attempt['faculty_id']) && ! $faculty)) {
             return $violations;
         }
 
@@ -548,24 +548,24 @@ class RuleEngine
             }
         }
 
-        if (! (bool) ($term->is_enabled ?? true)) {
+        if (! (bool) ($semester->is_enabled ?? true)) {
             $violations[] = [
-                'rule' => 'term_enabled',
-                'message' => 'Selected academic term is disabled for scheduling.',
+                'rule' => 'semester_enabled',
+                'message' => 'Selected academic semester is disabled for scheduling.',
             ];
         }
 
-        if ((int) $section->term_id !== (int) $term->id) {
+        if ((int) $section->semester_id !== (int) $semester->id) {
             $violations[] = [
-                'rule' => 'section_term_alignment',
-                'message' => 'Selected section does not belong to the selected academic term.',
+                'rule' => 'section_semester_alignment',
+                'message' => 'Selected section does not belong to the selected academic semester.',
             ];
         }
 
-        if ((string) $section->semester !== (string) $term->semester) {
+        if ((string) $section->semester !== (string) $semester->semester) {
             $violations[] = [
-                'rule' => 'section_term_semester_alignment',
-                'message' => 'Section semester does not match its academic term semester.',
+                'rule' => 'section_semester_period_alignment',
+                'message' => 'Section semester does not match the academic semester.',
             ];
         }
 
@@ -617,8 +617,8 @@ class RuleEngine
                 // Another department's room is reachable only through an
                 // approved room request, and only inside its granted windows.
                 $grantWindows = $this->remember(
-                    'room-grants:'.$section->department_id.':'.$term->id,
-                    fn () => app(RoomAccessPolicy::class)->grantWindowsFor((int) $section->department_id, (int) $term->id),
+                    'room-grants:'.$section->department_id.':'.$semester->id,
+                    fn () => app(RoomAccessPolicy::class)->grantWindowsFor((int) $section->department_id, (int) $semester->id),
                 )[(int) $room->id] ?? null;
 
                 if ($grantWindows === null) {
@@ -816,7 +816,7 @@ class RuleEngine
         $violations = [];
         $ignoreId = $attempt['ignore_schedule_id'] ?? null;
 
-        foreach (['term_id', 'section_id', 'day', 'start_time', 'end_time'] as $field) {
+        foreach (['semester_id', 'section_id', 'day', 'start_time', 'end_time'] as $field) {
             if (! array_key_exists($field, $attempt) || $attempt[$field] === null || $attempt[$field] === '') {
                 $violations[] = [
                     'rule' => 'required_field',
@@ -885,7 +885,7 @@ class RuleEngine
         if ($mode !== 'online' && ($attempt['room_id'] ?? null) !== null) {
             $roomConflict = $this->checkRoomConflict(
                 (int) $attempt['room_id'],
-                $attempt['term_id'],
+                $attempt['semester_id'],
                 $attempt['day'],
                 $attempt['start_time'],
                 $attempt['end_time'],
@@ -900,7 +900,7 @@ class RuleEngine
         if (! empty($attempt['faculty_id'])) {
             $facultyConflict = $this->checkFacultyConflict(
                 $attempt['faculty_id'],
-                $attempt['term_id'],
+                $attempt['semester_id'],
                 $attempt['day'],
                 $attempt['start_time'],
                 $attempt['end_time'],
@@ -913,7 +913,7 @@ class RuleEngine
 
         $sectionConflict = $this->checkSectionConflict(
             $attempt['section_id'],
-            $attempt['term_id'],
+            $attempt['semester_id'],
             $attempt['day'],
             $attempt['start_time'],
             $attempt['end_time'],
@@ -926,7 +926,7 @@ class RuleEngine
         $subjectSectionConflict = $this->checkSubjectSectionConflict(
             (int) ($attempt['course_id'] ?? $attempt['subject_id'] ?? 0),
             (int) $attempt['section_id'],
-            (int) $attempt['term_id'],
+            (int) $attempt['semester_id'],
             (string) $attempt['day'],
             (string) $attempt['start_time'],
             (string) $attempt['end_time'],
@@ -970,7 +970,7 @@ class RuleEngine
 
         if (($attempt['mode'] ?? 'on-site') === 'online') {
             $onlineCapacityViolation = $this->checkOnlineCapacity(
-                (int) $attempt['term_id'],
+                (int) $attempt['semester_id'],
                 (string) $attempt['day'],
                 (string) $attempt['start_time'],
                 (string) $attempt['end_time'],
@@ -983,7 +983,7 @@ class RuleEngine
 
             $onlineLimitViolation = $this->checkSectionOnlineLimit(
                 (int) $attempt['section_id'],
-                (int) $attempt['term_id'],
+                (int) $attempt['semester_id'],
                 $ignoreId
             );
             if ($onlineLimitViolation) {
@@ -1172,7 +1172,7 @@ class RuleEngine
     }
 
     private function checkOnlineCapacity(
-        int $termId,
+        int $semesterId,
         string $day,
         string $startTime,
         string $endTime,
@@ -1181,7 +1181,7 @@ class RuleEngine
     ): ?array {
         $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
         $overlapCount = Schedule::query()
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('mode', 'online')
             ->where('day', $day)
             ->when($departmentId !== null, fn ($q) => $q->where('department_id', $departmentId))
@@ -1360,7 +1360,7 @@ class RuleEngine
      */
     private function checkSectionOnlineLimit(
         int $sectionId,
-        int $termId,
+        int $semesterId,
         int|array|null $ignoreId
     ): ?array {
         $ignoreIds = $this->normalizeIgnoreScheduleIds($ignoreId);
@@ -1377,7 +1377,7 @@ class RuleEngine
         }
 
         $query = Schedule::where('section_id', $sectionId)
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('mode', 'online');
 
         if (! empty($ignoreIds)) {

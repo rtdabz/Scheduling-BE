@@ -135,7 +135,7 @@ class YearLevelScheduleGenerationService
         }
 
         $this->generationSnapshot = $this->snapshots->capture(
-            termId: (int) $sections[0]->term_id,
+            semesterId: (int) $sections[0]->semester_id,
             departmentId: (int) $sections[0]->department_id,
             sectionIds: array_map(static fn (Sections $section): int => (int) $section->id, $sections),
             courseIds: array_values($snapshotCourseIds),

@@ -24,7 +24,7 @@ class SchedulingConstraintPredicatesTest extends TestCase
     public function test_capacity_sweep_treats_end_events_before_start_events(): void
     {
         $row = ScheduleRow::fromArray([
-            'term_id' => 1,
+            'semester_id' => 1,
             'section_id' => 1,
             'course_id' => 1,
             'department_id' => 1,

@@ -31,7 +31,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
             'status' => 'active',
         ]);
 
-        $term = \App\Models\Terms::create([
+        $semester = \App\Models\Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -43,7 +43,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
             'department_id' => $this->department->id,
             'year_level' => '2',
             'semester' => '1st',
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -108,7 +108,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
             'department_id' => $this->department->id,
             'year_level' => '2',
             'semester' => '1st',
-            'term_id' => $this->section->term_id,
+            'semester_id' => $this->section->semester_id,
             'status' => 'active',
         ]);
 
@@ -119,7 +119,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
                 'course_id' => $this->course->id,
                 'room_id' => $this->lectureRoom->id,
                 'department_id' => $this->department->id,
-                'term_id' => $this->section->term_id,
+                'semester_id' => $this->section->semester_id,
                 'day' => $day,
                 'start_time' => '07:00:00',
                 'end_time' => '19:00:00',
@@ -166,7 +166,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
             'department_id' => $this->department->id,
             'year_level' => '2',
             'semester' => '1st',
-            'term_id' => $this->section->term_id,
+            'semester_id' => $this->section->semester_id,
             'status' => 'active',
         ]);
 
@@ -177,7 +177,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
                 'course_id' => $this->course->id,
                 'room_id' => $this->lectureRoom->id,
                 'department_id' => $this->department->id,
-                'term_id' => $this->section->term_id,
+                'semester_id' => $this->section->semester_id,
                 'day' => $day,
                 'start_time' => '07:00:00',
                 'end_time' => '19:00:00',
@@ -216,7 +216,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
             'department_id' => $this->department->id,
             'year_level' => '2',
             'semester' => '1st',
-            'term_id' => $this->section->term_id,
+            'semester_id' => $this->section->semester_id,
             'status' => 'active',
         ]);
 
@@ -227,7 +227,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
                 'course_id' => $this->course->id,
                 'room_id' => $this->lectureRoom->id,
                 'department_id' => $this->department->id,
-                'term_id' => $this->section->term_id,
+                'semester_id' => $this->section->semester_id,
                 'day' => $day,
                 'start_time' => '07:00:00',
                 'end_time' => '19:00:00',
@@ -263,7 +263,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
             'department_id' => $this->department->id,
             'year_level' => '2',
             'semester' => '1st',
-            'term_id' => $this->section->term_id,
+            'semester_id' => $this->section->semester_id,
             'status' => 'active',
         ]);
 
@@ -274,7 +274,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
                 'course_id' => $this->course->id,
                 'room_id' => $this->lectureRoom->id,
                 'department_id' => $this->department->id,
-                'term_id' => $this->section->term_id,
+                'semester_id' => $this->section->semester_id,
                 'day' => $day,
                 'start_time' => '07:00:00',
                 'end_time' => '19:00:00',

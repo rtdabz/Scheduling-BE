@@ -8,7 +8,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -21,7 +21,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_generation_honors_forced_course_day_rule(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -38,7 +38,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -85,7 +85,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_minor_course_can_be_forced_to_saturday(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -100,7 +100,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([
@@ -144,7 +144,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_generation_reconsiders_valid_candidates_to_remove_same_day_gaps(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -159,7 +159,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $room = Rooms::create([
@@ -217,7 +217,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_major_course_with_lecture_and_lab_stays_single_block_when_override_is_disabled(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -235,7 +235,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -280,7 +280,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_lecture_only_major_course_is_marked_as_lecture(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -297,7 +297,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -338,7 +338,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_csp_does_not_force_lecture_subjects_online_when_rooms_are_available(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -355,7 +355,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '2',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -365,7 +365,7 @@ class DefaultLectureLabGenerationTest extends TestCase
                 'year_level' => '2',
                 'semester' => '1st',
                 'department_id' => $department->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]);
         }
@@ -429,7 +429,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_minor_lecture_courses_can_use_available_classrooms(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -446,7 +446,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '2',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -456,7 +456,7 @@ class DefaultLectureLabGenerationTest extends TestCase
                 'year_level' => '2',
                 'semester' => '1st',
                 'department_id' => $department->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]);
         }
@@ -517,7 +517,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_csp_keeps_valid_physical_candidates_for_later_sections(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -534,7 +534,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '3',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -543,7 +543,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '3',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -587,7 +587,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             ]);
 
             Schedule::create([
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $earlySection->id,
                 'department_id' => $department->id,
                 'course_id' => $course->id,
@@ -617,7 +617,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_major_course_with_lecture_and_lab_generates_separate_components_when_override_is_enabled(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -635,7 +635,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -690,7 +690,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_hybrid_split_components_are_always_scheduled_on_different_days(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -708,7 +708,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -752,7 +752,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_split_session_prefers_available_lecture_room_before_online(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -770,7 +770,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -827,7 +827,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_default_lecture_lab_generation_places_lecture_online_when_no_classroom_exists(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -845,7 +845,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -895,7 +895,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_laboratory_generation_tries_other_slots_before_room_tba(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -912,7 +912,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -943,7 +943,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $existingCourse = Course::create([
@@ -960,7 +960,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'status' => 'active',
         ]);
         Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $otherSection->id,
             'course_id' => $existingCourse->id,
             'room_id' => $labRoom->id,
@@ -987,11 +987,11 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_split_laboratory_generation_exhausts_weekday_room_slots_before_saturday(): void
     {
-        [$term, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse] =
+        [$semester, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse] =
             $this->splitLaboratoryWeekdayPriorityFixture();
 
         Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $blockingSection->id,
             'course_id' => $blockingCourse->id,
             'room_id' => $labRoom->id,
@@ -1020,12 +1020,12 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_split_laboratory_generation_uses_saturday_real_room_after_weekdays_are_exhausted(): void
     {
-        [$term, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse] =
+        [$semester, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse] =
             $this->splitLaboratoryWeekdayPriorityFixture();
 
         foreach (SchedulingPolicy::WEEKDAYS as $day) {
             Schedule::create([
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $blockingSection->id,
                 'course_id' => $blockingCourse->id,
                 'room_id' => $labRoom->id,
@@ -1060,7 +1060,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_default_lecture_lab_generation_uses_room_tba_when_laboratory_is_unavailable(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -1078,7 +1078,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -1119,10 +1119,10 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNull($laboratory['room_id']);
     }
 
-    /** @return array{Terms, Departments, Sections, Course, Rooms, Sections, Course} */
+    /** @return array{Semester, Departments, Sections, Course, Rooms, Sections, Course} */
     private function splitLaboratoryWeekdayPriorityFixture(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -1139,7 +1139,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '2',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         // Make the target course ID align the rotating day-balance anchor with
@@ -1185,7 +1185,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '2',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'inactive',
         ]);
         $blockingCourse = Course::create([
@@ -1202,12 +1202,12 @@ class DefaultLectureLabGenerationTest extends TestCase
             'status' => 'active',
         ]);
 
-        return [$term, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse];
+        return [$semester, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse];
     }
 
     public function test_missing_laboratory_course_keeps_room_tba_even_when_online_is_requested(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -1224,7 +1224,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -1265,7 +1265,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_generation_falls_back_online_when_existing_classrooms_are_fully_booked(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -1282,7 +1282,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -1291,7 +1291,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -1319,7 +1319,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
         foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as $day) {
             Schedule::create([
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $blockingSection->id,
                 'department_id' => $department->id,
                 'course_id' => $course->id,
@@ -1346,7 +1346,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_generation_allows_more_than_five_online_fallbacks_when_rooms_are_fully_booked(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -1363,7 +1363,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '3',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -1372,7 +1372,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '3',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -1404,7 +1404,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
         foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as $day) {
             Schedule::create([
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $blockingSection->id,
                 'department_id' => $department->id,
                 'course_id' => $courseIds[0],
@@ -1432,7 +1432,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_generation_skips_zero_duration_internship_courses(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -1449,7 +1449,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '4',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -1503,7 +1503,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_generation_uses_fixed_start_time_patterns_by_duration(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -1520,7 +1520,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '2',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -1599,7 +1599,7 @@ class DefaultLectureLabGenerationTest extends TestCase
 
     public function test_selected_split_lab_stays_face_to_face_when_course_mode_is_online(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -1617,7 +1617,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'year_level' => '2',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 

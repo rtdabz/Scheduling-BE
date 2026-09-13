@@ -41,13 +41,13 @@ final class CommitSchedulePlan
      */
     public function commit(SchedulePlan $plan, ?int $actorUserId = null): SchedulePlan
     {
-        [$termId, $departmentId] = $this->assertCommitEligible($plan);
+        [$semesterId, $departmentId] = $this->assertCommitEligible($plan);
 
         try {
-            $committed = $this->lock->execute([$termId], function () use ($plan, $actorUserId, $termId, $departmentId): SchedulePlan {
-                return DB::transaction(function () use ($plan, $actorUserId, $termId, $departmentId): SchedulePlan {
+            $committed = $this->lock->execute([$semesterId], function () use ($plan, $actorUserId, $semesterId, $departmentId): SchedulePlan {
+                return DB::transaction(function () use ($plan, $actorUserId, $semesterId, $departmentId): SchedulePlan {
                     $snapshot = $this->snapshots->captureForConfiguration(
-                        $termId,
+                        $semesterId,
                         $departmentId,
                         $plan->configuration,
                     );
@@ -105,7 +105,7 @@ final class CommitSchedulePlan
                     }
 
                     $before = Schedule::query()
-                        ->where('term_id', $termId)
+                        ->where('semester_id', $semesterId)
                         ->where('section_id', $plan->configuration->sectionId)
                         ->whereIn('course_id', $plan->configuration->courseIds)
                         ->whereIn('status', self::REPLACEABLE_STATUSES)
@@ -132,7 +132,7 @@ final class CommitSchedulePlan
                         $before,
                         $created,
                         $actorUserId,
-                        $termId,
+                        $semesterId,
                         $departmentId,
                         'schedule_plan_commit',
                         null,
@@ -147,7 +147,7 @@ final class CommitSchedulePlan
                     SchedulingAuditLog::create([
                         'user_id' => $actorUserId,
                         'history_version_id' => $version->id,
-                        'term_id' => $termId,
+                        'semester_id' => $semesterId,
                         'section_id' => $plan->configuration->sectionId,
                         'department_id' => $departmentId,
                         'action' => 'schedule_plan_committed',
@@ -215,7 +215,7 @@ final class CommitSchedulePlan
         }
 
         $first = $plan->rows[0] ?? null;
-        $termId = $first?->termId ?? 0;
+        $semesterId = $first?->semesterId ?? 0;
         $departmentId = $first?->departmentId ?? 0;
         $configuredCourseIds = $plan->configuration->courseIds;
         sort($configuredCourseIds);
@@ -226,20 +226,20 @@ final class CommitSchedulePlan
         sort($rowCourseIds);
 
         foreach ($plan->rows as $index => $row) {
-            if ($row->termId !== $termId
+            if ($row->semesterId !== $semesterId
                 || $row->departmentId !== $departmentId
                 || $row->sectionId !== $plan->configuration->sectionId
                 || ! in_array($row->courseId, $plan->configuration->courseIds, true)
                 || $row->status !== 'draft') {
                 $violations[] = $this->violation(
                     'schedule_plan_scope_mismatch',
-                    'A schedule plan row falls outside the configured term, department, section, course, or draft persistence scope.',
+                    'A schedule plan row falls outside the configured semester, department, section, course, or draft persistence scope.',
                     ['row_index' => $index],
                 );
             }
         }
 
-        if ($termId <= 0 || $departmentId <= 0 || $rowCourseIds !== $configuredCourseIds) {
+        if ($semesterId <= 0 || $departmentId <= 0 || $rowCourseIds !== $configuredCourseIds) {
             $violations[] = $this->violation(
                 'schedule_plan_scope_mismatch',
                 'The schedule plan does not represent every configured course in one valid scheduling scope.',
@@ -254,7 +254,7 @@ final class CommitSchedulePlan
             $this->reject($violations);
         }
 
-        return [$termId, $departmentId];
+        return [$semesterId, $departmentId];
     }
 
     /** @return array<string, mixed> */

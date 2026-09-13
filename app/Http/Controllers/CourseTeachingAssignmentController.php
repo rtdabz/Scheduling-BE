@@ -6,7 +6,7 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
@@ -39,9 +39,9 @@ use Illuminate\Support\Facades\DB;
  * not part of that answer — it belongs to the owner's curriculum, and it is reported
  * separately as an incoming cross-department course.
  *
- * It is also scoped to the active term's semester, for the same reason
+ * It is also scoped to the active semester's period (1st, 2nd or summer), for the same reason
  * InitialDataController is: delegation is decided one semester at a time, and a list
- * carrying all three made the year-level tabs claim work that is not this term's.
+ * carrying all three made the year-level tabs claim work that is not this semester's.
  */
 class CourseTeachingAssignmentController extends Controller
 {
@@ -66,20 +66,20 @@ class CourseTeachingAssignmentController extends Controller
         $programId = $request->user()?->role === 'program_head'
             ? ($request->user()?->program_id === null ? null : (int) $request->user()->program_id)
             : null;
-        $activeTerm = $this->activeTerm();
-        $activeSemester = self::pivotSemester($activeTerm?->semester);
+        $activeSemester = $this->activeSemester();
+        $activePeriod = self::pivotSemester($activeSemester?->semester);
 
         $curriculumIds = $this->activeCurriculumIds($departmentId, $programId);
-        $courses = $this->departmentCourses($departmentId, $curriculumIds, $activeSemester);
+        $courses = $this->departmentCourses($departmentId, $curriculumIds, $activePeriod);
         $incoming = Course::query()->with(['department', 'teachingDepartment', 'teachingProgram', 'program'])
             ->where('status', 'active')->where('teaching_department_id', $departmentId)
             ->where(fn ($query) => $query->whereNull('department_id')->orWhere('department_id', '!=', $departmentId))
             // An incoming course sits in the *owner's* curriculum, so its semester
             // has to be read from wherever it is placed rather than from this
             // department's curriculum, which does not carry it.
-            ->when($activeSemester !== null, fn ($query) => $query->whereIn(
+            ->when($activePeriod !== null, fn ($query) => $query->whereIn(
                 'courses.id',
-                $this->coursesPlacedInSemester($activeSemester),
+                $this->coursesPlacedInSemester($activePeriod),
             ))
             ->orderBy('course_code')->get()->map(fn (Course $course): array => $this->presentIncoming($course))->values();
 
@@ -90,12 +90,12 @@ class CourseTeachingAssignmentController extends Controller
             // and the page has to say which.
             'has_active_curriculum' => $curriculumIds->isNotEmpty(),
             // A third way to be empty: the curriculum is published but places
-            // nothing this semester. The page has to name the term it is showing,
+            // nothing this semester. The page has to name the semester it is showing,
             // or a narrowed list reads as a broken curriculum.
-            'active_term' => $activeTerm === null ? null : [
-                'id' => (int) $activeTerm->id,
-                'academic_year' => $activeTerm->academic_year,
-                'semester' => $activeTerm->semester,
+            'active_semester' => $activeSemester === null ? null : [
+                'id' => (int) $activeSemester->id,
+                'academic_year' => $activeSemester->academic_year,
+                'semester' => $activeSemester->semester,
             ],
             'departments' => Departments::query()
                 ->orderBy('department_name')
@@ -139,28 +139,28 @@ class CourseTeachingAssignmentController extends Controller
     }
 
     /**
-     * The term currently being scheduled, from the same cache entry
+     * The semester currently being scheduled, from the same cache entry
      * InitialDataController reads, so the two pages cannot disagree about which
      * semester is live.
      */
-    private function activeTerm(): ?Terms
+    private function activeSemester(): ?Semester
     {
         return Cache::remember(
-            ApiCache::key('terms.active'),
+            ApiCache::key('semesters.active'),
             ApiCache::LOOKUP_TTL_SECONDS,
-            fn () => Terms::query()->where('is_active', true)->first(),
+            fn () => Semester::query()->where('is_active', true)->first(),
         );
     }
 
     /**
-     * `terms.semester` is the enum '1st'|'2nd'|'summer'; `curriculum_course.semester`
+     * `semesters.semester` is the enum '1st'|'2nd'|'summer'; `curriculum_course.semester`
      * is an unsigned tinyint 1|2|3. Every comparison between the two has to cross
-     * this gap, and a null means "do not narrow" — with no active term the page
+     * this gap, and a null means "do not narrow" — with no active semester the page
      * shows the whole curriculum rather than nothing at all.
      */
-    private static function pivotSemester(?string $termSemester): ?int
+    private static function pivotSemester(?string $semesterPeriod): ?int
     {
-        return match ($termSemester) {
+        return match ($semesterPeriod) {
             '1st' => 1,
             '2nd' => 2,
             'summer' => 3,
@@ -212,20 +212,20 @@ class CourseTeachingAssignmentController extends Controller
      * so rather than falling back to ownership, which for a college that owns no
      * minors would have returned every shared minor in the institution.
      *
-     * Only the active term's semester is offered. A curriculum places a course in
+     * Only the active semester's period (1st, 2nd or summer) is offered. A curriculum places a course in
      * exactly one semester, so this both narrows the list and picks which placement
      * the year level is read from, for the rare course placed twice.
      *
      * @param  Collection<int, int|string>  $curriculumIds
      * @return Collection<int, Course>
      */
-    private function departmentCourses(int $departmentId, Collection $curriculumIds, ?int $activeSemester): Collection
+    private function departmentCourses(int $departmentId, Collection $curriculumIds, ?int $activePeriod): Collection
     {
         if ($curriculumIds->isEmpty()) {
             return new Collection;
         }
 
-        $placements = $this->curriculumPlacements($curriculumIds, $activeSemester);
+        $placements = $this->curriculumPlacements($curriculumIds, $activePeriod);
 
         // A published curriculum that places nothing this semester offers nothing to
         // delegate — distinct from having no curriculum, which the response also says.
@@ -251,18 +251,18 @@ class CourseTeachingAssignmentController extends Controller
 
     /**
      * Where this department's curriculum places each course, narrowed to the active
-     * term's semester when there is one.
+     * semester's period when there is one.
      *
      * @param  Collection<int, int|string>  $curriculumIds
      * @return Collection<int|string, object> keyed by course_id
      */
-    private function curriculumPlacements(Collection $curriculumIds, ?int $activeSemester): Collection
+    private function curriculumPlacements(Collection $curriculumIds, ?int $activePeriod): Collection
     {
         return DB::table('curriculum_course')
             ->join('curriculum', 'curriculum.id', '=', 'curriculum_course.curriculum_id')
             ->leftJoin('programs', 'programs.id', '=', 'curriculum.program_id')
             ->whereIn('curriculum_course.curriculum_id', $curriculumIds)
-            ->when($activeSemester !== null, fn ($query) => $query->where('curriculum_course.semester', $activeSemester))
+            ->when($activePeriod !== null, fn ($query) => $query->where('curriculum_course.semester', $activePeriod))
             // Newest curriculum first, so the flattening below keeps its
             // placement. A department mid-transition legitimately runs two, and
             // this page's year tabs should follow the curriculum it is moving
@@ -477,7 +477,7 @@ class CourseTeachingAssignmentController extends Controller
 
     private function presentIncoming(Course $course): array
     {
-        $scheduleQuery = $course->schedules()->whereHas('term', fn ($query) => $query->where('is_active', true));
+        $scheduleQuery = $course->schedules()->whereHas('academicSemester', fn ($query) => $query->where('is_active', true));
         $scheduleCount = (clone $scheduleQuery)->count();
         $unassignedCount = (clone $scheduleQuery)->whereNull('faculty_id')->count();
 

@@ -10,7 +10,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleSplit;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\TimeslotOverride;
 use App\Models\User;
 use App\Support\ApiCache;
@@ -28,7 +28,7 @@ class ArchiveController extends Controller
         'rooms' => Rooms::class,
         'faculties' => Faculty::class,
         'courses' => Course::class,
-        'terms' => Terms::class,
+        'semesters' => Semester::class,
         'sections' => Sections::class,
         'schedules' => Schedule::class,
         'schedule-splits' => ScheduleSplit::class,
@@ -73,10 +73,10 @@ class ArchiveController extends Controller
             'faculties.index',
             'courses.index',
             'sections.index',
-            'sections.by_term',
+            'sections.by_semester',
             'sections.by_department',
-            'terms.index',
-            'terms.active',
+            'semesters.index',
+            'semesters.active',
             'initial.data',
         ]);
 
@@ -92,7 +92,7 @@ class ArchiveController extends Controller
             'rooms' => (string) $record->getAttribute('room_code'),
             'faculties' => trim((string) $record->getAttribute('first_name').' '.(string) $record->getAttribute('last_name')),
             'courses' => trim((string) $record->getAttribute('course_code').' - '.(string) $record->getAttribute('course_name')),
-            'terms' => trim((string) $record->getAttribute('academic_year').' '.(string) $record->getAttribute('semester')),
+            'semesters' => trim((string) $record->getAttribute('academic_year').' '.(string) $record->getAttribute('semester')),
             'sections' => (string) $record->getAttribute('section_name'),
             'schedules' => 'Schedule #'.$record->getKey(),
             'schedule-splits' => 'Schedule split #'.$record->getKey(),

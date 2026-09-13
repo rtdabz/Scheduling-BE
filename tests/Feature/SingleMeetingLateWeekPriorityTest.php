@@ -7,7 +7,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Engine\CspSolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -72,7 +72,7 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $context['department']->id,
-            'term_id' => $context['term']->id,
+            'semester_id' => $context['semester']->id,
             'status' => 'active',
         ]);
 
@@ -87,7 +87,7 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
 
         foreach ($days as $day) {
             \App\Models\Schedule::create([
-                'term_id' => $context['term']->id,
+                'semester_id' => $context['semester']->id,
                 'section_id' => $blocker->id,
                 'course_id' => $filler->id,
                 'room_id' => $room->id,
@@ -124,10 +124,10 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
         );
     }
 
-    /** @return array{term: Terms, department: Departments, section: Sections, curriculum: Curriculum} */
+    /** @return array{semester: Semester, department: Departments, section: Sections, curriculum: Curriculum} */
     private function scaffold(int $lectureRooms = 0, int $laboratoryRooms = 0): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -145,7 +145,7 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -172,7 +172,7 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
         }
 
         return [
-            'term' => $term,
+            'semester' => $semester,
             'department' => $department,
             'section' => $section,
             'curriculum' => Curriculum::create([

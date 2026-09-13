@@ -10,7 +10,7 @@ use InvalidArgumentException;
 final readonly class ScheduleRow implements SchedulingContract
 {
     public function __construct(
-        public int $termId,
+        public int $semesterId,
         public int $sectionId,
         public int $courseId,
         public int $departmentId,
@@ -27,7 +27,7 @@ final readonly class ScheduleRow implements SchedulingContract
         public ?int $meetingIndex = null,
         public string $status = 'draft',
     ) {
-        foreach ([$this->termId, $this->sectionId, $this->courseId, $this->departmentId] as $id) {
+        foreach ([$this->semesterId, $this->sectionId, $this->courseId, $this->departmentId] as $id) {
             if ($id <= 0) {
                 throw new InvalidArgumentException('Schedule identity values must be positive integers.');
             }
@@ -62,7 +62,7 @@ final readonly class ScheduleRow implements SchedulingContract
     public static function fromArray(array $payload): self
     {
         return new self(
-            termId: (int) ($payload['term_id'] ?? 0),
+            semesterId: (int) ($payload['semester_id'] ?? 0),
             sectionId: (int) ($payload['section_id'] ?? 0),
             courseId: (int) ($payload['course_id'] ?? $payload['subject_id'] ?? 0),
             departmentId: (int) ($payload['department_id'] ?? 0),
@@ -89,7 +89,7 @@ final readonly class ScheduleRow implements SchedulingContract
     public function toArray(): array
     {
         return [
-            'term_id' => $this->termId,
+            'semester_id' => $this->semesterId,
             'section_id' => $this->sectionId,
             'course_id' => $this->courseId,
             'faculty_id' => $this->facultyId,

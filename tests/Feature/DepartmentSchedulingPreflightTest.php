@@ -9,7 +9,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Engine\CSPSolver;
 use App\Services\Scheduling\Department\DepartmentSchedulingAuditService;
@@ -23,7 +23,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_standard_department_generates_lecture_course_without_laboratory_room(): void
     {
-        [$term, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
         $this->attachCourse($department, $course, $section);
         Rooms::create([
             'room_code' => 'BA 101',
@@ -48,7 +48,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_preflight_uses_the_active_curriculum_period_instead_of_global_course_metadata(): void
     {
-        [$term, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
         $course->update([
             'year_level' => '2',
             'semester' => '2nd',
@@ -77,7 +77,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_standard_department_does_not_use_an_available_laboratory_for_a_lecture_course(): void
     {
-        [$term, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
         $this->attachCourse($department, $course, $section);
         $lecture = Rooms::create([
             'room_code' => 'BA 101',
@@ -115,7 +115,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_standard_department_rejects_laboratory_course_before_solver(): void
     {
-        [$term, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
         $course->update([
             'course_code' => 'BA LAB 101',
             'lab_hours' => 1,
@@ -130,7 +130,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'department_id' => $department->id,
         ]);
         $existing = Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => $room->id,
@@ -160,7 +160,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_standard_department_reports_missing_lecture_room(): void
     {
-        [$term, $department, $section, $course] = $this->createBase('EDUC', 'Education', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('EDUC', 'Education', 'standard');
         $this->attachCourse($department, $course, $section);
 
         $user = User::factory()->create([
@@ -182,7 +182,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_standard_solver_reports_an_actionable_empty_room_domain(): void
     {
-        [$term, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
         $this->attachCourse($department, $course, $section);
         Rooms::create([
             'room_code' => 'BA Lab',
@@ -209,7 +209,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_department_audit_reports_profile_and_room_counts(): void
     {
-        [$term, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
         $this->attachCourse($department, $course, $section);
         Rooms::create([
             'room_code' => 'BA 103',
@@ -229,7 +229,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     private function createBase(string $code, string $name, string $profile): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -253,7 +253,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'semester' => '1st',
             'department_id' => $department->id,
             'program_id' => $program->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([
@@ -270,7 +270,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'status' => 'active',
         ]);
 
-        return [$term, $department, $section, $course];
+        return [$semester, $department, $section, $course];
     }
 
     private function attachCourse(Departments $department, Course $course, Sections $section): void

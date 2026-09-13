@@ -20,7 +20,7 @@ class ManualHybridFacultyAssignmentResolver
         }
 
         $query = Schedule::query()
-            ->where('term_id', $schedule->term_id)
+            ->where('semester_id', $schedule->semester_id)
             ->where('section_id', $schedule->section_id)
             ->where('course_id', $schedule->course_id)
             ->where('department_id', $schedule->department_id);

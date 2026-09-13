@@ -5,11 +5,11 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
-class Terms extends Model
+class Semester extends Model
 {
     use SoftDeletes;
 
-    protected $table = 'terms';
+    protected $table = 'semesters';
     protected $fillable = [
         'academic_year',
         'semester',
@@ -20,9 +20,9 @@ class Terms extends Model
     {
         parent::boot();
 
-        static::saving(function ($term) {
-            if ($term->is_active) {
-                static::where('id', '!=', $term->id)
+        static::saving(function ($semester) {
+            if ($semester->is_active) {
+                static::where('id', '!=', $semester->id)
                       ->where('is_active', true)
                       ->update(['is_active' => false]);
             }

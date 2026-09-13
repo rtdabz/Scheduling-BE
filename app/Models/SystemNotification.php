@@ -10,7 +10,7 @@ class SystemNotification extends Model
         'user_id',
         'actor_id',
         'department_id',
-        'term_id',
+        'semester_id',
         'type',
         'title',
         'message',
@@ -39,8 +39,8 @@ class SystemNotification extends Model
         return $this->belongsTo(Departments::class, 'department_id');
     }
 
-    public function term()
+    public function academicSemester()
     {
-        return $this->belongsTo(Terms::class);
+        return $this->belongsTo(Semester::class, 'semester_id');
     }
 }

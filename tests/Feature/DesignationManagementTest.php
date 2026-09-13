@@ -5,7 +5,7 @@ namespace Tests\Feature;
 use App\Models\Departments;
 use App\Models\Designation;
 use App\Models\Faculty;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -292,7 +292,7 @@ class DesignationManagementTest extends TestCase
             'department_code' => 'DSG',
         ]);
 
-        Terms::create([
+        Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,

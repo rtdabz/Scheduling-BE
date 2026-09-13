@@ -8,7 +8,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -23,9 +23,9 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
 
     public function test_conflicting_batch_is_rejected_and_creates_nothing(): void
     {
-        [$dept, $term, $room, $course, $otherCourse, $section, $user] = $this->fixture();
+        [$dept, $semester, $room, $course, $otherCourse, $section, $user] = $this->fixture();
 
-        $this->schedule($dept, $term, $room, $course, $section, [
+        $this->schedule($dept, $semester, $room, $course, $section, [
             'day' => 'Monday',
             'start_time' => '08:00',
             'end_time' => '09:00',
@@ -34,7 +34,7 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
         $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
             'operations' => [
                 [
-                    'term_id' => $term->id,
+                    'semester_id' => $semester->id,
                     'section_id' => $section->id,
                     'course_id' => $otherCourse->id,
                     'room_id' => $room->id,
@@ -46,7 +46,7 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
                     'status' => 'draft',
                 ],
                 [
-                    'term_id' => $term->id,
+                    'semester_id' => $semester->id,
                     'section_id' => $section->id,
                     'course_id' => $otherCourse->id,
                     'room_id' => $room->id,
@@ -73,14 +73,14 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
 
     public function test_rejected_batch_does_not_apply_its_delete_ids(): void
     {
-        [$dept, $term, $room, $course, $otherCourse, $section, $user] = $this->fixture();
+        [$dept, $semester, $room, $course, $otherCourse, $section, $user] = $this->fixture();
 
-        $existing = $this->schedule($dept, $term, $room, $course, $section, [
+        $existing = $this->schedule($dept, $semester, $room, $course, $section, [
             'day' => 'Monday',
             'start_time' => '08:00',
             'end_time' => '09:00',
         ]);
-        $unrelated = $this->schedule($dept, $term, $room, $otherCourse, $section, [
+        $unrelated = $this->schedule($dept, $semester, $room, $otherCourse, $section, [
             'day' => 'Friday',
             'start_time' => '15:00',
             'end_time' => '16:00',
@@ -88,7 +88,7 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
 
         $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
             'operations' => [[
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $section->id,
                 'course_id' => $otherCourse->id,
                 'room_id' => $room->id,
@@ -109,9 +109,9 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
 
     public function test_valid_batch_still_saves_and_deletes(): void
     {
-        [$dept, $term, $room, $course, $otherCourse, $section, $user] = $this->fixture();
+        [$dept, $semester, $room, $course, $otherCourse, $section, $user] = $this->fixture();
 
-        $stale = $this->schedule($dept, $term, $room, $course, $section, [
+        $stale = $this->schedule($dept, $semester, $room, $course, $section, [
             'day' => 'Monday',
             'start_time' => '08:00',
             'end_time' => '09:00',
@@ -119,7 +119,7 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
 
         $response = $this->actingAs($user)->postJson('/api/schedules/batch', [
             'operations' => [[
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $section->id,
                 'course_id' => $otherCourse->id,
                 'room_id' => $room->id,
@@ -145,14 +145,14 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
 
     public function test_conflicting_single_update_is_rejected_and_leaves_row_untouched(): void
     {
-        [$dept, $term, $room, $course, $otherCourse, $section, $user] = $this->fixture();
+        [$dept, $semester, $room, $course, $otherCourse, $section, $user] = $this->fixture();
 
-        $blocking = $this->schedule($dept, $term, $room, $course, $section, [
+        $blocking = $this->schedule($dept, $semester, $room, $course, $section, [
             'day' => 'Monday',
             'start_time' => '08:00',
             'end_time' => '09:00',
         ]);
-        $target = $this->schedule($dept, $term, $room, $otherCourse, $section, [
+        $target = $this->schedule($dept, $semester, $room, $otherCourse, $section, [
             'day' => 'Friday',
             'start_time' => '15:00',
             'end_time' => '16:00',
@@ -175,9 +175,9 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
 
     public function test_valid_single_update_still_persists(): void
     {
-        [$dept, $term, $room, $course, , $section, $user] = $this->fixture();
+        [$dept, $semester, $room, $course, , $section, $user] = $this->fixture();
 
-        $target = $this->schedule($dept, $term, $room, $course, $section, [
+        $target = $this->schedule($dept, $semester, $room, $course, $section, [
             'day' => 'Friday',
             'start_time' => '15:00',
             'end_time' => '16:00',
@@ -195,14 +195,14 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
         $this->assertSame('10:00', $target->start_time);
     }
 
-    /** @return array{0: Departments, 1: Terms, 2: Rooms, 3: Course, 4: Course, 5: Sections, 6: User} */
+    /** @return array{0: Departments, 1: Semester, 2: Rooms, 3: Course, 4: Course, 5: Sections, 6: User} */
     private function fixture(): array
     {
         $dept = Departments::create(['department_name' => 'Atomic Dept', 'department_code' => 'ATM']);
         // Schedule capabilities and section scheduling both require the
         // department to own a program.
         $program = Program::create(['department_id' => $dept->id, 'code' => 'ATMP', 'name' => 'Atomic Program']);
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -224,13 +224,13 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
             'semester' => '1st',
             'department_id' => $dept->id,
             'program_id' => $program->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]));
 
-        return [$dept, $term, $room, $course, $otherCourse, $section, $user];
+        return [$dept, $semester, $room, $course, $otherCourse, $section, $user];
     }
 
     private function course(string $code, string $name, Departments $department): Course
@@ -252,14 +252,14 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
 
     private function schedule(
         Departments $department,
-        Terms $term,
+        Semester $semester,
         Rooms $room,
         Course $course,
         Sections $section,
         array $overrides = [],
     ): Schedule {
         return Schedule::create(array_merge([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => $room->id,

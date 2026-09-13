@@ -9,7 +9,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -104,7 +104,7 @@ class PreferredPeriodWindowFeasibilityTest extends TestCase
     /** @return array{0: User, 1: array<string, mixed>, 2: Sections, 3: Course} */
     private function scenario(int $units, ?string $period, bool $majorLectureSplitEnabled = false): array
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
@@ -119,7 +119,7 @@ class PreferredPeriodWindowFeasibilityTest extends TestCase
             'department_id' => $department->id,
             'program_id' => $program->id,
             'curriculum_id' => $curriculum->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([
@@ -151,7 +151,7 @@ class PreferredPeriodWindowFeasibilityTest extends TestCase
         }
 
         return [$user, [
-            'term_id' => (int) $term->id,
+            'semester_id' => (int) $semester->id,
             'department_id' => (int) $department->id,
             'year_level' => 1,
             'section_configs' => [$config],

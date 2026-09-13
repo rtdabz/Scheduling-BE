@@ -9,7 +9,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -328,7 +328,7 @@ class FacultyOverloadConfirmationTest extends TestCase
             'code' => 'BSLOD',
             'name' => 'Load Program',
         ]);
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -338,7 +338,7 @@ class FacultyOverloadConfirmationTest extends TestCase
         $fixture = [
             'department' => $department,
             'program' => $program,
-            'term' => $term,
+            'semester' => $semester,
             'room' => Rooms::create([
                 'room_code' => 'LOD101',
                 'room_type' => 'lecture',
@@ -423,7 +423,7 @@ class FacultyOverloadConfirmationTest extends TestCase
             'semester' => '1st',
             'department_id' => $fixture['department']->id,
             'program_id' => $fixture['program']->id,
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'status' => 'active',
         ]);
 
@@ -433,7 +433,7 @@ class FacultyOverloadConfirmationTest extends TestCase
         $hour = 7 + intdiv($slot, count($days));
 
         return Schedule::create([
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => $fixture['room']->id,

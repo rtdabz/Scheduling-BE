@@ -44,7 +44,7 @@ class SchedulingDomainContractsTest extends TestCase
     public function test_schedule_row_supports_current_transport_aliases_and_room_resolution(): void
     {
         $row = ScheduleRow::fromArray([
-            'term_id' => 1,
+            'semester_id' => 1,
             'section_id' => 2,
             'subject_id' => 3,
             'department_id' => 4,
@@ -101,15 +101,15 @@ class SchedulingDomainContractsTest extends TestCase
         $snapshot = new SchedulingSnapshot(
             fingerprint: str_repeat('a', 64),
             capturedAt: new \DateTimeImmutable,
-            termId: 2,
+            semesterId: 2,
             departmentId: 5,
-            sectionsById: [3 => ['id' => 3, 'term_id' => 2, 'department_id' => 5]],
+            sectionsById: [3 => ['id' => 3, 'semester_id' => 2, 'department_id' => 5]],
             coursesById: [4 => ['id' => 4, 'lecture_hours' => 2, 'lab_hours' => 1, 'units' => 3]],
-            term: ['id' => 2],
+            semester: ['id' => 2],
         );
         $rows = [
-            ScheduleRow::fromArray(['term_id' => 2, 'section_id' => 3, 'department_id' => 5, 'course_id' => 4, 'day' => 'Monday', 'start_time' => '08:00', 'end_time' => '10:00', 'mode' => 'online', 'is_hybrid' => true, 'meeting_type' => 'lecture']),
-            ScheduleRow::fromArray(['term_id' => 2, 'section_id' => 3, 'department_id' => 5, 'course_id' => 4, 'day' => 'Monday', 'start_time' => '13:00', 'end_time' => '16:00', 'mode' => 'on-site', 'is_hybrid' => true, 'meeting_type' => 'laboratory']),
+            ScheduleRow::fromArray(['semester_id' => 2, 'section_id' => 3, 'department_id' => 5, 'course_id' => 4, 'day' => 'Monday', 'start_time' => '08:00', 'end_time' => '10:00', 'mode' => 'online', 'is_hybrid' => true, 'meeting_type' => 'lecture']),
+            ScheduleRow::fromArray(['semester_id' => 2, 'section_id' => 3, 'department_id' => 5, 'course_id' => 4, 'day' => 'Monday', 'start_time' => '13:00', 'end_time' => '16:00', 'mode' => 'on-site', 'is_hybrid' => true, 'meeting_type' => 'laboratory']),
         ];
 
         $violations = app(\App\Services\Scheduling\Engine\Constraints\ValidateScheduleCandidate::class)
@@ -151,7 +151,7 @@ class SchedulingDomainContractsTest extends TestCase
         $snapshot = new SchedulingSnapshot(
             fingerprint: 'snapshot-sha256',
             capturedAt: new DateTimeImmutable('2026-09-01T09:30:00+08:00'),
-            termId: 1,
+            semesterId: 1,
             departmentId: 4,
             sectionsById: [2 => ['id' => 2]],
             coursesById: [3 => ['id' => 3]],
@@ -211,7 +211,7 @@ class SchedulingDomainContractsTest extends TestCase
         ?int $roomId = 5,
     ): array {
         return [
-            'term_id' => 1,
+            'semester_id' => 1,
             'section_id' => 2,
             'course_id' => 3,
             'department_id' => 4,

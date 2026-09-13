@@ -5,7 +5,7 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Curriculum;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -370,7 +370,7 @@ class CurriculumIndependenceTest extends TestCase
         $response = $this->getJson("/api/curriculum/{$hmCurriculum->id}/full");
 
         $response->assertOk();
-        $courseCodes = collect($response->json('terms.0.courses'))->pluck('code')->all();
+        $courseCodes = collect($response->json('semesters.0.courses'))->pluck('code')->all();
         $this->assertContains('HM 101', $courseCodes);
         $this->assertContains('GEC 1', $courseCodes);
         $this->assertNotContains('IT 101', $courseCodes);

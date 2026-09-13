@@ -52,7 +52,7 @@ final class RecommendationPlanBackfillService
                         ]);
                     }
                     $rows = $this->rows($recommendation);
-                    $snapshot = $this->snapshots->captureForConfiguration((int) $recommendation->term_id, (int) $recommendation->department_id, $configuration);
+                    $snapshot = $this->snapshots->captureForConfiguration((int) $recommendation->semester_id, (int) $recommendation->department_id, $configuration);
                     $plan = new SchedulePlan(
                         planId: (string) Str::uuid(), configuration: $configuration,
                         snapshotFingerprint: $snapshot->fingerprint,
@@ -89,7 +89,7 @@ final class RecommendationPlanBackfillService
     private function rows(ScheduleRecommendation $recommendation): array
     {
         return array_map(function (array $row) use ($recommendation): array {
-            return [...$row, 'term_id' => $row['term_id'] ?? $recommendation->term_id, 'section_id' => $row['section_id'] ?? $recommendation->section_id, 'department_id' => $row['department_id'] ?? $recommendation->department_id];
+            return [...$row, 'semester_id' => $row['semester_id'] ?? $recommendation->semester_id, 'section_id' => $row['section_id'] ?? $recommendation->section_id, 'department_id' => $row['department_id'] ?? $recommendation->department_id];
         }, is_array($recommendation->recommended_schedules) ? $recommendation->recommended_schedules : []);
     }
 }

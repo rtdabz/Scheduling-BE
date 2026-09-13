@@ -317,7 +317,7 @@ final class SchedulingConstraintKernel
         $violations = [];
 
         foreach ($others as $other) {
-            if (! $this->sameTerm($row, $other) || ! SchedulingConstraintPredicates::rowOverlaps($row, $other)) {
+            if (! $this->sameSemester($row, $other) || ! SchedulingConstraintPredicates::rowOverlaps($row, $other)) {
                 continue;
             }
 
@@ -398,7 +398,7 @@ final class SchedulingConstraintKernel
     {
         return array_values(array_filter(
             $others,
-            fn (array|ScheduleRow $other): bool => $this->sameTerm($row, $other)
+            fn (array|ScheduleRow $other): bool => $this->sameSemester($row, $other)
                 && SchedulingConstraintPredicates::rowOverlaps($row, $other)
                 && $predicate($row, $other),
         ));
@@ -464,9 +464,9 @@ final class SchedulingConstraintKernel
     }
 
     /** @param array<string, mixed>|ScheduleRow $other */
-    private function sameTerm(ScheduleRow $row, array|ScheduleRow $other): bool
+    private function sameSemester(ScheduleRow $row, array|ScheduleRow $other): bool
     {
-        return $row->termId === $this->intValue($other, 'term_id');
+        return $row->semesterId === $this->intValue($other, 'semester_id');
     }
 
     /** @param array<string, mixed>|ScheduleRow $other */
@@ -488,7 +488,7 @@ final class SchedulingConstraintKernel
     {
         if ($row instanceof ScheduleRow) {
             return match ($key) {
-                'term_id' => $row->termId,
+                'semester_id' => $row->semesterId,
                 'section_id' => $row->sectionId,
                 'course_id' => $row->courseId,
                 'department_id' => $row->departmentId,

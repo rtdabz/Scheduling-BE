@@ -17,7 +17,7 @@ use InvalidArgumentException;
 /**
  * Resolves a single split-session placement using the CSP solver and Rule Engine.
  *
- * The caller provides one split block's context (course, section, term, duration,
+ * The caller provides one split block's context (course, section, semester, duration,
  * preferred day/time/room/mode, and any schedule IDs to treat as deleted).
  * This service builds a focused CSP domain for only that one block, pre-loads
  * all existing persisted schedules for the section as constraints, then searches
@@ -36,7 +36,7 @@ final class SplitScheduleService
     /**
      * Find the best conflict-free placements for a single split-session block.
      *
-     * @param  int          $termId         Academic term ID.
+     * @param  int          $semesterId         Academic semester ID.
      * @param  int          $sectionId      Section being scheduled.
      * @param  int          $courseId       Course being split.
      * @param  int          $departmentId   Department owning the section.
@@ -50,7 +50,7 @@ final class SplitScheduleService
      * @return array{status: string, recommendations: array<int, array<string, mixed>>}
      */
     public function recommend(
-        int    $termId,
+        int    $semesterId,
         int    $sectionId,
         int    $courseId,
         int    $departmentId,
@@ -72,7 +72,7 @@ final class SplitScheduleService
         }
 
         $course  = Course::findOrFail($courseId);
-        $section = Sections::with('term')->findOrFail($sectionId);
+        $section = Sections::with('academicSemester')->findOrFail($sectionId);
         $meetingType ??= $this->inferMeetingType($course, $durationSlots, $departmentId);
 
         $targetRoomType = match (true) {
@@ -84,7 +84,7 @@ final class SplitScheduleService
         };
 
         // Build the list of rooms to search over.
-        $rooms = $this->resolveRooms($course, $mode, $roomId, $departmentId, $meetingType, (int) $section->term_id);
+        $rooms = $this->resolveRooms($course, $mode, $roomId, $departmentId, $meetingType, (int) $section->semester_id);
 
         $allowRoomTba = $mode === 'on-site'
             && SchedulingPolicy::allowsRoomTbaFallback($course, $departmentId, $meetingType);
@@ -118,12 +118,12 @@ final class SplitScheduleService
                 break;
             }
 
-            if ($this->candidateHasPersistedConflict($candidate, $termId, $sectionId, $ignoreIds)) {
+            if ($this->candidateHasPersistedConflict($candidate, $semesterId, $sectionId, $ignoreIds)) {
                 continue;
             }
 
             $data = [
-                'term_id'             => $termId,
+                'semester_id'             => $semesterId,
                 'section_id'          => $sectionId,
                 'course_id'           => $courseId,
                 'room_id'             => $candidate['room_id'],
@@ -196,10 +196,10 @@ final class SplitScheduleService
         return ['status' => 'ok', 'recommendations' => $ranked];
     }
 
-    private function candidateHasPersistedConflict(array $candidate, int $termId, int $sectionId, array $ignoreIds): bool
+    private function candidateHasPersistedConflict(array $candidate, int $semesterId, int $sectionId, array $ignoreIds): bool
     {
         $schedules = Schedule::query()
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('day', $candidate['day'])
             ->where(function ($query) use ($candidate, $sectionId): void {
                 $query
@@ -255,7 +255,7 @@ final class SplitScheduleService
         ?int   $preferredRoomId,
         int    $departmentId,
         ?string $meetingType = null,
-        ?int $termId = null,
+        ?int $semesterId = null,
     ): \Illuminate\Database\Eloquent\Collection {
         $targetRoomType = match (true) {
             $mode === 'online' => 'online',
@@ -268,7 +268,7 @@ final class SplitScheduleService
         $query = Rooms::query()
             ->where('status', 'available')
             ->where('room_type', $targetRoomType)
-            ->tap(fn ($q) => app(RoomAccessPolicy::class)->scopeReachableRooms($q, $departmentId, $termId))
+            ->tap(fn ($q) => app(RoomAccessPolicy::class)->scopeReachableRooms($q, $departmentId, $semesterId))
             ->orderBy('room_code');
 
         $rooms = $query->get();

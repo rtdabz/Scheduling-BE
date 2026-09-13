@@ -6,7 +6,7 @@ use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -60,34 +60,34 @@ class DayCategoryConstraintParityTest extends TestCase
 
     public function test_major_courses_on_sunday_require_online_delivery(): void
     {
-        [$term, $department, $section, $room] = $this->fixture();
+        [$semester, $department, $section, $room] = $this->fixture();
         $course = $this->course('IT101', 'Intro to Computing', 'major', 'lecture');
 
-        $onSite = $this->rules($this->attempt($term, $department, $section, $course, 'Sunday', 'on-site', $room->id));
+        $onSite = $this->rules($this->attempt($semester, $department, $section, $course, 'Sunday', 'on-site', $room->id));
         $this->assertContains('major_sunday_mode_constraint', $onSite);
 
-        $online = $this->rules($this->attempt($term, $department, $section, $course, 'Sunday', 'online', null));
+        $online = $this->rules($this->attempt($semester, $department, $section, $course, 'Sunday', 'online', null));
         $this->assertNotContains('major_sunday_mode_constraint', $online);
     }
 
     public function test_sunday_rule_can_be_disabled_per_department(): void
     {
-        [$term, $department, $section, $room] = $this->fixture();
+        [$semester, $department, $section, $room] = $this->fixture();
         $department->update(['sunday_online_only_enabled' => false]);
         $course = $this->course('IT101', 'Intro to Computing', 'major', 'lecture');
 
-        $rules = $this->rules($this->attempt($term, $department, $section, $course, 'Sunday', 'on-site', $room->id));
+        $rules = $this->rules($this->attempt($semester, $department, $section, $course, 'Sunday', 'on-site', $room->id));
 
         $this->assertNotContains('major_sunday_mode_constraint', $rules);
     }
 
     public function test_field_courses_must_end_by_five_pm_unless_the_department_opts_in(): void
     {
-        [$term, $department, $section] = $this->fixture();
+        [$semester, $department, $section] = $this->fixture();
         $field = $this->fieldRoom();
         $course = $this->course('PATHFIT9', 'Movement Competency', 'major', 'field');
 
-        $evening = $this->attempt($term, $department, $section, $course, 'Monday', 'field', $field->id);
+        $evening = $this->attempt($semester, $department, $section, $course, 'Monday', 'field', $field->id);
         $evening['start_time'] = '17:00';
         $evening['end_time'] = '18:00';
 
@@ -101,11 +101,11 @@ class DayCategoryConstraintParityTest extends TestCase
 
     public function test_daytime_field_placements_are_unaffected(): void
     {
-        [$term, $department, $section] = $this->fixture();
+        [$semester, $department, $section] = $this->fixture();
         $field = $this->fieldRoom();
         $course = $this->course('PATHFIT8', 'Movement Competency', 'major', 'field');
 
-        $daytime = $this->attempt($term, $department, $section, $course, 'Monday', 'field', $field->id);
+        $daytime = $this->attempt($semester, $department, $section, $course, 'Monday', 'field', $field->id);
         $daytime['start_time'] = '08:00';
         $daytime['end_time'] = '10:00';
 
@@ -114,10 +114,10 @@ class DayCategoryConstraintParityTest extends TestCase
 
     public function test_non_field_courses_may_run_into_the_evening(): void
     {
-        [$term, $department, $section, $room] = $this->fixture();
+        [$semester, $department, $section, $room] = $this->fixture();
         $course = $this->course('IT909', 'Evening Lecture', 'major', 'lecture');
 
-        $evening = $this->attempt($term, $department, $section, $course, 'Monday', 'on-site', $room->id);
+        $evening = $this->attempt($semester, $department, $section, $course, 'Monday', 'on-site', $room->id);
         $evening['start_time'] = '17:00';
         $evening['end_time'] = '18:00';
 
@@ -126,14 +126,14 @@ class DayCategoryConstraintParityTest extends TestCase
     /** @return array<string, list<string>> */
     private function violationRulesForEachDay(Course $course): array
     {
-        [$term, $department, $section, $room] = $this->fixture();
+        [$semester, $department, $section, $room] = $this->fixture();
         $isFieldLike = $course->room_type_required === 'field';
         $result = [];
 
         foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day) {
             $room = $isFieldLike ? $this->fieldRoom() : $room;
             $result[$day] = $this->rules(
-                $this->attempt($term, $department, $section, $course, $day, $isFieldLike ? 'field' : 'on-site', $room->id)
+                $this->attempt($semester, $department, $section, $course, $day, $isFieldLike ? 'field' : 'on-site', $room->id)
             );
         }
 
@@ -150,7 +150,7 @@ class DayCategoryConstraintParityTest extends TestCase
     }
 
     private function attempt(
-        Terms $term,
+        Semester $semester,
         Departments $department,
         Sections $section,
         Course $course,
@@ -159,7 +159,7 @@ class DayCategoryConstraintParityTest extends TestCase
         ?int $roomId,
     ): array {
         return [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'department_id' => $department->id,
@@ -171,10 +171,10 @@ class DayCategoryConstraintParityTest extends TestCase
         ];
     }
 
-    /** @return array{0: Terms, 1: Departments, 2: Sections, 3: Rooms} */
+    /** @return array{0: Semester, 1: Departments, 2: Sections, 3: Rooms} */
     private function fixture(): array
     {
-        $term = Terms::firstOrCreate(
+        $semester = Semester::firstOrCreate(
             ['academic_year' => '2026-2027', 'semester' => '1st'],
             ['is_active' => true, 'is_enabled' => true],
         );
@@ -183,7 +183,7 @@ class DayCategoryConstraintParityTest extends TestCase
             ['department_name' => 'Parity Dept'],
         );
         $section = Sections::firstOrCreate(
-            ['section_name' => 'PAR-1A', 'department_id' => $department->id, 'term_id' => $term->id],
+            ['section_name' => 'PAR-1A', 'department_id' => $department->id, 'semester_id' => $semester->id],
             ['year_level' => '1', 'semester' => '1st', 'status' => 'active'],
         );
         $room = Rooms::firstOrCreate(
@@ -191,7 +191,7 @@ class DayCategoryConstraintParityTest extends TestCase
             ['room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id],
         );
 
-        return [$term, $department, $section, $room];
+        return [$semester, $department, $section, $room];
     }
 
     private function fieldRoom(): Rooms

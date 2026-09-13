@@ -11,7 +11,7 @@ use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
@@ -29,10 +29,10 @@ final class SchedulingSnapshotRepository
         private readonly SectionCurriculumResolver $curricula,
     ) {}
 
-    public function captureForConfiguration(int $termId, int $departmentId, GenerationConfiguration $configuration): SchedulingSnapshot
+    public function captureForConfiguration(int $semesterId, int $departmentId, GenerationConfiguration $configuration): SchedulingSnapshot
     {
         return $this->capture(
-            termId: $termId,
+            semesterId: $semesterId,
             departmentId: $departmentId,
             sectionIds: [$configuration->sectionId],
             courseIds: $configuration->courseIds,
@@ -42,7 +42,7 @@ final class SchedulingSnapshotRepository
     /**
      * Capture the immutable database state required by current scheduling rules.
      *
-     * Persisted schedules are intentionally term-wide. A target department may
+     * Persisted schedules are intentionally semester-wide. A target department may
      * collide with another department through a shared room, online subject, or
      * previously assigned instructor.
      *
@@ -50,7 +50,7 @@ final class SchedulingSnapshotRepository
      * @param  list<int>  $courseIds
      */
     public function capture(
-        int $termId,
+        int $semesterId,
         int $departmentId,
         array $sectionIds = [],
         array $courseIds = [],
@@ -59,8 +59,8 @@ final class SchedulingSnapshotRepository
         $queryCountBefore = $this->queryCounter->total();
         $startedAt = microtime(true);
 
-        /** @var Terms $term */
-        $term = Terms::query()->findOrFail($termId);
+        /** @var Semester $semester */
+        $semester = Semester::query()->findOrFail($semesterId);
         /** @var Departments $department */
         $department = Departments::query()->findOrFail($departmentId);
 
@@ -68,7 +68,7 @@ final class SchedulingSnapshotRepository
         $courseIds = $this->positiveIds($courseIds);
 
         $sectionsQuery = Sections::query()
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('department_id', $departmentId)
             ->orderBy('id');
         if ($sectionIds !== []) {
@@ -123,7 +123,7 @@ final class SchedulingSnapshotRepository
 
         $schedules = Schedule::query()
             ->with('split')
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             // A generation snapshot represents the state outside the sections
             // being regenerated. Draft/completed/revision rows for any target
             // section must not consume room or online capacity while the batch
@@ -137,16 +137,16 @@ final class SchedulingSnapshotRepository
             })
             ->orderBy('id')
             ->get([
-                'id', 'term_id', 'section_id', 'course_id', 'faculty_id', 'room_id',
+                'id', 'semester_id', 'section_id', 'course_id', 'faculty_id', 'room_id',
                 'department_id', 'day', 'start_time', 'end_time', 'mode', 'is_hybrid',
                 'preferred_pattern', 'faculty_assignment_done', 'status',
             ]);
 
         $referencedRoomIds = $schedules->pluck('room_id')->filter()->map('intval')->unique()->values()->all();
-        // Rooms another department lent this one for the term. Their windows
+        // Rooms another department lent this one for the semester. Their windows
         // ride on the room records, so a grant approved or revoked after the
         // capture changes the fingerprint and no cached run is replayed.
-        $grantWindows = app(RoomAccessPolicy::class)->grantWindowsFor($departmentId, $termId);
+        $grantWindows = app(RoomAccessPolicy::class)->grantWindowsFor($departmentId, $semesterId);
         $grantedRoomIds = array_keys($grantWindows);
         $rooms = Rooms::query()
             ->where(function ($query) use ($departmentId, $referencedRoomIds, $grantedRoomIds): void {
@@ -195,7 +195,7 @@ final class SchedulingSnapshotRepository
 
         $payload = [
             'schema_version' => SchedulingSnapshot::SCHEMA_VERSION,
-            'term_id' => (int) $term->id,
+            'semester_id' => (int) $semester->id,
             'department_id' => (int) $department->id,
             'sections' => $this->sectionRecords($sections),
             'courses' => $this->courseRecords($courses, $curriculumPeriods),
@@ -214,12 +214,12 @@ final class SchedulingSnapshotRepository
                 'slot_minutes' => SchedulingPolicy::SLOT_MINUTES,
             ],
             'department_settings' => $this->departmentSettings($department),
-            'term' => [
-                'id' => (int) $term->id,
-                'academic_year' => (string) $term->academic_year,
-                'semester' => (string) $term->semester,
-                'is_active' => (bool) $term->is_active,
-                'is_enabled' => (bool) $term->is_enabled,
+            'semester' => [
+                'id' => (int) $semester->id,
+                'academic_year' => (string) $semester->academic_year,
+                'semester' => (string) $semester->semester,
+                'is_active' => (bool) $semester->is_active,
+                'is_enabled' => (bool) $semester->is_enabled,
             ],
             'metadata' => [
                 // The curricula the target sections actually follow. The old
@@ -249,7 +249,7 @@ final class SchedulingSnapshotRepository
         return new SchedulingSnapshot(
             fingerprint: $snapshotFingerprint,
             capturedAt: new DateTimeImmutable,
-            termId: $payload['term_id'],
+            semesterId: $payload['semester_id'],
             departmentId: $payload['department_id'],
             sectionsById: $payload['sections'],
             coursesById: $payload['courses'],
@@ -264,7 +264,7 @@ final class SchedulingSnapshotRepository
             resourceLimits: $payload['resource_limits'],
             operatingHours: $payload['operating_hours'],
             departmentSettings: $payload['department_settings'],
-            term: $payload['term'],
+            semester: $payload['semester'],
             metadata: $payload['metadata'],
         );
     }
@@ -287,7 +287,7 @@ final class SchedulingSnapshotRepository
             'year_level' => (string) $section->year_level,
             'semester' => (string) $section->semester,
             'department_id' => (int) $section->department_id,
-            'term_id' => (int) $section->term_id,
+            'semester_id' => (int) $section->semester_id,
             'curriculum_id' => $section->curriculum_id === null ? null : (int) $section->curriculum_id,
             'status' => (string) $section->status,
         ]])->all();
@@ -384,7 +384,7 @@ final class SchedulingSnapshotRepository
     {
         return $schedules->map(static fn (Schedule $schedule): array => [
             'id' => (int) $schedule->id,
-            'term_id' => (int) $schedule->term_id,
+            'semester_id' => (int) $schedule->semester_id,
             'section_id' => (int) $schedule->section_id,
             'course_id' => (int) $schedule->course_id,
             'faculty_id' => $schedule->faculty_id === null ? null : (int) $schedule->faculty_id,
@@ -410,7 +410,7 @@ final class SchedulingSnapshotRepository
             // Meetings of one split course still differ by day, time or type, so
             // dropping the run identifier does not merge them.
             ->unique(static fn (array $schedule): string => implode('|', [
-                $schedule['term_id'],
+                $schedule['semester_id'],
                 $schedule['section_id'],
                 $schedule['course_id'],
                 $schedule['faculty_id'] ?? '',

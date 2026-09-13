@@ -6,7 +6,7 @@ use App\Exceptions\GenerationConfigurationConfirmationException;
 use App\Http\Controllers\ScheduleRecommendationController;
 use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -49,9 +49,9 @@ class GenerateSectionSchedulePreview implements ShouldQueue
 
             return;
         }
-        $term = Terms::query()->find((int) $section->term_id);
-        if (! $term?->is_active || (string) $section->semester !== (string) $term->semester || (int) $run->term_id !== (int) $section->term_id) {
-            $run->update(['status' => 'cancelled', 'error_message' => 'The selected academic term or semester is no longer active.', 'finished_at' => now()]);
+        $semester = Semester::query()->find((int) $section->semester_id);
+        if (! $semester?->is_active || (string) $section->semester !== (string) $semester->semester || (int) $run->semester_id !== (int) $section->semester_id) {
+            $run->update(['status' => 'cancelled', 'error_message' => 'The selected academic semester or semester is no longer active.', 'finished_at' => now()]);
 
             return;
         }

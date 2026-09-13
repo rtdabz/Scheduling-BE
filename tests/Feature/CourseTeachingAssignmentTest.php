@@ -6,7 +6,7 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -451,14 +451,14 @@ class CourseTeachingAssignmentTest extends TestCase
 
     /**
      * Delegation is decided one semester at a time, so the listing is the active
-     * term's, not the whole curriculum's. A course the curriculum places in the
-     * second semester is not this term's work and is not offered while the first
+     * semester's, not the whole curriculum's. A course the curriculum places in the
+     * second semester is not this semester's work and is not offered while the first
      * semester runs.
      */
-    public function test_the_listing_offers_only_the_active_terms_semester(): void
+    public function test_the_listing_offers_only_the_active_semester_period(): void
     {
         $fixture = $this->fixture();
-        $this->activateTerm('1st');
+        $this->activateSemester('1st');
 
         $secondSemester = $this->course('GEC 201', 'minor', $fixture['it']->id);
         $this->place($fixture['curriculum'], $secondSemester, '1', 2);
@@ -475,29 +475,29 @@ class CourseTeachingAssignmentTest extends TestCase
     }
 
     /**
-     * The page has to name the term it narrowed to; an empty year level is otherwise
+     * The page has to name the semester it narrowed to; an empty year level is otherwise
      * indistinguishable from a curriculum missing its courses.
      */
-    public function test_the_listing_reports_the_term_it_is_scoped_to(): void
+    public function test_the_listing_reports_the_semester_it_is_scoped_to(): void
     {
         $fixture = $this->fixture();
-        $this->activateTerm('1st');
+        $this->activateSemester('1st');
 
         $this->actingAs($fixture['itSecretary'])
             ->getJson('/api/course-teaching-assignments')
             ->assertOk()
-            ->assertJsonPath('active_term.semester', '1st')
-            ->assertJsonPath('active_term.academic_year', '2026-2027');
+            ->assertJsonPath('active_semester.semester', '1st')
+            ->assertJsonPath('active_semester.academic_year', '2026-2027');
     }
 
     /**
-     * Switching the active term switches the list, rather than the second semester's
+     * Switching the active semester switches the list, rather than the second semester's
      * courses being permanently invisible.
      */
-    public function test_the_second_semester_is_offered_once_its_term_is_active(): void
+    public function test_the_second_semester_is_offered_once_its_semester_is_active(): void
     {
         $fixture = $this->fixture();
-        $this->activateTerm('2nd');
+        $this->activateSemester('2nd');
 
         $secondSemester = $this->course('GEC 201', 'minor', $fixture['it']->id);
         $this->place($fixture['curriculum'], $secondSemester, '3', 2);
@@ -516,10 +516,10 @@ class CourseTeachingAssignmentTest extends TestCase
     }
 
     /**
-     * With no term active there is nothing to narrow to, and the whole curriculum is
+     * With no semester active there is nothing to narrow to, and the whole curriculum is
      * offered rather than nothing at all — a blank page would be the worse failure.
      */
-    public function test_no_active_term_leaves_the_listing_unnarrowed(): void
+    public function test_no_active_semester_leaves_the_listing_unnarrowed(): void
     {
         $fixture = $this->fixture();
         $secondSemester = $this->course('GEC 201', 'minor', $fixture['it']->id);
@@ -528,7 +528,7 @@ class CourseTeachingAssignmentTest extends TestCase
         $response = $this->actingAs($fixture['itSecretary'])
             ->getJson('/api/course-teaching-assignments')
             ->assertOk()
-            ->assertJsonPath('active_term', null);
+            ->assertJsonPath('active_semester', null);
 
         $this->assertEqualsCanonicalizing(
             ['GEC 101', 'PATH FIT 1', 'IT 101', 'GEC 201'],
@@ -543,7 +543,7 @@ class CourseTeachingAssignmentTest extends TestCase
     public function test_an_incoming_course_from_another_semester_is_not_reported(): void
     {
         $fixture = $this->fixture();
-        $this->activateTerm('1st');
+        $this->activateSemester('1st');
 
         $secondSemester = $this->course('GEC 201', 'minor', $fixture['it']->id);
         $this->place($fixture['curriculum'], $secondSemester, '1', 2);
@@ -630,33 +630,33 @@ class CourseTeachingAssignmentTest extends TestCase
 
     /**
      * `curriculum_course.semester` is the tinyint 1|2|3, not the '1st'|'2nd'|'summer'
-     * enum that `terms` and `courses` carry. Placements default to the first
-     * semester, which is what the fixture's term runs.
+     * enum that `semesters` and `courses` carry. Placements default to the first
+     * semester, which is what the fixture's semester runs.
      */
-    private function place(Curriculum $curriculum, Course $course, string $yearLevel, int $semester = 1): void
+    private function place(Curriculum $curriculum, Course $course, string $yearLevel, int $period = 1): void
     {
         DB::table('curriculum_course')->insert([
             'curriculum_id' => $curriculum->id,
             'course_id' => $course->id,
             'year_level' => $yearLevel,
-            'semester' => $semester,
+            'semester' => $period,
         ]);
     }
 
     /**
-     * The listing reads the active term through a cache the term endpoints normally
-     * clear, so a test that switches terms has to clear it too.
+     * The listing reads the active semester through a cache the semester endpoints normally
+     * clear, so a test that switches semesters has to clear it too.
      */
-    private function activateTerm(string $semester): Terms
+    private function activateSemester(string $period): Semester
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
-            'semester' => $semester,
+            'semester' => $period,
             'is_active' => true,
         ]);
         Cache::flush();
 
-        return $term;
+        return $semester;
     }
 
     private function course(string $code, string $category, ?int $departmentId, ?int $programId = null): Course

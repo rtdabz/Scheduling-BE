@@ -8,7 +8,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulePlan;
 use App\Services\Scheduling\Generation\GenerateSchedulePlan;
@@ -77,7 +77,7 @@ class PhysicalRoomExhaustionTest extends TestCase
      */
     public function test_split_lecture_uses_a_classroom_when_one_is_available(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -95,7 +95,7 @@ class PhysicalRoomExhaustionTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -258,7 +258,7 @@ class PhysicalRoomExhaustionTest extends TestCase
      * Books the room solid on every day except Monday, and on Monday only for
      * the given windows, so the free Monday gaps are the only options left.
      *
-     * @param  array{term: Terms, department: Departments, section: Sections, courses: list<Course>}  $context
+     * @param  array{semester: Semester, department: Departments, section: Sections, courses: list<Course>}  $context
      * @param  list<array{0: string, 1: string, 2: string}>  $mondayBusy
      */
     private function occupyLaboratory(array $context, Rooms $room, array $mondayBusy): void
@@ -274,7 +274,7 @@ class PhysicalRoomExhaustionTest extends TestCase
     }
 
     /**
-     * @param  array{term: Terms, department: Departments, section: Sections, courses: list<Course>}  $context
+     * @param  array{semester: Semester, department: Departments, section: Sections, courses: list<Course>}  $context
      * @param  list<array{0: string, 1: string, 2: string}>  $busy
      */
     private function bookRoom(array $context, Rooms $room, array $busy): void
@@ -284,7 +284,7 @@ class PhysicalRoomExhaustionTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $context['department']->id,
-            'term_id' => $context['term']->id,
+            'semester_id' => $context['semester']->id,
             'status' => 'active',
         ]);
 
@@ -304,7 +304,7 @@ class PhysicalRoomExhaustionTest extends TestCase
 
         foreach ($busy as [$day, $start, $end]) {
             Schedule::create([
-                'term_id' => $context['term']->id,
+                'semester_id' => $context['semester']->id,
                 'section_id' => $blocker->id,
                 'course_id' => $filler->id,
                 'room_id' => $room->id,
@@ -321,11 +321,11 @@ class PhysicalRoomExhaustionTest extends TestCase
     /**
      * @param  list<string>  $courseCodes
      * @param  list<int>  $unitsPerCourse
-     * @return array{term: Terms, department: Departments, section: Sections, courses: list<Course>}
+     * @return array{semester: Semester, department: Departments, section: Sections, courses: list<Course>}
      */
     private function scaffold(array $courseCodes, array $unitsPerCourse = []): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -343,7 +343,7 @@ class PhysicalRoomExhaustionTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -378,18 +378,18 @@ class PhysicalRoomExhaustionTest extends TestCase
         }
 
         return [
-            'term' => $term,
+            'semester' => $semester,
             'department' => $department,
             'section' => $section,
             'courses' => $courses,
         ];
     }
 
-    /** @param array{term: Terms, department: Departments, section: Sections, courses: list<Course>} $context */
+    /** @param array{semester: Semester, department: Departments, section: Sections, courses: list<Course>} $context */
     private function generate(array $context): SchedulePlan
     {
         $plans = app(GenerateSchedulePlan::class)->generate(
-            termId: (int) $context['term']->id,
+            semesterId: (int) $context['semester']->id,
             departmentId: (int) $context['department']->id,
             configuration: new GenerationConfiguration(
                 sectionId: (int) $context['section']->id,

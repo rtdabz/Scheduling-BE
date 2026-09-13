@@ -8,7 +8,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -19,7 +19,7 @@ class YearLevelScheduleGenerationTest extends TestCase
 
     public function test_year_level_preview_keeps_section_course_modes_independent_and_rolls_back_staging_rows(): void
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'IT']);
         // Schedule capabilities and section scheduling both require the
         // department to own a program.
@@ -28,8 +28,8 @@ class YearLevelScheduleGenerationTest extends TestCase
             'code' => 'P'.$department->id,
             'name' => 'Program '.$department->id,
         ]);
-        $sectionA = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
-        $sectionB = Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
+        $sectionA = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'semester_id' => $semester->id, 'status' => 'active']);
+        $sectionB = Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'semester_id' => $semester->id, 'status' => 'active']);
         $course = Course::create(['course_code' => 'GEC 101', 'course_name' => 'Understanding the Self', 'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3, 'course_category' => 'minor', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => null, 'status' => 'active']);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
         $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
@@ -37,7 +37,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => [
@@ -100,7 +100,7 @@ class YearLevelScheduleGenerationTest extends TestCase
 
     public function test_year_level_preview_keeps_split_configuration_independent_per_section(): void
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
@@ -114,8 +114,8 @@ class YearLevelScheduleGenerationTest extends TestCase
             'code' => 'P'.$department->id,
             'name' => 'Program '.$department->id,
         ]);
-        $sectionA = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
-        $sectionB = Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
+        $sectionA = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'semester_id' => $semester->id, 'status' => 'active']);
+        $sectionB = Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'semester_id' => $semester->id, 'status' => 'active']);
         $course = Course::create(['course_code' => 'IT 101', 'course_name' => 'Programming 1', 'lecture_hours' => 2, 'lab_hours' => 1, 'units' => 3, 'course_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'status' => 'active']);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
         $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
@@ -124,7 +124,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => [
@@ -145,7 +145,7 @@ class YearLevelScheduleGenerationTest extends TestCase
 
     public function test_year_level_preview_handles_all_sections_with_split_laboratories(): void
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
@@ -168,7 +168,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $department->id, 'program_id' => $departmentProgram->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]);
         }
@@ -201,7 +201,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         $courseIds = array_map(static fn (Course $course): int => (int) $course->id, $courses);
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => array_map(static fn (Sections $section): array => [
@@ -231,7 +231,7 @@ class YearLevelScheduleGenerationTest extends TestCase
 
     public function test_year_level_preview_reallocates_sections_before_using_room_tba(): void
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
@@ -260,7 +260,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $department->id, 'program_id' => $departmentProgram->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]);
         }
@@ -295,7 +295,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         $courseIds = array_map(static fn (Course $course): int => (int) $course->id, $courses);
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => array_map(static fn (Sections $section): array => [
@@ -316,12 +316,12 @@ class YearLevelScheduleGenerationTest extends TestCase
     public function test_year_level_preview_handles_split_heavy_sections_for_every_year_level(): void
     {
         foreach ([1, 2, 3, 4] as $yearLevel) {
-            $term = Terms::create([
+            $semester = Semester::create([
                 'academic_year' => "2026-2027-Y{$yearLevel}",
                 'semester' => '1st',
-                // Generation is refused outside the active term, and each pass
-                // needs its own. Terms::created deactivates the previous one,
-                // so this stays the single active term for its iteration.
+                // Generation is refused outside the active semester, and each pass
+                // needs its own. Semester::created deactivates the previous one,
+                // so this stays the single active semester for its iteration.
                 'is_active' => true,
                 'is_enabled' => true,
             ]);
@@ -354,7 +354,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                     'year_level' => (string) $yearLevel,
                     'semester' => '1st',
                     'department_id' => $department->id, 'program_id' => $departmentProgram->id,
-                    'term_id' => $term->id,
+                    'semester_id' => $semester->id,
                     'status' => 'active',
                 ]);
             }
@@ -403,7 +403,7 @@ class YearLevelScheduleGenerationTest extends TestCase
             $courseIds = [...$majorCourseIds, (int) $minorCourse->id];
 
             $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'department_id' => $department->id,
                 'year_level' => $yearLevel,
                 'section_configs' => array_map(static fn (Sections $section): array => [
@@ -422,7 +422,7 @@ class YearLevelScheduleGenerationTest extends TestCase
 
     public function test_year_level_preview_handles_all_major_and_minor_courses_split(): void
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
@@ -446,7 +446,7 @@ class YearLevelScheduleGenerationTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $department->id, 'program_id' => $departmentProgram->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]);
         }
@@ -500,7 +500,7 @@ class YearLevelScheduleGenerationTest extends TestCase
         $courseIds = [...$majorCourseIds, ...$minorCourseIds];
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => array_map(static fn (Sections $section): array => [
@@ -528,7 +528,7 @@ class YearLevelScheduleGenerationTest extends TestCase
 
     public function test_year_level_preview_applies_configured_minor_course_split_pattern(): void
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
@@ -543,8 +543,8 @@ class YearLevelScheduleGenerationTest extends TestCase
         ]);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
         $sections = [
-            Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']),
-            Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']),
+            Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'semester_id' => $semester->id, 'status' => 'active']),
+            Sections::create(['section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'semester_id' => $semester->id, 'status' => 'active']),
         ];
         $course = Course::create([
             'course_code' => 'PE 101',
@@ -565,7 +565,7 @@ class YearLevelScheduleGenerationTest extends TestCase
 
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => array_map(static fn (Sections $section): array => [

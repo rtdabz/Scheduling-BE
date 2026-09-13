@@ -7,7 +7,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\YearLevel\YearLevelFeasibilityService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -118,7 +118,7 @@ class ForcedDayCapacityCheckTest extends TestCase
      */
     private function scaffold(int $sectionCount, ?string $forcedDay, int $fieldSlotLimit = 3, ?array $splitCourse = null): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
@@ -186,7 +186,7 @@ class ForcedDayCapacityCheckTest extends TestCase
         for ($s = 1; $s <= $sectionCount; $s++) {
             $section = Sections::create([
                 'section_name' => "IT 1-{$s}", 'year_level' => '1', 'semester' => '1st',
-                'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active',
+                'department_id' => $department->id, 'semester_id' => $semester->id, 'status' => 'active',
             ]);
             $sections[] = $section;
             $configs[(int) $section->id] = [

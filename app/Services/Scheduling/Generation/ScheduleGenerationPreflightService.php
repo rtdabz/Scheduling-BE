@@ -69,13 +69,13 @@ class ScheduleGenerationPreflightService
             );
         }
 
-        if ($section->term === null || (string) $section->term->semester !== (string) $section->semester) {
+        if ($section->academicSemester === null || (string) $section->academicSemester->semester !== (string) $section->semester) {
             $issues[] = $this->issue(
                 'invalid_curriculum_assignment',
-                "Section {$section->section_name} does not match its academic term semester.",
+                "Section {$section->section_name} does not match the academic semester.",
                 $section,
-                ['term_id' => (int) $section->term_id],
-                'Correct the section term or semester before generating.',
+                ['semester_id' => (int) $section->semester_id],
+                'Correct the section semester or semester before generating.',
             );
         }
 
@@ -244,7 +244,7 @@ class ScheduleGenerationPreflightService
             ->tap(fn ($query) => app(RoomAccessPolicy::class)->scopeReachableRooms(
                 $query,
                 (int) $section->department_id,
-                (int) $section->term_id,
+                (int) $section->semester_id,
             ))
             ->exists();
     }

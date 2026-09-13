@@ -391,10 +391,10 @@ final class SchedulingPolicy
             'description' => 'No candidate satisfies all hard constraints for the validated generation configuration.',
             'enforced_by' => ['generate_schedule_plan'],
         ],
-        'term_exists' => [
+        'semester_exists' => [
             'severity' => 'hard',
             'category' => 'relational_integrity',
-            'description' => 'The selected academic term must exist.',
+            'description' => 'The selected academic semester must exist.',
             'enforced_by' => ['request_validation', 'rule_engine'],
         ],
         'section_exists' => [
@@ -445,46 +445,46 @@ final class SchedulingPolicy
             'description' => 'Schedule times must be represented as 30-minute slots on the operating-hours grid.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
-        'term_enabled' => [
+        'semester_enabled' => [
             'severity' => 'hard',
-            'category' => 'academic_term',
-            'description' => 'Schedules can only be created for enabled academic terms.',
+            'category' => 'academic_semester',
+            'description' => 'Schedules can only be created for enabled academic semesters.',
             'enforced_by' => ['rule_engine'],
         ],
-        'section_term_alignment' => [
+        'section_semester_alignment' => [
             'severity' => 'hard',
-            'category' => 'academic_term',
-            'description' => 'The selected section must belong to the selected schedule term.',
+            'category' => 'academic_semester',
+            'description' => 'The selected section must belong to the selected schedule semester.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
-        'section_term_semester_alignment' => [
+        'section_semester_period_alignment' => [
             'severity' => 'hard',
-            'category' => 'academic_term',
-            'description' => 'A section semester must match its academic term semester.',
+            'category' => 'academic_semester',
+            'description' => 'The section period must match its academic semester.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'section_conflict' => [
             'severity' => 'hard',
             'category' => 'resource_conflict',
-            'description' => 'A section cannot attend overlapping classes in the same term.',
+            'description' => 'A section cannot attend overlapping classes in the same semester.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'subject_section_time_conflict' => [
             'severity' => 'hard',
             'category' => 'resource_conflict',
-            'description' => 'Different online sections taking the same subject cannot overlap in the same term and time slot.',
+            'description' => 'Different online sections taking the same subject cannot overlap in the same semester and time slot.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'room_conflict' => [
             'severity' => 'hard',
             'category' => 'resource_conflict',
-            'description' => 'A room cannot host overlapping classes in the same term.',
+            'description' => 'A room cannot host overlapping classes in the same semester.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'faculty_conflict' => [
             'severity' => 'hard',
             'category' => 'resource_conflict',
-            'description' => 'An assigned faculty member cannot teach overlapping classes in the same term.',
+            'description' => 'An assigned faculty member cannot teach overlapping classes in the same semester.',
             'enforced_by' => ['rule_engine', 'batch_conflict_validator'],
         ],
         'room_capacity_conflict' => [
@@ -658,7 +658,7 @@ final class SchedulingPolicy
         'duplicate_section_subject' => [
             'severity' => 'hard',
             'category' => 'curriculum',
-            'description' => 'A recommendation cannot be accepted if the section already has a schedule for that subject in the same term.',
+            'description' => 'A recommendation cannot be accepted if the section already has a schedule for that subject in the same semester.',
             'enforced_by' => ['recommendation_acceptance'],
         ],
         'major_department_alignment' => [
@@ -759,7 +759,7 @@ final class SchedulingPolicy
         'duplicate_section_course' => [
             'severity' => 'hard',
             'category' => 'curriculum',
-            'description' => 'Recommendation acceptance cannot create a course already represented by a non-replaceable schedule for the section and term.',
+            'description' => 'Recommendation acceptance cannot create a course already represented by a non-replaceable schedule for the section and semester.',
             'enforced_by' => ['recommendation_acceptance'],
         ],
         'concurrent_write' => [
@@ -777,7 +777,7 @@ final class SchedulingPolicy
         'schedule_plan_scope_mismatch' => [
             'severity' => 'hard',
             'category' => 'transaction',
-            'description' => 'Every committed plan row must match the configured term, department, section, and course scope.',
+            'description' => 'Every committed plan row must match the configured semester, department, section, and course scope.',
             'enforced_by' => ['schedule_plan_commit'],
         ],
         'stale_schedule_plan' => [
@@ -1340,7 +1340,7 @@ final class SchedulingPolicy
 
     /**
      * The room type a course component requires, in the scheduling department's
-     * terms.
+     * semesters.
      *
      * $departmentId is required rather than optional on purpose. Field-course
      * codes are configured per department, while a shared minor carries a NULL

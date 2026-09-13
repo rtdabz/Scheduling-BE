@@ -15,7 +15,7 @@ class SchedulingAuditLog extends Model
         'schedule_recommendation_id',
         'history_version_id',
         'schedule_submission_id',
-        'term_id',
+        'semester_id',
         'section_id',
         'department_id',
         'action',

@@ -14,7 +14,7 @@ use App\Models\ScheduleGenerationRun;
 use App\Models\ScheduleRecommendation;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Domain\PreparedGenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulePlan;
 use App\Services\Scheduling\Domain\ScheduleRecommendationPayload;
@@ -79,7 +79,7 @@ class ScheduleRecommendationController extends Controller
             }
         }
 
-        $recommendations = ScheduleRecommendation::with(['section', 'term', 'department', 'requester'])
+        $recommendations = ScheduleRecommendation::with(['section', 'academicSemester', 'department', 'requester'])
             ->when(($scope = $this->departmentScope($request)) !== null, fn ($query) => $query->where('department_id', $scope))
             ->when(isset($validated['section_id']), fn ($query) => $query->where('section_id', $validated['section_id']))
             ->when(isset($validated['status']), fn ($query) => $query->where('status', $validated['status']))
@@ -101,7 +101,7 @@ class ScheduleRecommendationController extends Controller
     public function recommendSplit(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'term_id' => 'required|integer|exists:terms,id',
+            'semester_id' => 'required|integer|exists:semesters,id',
             'section_id' => 'required|integer|exists:sections,id',
             'course_id' => 'required|integer|exists:courses,id',
             'department_id' => 'required|integer|exists:departments,id',
@@ -130,7 +130,7 @@ class ScheduleRecommendationController extends Controller
 
         try {
             $result = $this->splitScheduleService->recommend(
-                termId: (int) $validated['term_id'],
+                semesterId: (int) $validated['semester_id'],
                 sectionId: (int) $validated['section_id'],
                 courseId: (int) $validated['course_id'],
                 departmentId: (int) $validated['department_id'],
@@ -193,7 +193,7 @@ class ScheduleRecommendationController extends Controller
         $section = Sections::query()->findOrFail($validated['section_id']);
 
         try {
-            $this->assertActiveSectionTerm($section);
+            $this->assertActiveSectionSemester($section);
         } catch (InvalidArgumentException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);
         }
@@ -227,7 +227,7 @@ class ScheduleRecommendationController extends Controller
                 // recommendation insert fails, the previous editable schedule
                 // and its pending options remain available.
                 $replacedIds = Schedule::where('section_id', $section->id)
-                    ->where('term_id', $section->term_id)
+                    ->where('semester_id', $section->semester_id)
                     ->whereIn('status', self::REPLACEABLE_SCHEDULE_STATUSES)
                     ->pluck('id');
 
@@ -237,7 +237,7 @@ class ScheduleRecommendationController extends Controller
                 Schedule::retireSplitsFor($replacedIds);
 
                 ScheduleRecommendation::where('section_id', $section->id)
-                    ->where('term_id', $section->term_id)
+                    ->where('semester_id', $section->semester_id)
                     ->delete();
             }
 
@@ -249,7 +249,7 @@ class ScheduleRecommendationController extends Controller
                         || (int) ($candidate->metadata['rank'] ?? 0) === (int) $solution['rank'],
                 );
                 $recommendation = ScheduleRecommendation::create([
-                    'term_id' => (int) $section->term_id,
+                    'semester_id' => (int) $section->semester_id,
                     'section_id' => (int) $section->id,
                     'department_id' => (int) $section->department_id,
                     'requested_by' => $user?->id,
@@ -275,14 +275,14 @@ class ScheduleRecommendationController extends Controller
                     ],
                 );
 
-                $created[] = $recommendation->load(['section', 'term', 'department', 'requester']);
+                $created[] = $recommendation->load(['section', 'academicSemester', 'department', 'requester']);
             }
 
             return $created;
         });
 
         if ($recommendations !== []) {
-            $section->loadMissing(['department', 'term']);
+            $section->loadMissing(['department', 'academicSemester']);
             $this->notifications->notifyRoles(
                 ['secretary', 'program_head', 'dean'],
                 'schedule_generation_completed',
@@ -290,13 +290,13 @@ class ScheduleRecommendationController extends Controller
                 $this->notifications->departmentWorkflowMessage(
                     'generated schedule recommendations for',
                     $section->department,
-                    $section->term,
+                    $section->academicSemester,
                     $user,
                     count($recommendations),
                 ),
                 $user,
                 (int) $section->department_id,
-                (int) $section->term_id,
+                (int) $section->semester_id,
                 null,
                 [
                     'section_id' => $section->id,
@@ -335,7 +335,7 @@ class ScheduleRecommendationController extends Controller
             'anchored_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
             'tentative_schedules' => 'sometimes|array',
             'tentative_schedules.*.id' => 'sometimes|integer|exists:schedules,id',
-            'tentative_schedules.*.term_id' => 'required|integer|exists:terms,id',
+            'tentative_schedules.*.semester_id' => 'required|integer|exists:semesters,id',
             'tentative_schedules.*.section_id' => 'required|integer|exists:sections,id',
             'tentative_schedules.*.course_id' => 'required|integer|exists:courses,id',
             'tentative_schedules.*.faculty_id' => 'nullable|integer|exists:faculties,id',
@@ -369,7 +369,7 @@ class ScheduleRecommendationController extends Controller
         $section = Sections::query()->findOrFail($validated['section_id']);
 
         try {
-            $this->assertActiveSectionTerm($section);
+            $this->assertActiveSectionSemester($section);
         } catch (InvalidArgumentException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);
         }
@@ -454,7 +454,7 @@ class ScheduleRecommendationController extends Controller
 
         $section = Sections::query()->findOrFail((int) $validated['section_id']);
         try {
-            $this->assertActiveSectionTerm($section);
+            $this->assertActiveSectionSemester($section);
         } catch (InvalidArgumentException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);
         }
@@ -466,7 +466,7 @@ class ScheduleRecommendationController extends Controller
         ScheduleGenerationRun::create([
             'run_id' => $runId,
             'requested_by' => $request->user()->id,
-            'term_id' => $section->term_id,
+            'semester_id' => $section->semester_id,
             'department_id' => $section->department_id,
             'year_level' => (int) $section->year_level,
             'status' => 'queued',
@@ -479,7 +479,7 @@ class ScheduleRecommendationController extends Controller
     public function runAsyncSectionPreview(int $sectionId, array $input): array
     {
         $section = Sections::query()->findOrFail($sectionId);
-        $this->assertActiveSectionTerm($section);
+        $this->assertActiveSectionSemester($section);
         $input['course_ids'] = $this->resolveCourseIds($section, $input['course_ids'] ?? null);
         $input['selected_split_session_course_ids'] = ($input['split_session_enabled'] ?? false)
             ? $this->resolveLectureLabSplitCourseIds($section, $input['selected_split_session_course_ids'] ?? [], $input['course_ids']) : [];
@@ -515,7 +515,7 @@ class ScheduleRecommendationController extends Controller
         $this->allowLongRunningGeneration(self::YEAR_LEVEL_PREVIEW_EXECUTION_SECONDS);
 
         $validated = $request->validate([
-            'term_id' => 'required|integer|exists:terms,id',
+            'semester_id' => 'required|integer|exists:semesters,id',
             'department_id' => 'required|integer|exists:departments,id',
             'year_level' => 'required|integer|min:1|max:4',
             'section_configs' => 'required|array|min:1',
@@ -545,17 +545,17 @@ class ScheduleRecommendationController extends Controller
             return $guard;
         }
 
-        $term = Terms::query()->findOrFail((int) $validated['term_id']);
-        if (! $term->is_active) {
-            return response()->json(['message' => 'Schedule generation is only available for the active academic term.'], 422);
+        $semester = Semester::query()->findOrFail((int) $validated['semester_id']);
+        if (! $semester->is_active) {
+            return response()->json(['message' => 'Schedule generation is only available for the active academic semester.'], 422);
         }
 
         $sections = Sections::query()
             ->with('department')
-            ->where('term_id', (int) $validated['term_id'])
+            ->where('semester_id', (int) $validated['semester_id'])
             ->where('department_id', (int) $validated['department_id'])
             ->where('year_level', (string) $validated['year_level'])
-            ->where('semester', (string) $term->semester)
+            ->where('semester', (string) $semester->semester)
             ->where('status', 'active')
             ->orderBy('section_name')
             ->get();
@@ -564,7 +564,7 @@ class ScheduleRecommendationController extends Controller
             return response()->json(['message' => 'No active sections were found for the selected year level.'], 422);
         }
 
-        if (! $this->yearLevelEligibility->canGenerate($sections, (int) $validated['term_id'])) {
+        if (! $this->yearLevelEligibility->canGenerate($sections, (int) $validated['semester_id'])) {
             return response()->json(['message' => YearLevelGenerationEligibilityService::BLOCKED_MESSAGE], 422);
         }
 
@@ -598,7 +598,7 @@ class ScheduleRecommendationController extends Controller
                     'time_preferences_by_course_id' => $config['time_preferences_by_course_id'] ?? [],
                     'preferred_period' => $config['preferred_period'] ?? null,
                     'seed' => $this->yearLevelConfigSeed(
-                        termId: (int) $validated['term_id'],
+                        semesterId: (int) $validated['semester_id'],
                         departmentId: (int) $validated['department_id'],
                         yearLevel: (int) $validated['year_level'],
                         sectionId: (int) $section->id,
@@ -665,7 +665,7 @@ class ScheduleRecommendationController extends Controller
         // Reuse the same validation and preparation contract as the preview
         // endpoint without running the solver in this request.
         $validated = $request->validate([
-            'term_id' => 'required|integer|exists:terms,id',
+            'semester_id' => 'required|integer|exists:semesters,id',
             'department_id' => 'required|integer|exists:departments,id',
             'year_level' => 'required|integer|min:1|max:4',
             'section_configs' => 'required|array|min:1',
@@ -691,19 +691,19 @@ class ScheduleRecommendationController extends Controller
         if (($guard = $this->departmentGuard($request, (int) $validated['department_id'])) !== null) {
             return $guard;
         }
-        $term = Terms::query()->findOrFail((int) $validated['term_id']);
-        if (! $term->is_active) {
-            return response()->json(['message' => 'Schedule generation is only available for the active academic term.'], 422);
+        $semester = Semester::query()->findOrFail((int) $validated['semester_id']);
+        if (! $semester->is_active) {
+            return response()->json(['message' => 'Schedule generation is only available for the active academic semester.'], 422);
         }
-        $sections = Sections::query()->with('department')->where('term_id', $validated['term_id'])
+        $sections = Sections::query()->with('department')->where('semester_id', $validated['semester_id'])
             ->where('department_id', $validated['department_id'])
             ->where('year_level', (string) $validated['year_level'])
-            ->where('semester', (string) $term->semester)
+            ->where('semester', (string) $semester->semester)
             ->where('status', 'active')->orderBy('section_name')->get();
         if ($sections->isEmpty()) {
             return response()->json(['message' => 'No active sections were found for the selected year level.'], 422);
         }
-        if (! $this->yearLevelEligibility->canGenerate($sections, (int) $validated['term_id'])) {
+        if (! $this->yearLevelEligibility->canGenerate($sections, (int) $validated['semester_id'])) {
             return response()->json(['message' => YearLevelGenerationEligibilityService::BLOCKED_MESSAGE], 422);
         }
         $configs = collect($validated['section_configs'])->keyBy(fn (array $config): int => (int) $config['section_id']);
@@ -728,7 +728,7 @@ class ScheduleRecommendationController extends Controller
                 'preferred_patterns' => $preferredPatterns, 'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
                 'time_preferences_by_course_id' => $config['time_preferences_by_course_id'] ?? [],
                 'preferred_period' => $config['preferred_period'] ?? null,
-                'seed' => $this->yearLevelConfigSeed((int) $validated['term_id'], (int) $validated['department_id'], (int) $validated['year_level'], (int) $section->id, $courseIds, $splitIds, $gecIds, $preferredPatterns),
+                'seed' => $this->yearLevelConfigSeed((int) $validated['semester_id'], (int) $validated['department_id'], (int) $validated['year_level'], (int) $section->id, $courseIds, $splitIds, $gecIds, $preferredPatterns),
             ];
             $profile = $this->preflight->validate($section, $courseIds, $sectionConfig);
             $sectionConfig['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $sectionConfig);
@@ -736,7 +736,7 @@ class ScheduleRecommendationController extends Controller
             $configsBySectionId[(int) $section->id] = $sectionConfig;
         }
         $runId = (string) Str::uuid();
-        ScheduleGenerationRun::create(['run_id' => $runId, 'requested_by' => $request->user()->id, 'term_id' => $validated['term_id'], 'department_id' => $validated['department_id'], 'year_level' => $validated['year_level'], 'status' => 'queued']);
+        ScheduleGenerationRun::create(['run_id' => $runId, 'requested_by' => $request->user()->id, 'semester_id' => $validated['semester_id'], 'department_id' => $validated['department_id'], 'year_level' => $validated['year_level'], 'status' => 'queued']);
         GenerateYearLevelSchedulePreview::dispatch(
             $runId,
             $sections->pluck('id')->map('intval')->values()->all(),
@@ -801,7 +801,7 @@ class ScheduleRecommendationController extends Controller
     }
 
     /**
-     * The newest still-active run the caller owns for a department and term.
+     * The newest still-active run the caller owns for a department and semester.
      *
      * Progress tracking lives outside the generator modal, so a reload or a
      * closed panel must be able to find the run again. Ownership matches the
@@ -811,7 +811,7 @@ class ScheduleRecommendationController extends Controller
     {
         $validated = $request->validate([
             'department_id' => 'required|integer|exists:departments,id',
-            'term_id' => 'required|integer|exists:terms,id',
+            'semester_id' => 'required|integer|exists:semesters,id',
         ]);
 
         if (! $this->canManageDepartment($request, (int) $validated['department_id'])) {
@@ -820,7 +820,7 @@ class ScheduleRecommendationController extends Controller
 
         $run = ScheduleGenerationRun::query()
             ->where('department_id', (int) $validated['department_id'])
-            ->where('term_id', (int) $validated['term_id'])
+            ->where('semester_id', (int) $validated['semester_id'])
             ->where('requested_by', (int) $request->user()->id)
             ->whereIn('status', ['queued', 'running'])
             ->latest('id')
@@ -902,7 +902,7 @@ class ScheduleRecommendationController extends Controller
             'selected_gec_course_ids.*' => 'integer|exists:courses,id',
             'tentative_schedules' => 'sometimes|array',
             'tentative_schedules.*.id' => 'sometimes|integer|exists:schedules,id',
-            'tentative_schedules.*.term_id' => 'required|integer|exists:terms,id',
+            'tentative_schedules.*.semester_id' => 'required|integer|exists:semesters,id',
             'tentative_schedules.*.section_id' => 'required|integer|exists:sections,id',
             'tentative_schedules.*.course_id' => 'required|integer|exists:courses,id',
             'tentative_schedules.*.faculty_id' => 'nullable|integer|exists:faculties,id',
@@ -924,7 +924,7 @@ class ScheduleRecommendationController extends Controller
         $section = Sections::query()->findOrFail($validated['section_id']);
 
         try {
-            $this->assertActiveSectionTerm($section);
+            $this->assertActiveSectionSemester($section);
         } catch (InvalidArgumentException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);
         }
@@ -990,7 +990,7 @@ class ScheduleRecommendationController extends Controller
 
         $recommendation = DB::transaction(function () use ($selectedSolution, $selectedPlan, $section, $solverInput, $user, $preparedConfiguration) {
             $recommendation = ScheduleRecommendation::create([
-                'term_id' => (int) $section->term_id,
+                'semester_id' => (int) $section->semester_id,
                 'section_id' => (int) $section->id,
                 'department_id' => (int) $section->department_id,
                 'requested_by' => $user?->id,
@@ -1016,7 +1016,7 @@ class ScheduleRecommendationController extends Controller
                 ],
             );
 
-            return $recommendation->load(['section', 'term', 'department', 'requester']);
+            return $recommendation->load(['section', 'academicSemester', 'department', 'requester']);
         });
 
         return response()->json([
@@ -1037,7 +1037,7 @@ class ScheduleRecommendationController extends Controller
 
         return response()->json($scheduleRecommendation->load([
             'section',
-            'term',
+            'academicSemester',
             'department',
             'requester',
             'accepter',
@@ -1084,7 +1084,7 @@ class ScheduleRecommendationController extends Controller
 
             return $recommendation->fresh([
                 'section',
-                'term',
+                'academicSemester',
                 'department',
                 'requester',
                 'accepter',
@@ -1147,7 +1147,7 @@ class ScheduleRecommendationController extends Controller
 
                     return [
                         $committedPlan,
-                        $recommendation->fresh(['section', 'term', 'department', 'requester', 'accepter']),
+                        $recommendation->fresh(['section', 'academicSemester', 'department', 'requester', 'accepter']),
                         $createdIds,
                     ];
                 });
@@ -1155,7 +1155,7 @@ class ScheduleRecommendationController extends Controller
                 return response()->json([
                     'message' => 'Recommendation accepted and schedules created successfully.',
                     'recommendation' => $recommendation,
-                    'schedules' => Schedule::query()->whereIn('id', $createdIds)->with(['term', 'section', 'course', 'faculty', 'room', 'department'])->get(),
+                    'schedules' => Schedule::query()->whereIn('id', $createdIds)->with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])->get(),
                     'schedule_plan' => $committedPlan,
                 ]);
             } catch (SchedulePlanCommitException|InvalidArgumentException|RuntimeException $exception) {
@@ -1210,7 +1210,7 @@ class ScheduleRecommendationController extends Controller
 
                 return $recommendation->fresh([
                     'section',
-                    'term',
+                    'academicSemester',
                     'department',
                     'requester',
                     'rejecter',
@@ -1279,10 +1279,10 @@ class ScheduleRecommendationController extends Controller
         // department mid-transition runs the old and the new one at once.
         $curriculum = $this->curriculumResolver->forSection($section);
 
-        $semester = $this->mapSemesterToInt($section->semester);
+        $period = $this->mapSemesterToInt($section->semester);
         $courseQuery = $curriculum->courses()
             ->wherePivot('year_level', (int) $section->year_level)
-            ->wherePivot('semester', $semester)
+            ->wherePivot('semester', $period)
             ->where('courses.status', 'active');
 
         if (! empty($providedCourseIds)) {
@@ -1312,13 +1312,13 @@ class ScheduleRecommendationController extends Controller
         ));
     }
 
-    private function mapSemesterToInt(string $semester): int
+    private function mapSemesterToInt(string $period): int
     {
-        return match ($semester) {
+        return match ($period) {
             '1st' => 1,
             '2nd' => 2,
             'summer' => 3,
-            default => throw new InvalidArgumentException("Unrecognized semester '{$semester}'."),
+            default => throw new InvalidArgumentException("Unrecognized semester '{$period}'."),
         };
     }
 
@@ -1403,7 +1403,7 @@ class ScheduleRecommendationController extends Controller
     }
 
     private function yearLevelConfigSeed(
-        int $termId,
+        int $semesterId,
         int $departmentId,
         int $yearLevel,
         int $sectionId,
@@ -1413,7 +1413,7 @@ class ScheduleRecommendationController extends Controller
         array $preferredPatterns = [],
     ): int {
         $payload = implode('|', [
-            $termId,
+            $semesterId,
             $departmentId,
             $yearLevel,
             $sectionId,
@@ -1446,7 +1446,7 @@ class ScheduleRecommendationController extends Controller
         $section = Sections::query()->findOrFail($validated['section_id']);
 
         try {
-            $this->assertActiveSectionTerm($section);
+            $this->assertActiveSectionSemester($section);
         } catch (InvalidArgumentException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);
         }
@@ -1492,7 +1492,7 @@ class ScheduleRecommendationController extends Controller
             try {
                 [$committedPlan, $recommendation, $createdIds] = DB::transaction(function () use ($bestPlan, $bestSolution, $preparedConfiguration, $section, $validated, $user) {
                     $recommendation = ScheduleRecommendation::create([
-                        'term_id' => (int) $section->term_id,
+                        'semester_id' => (int) $section->semester_id,
                         'section_id' => (int) $section->id,
                         'department_id' => (int) $section->department_id,
                         'requested_by' => $user?->id,
@@ -1513,7 +1513,7 @@ class ScheduleRecommendationController extends Controller
                     'message' => 'Schedule generated and placed into Timetable Grid successfully.',
                     'department_profile' => $profile->value,
                     'generation_metrics' => $generated->generationMetrics,
-                    'schedules' => Schedule::query()->whereIn('id', $createdIds)->with(['term', 'section', 'course', 'faculty', 'room', 'department'])->get(),
+                    'schedules' => Schedule::query()->whereIn('id', $createdIds)->with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])->get(),
                     'recommendation' => $recommendation,
                     'schedule_plan' => $committedPlan,
                 ]);
@@ -1537,7 +1537,7 @@ class ScheduleRecommendationController extends Controller
         SchedulingAuditLog::create([
             'user_id' => $userId,
             'schedule_recommendation_id' => $recommendation->id,
-            'term_id' => $recommendation->term_id,
+            'semester_id' => $recommendation->semester_id,
             'section_id' => $recommendation->section_id,
             'department_id' => $recommendation->department_id,
             'action' => $action,
@@ -1571,15 +1571,15 @@ class ScheduleRecommendationController extends Controller
         ];
     }
 
-    private function assertActiveSectionTerm(Sections $section): void
+    private function assertActiveSectionSemester(Sections $section): void
     {
-        $term = Terms::query()->find((int) $section->term_id);
-        if (! $term?->is_active) {
-            throw new InvalidArgumentException('Schedule generation is only available for the active academic term.');
+        $semester = Semester::query()->find((int) $section->semester_id);
+        if (! $semester?->is_active) {
+            throw new InvalidArgumentException('Schedule generation is only available for the active academic semester.');
         }
 
-        if ((string) $section->semester !== (string) $term->semester) {
-            throw new InvalidArgumentException('The selected section belongs to a different semester than the active academic term.');
+        if ((string) $section->semester !== (string) $semester->semester) {
+            throw new InvalidArgumentException('The selected section belongs to a different semester than the active academic semester.');
         }
     }
 

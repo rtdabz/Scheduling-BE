@@ -7,7 +7,7 @@ use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -27,11 +27,11 @@ class ScheduleBatchQueryCountTest extends TestCase
 
     public function test_query_count_grows_far_slower_than_the_number_of_operations(): void
     {
-        [$term, $dept, $section, $room, $user] = $this->fixture();
+        [$semester, $dept, $section, $room, $user] = $this->fixture();
         $courses = $this->courses($dept, 12);
 
-        $forFour = $this->countQueriesForBatch($user, $term, $dept, $section, $room, array_slice($courses, 0, 4), 0);
-        $forTwelve = $this->countQueriesForBatch($user, $term, $dept, $section, $room, array_slice($courses, 4, 8), 8);
+        $forFour = $this->countQueriesForBatch($user, $semester, $dept, $section, $room, array_slice($courses, 0, 4), 0);
+        $forTwelve = $this->countQueriesForBatch($user, $semester, $dept, $section, $room, array_slice($courses, 4, 8), 8);
 
         // Tripling the payload must not triple the query count. Before the fix,
         // per-operation hydration and rule-engine lookups made growth linear with
@@ -55,7 +55,7 @@ class ScheduleBatchQueryCountTest extends TestCase
 
     public function test_response_hydration_does_not_scale_with_operation_count(): void
     {
-        [$term, $dept, $section, $room, $user] = $this->fixture();
+        [$semester, $dept, $section, $room, $user] = $this->fixture();
         $courses = $this->courses($dept, 6);
 
         $queries = [];
@@ -63,24 +63,24 @@ class ScheduleBatchQueryCountTest extends TestCase
             $queries[] = $query->sql;
         });
 
-        $this->postBatch($user, $term, $dept, $section, $room, $courses, 0)->assertOk();
+        $this->postBatch($user, $semester, $dept, $section, $room, $courses, 0)->assertOk();
 
         // The saved rows are re-read once with their relations, not once per row.
-        $termLoads = count(array_filter(
+        $semesterLoads = count(array_filter(
             $queries,
-            static fn (string $sql): bool => str_contains($sql, 'from "terms"') && str_contains($sql, 'in ('),
+            static fn (string $sql): bool => str_contains($sql, 'from "semesters"') && str_contains($sql, 'in ('),
         ));
 
         $this->assertLessThanOrEqual(
             2,
-            $termLoads,
+            $semesterLoads,
             'Relations should be eager-loaded once for the whole batch, not per operation.',
         );
     }
 
     private function countQueriesForBatch(
         User $user,
-        Terms $term,
+        Semester $semester,
         Departments $dept,
         Sections $section,
         Rooms $room,
@@ -92,14 +92,14 @@ class ScheduleBatchQueryCountTest extends TestCase
             $count++;
         });
 
-        $this->postBatch($user, $term, $dept, $section, $room, $courses, $slotOffset)->assertOk();
+        $this->postBatch($user, $semester, $dept, $section, $room, $courses, $slotOffset)->assertOk();
 
         return $count;
     }
 
     private function postBatch(
         User $user,
-        Terms $term,
+        Semester $semester,
         Departments $dept,
         Sections $section,
         Rooms $room,
@@ -113,7 +113,7 @@ class ScheduleBatchQueryCountTest extends TestCase
             $hour = 7 + ($slot % 5) * 2;
 
             $operations[] = [
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $section->id,
                 'course_id' => $course->id,
                 'room_id' => $room->id,
@@ -129,10 +129,10 @@ class ScheduleBatchQueryCountTest extends TestCase
         return $this->actingAs($user)->postJson('/api/schedules/batch', ['operations' => $operations]);
     }
 
-    /** @return array{0: Terms, 1: Departments, 2: Sections, 3: Rooms, 4: User} */
+    /** @return array{0: Semester, 1: Departments, 2: Sections, 3: Rooms, 4: User} */
     private function fixture(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
@@ -142,7 +142,7 @@ class ScheduleBatchQueryCountTest extends TestCase
         $program = Program::create(['department_id' => $dept->id, 'code' => 'QRYP', 'name' => 'Query Program']);
         $section = Sections::create([
             'section_name' => 'QRY-1A', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $dept->id, 'program_id' => $program->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $dept->id, 'program_id' => $program->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
         $room = Rooms::create([
             'room_code' => 'QRY101', 'room_type' => 'lecture', 'status' => 'available',
@@ -150,7 +150,7 @@ class ScheduleBatchQueryCountTest extends TestCase
         ]);
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]));
 
-        return [$term, $dept, $section, $room, $user];
+        return [$semester, $dept, $section, $room, $user];
     }
 
     /** @return list<Course> */

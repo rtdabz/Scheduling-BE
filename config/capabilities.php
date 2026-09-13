@@ -143,7 +143,7 @@ return [
         ],
         'room_requests' => [
             'title' => 'Room Requests',
-            'description' => "Borrowing another department's vacant rooms for a term.",
+            'description' => "Borrowing another department's vacant rooms for a semester.",
         ],
     ],
 

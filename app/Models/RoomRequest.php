@@ -14,7 +14,7 @@ class RoomRequest extends Model
 
     protected $fillable = [
         'room_id',
-        'term_id',
+        'semester_id',
         'requesting_department_id',
         'owner_department_id',
         'status',
@@ -34,9 +34,9 @@ class RoomRequest extends Model
         return $this->belongsTo(Rooms::class, 'room_id')->withTrashed();
     }
 
-    public function term()
+    public function academicSemester()
     {
-        return $this->belongsTo(Terms::class, 'term_id');
+        return $this->belongsTo(Semester::class, 'semester_id');
     }
 
     public function requestingDepartment()

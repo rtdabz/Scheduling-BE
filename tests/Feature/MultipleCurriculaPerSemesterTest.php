@@ -9,7 +9,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -73,7 +73,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
     }
 
     /**
-     * The heart of the feature: two year levels in the same term, on different
+     * The heart of the feature: two year levels in the same semester, on different
      * curricula, each generated from its own course list.
      */
     public function test_each_year_level_generates_from_the_curriculum_its_sections_follow(): void
@@ -107,7 +107,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
 
         $this->actingAs($fixture['secretary'])
             ->postJson('/api/schedule-recommendations/year-level-preview', [
-                'term_id' => $fixture['term']->id,
+                'semester_id' => $fixture['semester']->id,
                 'department_id' => $fixture['department']->id,
                 'year_level' => 1,
                 'section_configs' => [['section_id' => $fixture['year1']->id]],
@@ -129,7 +129,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
 
         $this->actingAs($fixture['secretary'])
             ->postJson('/api/schedule-recommendations/year-level-preview', [
-                'term_id' => $fixture['term']->id,
+                'semester_id' => $fixture['semester']->id,
                 'department_id' => $fixture['department']->id,
                 'year_level' => 1,
                 'section_configs' => [['section_id' => $fixture['year1']->id]],
@@ -148,7 +148,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
 
         $this->actingAs($fixture['secretary'])
             ->postJson('/api/sections/assign-curriculum', [
-                'term_id' => $fixture['term']->id,
+                'semester_id' => $fixture['semester']->id,
                 'department_id' => $fixture['department']->id,
                 'year_level' => 2,
                 'curriculum_id' => $fixture['new']->id,
@@ -186,7 +186,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
 
         $this->actingAs($fixture['secretary'])
             ->postJson('/api/sections/assign-curriculum', [
-                'term_id' => $fixture['term']->id,
+                'semester_id' => $fixture['semester']->id,
                 'department_id' => $fixture['department']->id,
                 'year_level' => 2,
                 'curriculum_id' => $fixture['old']->id,
@@ -271,7 +271,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
 
     /**
      * A schedule plotted from the new curriculum says nothing about the old one,
-     * even though both cohorts sit in the same department and term.
+     * even though both cohorts sit in the same department and semester.
      */
     public function test_a_schedule_from_another_curriculum_does_not_block_deactivation(): void
     {
@@ -328,7 +328,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
 
         $this->actingAs($fixture['secretary'])
             ->postJson('/api/schedule-recommendations/year-level-preview', [
-                'term_id' => $fixture['term']->id,
+                'semester_id' => $fixture['semester']->id,
                 'department_id' => $fixture['department']->id,
                 'year_level' => 1,
                 'section_configs' => [[
@@ -378,7 +378,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
      */
     private function fixture(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
@@ -417,7 +417,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
             'department_id' => $department->id,
             'program_id' => $program->id,
             'curriculum_id' => $curriculum->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -428,7 +428,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         ]);
 
         return [
-            'term' => $term,
+            'semester' => $semester,
             'department' => $department,
             'program' => $program,
             'old' => $old,
@@ -459,13 +459,13 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         ]);
     }
 
-    private function place(Curriculum $curriculum, Course $course, int $yearLevel, int $semester = 1): void
+    private function place(Curriculum $curriculum, Course $course, int $yearLevel, int $period = 1): void
     {
         DB::table('curriculum_course')->insert([
             'curriculum_id' => $curriculum->id,
             'course_id' => $course->id,
             'year_level' => $yearLevel,
-            'semester' => $semester,
+            'semester' => $period,
         ]);
     }
 
@@ -476,7 +476,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
     private function plot(array $fixture, Sections $section, Curriculum $curriculum, Course $course): Schedule
     {
         return Schedule::create([
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'section_id' => $section->id,
             'curriculum_id' => $curriculum->id,
             'course_id' => $course->id,
@@ -497,7 +497,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
 
         return $this->actingAs($actor)
             ->postJson('/api/schedule-recommendations/year-level-preview', [
-                'term_id' => $fixture['term']->id,
+                'semester_id' => $fixture['semester']->id,
                 'department_id' => $fixture['department']->id,
                 'year_level' => $yearLevel,
                 'section_configs' => [['section_id' => $section->id]],

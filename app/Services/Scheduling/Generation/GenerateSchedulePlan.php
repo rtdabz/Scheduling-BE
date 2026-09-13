@@ -30,12 +30,12 @@ final class GenerateSchedulePlan
 
     /** @return list<SchedulePlan> */
     public function generate(
-        int $termId,
+        int $semesterId,
         int $departmentId,
         GenerationConfiguration $configuration,
         bool $configurationWarningsConfirmed = false,
     ): array {
-        $snapshot = $this->snapshots->captureForConfiguration($termId, $departmentId, $configuration);
+        $snapshot = $this->snapshots->captureForConfiguration($semesterId, $departmentId, $configuration);
         $validation = $this->configurationValidator->validateSnapshot($configuration, $snapshot);
 
         if (! $validation->canGenerate()) {

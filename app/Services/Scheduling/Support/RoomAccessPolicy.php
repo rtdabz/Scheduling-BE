@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\DB;
  * A department always reaches its own rooms and the shared ones (no owner).
  * A room owned by another department is reachable only through an approved
  * room request, and then only inside the weekly windows the VPAA approved for
- * that term.
+ * that semester.
  *
  * Every placement path -- the validator, the generator's room domain and the
  * alternative-room search -- asks this class, so none of them can offer a room
@@ -20,20 +20,20 @@ use Illuminate\Support\Facades\DB;
 class RoomAccessPolicy
 {
     /**
-     * Approved grant windows for a department in a term, keyed by room id.
+     * Approved grant windows for a department in a semester, keyed by room id.
      *
      * @return array<int, list<array{day: string, start_time: string, end_time: string, start_minutes: int, end_minutes: int}>>
      */
-    public function grantWindowsFor(int $departmentId, int $termId): array
+    public function grantWindowsFor(int $departmentId, int $semesterId): array
     {
-        if ($departmentId <= 0 || $termId <= 0) {
+        if ($departmentId <= 0 || $semesterId <= 0) {
             return [];
         }
 
         $rows = DB::table('room_request_windows')
             ->join('room_requests', 'room_requests.id', '=', 'room_request_windows.room_request_id')
             ->where('room_requests.requesting_department_id', $departmentId)
-            ->where('room_requests.term_id', $termId)
+            ->where('room_requests.semester_id', $semesterId)
             ->where('room_requests.status', RoomRequest::STATUS_APPROVED)
             ->orderBy('room_requests.room_id')
             ->orderBy('room_request_windows.day')
@@ -58,19 +58,19 @@ class RoomAccessPolicy
     }
 
     /**
-     * Rooms with at least one approved window for the department in the term.
+     * Rooms with at least one approved window for the department in the semester.
      *
      * @return list<int>
      */
-    public function grantedRoomIds(int $departmentId, ?int $termId): array
+    public function grantedRoomIds(int $departmentId, ?int $semesterId): array
     {
-        if ($departmentId <= 0 || $termId === null || $termId <= 0) {
+        if ($departmentId <= 0 || $semesterId === null || $semesterId <= 0) {
             return [];
         }
 
         return DB::table('room_requests')
             ->where('requesting_department_id', $departmentId)
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('status', RoomRequest::STATUS_APPROVED)
             ->distinct()
             ->orderBy('room_id')
@@ -81,14 +81,14 @@ class RoomAccessPolicy
 
     /**
      * Narrows a rooms query to what the department may reach: its own rooms,
-     * shared rooms, and rooms granted to it for the term. Whether a granted
+     * shared rooms, and rooms granted to it for the semester. Whether a granted
      * room fits a particular meeting is still the RuleEngine's call.
      *
      * @param  \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder  $query
      */
-    public function scopeReachableRooms($query, int $departmentId, ?int $termId, string $column = 'department_id', string $idColumn = 'id'): void
+    public function scopeReachableRooms($query, int $departmentId, ?int $semesterId, string $column = 'department_id', string $idColumn = 'id'): void
     {
-        $grantedRoomIds = $this->grantedRoomIds($departmentId, $termId);
+        $grantedRoomIds = $this->grantedRoomIds($departmentId, $semesterId);
 
         $query->where(static function ($scope) use ($departmentId, $grantedRoomIds, $column, $idColumn): void {
             $scope->whereNull($column)->orWhere($column, $departmentId);

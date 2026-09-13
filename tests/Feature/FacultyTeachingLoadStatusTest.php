@@ -9,7 +9,7 @@ use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -87,7 +87,7 @@ class FacultyTeachingLoadStatusTest extends TestCase
         // Schedule capabilities and section scheduling both require the
         // department to own a program.
         $program = Program::create(['department_id' => $department->id, 'code' => 'LODP', 'name' => 'Load Program']);
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -96,7 +96,7 @@ class FacultyTeachingLoadStatusTest extends TestCase
 
         return [
             'department' => $department,
-            'term' => $term,
+            'semester' => $semester,
             'room' => Rooms::create([
                 'room_code' => 'LOD101',
                 'room_type' => 'lecture',
@@ -122,7 +122,7 @@ class FacultyTeachingLoadStatusTest extends TestCase
                 'semester' => '1st',
                 'department_id' => $department->id,
                 'program_id' => $program->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]),
             'faculty' => Faculty::create([
@@ -141,7 +141,7 @@ class FacultyTeachingLoadStatusTest extends TestCase
     private function schedule(array $fixture, array $overrides = []): Schedule
     {
         return Schedule::create(array_merge([
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'section_id' => $fixture['section']->id,
             'course_id' => $fixture['course']->id,
             'room_id' => $fixture['room']->id,

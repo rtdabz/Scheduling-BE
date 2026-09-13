@@ -30,8 +30,8 @@ class YearLevelFeasibilityService
     /** Statuses whose existing schedules will be replaced by this run. */
     private const REPLACEABLE_STATUSES = ['draft', 'completed', 'revision'];
 
-    /** The run's term, so rooms granted to the department count as supply. */
-    private ?int $termId = null;
+    /** The run's semester, so rooms granted to the department count as supply. */
+    private ?int $semesterId = null;
 
     /**
      * @param  list<Sections>  $sections
@@ -45,7 +45,7 @@ class YearLevelFeasibilityService
         }
 
         $department = $this->resolveDepartment($sections);
-        $this->termId = (int) $sections[array_key_first($sections)]->term_id ?: null;
+        $this->semesterId = (int) $sections[array_key_first($sections)]->semester_id ?: null;
         $courses = $this->courses($configsBySectionId);
         $slotsPerDay = SchedulingPolicy::totalSlots();
 
@@ -651,17 +651,17 @@ class YearLevelFeasibilityService
 
     /**
      * Placements on the pinned day already held by schedules this run will not
-     * replace, so a partly-scheduled term is measured against what is left.
+     * replace, so a partly-scheduled semester is measured against what is left.
      *
      * @param  list<Sections>  $sections
      */
     private function occupiedForcedDaySlots(array $sections, int $courseId, string $day): int
     {
         $sectionIds = array_map(static fn (Sections $section): int => (int) $section->id, $sections);
-        $termId = (int) ($sections[array_key_first($sections)]->term_id ?? 0);
+        $semesterId = (int) ($sections[array_key_first($sections)]->semester_id ?? 0);
 
         return Schedule::query()
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->where('course_id', $courseId)
             ->where('day', $day)
             ->whereNotIn('section_id', $sectionIds)
@@ -1050,15 +1050,15 @@ class YearLevelFeasibilityService
             return 0;
         }
 
-        $termIds = array_values(array_unique(array_map(
-            static fn (Sections $section): int => (int) $section->term_id,
+        $semesterIds = array_values(array_unique(array_map(
+            static fn (Sections $section): int => (int) $section->semester_id,
             $sections,
         )));
         $sectionIds = array_map(static fn (Sections $section): int => (int) $section->id, $sections);
 
         $minutes = Schedule::query()
             ->whereIn('room_id', $roomIds)
-            ->whereIn('term_id', $termIds)
+            ->whereIn('semester_id', $semesterIds)
             ->where(function ($query) use ($sectionIds): void {
                 $query->whereNotIn('section_id', $sectionIds)
                     ->orWhereNotIn('status', self::REPLACEABLE_STATUSES);
@@ -1115,7 +1115,7 @@ class YearLevelFeasibilityService
             ->whereIn('room_type', $roomTypes)
             // A granted room counts in full even though it is open only in its
             // windows: overstating supply never refuses a feasible run.
-            ->tap(fn ($query) => app(RoomAccessPolicy::class)->scopeReachableRooms($query, (int) $department->id, $this->termId))
+            ->tap(fn ($query) => app(RoomAccessPolicy::class)->scopeReachableRooms($query, (int) $department->id, $this->semesterId))
             ->where(function ($query): void {
                 $query->where('status', 'available')->orWhereNull('status');
             })

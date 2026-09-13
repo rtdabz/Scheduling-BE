@@ -11,9 +11,9 @@ class FacultyLoadService
 {
     /**
      * Every faculty row for a department, each decorated with its live teaching
-     * load for the term.
+     * load for the semester.
      */
-    public function get(?int $departmentId, ?int $termId, ?int $programId = null): Collection
+    public function get(?int $departmentId, ?int $semesterId, ?int $programId = null): Collection
     {
         $faculties = Faculty::query()
             ->with(['department', 'program', 'availabilities', 'user', 'designation'])
@@ -23,11 +23,11 @@ class FacultyLoadService
             ->orderBy('first_name')
             ->get();
 
-        if ($termId === null || $faculties->isEmpty()) {
+        if ($semesterId === null || $faculties->isEmpty()) {
             return $faculties->each(fn (Faculty $faculty) => $this->applyRows($faculty, collect()));
         }
 
-        $assignments = $this->assignmentRows($termId, $faculties->pluck('id')->all())
+        $assignments = $this->assignmentRows($semesterId, $faculties->pluck('id')->all())
             ->groupBy('faculty_id');
 
         return $faculties->each(function (Faculty $faculty) use ($assignments): void {
@@ -41,11 +41,11 @@ class FacultyLoadService
      * to carry the load fields too — a bare model reply made the UI read the
      * absent fields as a zero load and cache that over the real numbers.
      */
-    public function decorate(Faculty $faculty, ?int $termId): Faculty
+    public function decorate(Faculty $faculty, ?int $semesterId): Faculty
     {
-        $rows = $termId === null
+        $rows = $semesterId === null
             ? collect()
-            : $this->assignmentRows($termId, [$faculty->id]);
+            : $this->assignmentRows($semesterId, [$faculty->id]);
 
         $this->applyRows($faculty, $rows);
 
@@ -59,15 +59,15 @@ class FacultyLoadService
      *
      * @param  \Illuminate\Support\Collection<int, Faculty>|Collection  $faculties
      */
-    public function decorateMany($faculties, ?int $termId)
+    public function decorateMany($faculties, ?int $semesterId)
     {
         if ($faculties->isEmpty()) {
             return $faculties;
         }
 
-        $rows = $termId === null
+        $rows = $semesterId === null
             ? collect()
-            : $this->assignmentRows($termId, $faculties->pluck('id')->all());
+            : $this->assignmentRows($semesterId, $faculties->pluck('id')->all());
 
         $byFaculty = $rows->groupBy('faculty_id');
 
@@ -87,11 +87,11 @@ class FacultyLoadService
      * @param  array<int, array{section_id: int, course_id: int, units: int}>  $incoming
      * @return array<string, mixed>
      */
-    public function projectLoad(Faculty $faculty, ?int $termId, array $incoming): array
+    public function projectLoad(Faculty $faculty, ?int $semesterId, array $incoming): array
     {
-        $rows = $termId === null
+        $rows = $semesterId === null
             ? collect()
-            : $this->assignmentRows($termId, [$faculty->id]);
+            : $this->assignmentRows($semesterId, [$faculty->id]);
 
         // Keyed the same way applyRows() dedupes, so a course split across
         // several meeting blocks counts its units once, and re-assigning a class
@@ -139,7 +139,7 @@ class FacultyLoadService
      *
      * @param  array<int, int>  $facultyIds
      */
-    private function assignmentRows(int $termId, array $facultyIds): \Illuminate\Support\Collection
+    private function assignmentRows(int $semesterId, array $facultyIds): \Illuminate\Support\Collection
     {
         if ($facultyIds === []) {
             return collect();
@@ -148,7 +148,7 @@ class FacultyLoadService
         return DB::table('schedules')
             ->join('courses', 'schedules.course_id', '=', 'courses.id')
             ->join('sections', 'schedules.section_id', '=', 'sections.id')
-            ->where('schedules.term_id', $termId)
+            ->where('schedules.semester_id', $semesterId)
             ->whereIn('schedules.status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
             ->whereIn('schedules.faculty_id', $facultyIds)
             ->select([

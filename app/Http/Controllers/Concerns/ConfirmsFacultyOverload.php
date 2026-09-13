@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Concerns;
 
 use App\Models\Course;
 use App\Models\Schedule;
-use App\Models\Terms;
+use App\Models\Semester;
 use Illuminate\Http\JsonResponse;
 
 /**
@@ -35,7 +35,7 @@ trait ConfirmsFacultyOverload
     /**
      * A unit ceiling is a hard limit. Overload and pro-bono allowances may be
      * confirmed, but a new assignment may never push an instructor past the
-     * configured ceiling for the active term.
+     * configured ceiling for the active semester.
      *
      * @param  array<int, array<string, mixed>>  $projections
      */
@@ -77,12 +77,12 @@ trait ConfirmsFacultyOverload
     }
 
     /**
-     * The term the load is measured in. Load only counts the active term, so a
+     * The semester the load is measured in. Load only counts the active semester, so a
      * null here means every projection reports a zero current load.
      */
-    protected function activeTermId(): ?int
+    protected function activeSemesterId(): ?int
     {
-        $id = Terms::query()->where('is_active', true)->value('id');
+        $id = Semester::query()->where('is_active', true)->value('id');
 
         return $id !== null ? (int) $id : null;
     }

@@ -12,7 +12,7 @@ use App\Models\ScheduleHistoryVersion;
 use App\Models\ScheduleSubmission;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -23,17 +23,17 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     public function test_secretary_can_withdraw_selected_sections_after_vpaa_approval(): void
     {
-        [$department, $term, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
-        $first = $this->schedule($department, $term, $room, $course, $firstSection, [
+        $first = $this->schedule($department, $semester, $room, $course, $firstSection, [
             'status' => 'faculty_assignment',
         ]);
-        $second = $this->schedule($department, $term, $room, $course, $secondSection, [
+        $second = $this->schedule($department, $semester, $room, $course, $secondSection, [
             'status' => 'faculty_assignment',
         ]);
-        $submission = $this->submission($department, $term, [$firstSection, $secondSection], 'approved', [
+        $submission = $this->submission($department, $semester, [$firstSection, $secondSection], 'approved', [
             'dean_reviewed_by' => $vpaa->id,
             'dean_reviewed_at' => now(),
             'vpaa_reviewed_by' => $vpaa->id,
@@ -75,9 +75,9 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     public function test_finalized_schedule_cannot_be_withdrawn(): void
     {
-        [$department, $term, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
-        $schedule = $this->schedule($department, $term, $room, $course, $firstSection, ['status' => 'finalized']);
+        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'finalized']);
 
         $this->actingAs($secretary)
             ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
@@ -88,12 +88,12 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     public function test_withdrawal_ignores_finalized_schedules_in_unselected_sections(): void
     {
-        [$department, $term, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
-        $withdrawn = $this->schedule($department, $term, $room, $course, $firstSection, [
+        $withdrawn = $this->schedule($department, $semester, $room, $course, $firstSection, [
             'status' => 'submitted',
         ]);
-        $finalized = $this->schedule($department, $term, $room, $course, $secondSection, [
+        $finalized = $this->schedule($department, $semester, $room, $course, $secondSection, [
             'status' => 'finalized',
         ]);
 
@@ -110,10 +110,10 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     public function test_finalized_section_status_is_not_downgraded_by_legacy_draft_rows(): void
     {
-        [$department, $term, $room, $course, $firstSection] = $this->fixture();
+        [$department, $semester, $room, $course, $firstSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
-        $this->schedule($department, $term, $room, $course, $firstSection, ['status' => 'draft']);
-        $this->schedule($department, $term, $room, $course, $firstSection, ['status' => 'finalized']);
+        $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'draft']);
+        $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'finalized']);
 
         $response = $this->actingAs($secretary)
             ->getJson("/api/departments/{$department->id}/schedule-status")
@@ -125,15 +125,15 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     public function test_withdrawal_releases_instructors_only_for_the_withdrawn_sections(): void
     {
-        [$department, $term, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $instructor = $this->instructor($department);
 
-        $withdrawn = $this->schedule($department, $term, $room, $course, $firstSection, [
+        $withdrawn = $this->schedule($department, $semester, $room, $course, $firstSection, [
             'status' => 'faculty_assignment',
             'faculty_id' => $instructor->id,
         ]);
-        $untouched = $this->schedule($department, $term, $room, $course, $secondSection, [
+        $untouched = $this->schedule($department, $semester, $room, $course, $secondSection, [
             'status' => 'faculty_assignment',
             'faculty_id' => $instructor->id,
         ]);
@@ -158,19 +158,19 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     public function test_withdrawn_section_can_complete_the_full_reapproval_workflow(): void
     {
-        [$department, $term, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
         $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
-        $schedule = $this->schedule($department, $term, $room, $course, $firstSection, [
+        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, [
             'status' => 'faculty_assignment',
         ]);
-        $withdrawnSubmission = $this->submission($department, $term, [$firstSection], 'approved');
+        $withdrawnSubmission = $this->submission($department, $semester, [$firstSection], 'approved');
         $secondSection->update(['section_name' => 'BSIT 4A', 'year_level' => '4']);
-        $finalized = $this->schedule($department, $term, $room, $course, $secondSection, [
+        $finalized = $this->schedule($department, $semester, $room, $course, $secondSection, [
             'status' => 'finalized',
         ]);
-        $finalizedSubmission = $this->submission($department, $term, [$secondSection], 'approved', [
+        $finalizedSubmission = $this->submission($department, $semester, [$secondSection], 'approved', [
             'dean_reviewed_by' => $dean->id,
             'dean_reviewed_at' => now(),
             'vpaa_reviewed_by' => $vpaa->id,
@@ -251,10 +251,10 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     public function test_initial_submission_cannot_skip_unfinished_year_levels(): void
     {
-        [$department, $term, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
-        $ready = $this->schedule($department, $term, $room, $course, $firstSection, ['status' => 'completed']);
-        $draft = $this->schedule($department, $term, $room, $course, $secondSection, ['status' => 'draft']);
+        $ready = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
+        $draft = $this->schedule($department, $semester, $room, $course, $secondSection, ['status' => 'draft']);
 
         $this->actingAs($secretary)
             ->postJson("/api/departments/{$department->id}/submit-schedules", [
@@ -269,11 +269,11 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     public function test_released_instructors_are_recorded_in_the_audit_log(): void
     {
-        [$department, $term, $room, $course, $firstSection] = $this->fixture();
+        [$department, $semester, $room, $course, $firstSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $instructor = $this->instructor($department);
 
-        $schedule = $this->schedule($department, $term, $room, $course, $firstSection, [
+        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, [
             'status' => 'faculty_assignment',
             'faculty_id' => $instructor->id,
         ]);
@@ -302,9 +302,9 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     public function test_withdrawal_without_instructors_reports_none_released(): void
     {
-        [$department, $term, $room, $course, $firstSection] = $this->fixture();
+        [$department, $semester, $room, $course, $firstSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
-        $this->schedule($department, $term, $room, $course, $firstSection, ['status' => 'submitted']);
+        $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'submitted']);
 
         $this->actingAs($secretary)
             ->postJson("/api/departments/{$department->id}/withdraw-submission", [
@@ -345,7 +345,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             'code' => 'BSIT',
             'name' => 'Information Technology',
         ]);
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -376,7 +376,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             'semester' => '1st',
             'department_id' => $department->id,
             'program_id' => $program->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $secondSection = Sections::create([
@@ -385,17 +385,17 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             'semester' => '1st',
             'department_id' => $department->id,
             'program_id' => $program->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
-        return [$department, $term, $room, $course, $firstSection, $secondSection];
+        return [$department, $semester, $room, $course, $firstSection, $secondSection];
     }
 
-    private function schedule(Departments $department, Terms $term, Rooms $room, Course $course, Sections $section, array $overrides = []): Schedule
+    private function schedule(Departments $department, Semester $semester, Rooms $room, Course $course, Sections $section, array $overrides = []): Schedule
     {
         return Schedule::create(array_merge([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => $room->id,
@@ -410,17 +410,17 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
     private function submission(
         Departments $department,
-        Terms $term,
+        Semester $semester,
         array $sections,
         string $status,
         array $overrides = [],
     ): ScheduleSubmission {
         $submission = ScheduleSubmission::create(array_merge([
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'revision_number' => ((int) ScheduleSubmission::query()
                 ->where('department_id', $department->id)
-                ->where('term_id', $term->id)
+                ->where('semester_id', $semester->id)
                 ->max('revision_number')) + 1,
             'status' => $status,
             'submitted_at' => now(),

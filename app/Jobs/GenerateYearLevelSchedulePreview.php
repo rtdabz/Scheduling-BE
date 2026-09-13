@@ -7,7 +7,7 @@ use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Exceptions\YearLevelGenerationException;
 use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\GenerationCancellationToken;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
@@ -68,9 +68,9 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
 
             return;
         }
-        $term = Terms::query()->find($run->term_id);
-        if (! $term?->is_active) {
-            $run->update(['status' => 'cancelled', 'error_message' => 'The selected academic term is no longer active.', 'finished_at' => now()]);
+        $semester = Semester::query()->find($run->semester_id);
+        if (! $semester?->is_active) {
+            $run->update(['status' => 'cancelled', 'error_message' => 'The selected academic semester is no longer active.', 'finished_at' => now()]);
 
             return;
         }
@@ -78,10 +78,10 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
             $sections = Sections::query()
                 ->with('department')
                 ->whereIn('id', array_map('intval', $this->sectionIds))
-                ->where('term_id', $run->term_id)
+                ->where('semester_id', $run->semester_id)
                 ->where('department_id', $run->department_id)
                 ->where('year_level', (string) $run->year_level)
-                ->where('semester', (string) $term->semester)
+                ->where('semester', (string) $semester->semester)
                 ->where('status', 'active')
                 ->orderBy('section_name')
                 ->get()

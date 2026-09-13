@@ -20,13 +20,13 @@ final class ValidateGenerationConfiguration
     ) {}
 
     public function validate(
-        int $termId,
+        int $semesterId,
         int $departmentId,
         GenerationConfiguration $configuration,
     ): GenerationConfigurationValidationResult {
         return $this->validateSnapshot(
             $configuration,
-            $this->snapshots->captureForConfiguration($termId, $departmentId, $configuration),
+            $this->snapshots->captureForConfiguration($semesterId, $departmentId, $configuration),
         );
     }
 
@@ -41,7 +41,7 @@ final class ValidateGenerationConfiguration
         if (! is_array($section)) {
             $violations[] = $this->violation(
                 'section_exists',
-                'The configured section is not available in this department and term snapshot.',
+                'The configured section is not available in this department and semester snapshot.',
                 ['section_id' => $configuration->sectionId],
             );
 
@@ -67,11 +67,11 @@ final class ValidateGenerationConfiguration
         SchedulingSnapshot $snapshot,
         array &$violations,
     ): void {
-        if ((int) ($section['term_id'] ?? 0) !== $snapshot->termId) {
+        if ((int) ($section['semester_id'] ?? 0) !== $snapshot->semesterId) {
             $violations[] = $this->violation(
-                'section_term_alignment',
-                'The configured section does not belong to the selected academic term.',
-                ['section_id' => (int) ($section['id'] ?? 0), 'term_id' => $snapshot->termId],
+                'section_semester_alignment',
+                'The configured section does not belong to the selected academic semester.',
+                ['section_id' => (int) ($section['id'] ?? 0), 'semester_id' => $snapshot->semesterId],
             );
         }
 
@@ -91,11 +91,11 @@ final class ValidateGenerationConfiguration
             );
         }
 
-        if ((string) ($section['semester'] ?? '') !== (string) ($snapshot->term['semester'] ?? '')) {
+        if ((string) ($section['semester'] ?? '') !== (string) ($snapshot->semester['semester'] ?? '')) {
             $violations[] = $this->violation(
-                'section_term_semester_alignment',
-                'The section semester does not match the selected academic term.',
-                ['section_semester' => $section['semester'] ?? null, 'term_semester' => $snapshot->term['semester'] ?? null],
+                'section_semester_period_alignment',
+                'The section semester does not match the selected academic semester.',
+                ['section_semester' => $section['semester'] ?? null, 'semester_period' => $snapshot->semester['semester'] ?? null],
             );
         }
     }
@@ -682,7 +682,7 @@ final class ValidateGenerationConfiguration
             violations: $violations,
             recommendations: array_values($recommendationsById),
             metadata: [
-                'term_id' => $snapshot->termId,
+                'semester_id' => $snapshot->semesterId,
                 'department_id' => $snapshot->departmentId,
                 'section_id' => $configuration->sectionId,
                 'validated_course_count' => count($configuration->courseIds),

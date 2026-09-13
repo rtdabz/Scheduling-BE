@@ -19,10 +19,10 @@ final class PrepareGenerationConfigurationForSolve
     ) {}
 
     /** @param array<string, mixed> $input */
-    public function prepareLegacy(int $termId, int $departmentId, array $input): PreparedGenerationConfiguration
+    public function prepareLegacy(int $semesterId, int $departmentId, array $input): PreparedGenerationConfiguration
     {
         $configuration = $this->mapper->map($input);
-        $validation = $this->validator->validate($termId, $departmentId, $configuration);
+        $validation = $this->validator->validate($semesterId, $departmentId, $configuration);
         $configurationFingerprint = $this->fingerprint->calculate($configuration);
         $confirmation = $this->confirmation($input);
         $warningRuleIds = array_values(array_unique(array_map(

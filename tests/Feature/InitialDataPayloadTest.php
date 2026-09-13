@@ -10,7 +10,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -136,11 +136,11 @@ class InitialDataPayloadTest extends TestCase
     public function test_program_head_payload_only_contains_courses_and_schedules_assigned_to_their_program(): void
     {
         [, $department] = $this->fixture();
-        $term = Terms::query()->where('is_active', true)->firstOrFail();
+        $semester = Semester::query()->where('is_active', true)->firstOrFail();
         $sourceDepartment = Departments::create(['department_name' => 'Source Dept', 'department_code' => 'SRC']);
         $sourceSection = Sections::create([
             'section_name' => 'SRC-1A', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $sourceDepartment->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $sourceDepartment->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
         $bped = Program::create(['department_id' => $department->id, 'code' => 'BPED', 'name' => 'Physical Education']);
         $beed = Program::create(['department_id' => $department->id, 'code' => 'BEED', 'name' => 'Elementary Education']);
@@ -162,7 +162,7 @@ class InitialDataPayloadTest extends TestCase
 
         foreach ([$bpedCourse, $beedCourse] as $index => $assignedCourse) {
             Schedule::create([
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $sourceSection->id,
                 'course_id' => $assignedCourse->id,
                 'department_id' => $sourceDepartment->id,
@@ -184,14 +184,14 @@ class InitialDataPayloadTest extends TestCase
     /** @return array{0: User, 1: Departments} */
     private function fixture(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
         $dept = Departments::create(['department_name' => 'Payload Dept', 'department_code' => 'PAY']);
         Sections::create([
             'section_name' => 'PAY-1A', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $dept->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $dept->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
         Rooms::create([
             'room_code' => 'PAY101', 'room_type' => 'lecture',

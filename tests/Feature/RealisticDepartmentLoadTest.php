@@ -8,7 +8,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -34,7 +34,7 @@ use Tests\TestCase;
  *   3 laboratory courses per section competing for only 6 laboratory rooms
  *   1 NSTP course and 1 PATHFIT course, both field, both forced to Saturday
  *   3 of the 6 courses are shared minors with a NULL department_id
- *   ~1,500 schedules already persisted for other year levels in the term
+ *   ~1,500 schedules already persisted for other year levels in the semester
  *
  * The split count of 3 crosses SPLIT_HEAVY_COURSE_THRESHOLD, so the solver runs
  * its long per-attempt timeout. This is the shape the generator actually has to
@@ -100,7 +100,7 @@ class RealisticDepartmentLoadTest extends TestCase
     /** @return array{0: list<Sections>, 1: array<int, array<string, mixed>>} */
     private function buildRealisticScenario(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
@@ -221,7 +221,7 @@ class RealisticDepartmentLoadTest extends TestCase
             $section = Sections::create([
                 'section_name' => 'IT 1-'.$s,
                 'year_level' => '1', 'semester' => '1st',
-                'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active',
+                'department_id' => $department->id, 'semester_id' => $semester->id, 'status' => 'active',
             ]);
             $sections[] = $section;
 
@@ -241,16 +241,16 @@ class RealisticDepartmentLoadTest extends TestCase
             $configs[(int) $section->id] = $config;
         }
 
-        $this->seedOtherYearLevelSchedules($term, $department, $courseIds[0]);
+        $this->seedOtherYearLevelSchedules($semester, $department, $courseIds[0]);
 
         return [$sections, $configs];
     }
 
     /**
-     * Schedules belonging to other year levels in the same term. A year-1 run
+     * Schedules belonging to other year levels in the same semester. A year-1 run
      * cannot replace these, so they stay in the snapshot and consume rooms.
      */
-    private function seedOtherYearLevelSchedules(Terms $term, Departments $department, int $courseId): void
+    private function seedOtherYearLevelSchedules(Semester $semester, Departments $department, int $courseId): void
     {
         // Other year levels lean on lecture rooms; the six laboratories are left
         // mostly free because year 1's own three laboratory courses are what
@@ -263,7 +263,7 @@ class RealisticDepartmentLoadTest extends TestCase
 
         $otherSection = Sections::create([
             'section_name' => 'IT 2-1', 'year_level' => '2', 'semester' => '1st',
-            'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $department->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
 
         $rows = [];
@@ -281,7 +281,7 @@ class RealisticDepartmentLoadTest extends TestCase
                         continue;
                     }
                     $rows[] = [
-                        'term_id' => $term->id,
+                        'semester_id' => $semester->id,
                         'section_id' => $otherSection->id,
                         'course_id' => $courseId,
                         'room_id' => $roomId,

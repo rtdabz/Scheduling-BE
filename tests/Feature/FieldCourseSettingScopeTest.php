@@ -7,7 +7,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -148,7 +148,7 @@ class FieldCourseSettingScopeTest extends TestCase
     /** @return array{0: Departments, 1: User} */
     private function department(string $code): array
     {
-        $term = Terms::firstOrCreate(
+        $semester = Semester::firstOrCreate(
             ['academic_year' => '2026-2027', 'semester' => '1st'],
             ['is_active' => true, 'is_enabled' => true],
         );
@@ -158,7 +158,7 @@ class FieldCourseSettingScopeTest extends TestCase
         $program = Program::create(['department_id' => $dept->id, 'code' => $code.'P', 'name' => "Program {$code}"]);
         Sections::create([
             'section_name' => "{$code}-1A", 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $dept->id, 'program_id' => $program->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $dept->id, 'program_id' => $program->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $dept->id]));
 

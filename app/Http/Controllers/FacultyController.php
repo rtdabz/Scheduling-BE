@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Designation;
 use App\Models\Faculty;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
@@ -49,7 +49,7 @@ class FacultyController extends Controller
     public function index(Request $request)
     {
         $departmentId = $this->resolveDepartmentId($request);
-        $termId = $this->activeTermId();
+        $semesterId = $this->activeSemesterId();
 
         $programId = $request->user()?->role === 'program_head'
             ? (int) ($request->user()?->program_id ?? 0)
@@ -58,11 +58,11 @@ class FacultyController extends Controller
         $faculty = Cache::remember(
             ApiCache::key('faculty.index', [
                 'department_id' => $departmentId,
-                'term_id' => $termId,
+                'semester_id' => $semesterId,
                 'program_id' => $programId,
             ]),
             ApiCache::LOOKUP_TTL_SECONDS,
-            fn () => $this->facultyLoad->get($departmentId, $termId, $programId),
+            fn () => $this->facultyLoad->get($departmentId, $semesterId, $programId),
         );
 
         return response()->json($faculty);
@@ -282,28 +282,28 @@ class FacultyController extends Controller
     private function present(Faculty $faculty): Faculty
     {
         return $this->facultyLoad
-            ->decorate($faculty, $this->activeTermId())
+            ->decorate($faculty, $this->activeSemesterId())
             ->load(['department', 'program', 'availabilities', 'designation']);
     }
 
-    private function activeTermId(): ?int
+    private function activeSemesterId(): ?int
     {
-        $activeTerm = Terms::where('is_active', true)->first();
+        $activeSemester = Semester::where('is_active', true)->first();
 
-        return $activeTerm ? (int) $activeTerm->id : null;
+        return $activeSemester ? (int) $activeSemester->id : null;
     }
 
     /** @return array<int, int> */
     private function liveScheduleIds(Faculty $faculty): array
     {
-        $termId = $this->activeTermId();
-        if ($termId === null) {
+        $semesterId = $this->activeSemesterId();
+        if ($semesterId === null) {
             return [];
         }
 
         return DB::table('schedules')
             ->where('faculty_id', $faculty->id)
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
             ->pluck('id')
             ->map(fn ($id) => (int) $id)

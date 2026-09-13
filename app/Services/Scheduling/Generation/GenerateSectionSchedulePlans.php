@@ -33,13 +33,13 @@ final class GenerateSectionSchedulePlans
         $profile = $this->preflight->validate($section, $courseIds, $input);
         $input['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $input);
         $prepared = $this->prepareConfiguration->prepareLegacy(
-            (int) $section->term_id,
+            (int) $section->semester_id,
             (int) $section->department_id,
             $input,
         );
 
         $plans = $this->planner->generate(
-            termId: (int) $section->term_id,
+            semesterId: (int) $section->semester_id,
             departmentId: (int) $section->department_id,
             configuration: $prepared->configuration,
             configurationWarningsConfirmed: true,

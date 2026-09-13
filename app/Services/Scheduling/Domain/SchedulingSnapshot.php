@@ -32,13 +32,13 @@ final readonly class SchedulingSnapshot implements SchedulingContract
      * @param  array<string, int>  $resourceLimits
      * @param  array<string, int|string>  $operatingHours
      * @param  array<string, mixed>  $departmentSettings
-     * @param  array<string, mixed>  $term
+     * @param  array<string, mixed>  $semester
      * @param  array<string, mixed>  $metadata
      */
     public function __construct(
         public string $fingerprint,
         public DateTimeImmutable $capturedAt,
-        public int $termId,
+        public int $semesterId,
         public int $departmentId,
         public array $sectionsById = [],
         public array $coursesById = [],
@@ -53,11 +53,11 @@ final readonly class SchedulingSnapshot implements SchedulingContract
         public array $resourceLimits = [],
         public array $operatingHours = [],
         public array $departmentSettings = [],
-        public array $term = [],
+        public array $semester = [],
         public array $metadata = [],
         public int $schemaVersion = self::SCHEMA_VERSION,
     ) {
-        if ($this->fingerprint === '' || $this->termId <= 0 || $this->departmentId <= 0) {
+        if ($this->fingerprint === '' || $this->semesterId <= 0 || $this->departmentId <= 0) {
             throw new InvalidArgumentException('Scheduling snapshot identity is incomplete.');
         }
     }
@@ -68,7 +68,7 @@ final readonly class SchedulingSnapshot implements SchedulingContract
         return new self(
             fingerprint: (string) ($payload['fingerprint'] ?? ''),
             capturedAt: new DateTimeImmutable((string) ($payload['captured_at'] ?? 'now')),
-            termId: (int) ($payload['term_id'] ?? 0),
+            semesterId: (int) ($payload['semester_id'] ?? 0),
             departmentId: (int) ($payload['department_id'] ?? 0),
             sectionsById: self::intKeyedRecords($payload['sections'] ?? []),
             coursesById: self::intKeyedRecords($payload['courses'] ?? []),
@@ -85,7 +85,7 @@ final readonly class SchedulingSnapshot implements SchedulingContract
             resourceLimits: is_array($payload['resource_limits'] ?? null) ? $payload['resource_limits'] : [],
             operatingHours: is_array($payload['operating_hours'] ?? null) ? $payload['operating_hours'] : [],
             departmentSettings: is_array($payload['department_settings'] ?? null) ? $payload['department_settings'] : [],
-            term: is_array($payload['term'] ?? null) ? $payload['term'] : [],
+            semester: is_array($payload['semester'] ?? null) ? $payload['semester'] : [],
             metadata: is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [],
             schemaVersion: (int) ($payload['schema_version'] ?? self::SCHEMA_VERSION),
         );
@@ -97,7 +97,7 @@ final readonly class SchedulingSnapshot implements SchedulingContract
             'schema_version' => $this->schemaVersion,
             'fingerprint' => $this->fingerprint,
             'captured_at' => $this->capturedAt->format(DATE_ATOM),
-            'term_id' => $this->termId,
+            'semester_id' => $this->semesterId,
             'department_id' => $this->departmentId,
             'sections' => $this->sectionsById,
             'courses' => $this->coursesById,
@@ -112,7 +112,7 @@ final readonly class SchedulingSnapshot implements SchedulingContract
             'resource_limits' => $this->resourceLimits,
             'operating_hours' => $this->operatingHours,
             'department_settings' => $this->departmentSettings,
-            'term' => $this->term,
+            'semester' => $this->semester,
             'metadata' => $this->metadata,
         ];
     }

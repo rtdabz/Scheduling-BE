@@ -6,7 +6,7 @@ use App\Models\Departments;
 use App\Models\Course;
 use App\Models\Schedule;
 use App\Models\SystemNotification;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
@@ -24,12 +24,12 @@ class SystemNotificationService
         string $message,
         ?User $actor = null,
         ?int $departmentId = null,
-        ?int $termId = null,
+        ?int $semesterId = null,
         ?string $remarks = null,
         array $metadata = [],
     ): void {
         $users = $this->usersForRoles($roles, $departmentId);
-        $this->createForUsers($users, $type, $title, $message, $actor, $departmentId, $termId, $remarks, $metadata);
+        $this->createForUsers($users, $type, $title, $message, $actor, $departmentId, $semesterId, $remarks, $metadata);
     }
 
     /**
@@ -43,7 +43,7 @@ class SystemNotificationService
         string $message,
         ?User $actor = null,
         ?int $departmentId = null,
-        ?int $termId = null,
+        ?int $semesterId = null,
         ?string $remarks = null,
         array $metadata = [],
     ): void {
@@ -53,7 +53,7 @@ class SystemNotificationService
             $message,
             $actor,
             $departmentId,
-            $termId,
+            $semesterId,
             $remarks,
             $metadata,
         ): void {
@@ -61,7 +61,7 @@ class SystemNotificationService
                 'user_id' => $user->id,
                 'actor_id' => $actor?->id,
                 'department_id' => $departmentId,
-                'term_id' => $termId,
+                'semester_id' => $semesterId,
                 'type' => $type,
                 'title' => $title,
                 'message' => $message,
@@ -95,17 +95,17 @@ class SystemNotificationService
     public function departmentWorkflowMessage(
         string $action,
         Departments $department,
-        ?Terms $term,
+        ?Semester $semester,
         ?User $actor,
         int $updatedCount,
         ?string $remarks = null,
     ): string {
         $actorName = $actor?->name ?? 'System';
-        $semester = $term?->semester ? strtoupper($term->semester) . ' semester' : 'active semester';
-        $academicYear = $term?->academic_year ? " AY {$term->academic_year}" : '';
+        $semesterText = $semester?->semester ? strtoupper($semester->semester) . ' semester' : 'active semester';
+        $academicYear = $semester?->academic_year ? " AY {$semester->academic_year}" : '';
         $count = "{$updatedCount} schedule" . ($updatedCount === 1 ? '' : 's');
 
-        $message = "{$actorName} {$action} {$department->department_name} for {$semester}{$academicYear}. {$count} updated.";
+        $message = "{$actorName} {$action} {$department->department_name} for {$semesterText}{$academicYear}. {$count} updated.";
 
         if ($remarks) {
             $message .= " Remarks: {$remarks}";
@@ -116,7 +116,7 @@ class SystemNotificationService
 
     public function notifyInstructorAssignmentProgress(Schedule $schedule, User $actor): void
     {
-        $schedule->loadMissing(['course.department', 'course.teachingDepartment', 'term']);
+        $schedule->loadMissing(['course.department', 'course.teachingDepartment', 'academicSemester']);
 
         $this->notifyDelegatedCourseCompletion($schedule, $actor);
 
@@ -125,11 +125,11 @@ class SystemNotificationService
             return;
         }
 
-        $activeTerm = Terms::query()->where('is_active', true)->first();
-        $termId = (int) ($activeTerm?->id ?? $schedule->term_id);
+        $activeSemester = Semester::query()->where('is_active', true)->first();
+        $semesterId = (int) ($activeSemester?->id ?? $schedule->semester_id);
 
         $query = Schedule::query()
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
             ->whereHas('course', function ($courseQuery) use ($courseDepartmentId) {
                 $courseQuery->where('department_id', $courseDepartmentId);
@@ -143,7 +143,7 @@ class SystemNotificationService
             return;
         }
 
-        $term = $activeTerm ?? $schedule->term;
+        $semester = $activeSemester ?? $schedule->academicSemester;
 
         $this->notifyRoles(
             ['secretary', 'program_head', 'dean', 'vpaa'],
@@ -152,13 +152,13 @@ class SystemNotificationService
             $this->departmentWorkflowMessage(
                 'assigned an instructor in',
                 $department,
-                $term,
+                $semester,
                 $actor,
                 1,
             ),
             $actor,
             $courseDepartmentId,
-            $termId,
+            $semesterId,
             null,
             [
                 'schedule_id' => $schedule->id,
@@ -177,13 +177,13 @@ class SystemNotificationService
                 $this->departmentWorkflowMessage(
                     'completed instructor assignments for',
                     $department,
-                    $term,
+                    $semester,
                     $actor,
                     $total,
                 ),
                 $actor,
                 $courseDepartmentId,
-                $termId,
+                $semesterId,
                 null,
                 [
                     'assigned_count' => $total,
@@ -219,9 +219,9 @@ class SystemNotificationService
             $courseIds = $completed->pluck('course_id')->unique()->values();
         }
 
-        $termId = (int) ($schedule->term_id ?? 0);
+        $semesterId = (int) ($schedule->semester_id ?? 0);
         if ($completedScheduleIds === null) {
-            $pending = Schedule::query()->where('term_id', $termId)->whereIn('course_id', $courseIds)
+            $pending = Schedule::query()->where('semester_id', $semesterId)->whereIn('course_id', $courseIds)
                 ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)->whereNull('faculty_id')->exists();
             if ($pending) return;
         }
@@ -229,7 +229,7 @@ class SystemNotificationService
         $source = $course->department?->department_name ?? 'The source department';
         $receiving = $course->teachingDepartment?->department_name ?? 'The receiving department';
         $message = "{$receiving} completed instructor assignments for the {$courseIds->count()} course" . ($courseIds->count() === 1 ? '' : 's') . '.';
-        $this->notifyRoles(['secretary', 'program_head', 'dean'], 'cross_department_instructor_assignments_completed', 'Cross-department assignments completed', $message, $actor, $sourceDepartmentId, $termId, null, ['course_ids' => $courseIds->values()->all(), 'receiving_department_id' => $receivingDepartmentId, 'link' => '/secretary/cross-department-assignments']);
+        $this->notifyRoles(['secretary', 'program_head', 'dean'], 'cross_department_instructor_assignments_completed', 'Cross-department assignments completed', $message, $actor, $sourceDepartmentId, $semesterId, null, ['course_ids' => $courseIds->values()->all(), 'receiving_department_id' => $receivingDepartmentId, 'link' => '/secretary/cross-department-assignments']);
     }
 
     public function notifyCrossDepartmentCompletion(Schedule $schedule, User $actor, ?array $completedScheduleIds = null): void

@@ -9,7 +9,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -134,7 +134,7 @@ class MajorInstructorRestrictionTest extends TestCase
             'department_id' => $fixture['department']->id,
         ]));
         $schedule = Schedule::create([
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'section_id' => $fixture['section']->id,
             'course_id' => $fixture['major']->id,
             'room_id' => $fixture['room']->id,
@@ -233,7 +233,7 @@ class MajorInstructorRestrictionTest extends TestCase
     private function validate(array $fixture, Course $course, Faculty $faculty): array
     {
         $schedule = Schedule::create([
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'section_id' => $fixture['section']->id,
             'course_id' => $course->id,
             'room_id' => $fixture['room']->id,
@@ -269,7 +269,7 @@ class MajorInstructorRestrictionTest extends TestCase
     {
         $department = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'CIT']);
         $otherDepartment = Departments::create(['department_name' => 'Engineering', 'department_code' => 'COE']);
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -289,7 +289,7 @@ class MajorInstructorRestrictionTest extends TestCase
         return [
             'department' => $department,
             'otherDepartment' => $otherDepartment,
-            'term' => $term,
+            'semester' => $semester,
             'program' => $program,
             'otherProgram' => $otherProgram,
             'room' => Rooms::create([
@@ -304,7 +304,7 @@ class MajorInstructorRestrictionTest extends TestCase
                 'semester' => '1st',
                 'department_id' => $department->id,
                 'program_id' => $program->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]),
             'major' => $this->course('IT 101', 'major', $department->id),

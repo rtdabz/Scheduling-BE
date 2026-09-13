@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\RoomRequest;
 use App\Models\Rooms;
 use App\Models\Schedule;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -19,7 +19,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 /**
- * A department borrowing another department's vacant room for a term.
+ * A department borrowing another department's vacant room for a semester.
  *
  * The secretary asks for weekly windows in one room; the VPAA approves,
  * rejects or later revokes. Approval is what RoomAccessPolicy reads, so a
@@ -38,7 +38,7 @@ class RoomRequestController extends Controller
     {
         $user = $request->user();
         $validated = $request->validate([
-            'term_id' => 'nullable|integer|exists:terms,id',
+            'semester_id' => 'nullable|integer|exists:semesters,id',
             'status' => ['nullable', Rule::in($this->statuses())],
             'scope' => 'nullable|in:department,all',
         ]);
@@ -50,7 +50,7 @@ class RoomRequestController extends Controller
         $requests = RoomRequest::query()
             ->with($this->relations())
             ->when(! $seesAll, fn ($query) => $query->where('requesting_department_id', (int) $user->department_id))
-            ->when(isset($validated['term_id']), fn ($query) => $query->where('term_id', (int) $validated['term_id']))
+            ->when(isset($validated['semester_id']), fn ($query) => $query->where('semester_id', (int) $validated['semester_id']))
             ->when(isset($validated['status']), fn ($query) => $query->where('status', $validated['status']))
             ->orderByRaw("CASE WHEN status = 'pending' THEN 0 ELSE 1 END")
             ->orderByDesc('created_at')
@@ -61,27 +61,27 @@ class RoomRequestController extends Controller
     }
 
     /**
-     * What already occupies a room in a term, so the request form can show
+     * What already occupies a room in a semester, so the request form can show
      * the vacant windows instead of letting the secretary guess.
      */
     public function occupancy(Request $request, int $room): JsonResponse
     {
         $roomModel = Rooms::query()->with('department')->findOrFail($room);
-        $term = $this->resolveTerm($request->input('term_id'));
+        $semester = $this->resolveSemester($request->input('semester_id'));
 
         $schedules = Schedule::query()
             ->with(['course:id,course_code', 'section:id,section_name', 'department:id,department_code'])
             ->where('room_id', $roomModel->id)
-            ->where('term_id', $term->id)
+            ->where('semester_id', $semester->id)
             ->orderBy('day')
             ->orderBy('start_time')
             ->get(['id', 'course_id', 'section_id', 'department_id', 'day', 'start_time', 'end_time']);
 
-        $grants = $this->approvedWindows($roomModel->id, $term->id);
+        $grants = $this->approvedWindows($roomModel->id, $semester->id);
 
         return response()->json([
             'room' => $this->presentRoom($roomModel),
-            'term' => $this->presentTerm($term),
+            'semester' => $this->presentSemester($semester),
             'opening_time' => substr(SchedulingPolicy::openingTime(), 0, 5),
             'closing_time' => substr(SchedulingPolicy::closingTime(), 0, 5),
             'occupied' => [
@@ -114,7 +114,7 @@ class RoomRequestController extends Controller
 
         $validated = $request->validate([
             'room_id' => 'required|integer|exists:rooms,id',
-            'term_id' => 'nullable|integer|exists:terms,id',
+            'semester_id' => 'nullable|integer|exists:semesters,id',
             'purpose' => 'required|string|max:1000',
             'windows' => 'required|array|min:1|max:21',
             'windows.*.day' => ['required', 'string', Rule::in(SchedulingPolicy::PERSISTABLE_DAYS)],
@@ -122,32 +122,32 @@ class RoomRequestController extends Controller
             'windows.*.end_time' => 'required|date_format:H:i',
         ]);
 
-        $term = $this->resolveTerm($validated['term_id'] ?? null);
+        $semester = $this->resolveSemester($validated['semester_id'] ?? null);
         $windows = $this->normalizeWindows($validated['windows']);
         $departmentId = (int) $user->department_id;
 
-        $roomRequest = DB::transaction(function () use ($validated, $term, $windows, $departmentId, $user): RoomRequest {
+        $roomRequest = DB::transaction(function () use ($validated, $semester, $windows, $departmentId, $user): RoomRequest {
             /** @var Rooms $room */
             $room = Rooms::query()->lockForUpdate()->findOrFail((int) $validated['room_id']);
             $this->assertLendable($room, $departmentId);
 
             $duplicate = RoomRequest::query()
                 ->where('room_id', $room->id)
-                ->where('term_id', $term->id)
+                ->where('semester_id', $semester->id)
                 ->where('requesting_department_id', $departmentId)
                 ->where('status', RoomRequest::STATUS_PENDING)
                 ->exists();
             if ($duplicate) {
                 throw ValidationException::withMessages([
-                    'room_id' => "Your department already has a pending request for {$room->room_code} this term.",
+                    'room_id' => "Your department already has a pending request for {$room->room_code} this semester.",
                 ]);
             }
 
-            $this->assertVacant($room, $term->id, $windows);
+            $this->assertVacant($room, $semester->id, $windows);
 
             $roomRequest = RoomRequest::create([
                 'room_id' => $room->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'requesting_department_id' => $departmentId,
                 'owner_department_id' => (int) $room->department_id,
                 'status' => RoomRequest::STATUS_PENDING,
@@ -197,7 +197,7 @@ class RoomRequestController extends Controller
 
             $this->assertVacant(
                 $room,
-                (int) $model->term_id,
+                (int) $model->semester_id,
                 $model->windows->map(fn ($window): array => [
                     'day' => (string) $window->day,
                     'start_time' => substr((string) $window->start_time, 0, 5),
@@ -353,18 +353,18 @@ class RoomRequestController extends Controller
      *
      * @param  list<array{day: string, start_time: string, end_time: string}>  $windows
      */
-    private function assertVacant(Rooms $room, int $termId, array $windows, ?int $ignoreRequestId = null): void
+    private function assertVacant(Rooms $room, int $semesterId, array $windows, ?int $ignoreRequestId = null): void
     {
         $days = array_values(array_unique(array_column($windows, 'day')));
 
         $schedules = Schedule::query()
             ->with(['course:id,course_code', 'section:id,section_name'])
             ->where('room_id', $room->id)
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->whereIn('day', $days)
             ->get(['id', 'course_id', 'section_id', 'day', 'start_time', 'end_time']);
 
-        $grants = $this->approvedWindows($room->id, $termId, $ignoreRequestId);
+        $grants = $this->approvedWindows($room->id, $semesterId, $ignoreRequestId);
 
         $conflicts = [];
         foreach ($windows as $window) {
@@ -454,13 +454,13 @@ class RoomRequestController extends Controller
     }
 
     /** @return Collection<int, object{day: string, start_time: string, end_time: string, department_code: ?string}> */
-    private function approvedWindows(int $roomId, int $termId, ?int $ignoreRequestId = null): Collection
+    private function approvedWindows(int $roomId, int $semesterId, ?int $ignoreRequestId = null): Collection
     {
         return DB::table('room_request_windows')
             ->join('room_requests', 'room_requests.id', '=', 'room_request_windows.room_request_id')
             ->leftJoin('departments', 'departments.id', '=', 'room_requests.requesting_department_id')
             ->where('room_requests.room_id', $roomId)
-            ->where('room_requests.term_id', $termId)
+            ->where('room_requests.semester_id', $semesterId)
             ->where('room_requests.status', RoomRequest::STATUS_APPROVED)
             ->when($ignoreRequestId !== null, fn ($query) => $query->where('room_requests.id', '!=', $ignoreRequestId))
             ->orderBy('room_request_windows.day')
@@ -479,7 +479,7 @@ class RoomRequestController extends Controller
         return Schedule::query()
             ->with(['course:id,course_code', 'section:id,section_name'])
             ->where('room_id', $model->room_id)
-            ->where('term_id', $model->term_id)
+            ->where('semester_id', $model->semester_id)
             ->where('department_id', $model->requesting_department_id)
             ->orderBy('day')
             ->orderBy('start_time')
@@ -496,18 +496,18 @@ class RoomRequestController extends Controller
         }
     }
 
-    private function resolveTerm(mixed $termId): Terms
+    private function resolveSemester(mixed $semesterId): Semester
     {
-        if ($termId !== null && $termId !== '') {
-            return Terms::query()->findOrFail((int) $termId);
+        if ($semesterId !== null && $semesterId !== '') {
+            return Semester::query()->findOrFail((int) $semesterId);
         }
 
-        $term = Terms::query()->where('is_active', true)->first();
-        if (! $term) {
-            abort(422, 'There is no active term to request a room for.');
+        $semester = Semester::query()->where('is_active', true)->first();
+        if (! $semester) {
+            abort(422, 'There is no active semester to request a room for.');
         }
 
-        return $term;
+        return $semester;
     }
 
     private function flushSchedulingCaches(): void
@@ -529,7 +529,7 @@ class RoomRequestController extends Controller
             "{$requester} requests {$room} ({$windows}). Purpose: {$model->purpose}",
             $actor,
             (int) $model->requesting_department_id,
-            (int) $model->term_id,
+            (int) $model->semester_id,
             null,
             [...$metadata, 'link' => '/vpaa/room-requests'],
         );
@@ -542,7 +542,7 @@ class RoomRequestController extends Controller
                 "{$requester} asked the VPAA to use {$room} ({$windows}).",
                 $actor,
                 (int) $model->owner_department_id,
-                (int) $model->term_id,
+                (int) $model->semester_id,
                 null,
                 $metadata,
             );
@@ -575,7 +575,7 @@ class RoomRequestController extends Controller
             $message,
             $actor,
             (int) $model->requesting_department_id,
-            (int) $model->term_id,
+            (int) $model->semester_id,
             $model->review_remarks,
             ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/secretary/room-requests'],
         );
@@ -594,7 +594,7 @@ class RoomRequestController extends Controller
             ),
             $actor,
             (int) $model->requesting_department_id,
-            (int) $model->term_id,
+            (int) $model->semester_id,
             null,
             ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/vpaa/room-requests'],
         );
@@ -625,7 +625,7 @@ class RoomRequestController extends Controller
     /** @return list<string> */
     private function relations(): array
     {
-        return ['room', 'term', 'requestingDepartment', 'ownerDepartment', 'requester', 'reviewer', 'windows'];
+        return ['room', 'academicSemester', 'requestingDepartment', 'ownerDepartment', 'requester', 'reviewer', 'windows'];
     }
 
     /** @return array<string, mixed> */
@@ -637,7 +637,7 @@ class RoomRequestController extends Controller
             'purpose' => $model->purpose,
             'review_remarks' => $model->review_remarks,
             'room' => $model->room ? $this->presentRoom($model->room) : null,
-            'term' => $model->term ? $this->presentTerm($model->term) : null,
+            'academic_semester' => $model->academicSemester ? $this->presentSemester($model->academicSemester) : null,
             'requesting_department' => $this->presentDepartment($model->requestingDepartment),
             'owner_department' => $this->presentDepartment($model->ownerDepartment),
             'requester' => $model->requester ? ['id' => (int) $model->requester->id, 'name' => (string) $model->requester->name] : null,
@@ -665,13 +665,13 @@ class RoomRequestController extends Controller
     }
 
     /** @return array<string, mixed> */
-    private function presentTerm(Terms $term): array
+    private function presentSemester(Semester $semester): array
     {
         return [
-            'id' => (int) $term->id,
-            'academic_year' => (string) $term->academic_year,
-            'semester' => (string) $term->semester,
-            'is_active' => (bool) $term->is_active,
+            'id' => (int) $semester->id,
+            'academic_year' => (string) $semester->academic_year,
+            'semester' => (string) $semester->semester,
+            'is_active' => (bool) $semester->is_active,
         ];
     }
 

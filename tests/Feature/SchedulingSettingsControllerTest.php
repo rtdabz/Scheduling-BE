@@ -6,7 +6,7 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -17,7 +17,7 @@ class SchedulingSettingsControllerTest extends TestCase
 
     public function test_generation_constraint_options_are_scoped_to_selected_section_year_and_semester(): void
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'IT']);
         // Schedule capabilities and section scheduling both require the
         // department to own a program.
@@ -32,7 +32,7 @@ class SchedulingSettingsControllerTest extends TestCase
             'semester' => '1st',
             'department_id' => $department->id,
             'program_id' => $program->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);

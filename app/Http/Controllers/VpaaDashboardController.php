@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Rooms;
 use App\Models\Schedule;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Cache;
 /**
  * Institution-wide figures for the VPAA dashboard.
  *
- * Everything here is an aggregate over *every* schedule row in the active term.
+ * Everything here is an aggregate over *every* schedule row in the active semester.
  * That is the whole reason this endpoint exists: `/initial-data` caps its
  * `schedules` array at 500 rows (2,000 on request) because it feeds the Schedule
  * Builder, and a truncated list silently understates campus-wide utilisation.
@@ -23,7 +23,7 @@ use Illuminate\Support\Facades\Cache;
  *
  * There is deliberately no clash detection here. RuleEngine's room, faculty and
  * section checks are already global rather than department-scoped, they run on
- * every write path, and concurrent saves are serialised by a term-wide lock — so
+ * every write path, and concurrent saves are serialised by a semester-wide lock — so
  * a standing double-booking cannot be produced through the application, and a
  * panel reporting them would only ever read zero.
  */
@@ -48,19 +48,19 @@ class VpaaDashboardController extends Controller
 
     public function __invoke(): JsonResponse
     {
-        $activeTerm = Terms::query()->where('is_active', true)->first();
-        $termId = $activeTerm?->id;
+        $activeSemester = Semester::query()->where('is_active', true)->first();
+        $semesterId = $activeSemester?->id;
 
         $cacheKey = ApiCache::compositeKey(
             'vpaa.dashboard.insights',
             ['initial.data', 'rooms.index'],
-            ['term' => $termId],
+            ['semester' => $semesterId],
         );
 
         $payload = Cache::remember(
             $cacheKey,
             ApiCache::LOOKUP_TTL_SECONDS,
-            fn (): array => $this->build($termId),
+            fn (): array => $this->build($semesterId),
         );
 
         return response()->json($payload);
@@ -69,14 +69,14 @@ class VpaaDashboardController extends Controller
     /**
      * @return array<string, mixed>
      */
-    private function build(?int $termId): array
+    private function build(?int $semesterId): array
     {
-        $meetings = $this->meetings($termId);
+        $meetings = $this->meetings($semesterId);
         $rooms = Rooms::query()->get(['id', 'room_code', 'building', 'room_type', 'status']);
         $physicalRooms = $rooms->reject(fn ($room) => $this->isVirtualRoom($room->room_type))->values();
 
         return [
-            'term_id' => $termId,
+            'semester_id' => $semesterId,
             'generated_at' => now()->toIso8601String(),
             'utilization' => $this->utilization($meetings, $physicalRooms),
             'peak_load' => $this->peakLoad($meetings),
@@ -85,15 +85,15 @@ class VpaaDashboardController extends Controller
     }
 
     /**
-     * Every live meeting in the term, flattened to plain rows.
+     * Every live meeting in the semester, flattened to plain rows.
      *
      * Deliberately a query-builder select rather than Eloquent with relations:
-     * this walks the entire term, and hydrating models plus relations for a few
+     * this walks the entire semester, and hydrating models plus relations for a few
      * thousand rows costs far more than the handful of columns actually read.
      */
-    private function meetings(?int $termId): Collection
+    private function meetings(?int $semesterId): Collection
     {
-        if ($termId === null) {
+        if ($semesterId === null) {
             return collect();
         }
 
@@ -103,7 +103,7 @@ class VpaaDashboardController extends Controller
             // that makes a section's meetings groupable into classes.
             ->leftJoin('courses', 'schedules.course_id', '=', 'courses.id')
             ->leftJoin('rooms', 'schedules.room_id', '=', 'rooms.id')
-            ->where('schedules.term_id', $termId)
+            ->where('schedules.semester_id', $semesterId)
             ->whereIn('schedules.status', self::LIVE_STATUSES)
             ->select([
                 'schedules.id',
@@ -286,7 +286,7 @@ class VpaaDashboardController extends Controller
     }
 
     /**
-     * Gaps that stop a term from opening: classes with nobody assigned to teach
+     * Gaps that stop a semester from opening: classes with nobody assigned to teach
      * them, and sections with no timetable at all.
      *
      * `schedules.day` is one row per meeting, so an MWF class is three rows;

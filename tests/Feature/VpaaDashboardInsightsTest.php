@@ -7,7 +7,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -15,7 +15,7 @@ use Tests\TestCase;
 /**
  * The VPAA dashboard's institution-wide aggregates.
  *
- * These count over every meeting in the active term, which is what /initial-data
+ * These count over every meeting in the active semester, which is what /initial-data
  * cannot do: it caps its schedules array, so anything measured from that payload
  * understates the campus.
  */
@@ -90,7 +90,7 @@ class VpaaDashboardInsightsTest extends TestCase
     /** @return array<string, mixed> */
     private function fixture(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
@@ -110,24 +110,24 @@ class VpaaDashboardInsightsTest extends TestCase
         ]);
 
         return [
-            'term' => $term,
+            'semester' => $semester,
             'ccs' => $ccs,
             'ced' => $ced,
             'room' => $room,
             'onlineRoom' => $onlineRoom,
-            'ccsSection' => $this->section($term, $ccs, 'CCS-1A'),
-            'cedSection' => $this->section($term, $ced, 'CED-1A'),
+            'ccsSection' => $this->section($semester, $ccs, 'CCS-1A'),
+            'cedSection' => $this->section($semester, $ced, 'CED-1A'),
             'ccsCourse' => $this->course($ccs, 'CCS101'),
             'cedCourse' => $this->course($ced, 'CED101'),
             'vpaa' => User::factory()->create(['role' => 'vpaa', 'department_id' => null]),
         ];
     }
 
-    private function section(Terms $term, Departments $department, string $name): Sections
+    private function section(Semester $semester, Departments $department, string $name): Sections
     {
         return Sections::create([
             'section_name' => $name, 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $department->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
     }
 
@@ -154,7 +154,7 @@ class VpaaDashboardInsightsTest extends TestCase
         ?int $roomId = null,
     ): Schedule {
         return Schedule::create([
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'section_id' => $fixture[$sectionKey]->id,
             'course_id' => $fixture[$departmentKey === 'ccs' ? 'ccsCourse' : 'cedCourse']->id,
             'faculty_id' => null,

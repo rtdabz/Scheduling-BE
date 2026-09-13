@@ -18,7 +18,7 @@ final class YearLevelGenerationEligibilityService
      *
      * @param  Collection<int, Sections>  $sections
      */
-    public function canGenerate(Collection $sections, int $termId): bool
+    public function canGenerate(Collection $sections, int $semesterId): bool
     {
         $sectionIds = $sections->pluck('id')->map('intval')->values();
         if ($sectionIds->isEmpty()) {
@@ -26,7 +26,7 @@ final class YearLevelGenerationEligibilityService
         }
 
         $statusesBySection = Schedule::query()
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->whereIn('section_id', $sectionIds)
             ->get(['section_id', 'status'])
             ->groupBy(fn (Schedule $schedule): int => (int) $schedule->section_id);

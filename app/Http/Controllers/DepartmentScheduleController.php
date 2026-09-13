@@ -8,7 +8,7 @@ use App\Models\Schedule;
 use App\Models\ScheduleSubmission;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Department\DepartmentScheduleStatusDeriver;
@@ -30,9 +30,9 @@ class DepartmentScheduleController extends Controller
         private readonly ScheduleOverviewService $scheduleOverviews,
     ) {}
 
-    private function activeTermId(): ?int
+    private function activeSemesterId(): ?int
     {
-        return Terms::where('is_active', true)->value('id');
+        return Semester::where('is_active', true)->value('id');
     }
 
     private function departmentSectionIds(int $departmentId): array
@@ -40,9 +40,9 @@ class DepartmentScheduleController extends Controller
         $query = Sections::where('department_id', $departmentId)
             ->where('status', 'active');
 
-        $activeTermId = $this->activeTermId();
-        if ($activeTermId) {
-            $query->where('term_id', $activeTermId);
+        $activeSemesterId = $this->activeSemesterId();
+        if ($activeSemesterId) {
+            $query->where('semester_id', $activeSemesterId);
         }
 
         return $query->pluck('id')->toArray();
@@ -52,9 +52,9 @@ class DepartmentScheduleController extends Controller
     {
         $query = Schedule::whereIn('section_id', $this->departmentSectionIds($departmentId));
 
-        $activeTermId = $this->activeTermId();
-        if ($activeTermId) {
-            $query->where('term_id', $activeTermId);
+        $activeSemesterId = $this->activeSemesterId();
+        if ($activeSemesterId) {
+            $query->where('semester_id', $activeSemesterId);
         }
 
         return $query;
@@ -66,15 +66,15 @@ class DepartmentScheduleController extends Controller
         array $scheduleStatuses,
         string $legacyStatus,
     ): ?ScheduleSubmission {
-        $termId = $this->activeTermId();
-        if ($termId === null) {
+        $semesterId = $this->activeSemesterId();
+        if ($semesterId === null) {
             return null;
         }
 
         $submission = ScheduleSubmission::query()
             ->with('sections')
             ->where('department_id', $departmentId)
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->whereIn('status', $submissionStatuses)
             ->latest('revision_number')
             ->first();
@@ -92,15 +92,15 @@ class DepartmentScheduleController extends Controller
             return null;
         }
 
-        return DB::transaction(function () use ($departmentId, $termId, $legacyStatus, $sectionIds): ScheduleSubmission {
+        return DB::transaction(function () use ($departmentId, $semesterId, $legacyStatus, $sectionIds): ScheduleSubmission {
             $revisionNumber = ((int) ScheduleSubmission::query()
                 ->where('department_id', $departmentId)
-                ->where('term_id', $termId)
+                ->where('semester_id', $semesterId)
                 ->lockForUpdate()
                 ->max('revision_number')) + 1;
             $submission = ScheduleSubmission::create([
                 'department_id' => $departmentId,
-                'term_id' => $termId,
+                'semester_id' => $semesterId,
                 'revision_number' => $revisionNumber,
                 'status' => $legacyStatus,
                 'submitted_at' => now(),
@@ -193,15 +193,15 @@ class DepartmentScheduleController extends Controller
     public function scheduleStatus(int $id): JsonResponse
     {
         $department = Departments::findOrFail($id);
-        $activeTermId = $this->activeTermId();
+        $activeSemesterId = $this->activeSemesterId();
 
-        $sections = Sections::with(['schedules' => function ($query) use ($activeTermId) {
+        $sections = Sections::with(['schedules' => function ($query) use ($activeSemesterId) {
             $query->select('id', 'section_id', 'status')
-                ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId));
+                ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId));
         }])
             ->where('department_id', $id)
             ->where('status', 'active')
-            ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId))
+            ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId))
             ->orderBy('year_level')
             ->orderBy('section_name')
             ->get();
@@ -229,7 +229,7 @@ class DepartmentScheduleController extends Controller
             // Delegated work the dashboard cannot see: these classes sit in other
             // departments' sections, so they are absent from the schedule rows the
             // dashboard loads for its own department.
-            'cross_department_pending' => $this->crossDepartmentPendingCount((int) $department->id, $activeTermId),
+            'cross_department_pending' => $this->crossDepartmentPendingCount((int) $department->id, $activeSemesterId),
         ]);
     }
 
@@ -242,14 +242,14 @@ class DepartmentScheduleController extends Controller
      * outstanding work. A class counts as pending while any of its meetings is
      * unassigned.
      */
-    private function crossDepartmentPendingCount(int $departmentId, ?int $activeTermId): int
+    private function crossDepartmentPendingCount(int $departmentId, ?int $activeSemesterId): int
     {
-        if ($activeTermId === null) {
+        if ($activeSemesterId === null) {
             return 0;
         }
 
         return Schedule::query()
-            ->where('term_id', $activeTermId)
+            ->where('semester_id', $activeSemesterId)
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES)
             ->whereNull('faculty_id')
             ->where('department_id', '!=', $departmentId)
@@ -269,7 +269,7 @@ class DepartmentScheduleController extends Controller
      *
      * This exists because the screen used to build the same numbers by counting
      * the schedule rows `/initial-data` happened to return, which is capped.
-     * The counts here are aggregated in SQL over the whole active term.
+     * The counts here are aggregated in SQL over the whole active semester.
      *
      * Only a VPAA sees the institution. Everyone else is scoped to the
      * department they are assigned to, and an unassigned account sees nothing
@@ -327,20 +327,20 @@ class DepartmentScheduleController extends Controller
         }
 
         $department = Departments::findOrFail($id);
-        $activeTermId = $this->activeTermId();
+        $activeSemesterId = $this->activeSemesterId();
         $validated = $request->validate([
             'section_ids' => ['nullable', 'array', 'min:1'],
             'section_ids.*' => ['integer', 'distinct'],
         ]);
 
-        $sections = Sections::with(['schedules' => function ($query) use ($activeTermId) {
+        $sections = Sections::with(['schedules' => function ($query) use ($activeSemesterId) {
             $query->select('id', 'section_id', 'status')
-                ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId));
+                ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId));
         }])
             ->where('department_id', $id)
             ->when($user->role === 'program_head', fn ($query) => $query->where('program_id', $user->program_id))
             ->where('status', 'active')
-            ->when($activeTermId, fn ($q) => $q->where('term_id', $activeTermId))
+            ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId))
             ->get();
 
         $allowedSectionIds = $sections->pluck('id')->map('intval')->values();
@@ -440,22 +440,22 @@ class DepartmentScheduleController extends Controller
 
         $sectionIds = $readySectionIds->all();
 
-        $result = DB::transaction(function () use ($sectionIds, $request, $department, $activeTermId, $user): array {
+        $result = DB::transaction(function () use ($sectionIds, $request, $department, $activeSemesterId, $user): array {
             $parentSubmission = ScheduleSubmission::query()
                 ->where('department_id', $department->id)
-                ->where('term_id', $activeTermId)
+                ->where('semester_id', $activeSemesterId)
                 ->whereIn('status', ['withdrawn', 'partially_withdrawn', 'rejected_by_dean', 'rejected_by_vpaa'])
                 ->whereHas('sections', fn ($query) => $query->whereIn('sections.id', $sectionIds))
                 ->latest('revision_number')
                 ->first();
             $revisionNumber = ((int) ScheduleSubmission::query()
                 ->where('department_id', $department->id)
-                ->where('term_id', $activeTermId)
+                ->where('semester_id', $activeSemesterId)
                 ->lockForUpdate()
                 ->max('revision_number')) + 1;
             $submission = ScheduleSubmission::create([
                 'department_id' => $department->id,
-                'term_id' => $activeTermId,
+                'semester_id' => $activeSemesterId,
                 'parent_submission_id' => $parentSubmission?->id,
                 'revision_number' => $revisionNumber,
                 'status' => 'pending_dean',
@@ -471,7 +471,7 @@ class DepartmentScheduleController extends Controller
                     'updated_at' => now(),
                 ]);
             if ($updated > 0) {
-                $this->recordWorkflowAudit($request, 'schedule_submitted', $department->id, $activeTermId, [
+                $this->recordWorkflowAudit($request, 'schedule_submitted', $department->id, $activeSemesterId, [
                     'schedules_updated' => $updated,
                     'selected_section_ids' => $sectionIds,
                 ], $submission->id);
@@ -484,7 +484,7 @@ class DepartmentScheduleController extends Controller
         $this->forgetWorkflowCaches();
 
         if ($updated > 0) {
-            $term = Terms::query()->find($this->activeTermId());
+            $semester = Semester::query()->find($this->activeSemesterId());
             $this->notifications->notifyRoles(
                 ['dean', 'secretary', 'program_head'],
                 'schedule_submitted',
@@ -492,13 +492,13 @@ class DepartmentScheduleController extends Controller
                 $this->notifications->departmentWorkflowMessage(
                     'submitted',
                     $department,
-                    $term,
+                    $semester,
                     $user,
                     $updated,
                 ),
                 $user,
                 $department->id,
-                $term?->id,
+                $semester?->id,
                 null,
                 [
                     'schedules_updated' => $updated,
@@ -558,13 +558,13 @@ class DepartmentScheduleController extends Controller
         $this->forgetWorkflowCaches();
 
         if ($updated > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_approved_by_dean', $department->id, $this->activeTermId(), [
+            $this->recordWorkflowAudit($request, 'schedule_approved_by_dean', $department->id, $this->activeSemesterId(), [
                 'schedules_updated' => $updated,
                 'selected_section_ids' => $targetSectionIds,
                 'approval_override' => $override,
                 'approval_override_reason' => $override ? ($validated['override_reason'] ?? null) : null,
             ], $submission->id);
-            $term = Terms::query()->find($this->activeTermId());
+            $semester = Semester::query()->find($this->activeSemesterId());
             $this->notifications->notifyRoles(
                 ['vpaa', 'dean', 'secretary', 'program_head'],
                 'schedule_approved_by_dean',
@@ -572,13 +572,13 @@ class DepartmentScheduleController extends Controller
                 $this->notifications->departmentWorkflowMessage(
                     'approved and forwarded',
                     $department,
-                    $term,
+                    $semester,
                     $user,
                     $updated,
                 ),
                 $user,
                 $department->id,
-                $term?->id,
+                $semester?->id,
                 null,
                 ['schedules_updated' => $updated, 'schedule_submission_id' => $submission->id],
             );
@@ -633,12 +633,12 @@ class DepartmentScheduleController extends Controller
         $this->forgetWorkflowCaches();
 
         if ($updated > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_returned_by_dean', $department->id, $this->activeTermId(), [
+            $this->recordWorkflowAudit($request, 'schedule_returned_by_dean', $department->id, $this->activeSemesterId(), [
                 'schedules_updated' => $updated,
                 'rejection_reason' => $validated['rejection_reason'],
                 'selected_section_ids' => $targetSectionIds,
             ], $submission->id);
-            $term = Terms::query()->find($this->activeTermId());
+            $semester = Semester::query()->find($this->activeSemesterId());
             $this->notifications->notifyRoles(
                 ['dean', 'secretary', 'program_head'],
                 'schedule_returned_by_dean',
@@ -646,14 +646,14 @@ class DepartmentScheduleController extends Controller
                 $this->notifications->departmentWorkflowMessage(
                     'returned',
                     $department,
-                    $term,
+                    $semester,
                     $user,
                     $updated,
                     $validated['rejection_reason'],
                 ),
                 $user,
                 $department->id,
-                $term?->id,
+                $semester?->id,
                 $validated['rejection_reason'],
                 ['schedules_updated' => $updated, 'schedule_submission_id' => $submission->id],
             );
@@ -781,7 +781,7 @@ class DepartmentScheduleController extends Controller
         $submissions = ScheduleSubmission::query()
             ->with('sections')
             ->where('department_id', $id)
-            ->where('term_id', $this->activeTermId())
+            ->where('semester_id', $this->activeSemesterId())
             ->whereIn('status', ['pending_dean', 'pending_vpaa', 'approved', 'partially_withdrawn'])
             ->whereHas('sections', fn ($sectionQuery) => $sectionQuery
                 ->whereIn('sections.id', $sectionIds)
@@ -846,7 +846,7 @@ class DepartmentScheduleController extends Controller
                 ->whereIn('section_id', $sectionIds)
                 ->where('status', 'completed')
                 ->whereNotNull('faculty_id')
-                ->get(['id', 'term_id', 'section_id', 'course_id', 'faculty_id']);
+                ->get(['id', 'semester_id', 'section_id', 'course_id', 'faculty_id']);
 
             $revision = $this->departmentScheduleQuery($id)
                 ->whereIn('section_id', $sectionIds)
@@ -885,9 +885,9 @@ class DepartmentScheduleController extends Controller
         // rows leave its visible statuses even though their faculty IDs persist.
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
-        $term = Terms::query()->find($this->activeTermId());
+        $semester = Semester::query()->find($this->activeSemesterId());
         if ($updated['revision'] > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_withdrawn', $department->id, $term?->id, [
+            $this->recordWorkflowAudit($request, 'schedule_withdrawn', $department->id, $semester?->id, [
                 'schedules_updated' => $updated['revision'],
                 'sections_unlocked' => count($sectionIds),
                 'withdrawal_stage' => $withdrawalStage,
@@ -904,13 +904,13 @@ class DepartmentScheduleController extends Controller
             $this->notifications->departmentWorkflowMessage(
                 'withdrew',
                 $department,
-                $term,
+                $semester,
                 $user,
                 $updated['revision'],
             ),
             $user,
             $department->id,
-            $term?->id,
+            $semester?->id,
             null,
             [
                 'schedules_updated' => $updated['revision'],
@@ -978,11 +978,11 @@ class DepartmentScheduleController extends Controller
         $this->forgetWorkflowCaches(affectsAssignments: true);
 
         if ($updated > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_approved_by_vpaa', $department->id, $this->activeTermId(), [
+            $this->recordWorkflowAudit($request, 'schedule_approved_by_vpaa', $department->id, $this->activeSemesterId(), [
                 'schedules_updated' => $updated,
                 'selected_section_ids' => $targetSectionIds,
             ], $submission->id);
-            $term = Terms::query()->find($this->activeTermId());
+            $semester = Semester::query()->find($this->activeSemesterId());
             $this->notifications->notifyRoles(
                 ['vpaa', 'dean', 'secretary', 'program_head'],
                 'schedule_approved_by_vpaa',
@@ -990,13 +990,13 @@ class DepartmentScheduleController extends Controller
                 $this->notifications->departmentWorkflowMessage(
                     'approved',
                     $department,
-                    $term,
+                    $semester,
                     $user,
                     $updated,
                 ),
                 $user,
                 $department->id,
-                $term?->id,
+                $semester?->id,
                 null,
                 ['schedules_updated' => $updated, 'schedule_submission_id' => $submission->id],
             );
@@ -1054,12 +1054,12 @@ class DepartmentScheduleController extends Controller
         $this->forgetWorkflowCaches(affectsAssignments: true);
 
         if ($updated > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_returned_by_vpaa', $department->id, $this->activeTermId(), [
+            $this->recordWorkflowAudit($request, 'schedule_returned_by_vpaa', $department->id, $this->activeSemesterId(), [
                 'schedules_updated' => $updated,
                 'rejection_reason' => $validated['rejection_reason'],
                 'selected_section_ids' => $targetSectionIds,
             ], $submission->id);
-            $term = Terms::query()->find($this->activeTermId());
+            $semester = Semester::query()->find($this->activeSemesterId());
             $this->notifications->notifyRoles(
                 ['vpaa', 'dean', 'secretary', 'program_head'],
                 'schedule_returned_by_vpaa',
@@ -1067,14 +1067,14 @@ class DepartmentScheduleController extends Controller
                 $this->notifications->departmentWorkflowMessage(
                     'returned',
                     $department,
-                    $term,
+                    $semester,
                     $user,
                     $updated,
                     $validated['rejection_reason'],
                 ),
                 $user,
                 $department->id,
-                $term?->id,
+                $semester?->id,
                 $validated['rejection_reason'],
                 ['schedules_updated' => $updated, 'schedule_submission_id' => $submission->id],
             );
@@ -1092,7 +1092,7 @@ class DepartmentScheduleController extends Controller
         Request $request,
         string $action,
         int $departmentId,
-        ?int $termId,
+        ?int $semesterId,
         array $metadata = [],
         ?int $submissionId = null,
     ): void {
@@ -1104,7 +1104,7 @@ class DepartmentScheduleController extends Controller
         // Schedule model events. Capture the resulting rows explicitly so
         // approvals, returns, submissions, and withdrawals are visible in
         // schedule history as well as the activity log.
-        if ($termId !== null) {
+        if ($semesterId !== null) {
             $targetSectionIds = collect($metadata['selected_section_ids'] ?? [])
                 ->map('intval')
                 ->filter()
@@ -1112,7 +1112,7 @@ class DepartmentScheduleController extends Controller
                 ->values();
             $departmentSchedules = Schedule::query()
                 ->where('department_id', $departmentId)
-                ->where('term_id', $termId)
+                ->where('semester_id', $semesterId)
                 ->get();
             $allSectionIds = $departmentSchedules->pluck('section_id')->filter()->unique();
             $schedules = $targetSectionIds->isNotEmpty()
@@ -1135,7 +1135,7 @@ class DepartmentScheduleController extends Controller
                 [],
                 $schedules,
                 $request->user()?->id,
-                $termId,
+                $semesterId,
                 $departmentId,
                 'department_workflow',
                 null,
@@ -1145,7 +1145,7 @@ class DepartmentScheduleController extends Controller
 
         SchedulingAuditLog::create([
             'user_id' => $request->user()?->id,
-            'term_id' => $termId,
+            'semester_id' => $semesterId,
             'department_id' => $departmentId,
             'action' => $action,
             'history_version_id' => $version?->id,

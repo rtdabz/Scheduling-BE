@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Curriculum;
 use App\Models\Program;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
@@ -21,7 +21,7 @@ class SectionsController extends Controller
     // Get all sections
     public function index()
     {
-        $sections = Cache::remember(ApiCache::key('sections.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'term', 'curriculum'])
+        $sections = Cache::remember(ApiCache::key('sections.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'academicSemester', 'curriculum'])
             ->latest()
             ->get());
 
@@ -44,17 +44,17 @@ class SectionsController extends Controller
     }
 
 
-    private function getActiveSystemTerm(): Terms
+    private function getActiveSystemSemester(): Semester
     {
-        return Terms::where('is_active', true)->first()
-            ?? Terms::where('is_enabled', true)->orderBy('id')->first()
-            ?? Terms::firstOrFail();
+        return Semester::where('is_active', true)->first()
+            ?? Semester::where('is_enabled', true)->orderBy('id')->first()
+            ?? Semester::firstOrFail();
     }
 
     // Create section
     public function store(Request $request)
     {
-        $activeTerm = $this->getActiveSystemTerm();
+        $activeSemester = $this->getActiveSystemSemester();
         $validated = $request->validate([
             'section_name' => 'required|string|max:255',
             'year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
@@ -77,26 +77,26 @@ class SectionsController extends Controller
         // department runs exactly one curriculum, and leaves it unset when there
         // is a real choice to make.
         $validated['curriculum_id'] = $curriculumId;
-        $validated['term_id'] = $activeTerm->id;
-        $validated['semester'] = $activeTerm->semester;
+        $validated['semester_id'] = $activeSemester->id;
+        $validated['semester'] = $activeSemester->semester;
         $validated['status'] = 'active';
 
         $section = Sections::create($validated);
         ApiCache::forgetGroups([
             'sections.index',
-            'sections.by_term',
+            'sections.by_semester',
             'sections.by_department',
             'departments.index',
             'initial.data',
         ]);
 
-        return response()->json($section->load(['department', 'program', 'term', 'curriculum']), 201);
+        return response()->json($section->load(['department', 'program', 'academicSemester', 'curriculum']), 201);
     }
 
     // Create batch sections
     public function batchStore(Request $request)
     {
-        $activeTerm = $this->getActiveSystemTerm();
+        $activeSemester = $this->getActiveSystemSemester();
         $validated = $request->validate([
             'sections' => 'required|array|min:1|max:50',
             'sections.*.section_name' => 'required|string|max:255',
@@ -125,14 +125,14 @@ class SectionsController extends Controller
             }
         }
 
-        $created = DB::transaction(function () use ($validated, $activeTerm) {
+        $created = DB::transaction(function () use ($validated, $activeSemester) {
             $list = [];
             foreach ($validated['sections'] as $data) {
-                $data['term_id'] = $activeTerm->id;
-                $data['semester'] = $activeTerm->semester;
+                $data['semester_id'] = $activeSemester->id;
+                $data['semester'] = $activeSemester->semester;
                 $data['status'] = 'active';
                 $section = Sections::create($data);
-                $list[] = $section->load(['department', 'program', 'term', 'curriculum']);
+                $list[] = $section->load(['department', 'program', 'academicSemester', 'curriculum']);
             }
 
             return $list;
@@ -140,7 +140,7 @@ class SectionsController extends Controller
 
         ApiCache::forgetGroups([
             'sections.index',
-            'sections.by_term',
+            'sections.by_semester',
             'sections.by_department',
             'departments.index',
             'initial.data',
@@ -155,7 +155,7 @@ class SectionsController extends Controller
     // Get single section
     public function show(Sections $section)
     {
-        return response()->json($section->load(['department', 'program', 'term', 'curriculum']));
+        return response()->json($section->load(['department', 'program', 'academicSemester', 'curriculum']));
     }
 
     // Update section
@@ -171,7 +171,7 @@ class SectionsController extends Controller
             'semester' => SchedulingPolicy::allowedSemestersRule('sometimes'),
             'department_id' => 'sometimes|exists:departments,id',
             'program_id' => ['sometimes', 'integer', Rule::exists('programs', 'id')->where(fn ($q) => $q->where('department_id', $request->input('department_id', $section->department_id)))],
-            'term_id' => 'sometimes|exists:terms,id',
+            'semester_id' => 'sometimes|exists:semesters,id',
             'curriculum_id' => 'sometimes|nullable|integer|exists:curriculum,id',
             'status' => SchedulingPolicy::allowedActiveStatusesRule('sometimes'),
         ]);
@@ -196,14 +196,14 @@ class SectionsController extends Controller
         $section->update($validated);
         ApiCache::forgetGroups([
             'sections.index',
-            'sections.by_term',
+            'sections.by_semester',
             'sections.by_department',
             'departments.index',
             'initial.data',
             'curriculum.index',
         ]);
 
-        return response()->json($section->load(['department', 'program', 'term', 'curriculum']));
+        return response()->json($section->load(['department', 'program', 'academicSemester', 'curriculum']));
     }
 
     /**
@@ -218,7 +218,7 @@ class SectionsController extends Controller
     public function assignCurriculumToYearLevel(Request $request)
     {
         $validated = $request->validate([
-            'term_id' => 'required|integer|exists:terms,id',
+            'semester_id' => 'required|integer|exists:semesters,id',
             'department_id' => 'required|integer|exists:departments,id',
             'year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
             'curriculum_id' => 'required|integer|exists:curriculum,id',
@@ -239,7 +239,7 @@ class SectionsController extends Controller
         }
 
         $sections = Sections::query()
-            ->where('term_id', (int) $validated['term_id'])
+            ->where('semester_id', (int) $validated['semester_id'])
             ->where('department_id', (int) $validated['department_id'])
             ->where('year_level', (string) $validated['year_level'])
             ->where('status', 'active')
@@ -278,7 +278,7 @@ class SectionsController extends Controller
 
         ApiCache::forgetGroups([
             'sections.index',
-            'sections.by_term',
+            'sections.by_semester',
             'sections.by_department',
             'departments.index',
             'initial.data',
@@ -309,7 +309,7 @@ class SectionsController extends Controller
         $section->delete();
         ApiCache::forgetGroups([
             'sections.index',
-            'sections.by_term',
+            'sections.by_semester',
             'sections.by_department',
             'departments.index',
             'initial.data',
@@ -318,11 +318,11 @@ class SectionsController extends Controller
         return response()->json(['message' => 'Section archived successfully']);
     }
 
-    // Get sections by term
-    public function byTerm($termId)
+    // Get sections by semester
+    public function bySemester($semesterId)
     {
-        $sections = Cache::remember(ApiCache::key('sections.by_term', ['term_id' => $termId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'curriculum'])
-            ->where('term_id', $termId)
+        $sections = Cache::remember(ApiCache::key('sections.by_semester', ['semester_id' => $semesterId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'curriculum'])
+            ->where('semester_id', $semesterId)
             ->get());
 
         return response()->json($sections);
@@ -331,7 +331,7 @@ class SectionsController extends Controller
     // Get sections by department
     public function byDepartment($departmentId)
     {
-        $sections = Cache::remember(ApiCache::key('sections.by_department', ['department_id' => $departmentId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['program', 'term', 'curriculum'])
+        $sections = Cache::remember(ApiCache::key('sections.by_department', ['department_id' => $departmentId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['program', 'academicSemester', 'curriculum'])
             ->where('department_id', $departmentId)
             ->get());
 

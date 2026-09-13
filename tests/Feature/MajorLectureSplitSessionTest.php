@@ -8,7 +8,7 @@ use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -27,7 +27,7 @@ class MajorLectureSplitSessionTest extends TestCase
     /** @return array{0: Departments, 1: Sections, 2: Course, 3: User} */
     private function scenario(bool $majorLectureSplitEnabled, int $labHours = 0): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -58,7 +58,7 @@ class MajorLectureSplitSessionTest extends TestCase
             'department_id' => $department->id,
             'program_id' => $program->id,
             'curriculum_id' => $curriculum->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([
@@ -90,7 +90,7 @@ class MajorLectureSplitSessionTest extends TestCase
     private function preview(User $user, Departments $department, Sections $section, Course $course): \Illuminate\Testing\TestResponse
     {
         return $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => (int) $section->term_id,
+            'semester_id' => (int) $section->semester_id,
             'department_id' => (int) $department->id,
             'year_level' => 1,
             'section_configs' => [[
@@ -152,7 +152,7 @@ class MajorLectureSplitSessionTest extends TestCase
                 'section_id' => (int) $section->id,
                 'course_id' => (int) $course->id,
                 'room_id' => (int) $room->id,
-                'term_id' => (int) $section->term_id,
+                'semester_id' => (int) $section->semester_id,
                 'day' => 'Monday',
                 'start_time' => '08:00',
                 'end_time' => '09:30',
@@ -164,7 +164,7 @@ class MajorLectureSplitSessionTest extends TestCase
                 'section_id' => (int) $section->id,
                 'course_id' => (int) $course->id,
                 'room_id' => (int) $room->id,
-                'term_id' => (int) $section->term_id,
+                'semester_id' => (int) $section->semester_id,
                 'day' => 'Wednesday',
                 'start_time' => '08:00',
                 'end_time' => '09:30',

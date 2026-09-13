@@ -8,7 +8,7 @@ use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -19,7 +19,7 @@ class RuleEngineSplitValidationTest extends TestCase
 
     public function test_same_subject_for_different_sections_cannot_overlap_online(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -35,7 +35,7 @@ class RuleEngineSplitValidationTest extends TestCase
             'year_level' => '2',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $secondSection = Sections::create([
@@ -43,7 +43,7 @@ class RuleEngineSplitValidationTest extends TestCase
             'year_level' => '2',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([
@@ -61,7 +61,7 @@ class RuleEngineSplitValidationTest extends TestCase
         ]);
 
         Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $firstSection->id,
             'course_id' => $course->id,
             'room_id' => null,
@@ -74,7 +74,7 @@ class RuleEngineSplitValidationTest extends TestCase
         ]);
 
         $attempt = [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $secondSection->id,
             'course_id' => $course->id,
             'room_id' => null,
@@ -98,7 +98,7 @@ class RuleEngineSplitValidationTest extends TestCase
 
     public function test_minor_course_is_valid_on_saturday_but_not_sunday(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -113,7 +113,7 @@ class RuleEngineSplitValidationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([
@@ -137,7 +137,7 @@ class RuleEngineSplitValidationTest extends TestCase
             'department_id' => $department->id,
         ]);
         $attempt = [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => $room->id,
@@ -159,8 +159,8 @@ class RuleEngineSplitValidationTest extends TestCase
 
     public function test_split_schedule_validates_relational_integrity_and_conflicts()
     {
-        // 1. Setup Active Term
-        $term = Terms::create([
+        // 1. Setup Active Semester
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -198,7 +198,7 @@ class RuleEngineSplitValidationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $dept1->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -216,7 +216,7 @@ class RuleEngineSplitValidationTest extends TestCase
         // Scenario A: Non-split schedule validation.
         // It should flag department alignment mismatch (IT102 belongs to DEPT2, Section belongs to DEPT1).
         $nonSplitAttempt = [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => $room->id,
@@ -248,11 +248,11 @@ class RuleEngineSplitValidationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $dept1->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $otherSection->id,
             'course_id' => $course->id,
             'room_id' => $room->id,
@@ -273,7 +273,7 @@ class RuleEngineSplitValidationTest extends TestCase
 
     public function test_online_schedule_does_not_require_room_assignment()
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -304,12 +304,12 @@ class RuleEngineSplitValidationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $dept->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
         $violations = app(RuleEngine::class)->validate([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => null,
@@ -328,7 +328,7 @@ class RuleEngineSplitValidationTest extends TestCase
 
     public function test_online_capacity_uses_department_configured_limit(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -365,7 +365,7 @@ class RuleEngineSplitValidationTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $dept->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]));
         $otherSection = Sections::create([
@@ -373,13 +373,13 @@ class RuleEngineSplitValidationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $otherDept->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
         foreach ($sections->take(1) as $section) {
             Schedule::create([
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $section->id,
                 'course_id' => $course->id,
                 'room_id' => null,
@@ -393,7 +393,7 @@ class RuleEngineSplitValidationTest extends TestCase
         }
 
         Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $otherSection->id,
             'course_id' => $course->id,
             'room_id' => null,
@@ -406,7 +406,7 @@ class RuleEngineSplitValidationTest extends TestCase
         ]);
 
         $secondAttempt = [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $sections[1]->id,
             'course_id' => $course->id,
             'room_id' => null,
@@ -433,7 +433,7 @@ class RuleEngineSplitValidationTest extends TestCase
 
     public function test_field_capacity_uses_department_configured_limit(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -479,7 +479,7 @@ class RuleEngineSplitValidationTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $dept->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]));
         $otherSection = Sections::create([
@@ -487,13 +487,13 @@ class RuleEngineSplitValidationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $otherDept->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
         foreach ($sections->take(1) as $section) {
             Schedule::create([
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'section_id' => $section->id,
                 'course_id' => $course->id,
                 'room_id' => $fieldRoom->id,
@@ -507,7 +507,7 @@ class RuleEngineSplitValidationTest extends TestCase
         }
 
         Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $otherSection->id,
             'course_id' => $course->id,
             'room_id' => $fieldRoom->id,
@@ -520,7 +520,7 @@ class RuleEngineSplitValidationTest extends TestCase
         ]);
 
         $secondAttempt = [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $sections[1]->id,
             'course_id' => $course->id,
             'room_id' => $fieldRoom->id,
@@ -547,7 +547,7 @@ class RuleEngineSplitValidationTest extends TestCase
 
     public function test_only_gec_service_subjects_require_cas_faculty(): void
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -585,7 +585,7 @@ class RuleEngineSplitValidationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $cit->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -647,7 +647,7 @@ class RuleEngineSplitValidationTest extends TestCase
 
         $ruleEngine = app(RuleEngine::class);
         $base = [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'department_id' => $cit->id,
             'day' => 'Monday',

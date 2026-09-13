@@ -9,7 +9,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleSplit;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -43,7 +43,7 @@ class DuplicateScheduleRowsTest extends TestCase
         $this->assertSame(4, Schedule::query()->count(), 'Fixture did not create the duplicates.');
 
         $snapshot = app(SchedulingSnapshotRepository::class)->captureForConfiguration(
-            (int) $context['term']->id,
+            (int) $context['semester']->id,
             (int) $context['department']->id,
             new GenerationConfiguration(
                 sectionId: (int) $context['other_section']->id,
@@ -70,7 +70,7 @@ class DuplicateScheduleRowsTest extends TestCase
         ScheduleSplit::create(['schedule_id' => $laboratory->id, 'split_group_id' => $groupId, 'meeting_type' => 'laboratory', 'meeting_index' => 1]);
 
         $snapshot = app(SchedulingSnapshotRepository::class)->captureForConfiguration(
-            (int) $context['term']->id,
+            (int) $context['semester']->id,
             (int) $context['department']->id,
             new GenerationConfiguration(
                 sectionId: (int) $context['other_section']->id,
@@ -89,7 +89,7 @@ class DuplicateScheduleRowsTest extends TestCase
     private function meeting(array $context, array $overrides = []): array
     {
         return array_merge([
-            'term_id' => $context['term']->id,
+            'semester_id' => $context['semester']->id,
             'section_id' => $context['section']->id,
             'course_id' => $context['course']->id,
             'room_id' => $context['room']->id,
@@ -104,7 +104,7 @@ class DuplicateScheduleRowsTest extends TestCase
 
     private function scaffold(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
@@ -117,14 +117,14 @@ class DuplicateScheduleRowsTest extends TestCase
 
         $section = Sections::create([
             'section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $department->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
 
         // The snapshot is captured for a different section, so the duplicated
         // rows count as outside bookings rather than replaceable ones.
         $otherSection = Sections::create([
             'section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $department->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $department->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
 
         $room = Rooms::create([
@@ -147,7 +147,7 @@ class DuplicateScheduleRowsTest extends TestCase
         $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
 
         return [
-            'term' => $term,
+            'semester' => $semester,
             'department' => $department,
             'section' => $section,
             'other_section' => $otherSection,

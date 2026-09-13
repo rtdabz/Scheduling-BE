@@ -9,7 +9,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleSubmission;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
@@ -33,7 +33,7 @@ class InitialDataController extends Controller
 
     /**
      * The optional collections a caller may ask for by name. Everything outside
-     * this list (the active term, the grid window, the readiness flags) is a
+     * this list (the active semester, the grid window, the readiness flags) is a
      * handful of scalars and is always returned.
      */
     private const OPTIONAL_SECTIONS = [
@@ -151,16 +151,16 @@ class InitialDataController extends Controller
         $viewerDepartmentId = $departmentId;
         $facultyDepartmentId = $user->role === 'program_head' ? $departmentId : null;
         $facultyProgramId = $user->role === 'program_head' ? (int) ($user->program_id ?? 0) : null;
-        $activeTerm = Cache::remember(
-            ApiCache::key('terms.active'),
+        $activeSemester = Cache::remember(
+            ApiCache::key('semesters.active'),
             ApiCache::LOOKUP_TTL_SECONDS,
-            fn () => Terms::query()->where('is_active', true)->first(),
+            fn () => Semester::query()->where('is_active', true)->first(),
         );
-        $activeTermId = $activeTerm?->id;
-        // Rooms another department lent this one for the active term ride along
+        $activeSemesterId = $activeSemester?->id;
+        // Rooms another department lent this one for the active semester ride along
         // with their windows, so the builder can offer them and say when.
-        $grantWindows = $departmentId !== null && $activeTermId !== null && $wants('rooms')
-            ? app(RoomAccessPolicy::class)->grantWindowsFor((int) $departmentId, (int) $activeTermId)
+        $grantWindows = $departmentId !== null && $activeSemesterId !== null && $wants('rooms')
+            ? app(RoomAccessPolicy::class)->grantWindowsFor((int) $departmentId, (int) $activeSemesterId)
             : [];
         $rooms = ! $wants('rooms') ? collect() : Rooms::query()
             ->with('department')
@@ -194,7 +194,7 @@ class InitialDataController extends Controller
 
         if ($wants('courses') && $activeCurriculumList->isNotEmpty()) {
             $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
-            $activeSemester = match ($activeTerm?->semester) {
+            $activePeriod = match ($activeSemester?->semester) {
                 '1st' => 1,
                 '2nd' => 2,
                 'summer' => 3,
@@ -202,7 +202,7 @@ class InitialDataController extends Controller
             };
             $pivotData = DB::table('curriculum_course')
                 ->whereIn('curriculum_id', $activeCurriculumList->pluck('id'))
-                ->when($activeSemester !== null, fn ($query) => $query->where('semester', $activeSemester))
+                ->when($activePeriod !== null, fn ($query) => $query->where('semester', $activePeriod))
                 ->get();
             $activeSemesterCourseIds = $pivotData->pluck('course_id')->map('intval')->unique()->values();
             $configuredFieldCodes = $departmentId === null
@@ -280,7 +280,7 @@ class InitialDataController extends Controller
         } else {
             // No active curriculum exists for this department scope. Its own
             // courses are only meaningful in the context of an active curriculum,
-            // and shared minors (null dept) have no term/year-level placement
+            // and shared minors (null dept) have no semester/year-level placement
             // without one either, so neither is returned.
             //
             // Courses delegated to this department are the exception: their
@@ -303,17 +303,17 @@ class InitialDataController extends Controller
         $sections = ! $wants('sections') ? collect() : Sections::query()
             // The curriculum comes along so the generator can show which one a
             // year level follows without a second round trip.
-            ->with(['department', 'program', 'term', 'curriculum'])
+            ->with(['department', 'program', 'academicSemester', 'curriculum'])
             // A Department without a Program is not a schedulable academic scope.
             // Keep legacy schedule rows readable below, but do not offer these
             // sections to the active scheduler or generation workflows.
             ->whereHas('program')
             ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
-            ->when($activeTermId !== null, fn (Builder $query) => $query->where(function (Builder $q) use ($activeTermId, $activeTerm) {
-                $q->where('term_id', $activeTermId)
-                    ->orWhereNull('term_id');
-                if ($activeTerm && ! empty($activeTerm->semester)) {
-                    $q->orWhere('semester', $activeTerm->semester);
+            ->when($activeSemesterId !== null, fn (Builder $query) => $query->where(function (Builder $q) use ($activeSemesterId, $activeSemester) {
+                $q->where('semester_id', $activeSemesterId)
+                    ->orWhereNull('semester_id');
+                if ($activeSemester && ! empty($activeSemester->semester)) {
+                    $q->orWhere('semester', $activeSemester->semester);
                 }
             }))
             ->get();
@@ -327,8 +327,8 @@ class InitialDataController extends Controller
         // otherwise be repeated once per meeting row.
         $schedules = ! $wants('schedules') ? collect() : Schedule::query()
             ->with(array_filter([
-                'term:id,academic_year,semester',
-                'section:id,section_name,year_level,semester,department_id,program_id,term_id',
+                'academicSemester:id,academic_year,semester',
+                'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
                 // teaching_department_id drives the delegated-assignment masking below.
                 'course:id,course_code,course_name,lecture_hours,lab_hours,units,course_category,room_type_required,year_level,semester,department_id,teaching_department_id,teaching_program_id,program_id',
                 'faculty:id,first_name,last_name,middle_name,department_id,program_id',
@@ -356,7 +356,7 @@ class InitialDataController extends Controller
                     ->where('program_id', $facultyProgramId)
                     ->orWhere('teaching_program_id', $facultyProgramId),
             ))
-            ->when($activeTermId !== null, fn (Builder $query) => $query->where('term_id', $activeTermId))
+            ->when($activeSemesterId !== null, fn (Builder $query) => $query->where('semester_id', $activeSemesterId))
             ->latest()
             // Keep the default response bounded for institution-wide viewers.
             // Callers that genuinely need more rows can opt in up to 2,000 and
@@ -367,14 +367,14 @@ class InitialDataController extends Controller
         $needsSubmissions = $wants('schedules') || $wants('schedule_submissions');
         $scheduleSubmissions = ! $needsSubmissions ? collect() : ScheduleSubmission::query()
             ->with([
-                'sections:id,section_name,year_level,department_id,term_id',
+                'sections:id,section_name,year_level,department_id,semester_id',
                 'submitter:id,name',
                 'deanReviewer:id,name',
                 'vpaaReviewer:id,name',
                 'withdrawer:id,name',
             ])
             ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
-            ->when($activeTermId !== null, fn (Builder $query) => $query->where('term_id', $activeTermId))
+            ->when($activeSemesterId !== null, fn (Builder $query) => $query->where('semester_id', $activeSemesterId))
             ->orderByDesc('revision_number')
             ->get();
         $latestSubmissionBySection = collect();
@@ -435,7 +435,7 @@ class InitialDataController extends Controller
             ->get();
 
         $payload = [
-            'active_term' => $activeTerm,
+            'active_semester' => $activeSemester,
             // The grid window is a stored setting (schedule_settings, PATCH
             // /timeslots/settings). The client used to hardcode 07:00-19:00 in ~40
             // places, so changing it desynchronised the whole builder (audit #33).
@@ -451,7 +451,7 @@ class InitialDataController extends Controller
             // Program Head, however, owns one program roster and must never see
             // another program's instructors in Auto-Assign.
             'faculties' => $wants('faculties')
-                ? $this->facultyLoad->get($facultyDepartmentId, $activeTermId, $facultyProgramId)
+                ? $this->facultyLoad->get($facultyDepartmentId, $activeSemesterId, $facultyProgramId)
                 : collect(),
             'sections' => $sections,
             'schedules' => $schedules,

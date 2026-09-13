@@ -9,7 +9,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -111,7 +111,7 @@ class PreferredPeriodCapacityTest extends TestCase
         ?string $period,
         bool $majorLectureSplitEnabled = false,
     ): array {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
             'department_name' => 'College of Business Administration',
             'department_code' => 'CBA',
@@ -153,7 +153,7 @@ class PreferredPeriodCapacityTest extends TestCase
             'department_id' => $department->id,
             'program_id' => $program->id,
             'curriculum_id' => $curriculum->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
@@ -164,7 +164,7 @@ class PreferredPeriodCapacityTest extends TestCase
         }
 
         return [$user, [
-            'term_id' => (int) $term->id,
+            'semester_id' => (int) $semester->id,
             'department_id' => (int) $department->id,
             'year_level' => 1,
             'section_configs' => [$config],

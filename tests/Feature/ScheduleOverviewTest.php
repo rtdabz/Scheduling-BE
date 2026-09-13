@@ -9,21 +9,21 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 /**
  * The All Schedules overview reports institution-wide totals, so the numbers it
- * shows have to come from the whole term rather than from however many rows a
+ * shows have to come from the whole semester rather than from however many rows a
  * bounded payload happened to carry.
  */
 class ScheduleOverviewTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_overview_counts_classes_meetings_and_gaps_across_the_whole_term(): void
+    public function test_overview_counts_classes_meetings_and_gaps_across_the_whole_semester(): void
     {
         $context = $this->scaffold();
 
@@ -122,7 +122,7 @@ class ScheduleOverviewTest extends TestCase
         Program::create(['department_id' => $other->id, 'code' => 'BSBA', 'name' => 'Business Administration']);
         Sections::create([
             'section_name' => 'BA 1A', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $other->id, 'term_id' => $context['term']->id, 'status' => 'active',
+            'department_id' => $other->id, 'semester_id' => $context['semester']->id, 'status' => 'active',
         ]);
 
         $dean = $this->grantCapabilities(User::factory()->create([
@@ -179,7 +179,7 @@ class ScheduleOverviewTest extends TestCase
     private function meeting(array $context, array $overrides = []): array
     {
         return array_merge([
-            'term_id' => $context['term']->id,
+            'semester_id' => $context['semester']->id,
             'section_id' => $context['section']->id,
             'course_id' => $context['course']->id,
             'faculty_id' => $context['faculty']->id,
@@ -196,7 +196,7 @@ class ScheduleOverviewTest extends TestCase
     /** @return array<string, mixed> */
     private function scaffold(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
@@ -215,7 +215,7 @@ class ScheduleOverviewTest extends TestCase
         $section = Sections::create([
             'section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st',
             'department_id' => $department->id, 'program_id' => $program->id,
-            'term_id' => $term->id, 'status' => 'active',
+            'semester_id' => $semester->id, 'status' => 'active',
         ]);
 
         // Left unscheduled on purpose: it is what makes sections_scheduled
@@ -223,7 +223,7 @@ class ScheduleOverviewTest extends TestCase
         Sections::create([
             'section_name' => 'IT 1B', 'year_level' => '1', 'semester' => '1st',
             'department_id' => $department->id, 'program_id' => $program->id,
-            'term_id' => $term->id, 'status' => 'active',
+            'semester_id' => $semester->id, 'status' => 'active',
         ]);
 
         $room = Rooms::create([
@@ -254,7 +254,7 @@ class ScheduleOverviewTest extends TestCase
         ]);
 
         return [
-            'term' => $term,
+            'semester' => $semester,
             'department' => $department,
             'section' => $section,
             'room' => $room,

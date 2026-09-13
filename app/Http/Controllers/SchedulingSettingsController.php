@@ -214,7 +214,7 @@ class SchedulingSettingsController extends Controller
                 'section_id' => (int) $section->id,
                 'semester' => (string) $section->semester,
                 'year_level' => (int) $section->year_level,
-                'term_id' => (int) $section->term_id,
+                'semester_id' => (int) $section->semester_id,
             ] : null,
             'forced_day_courses' => $courseOptions,
             'forced_day_rules' => $this->forcedDayRules($department, $section),

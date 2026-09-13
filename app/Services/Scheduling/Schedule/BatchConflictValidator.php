@@ -80,7 +80,7 @@ class BatchConflictValidator
     }
 
     /**
-     * Pairwise rules: two candidate rows that overlap in the same term and day.
+     * Pairwise rules: two candidate rows that overlap in the same semester and day.
      *
      * @param  array<int|string, array<string, mixed>>  $rows  already normalized
      * @param  array<int, string>  $courses
@@ -102,7 +102,7 @@ class BatchConflictValidator
                 $rightIndex = $indexes[$j];
                 $right = $rows[$rightIndex];
 
-                if ($left['term_id'] !== $right['term_id'] || $left['day'] !== $right['day']) {
+                if ($left['semester_id'] !== $right['semester_id'] || $left['day'] !== $right['day']) {
                     continue;
                 }
 
@@ -195,7 +195,7 @@ class BatchConflictValidator
     }
 
     /**
-     * Sweep-line over each (term, department, room, day) group for rooms whose
+     * Sweep-line over each (semester, department, room, day) group for rooms whose
      * concurrent limit is above one, counting candidate rows together with the
      * persisted rows they will sit alongside.
      *
@@ -217,7 +217,7 @@ class BatchConflictValidator
         $groups = [];
 
         foreach ($rows as $index => $row) {
-            if ($row['room_id'] <= 0 || $row['term_id'] <= 0 || $row['department_id'] <= 0) {
+            if ($row['room_id'] <= 0 || $row['semester_id'] <= 0 || $row['department_id'] <= 0) {
                 continue;
             }
             if ($row['day'] === '' || $row['mode'] === 'online' || $row['start'] >= $row['end']) {
@@ -229,7 +229,7 @@ class BatchConflictValidator
                 continue;
             }
 
-            $groups["{$row['term_id']}:{$row['department_id']}:{$row['room_id']}:{$row['day']}"][] = [
+            $groups["{$row['semester_id']}:{$row['department_id']}:{$row['room_id']}:{$row['day']}"][] = [
                 'index' => $index,
                 'capacity' => $capacity,
                 'day' => $row['day'],
@@ -245,11 +245,11 @@ class BatchConflictValidator
 
         $persisted = Schedule::query()
             ->whereIn('room_id', $scope['room_ids'])
-            ->whereIn('term_id', $scope['term_ids'])
+            ->whereIn('semester_id', $scope['semester_ids'])
             ->whereIn('department_id', $scope['department_ids'])
             ->whereIn('day', $scope['days'])
             ->when($ignoreScheduleIds !== [], fn ($query) => $query->whereNotIn('id', $ignoreScheduleIds))
-            ->get(['id', 'room_id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
+            ->get(['id', 'room_id', 'semester_id', 'department_id', 'day', 'start_time', 'end_time']);
 
         foreach ($persisted as $schedule) {
             $roomId = (int) $schedule->room_id;
@@ -259,7 +259,7 @@ class BatchConflictValidator
                 continue;
             }
 
-            $groups["{$schedule->term_id}:{$departmentId}:{$roomId}:{$schedule->day}"][] = [
+            $groups["{$schedule->semester_id}:{$departmentId}:{$roomId}:{$schedule->day}"][] = [
                 'index' => null,
                 'schedule_id' => (int) $schedule->id,
                 'capacity' => $capacity,
@@ -280,12 +280,12 @@ class BatchConflictValidator
     }
 
     /**
-     * Sweep-line over each (term, department, day) group of online rows against
+     * Sweep-line over each (semester, department, day) group of online rows against
      * the department's configured online slot limit.
      *
      * @param  array<int|string, array<string, mixed>>  $rows  already normalized
      * @param  array<int, string>  $courses
-     * @param  array{room_ids: list<int>, term_ids: list<int>, department_ids: list<int>, days: list<string>}  $scope
+     * @param  array{room_ids: list<int>, semester_ids: list<int>, department_ids: list<int>, days: list<string>}  $scope
      * @param  list<int>  $ignoreScheduleIds
      * @return list<BatchConflict>
      */
@@ -297,11 +297,11 @@ class BatchConflictValidator
             if ($row['mode'] !== 'online') {
                 continue;
             }
-            if ($row['term_id'] <= 0 || $row['department_id'] <= 0 || $row['day'] === '') {
+            if ($row['semester_id'] <= 0 || $row['department_id'] <= 0 || $row['day'] === '') {
                 continue;
             }
 
-            $groups["{$row['term_id']}:{$row['department_id']}:{$row['day']}"][] = [
+            $groups["{$row['semester_id']}:{$row['department_id']}:{$row['day']}"][] = [
                 'index' => $index,
                 'department_id' => $row['department_id'],
                 'day' => $row['day'],
@@ -317,14 +317,14 @@ class BatchConflictValidator
 
         $persisted = Schedule::query()
             ->where('mode', 'online')
-            ->whereIn('term_id', $scope['term_ids'])
+            ->whereIn('semester_id', $scope['semester_ids'])
             ->whereIn('department_id', $scope['department_ids'])
             ->whereIn('day', $scope['days'])
             ->when($ignoreScheduleIds !== [], fn ($query) => $query->whereNotIn('id', $ignoreScheduleIds))
-            ->get(['id', 'term_id', 'department_id', 'day', 'start_time', 'end_time']);
+            ->get(['id', 'semester_id', 'department_id', 'day', 'start_time', 'end_time']);
 
         foreach ($persisted as $schedule) {
-            $groups["{$schedule->term_id}:{$schedule->department_id}:{$schedule->day}"][] = [
+            $groups["{$schedule->semester_id}:{$schedule->department_id}:{$schedule->day}"][] = [
                 'index' => null,
                 'schedule_id' => (int) $schedule->id,
                 'department_id' => (int) $schedule->department_id,
@@ -421,7 +421,7 @@ class BatchConflictValidator
     private function normalizeRow(array $row): array
     {
         return [
-            'term_id' => (int) ($row['term_id'] ?? 0),
+            'semester_id' => (int) ($row['semester_id'] ?? 0),
             'section_id' => (int) ($row['section_id'] ?? 0),
             'department_id' => (int) ($row['department_id'] ?? 0),
             'room_id' => (int) ($row['room_id'] ?? 0),
@@ -436,12 +436,12 @@ class BatchConflictValidator
 
     /**
      * @param  array<int|string, array<string, mixed>>  $rows  already normalized
-     * @return array{room_ids: list<int>, term_ids: list<int>, department_ids: list<int>, days: list<string>}
+     * @return array{room_ids: list<int>, semester_ids: list<int>, department_ids: list<int>, days: list<string>}
      */
     private function groupScope(array $rows): array
     {
         $roomIds = [];
-        $termIds = [];
+        $semesterIds = [];
         $departmentIds = [];
         $days = [];
 
@@ -449,8 +449,8 @@ class BatchConflictValidator
             if ($row['room_id'] > 0) {
                 $roomIds[$row['room_id']] = $row['room_id'];
             }
-            if ($row['term_id'] > 0) {
-                $termIds[$row['term_id']] = $row['term_id'];
+            if ($row['semester_id'] > 0) {
+                $semesterIds[$row['semester_id']] = $row['semester_id'];
             }
             if ($row['department_id'] > 0) {
                 $departmentIds[$row['department_id']] = $row['department_id'];
@@ -462,7 +462,7 @@ class BatchConflictValidator
 
         return [
             'room_ids' => array_values($roomIds),
-            'term_ids' => array_values($termIds),
+            'semester_ids' => array_values($semesterIds),
             'department_ids' => array_values($departmentIds),
             'days' => array_values($days),
         ];

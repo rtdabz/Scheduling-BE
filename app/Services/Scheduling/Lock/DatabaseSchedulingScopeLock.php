@@ -11,24 +11,24 @@ final class DatabaseSchedulingScopeLock implements SchedulingScopeLock
 {
     private const TIMEOUT_SECONDS = 10;
 
-    public function execute(array $termIds, callable $callback): mixed
+    public function execute(array $semesterIds, callable $callback): mixed
     {
-        $termIds = array_values(array_unique(array_filter(
-            array_map('intval', $termIds),
-            static fn (int $termId): bool => $termId > 0,
+        $semesterIds = array_values(array_unique(array_filter(
+            array_map('intval', $semesterIds),
+            static fn (int $semesterId): bool => $semesterId > 0,
         )));
-        sort($termIds);
+        sort($semesterIds);
 
         $connection = DB::connection();
-        if (! in_array($connection->getDriverName(), ['mysql', 'mariadb'], true) || $termIds === []) {
+        if (! in_array($connection->getDriverName(), ['mysql', 'mariadb'], true) || $semesterIds === []) {
             return $callback();
         }
 
         $acquired = [];
 
         try {
-            foreach ($termIds as $termId) {
-                $lockName = sprintf('wicars:schedule-write:%d', $termId);
+            foreach ($semesterIds as $semesterId) {
+                $lockName = sprintf('wicars:schedule-write:%d', $semesterId);
                 $granted = $connection->selectOne(
                     'SELECT GET_LOCK(?, ?) AS granted',
                     [$lockName, self::TIMEOUT_SECONDS],
@@ -38,10 +38,10 @@ final class DatabaseSchedulingScopeLock implements SchedulingScopeLock
                     throw new ScheduleConflictException(
                         [[
                             'rule' => 'concurrent_write',
-                            'message' => 'Another schedule save for this term is still in progress. Please retry in a moment.',
-                            'term_id' => $termId,
+                            'message' => 'Another schedule save for this semester is still in progress. Please retry in a moment.',
+                            'semester_id' => $semesterId,
                         ]],
-                        'Another schedule save for this term is still in progress. Please retry in a moment.',
+                        'Another schedule save for this semester is still in progress. Please retry in a moment.',
                     );
                 }
 

@@ -18,7 +18,7 @@ class Sections extends Model
         // The curriculum this cohort follows. A department mid-transition runs
         // several at once, so this cannot be inferred from the department alone.
         'curriculum_id',
-        'term_id',
+        'semester_id',
         'status',
     ];
     protected $table = 'sections';
@@ -64,9 +64,9 @@ class Sections extends Model
         return $this->belongsTo(Curriculum::class, 'curriculum_id');
     }
 
-    public function term()
+    public function academicSemester()
     {
-        return $this->belongsTo(Terms::class);
+        return $this->belongsTo(Semester::class, 'semester_id');
     }
 
     public function schedules()

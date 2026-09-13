@@ -485,13 +485,13 @@ class CurriculumController extends Controller
                             'row_id' => $rowId,
                             'status' => 'success',
                             'course' => $course,
-                            'message' => 'Course is already attached to this term.',
+                            'message' => 'Course is already attached to this semester.',
                         ];
                         \DB::commit();
 
                         continue;
                     } else {
-                        throw new \Exception('Course code is already used in another term of this curriculum.');
+                        throw new \Exception('Course code is already used in another semester of this curriculum.');
                     }
                 }
 
@@ -604,7 +604,7 @@ class CurriculumController extends Controller
                 'description' => $curriculum->description,
                 'courses_count' => $curriculum->courses_count,
             ],
-            'terms' => $grouped,
+            'semesters' => $grouped,
         ]);
     }
 

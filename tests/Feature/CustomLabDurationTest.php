@@ -6,7 +6,7 @@ use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
@@ -74,7 +74,7 @@ class CustomLabDurationTest extends TestCase
         $this->assertSame(360, $this->minutesFor($rows, 'laboratory'));
 
         $rules = array_column(app(RuleEngine::class)->validate([
-            'term_id' => (int) $section->term_id,
+            'semester_id' => (int) $section->semester_id,
             'section_id' => (int) $section->id,
             'course_id' => (int) $course->id,
             'room_id' => $laboratory['room_id'] ?? null,
@@ -102,7 +102,7 @@ class CustomLabDurationTest extends TestCase
         ]);
 
         $rules = array_column(app(RuleEngine::class)->validate([
-            'term_id' => (int) $section->term_id,
+            'semester_id' => (int) $section->semester_id,
             'section_id' => (int) $section->id,
             'course_id' => (int) $course->id,
             'room_id' => (int) Rooms::query()->value('id'),
@@ -120,7 +120,7 @@ class CustomLabDurationTest extends TestCase
     /** @return array<int, mixed> */
     private function scenario(array $settings): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -137,7 +137,7 @@ class CustomLabDurationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([

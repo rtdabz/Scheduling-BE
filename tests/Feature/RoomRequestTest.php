@@ -11,7 +11,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\SystemNotification;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Engine\RuleEngine;
@@ -131,7 +131,7 @@ class RoomRequestTest extends TestCase
     {
         $f = $this->fixture();
         $attempt = fn (string $day, string $start, string $end): array => [
-            'term_id' => $f['term']->id,
+            'semester_id' => $f['semester']->id,
             'section_id' => $f['section']->id,
             'course_id' => $f['course']->id,
             'room_id' => $f['room']->id,
@@ -256,7 +256,7 @@ class RoomRequestTest extends TestCase
     {
         return [
             'room_id' => $f['room']->id,
-            'term_id' => $f['term']->id,
+            'semester_id' => $f['semester']->id,
             'purpose' => 'IT laboratory classes',
             'windows' => [['day' => 'Monday', 'start_time' => '11:00', 'end_time' => '13:00']],
         ];
@@ -265,7 +265,7 @@ class RoomRequestTest extends TestCase
     private function generate(array $f)
     {
         $plans = app(GenerateSchedulePlan::class)->generate(
-            termId: (int) $f['term']->id,
+            semesterId: (int) $f['semester']->id,
             departmentId: (int) $f['requester']->id,
             configuration: new GenerationConfiguration(
                 sectionId: (int) $f['section']->id,
@@ -300,7 +300,7 @@ class RoomRequestTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
-            'term_id' => $f['term']->id,
+            'semester_id' => $f['semester']->id,
             'status' => 'active',
         ]);
         $course ??= Course::create([
@@ -318,7 +318,7 @@ class RoomRequestTest extends TestCase
         ]);
 
         return Schedule::create([
-            'term_id' => $f['term']->id,
+            'semester_id' => $f['semester']->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => $f['room']->id,
@@ -341,7 +341,7 @@ class RoomRequestTest extends TestCase
 
     private function fixture(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -364,7 +364,7 @@ class RoomRequestTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $requester->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -392,7 +392,7 @@ class RoomRequestTest extends TestCase
         $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
 
         return [
-            'term' => $term,
+            'semester' => $semester,
             'requester' => $requester,
             'owner' => $owner,
             'section' => $section,

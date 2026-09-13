@@ -14,7 +14,7 @@ class ScheduleHistoryController extends Controller
             'page' => ['sometimes', 'integer', 'min:1'],
             'per_page' => ['sometimes', 'integer', 'min:10', 'max:100'],
             'department_id' => ['nullable', 'integer', 'exists:departments,id'],
-            'term_id' => ['nullable', 'integer', 'exists:terms,id'],
+            'semester_id' => ['nullable', 'integer', 'exists:semesters,id'],
             'schedule_id' => ['nullable', 'integer'],
         ]);
 
@@ -36,11 +36,11 @@ class ScheduleHistoryController extends Controller
     {
         $query = ScheduleHistoryVersion::query()
             ->with(['actor:id,name,username,role', 'department:id,department_name,department_code'])
-            ->where('source', 'term_change')
-            ->where('action', 'schedule_term_archived')
+            ->where('source', 'semester_change')
+            ->where('action', 'schedule_semester_archived')
             ->when($user?->role !== 'vpaa', fn ($q) => $q->where('department_id', $user->department_id))
             ->when($requestedDepartment, fn ($q, $id) => $q->where('department_id', $id))
-            ->when($validated['term_id'] ?? null, fn ($q, $id) => $q->where('term_id', $id))
+            ->when($validated['semester_id'] ?? null, fn ($q, $id) => $q->where('semester_id', $id))
             ->when($validated['schedule_id'] ?? null, fn ($q, $id) => $q->whereHas('items', fn ($items) => $items->where('original_schedule_id', $id)))
             ->latest('created_at')->latest('id');
         $paginator = $query->paginate($perPage, ['*'], 'page', $page);
@@ -52,7 +52,7 @@ class ScheduleHistoryController extends Controller
             $sectionIds = $items->map(fn ($item) => data_get($item->after_snapshot ?: $item->before_snapshot, 'section_id') ?? data_get($item->snapshot_metadata, 'section_id'))->filter()->unique()->values();
             $scope = $metadata['history_scope'] ?? ($sectionIds->count() >= 2 ? 'multiple_sections' : 'section');
             $firstMetadata = $first?->snapshot_metadata ?? [];
-            $label = in_array($scope, ['entire_term', 'entire_department_schedule', 'entire_schedule'], true)
+            $label = in_array($scope, ['entire_semester', 'entire_department_schedule', 'entire_schedule'], true)
                 ? $departmentName.' Schedule'
                 : ($scope === 'multiple_sections' ? $departmentName.' Department Schedule' : (($firstMetadata['section_name'] ?? null) ? $departmentName.' · '.$firstMetadata['section_name'] : $departmentName.' Schedule'));
             return [
@@ -62,7 +62,7 @@ class ScheduleHistoryController extends Controller
                 'schedule_count' => $items->count(),
                 'section_count' => $sectionIds->count(),
                 'schedule_label' => $label,
-                'term_id' => $version->term_id,
+                'semester_id' => $version->semester_id,
                 'academic_year' => $version->academic_year,
                 'semester' => $version->semester,
                 'section_id' => data_get($first?->after_snapshot ?: $first?->before_snapshot, 'section_id'),

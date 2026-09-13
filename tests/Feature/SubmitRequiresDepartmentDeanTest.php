@@ -7,7 +7,7 @@ use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -106,7 +106,7 @@ class SubmitRequiresDepartmentDeanTest extends TestCase
     /** @return array{department: Departments, secretary: User} */
     private function scaffold(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
@@ -125,7 +125,7 @@ class SubmitRequiresDepartmentDeanTest extends TestCase
         $section = Sections::create([
             'section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st',
             'department_id' => $department->id, 'program_id' => $program->id,
-            'term_id' => $term->id, 'status' => 'active',
+            'semester_id' => $semester->id, 'status' => 'active',
         ]);
 
         $course = Course::create([
@@ -137,7 +137,7 @@ class SubmitRequiresDepartmentDeanTest extends TestCase
         ]);
 
         Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => null,

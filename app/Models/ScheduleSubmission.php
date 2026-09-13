@@ -8,7 +8,7 @@ class ScheduleSubmission extends Model
 {
     protected $fillable = [
         'department_id',
-        'term_id',
+        'semester_id',
         'parent_submission_id',
         'revision_number',
         'status',
@@ -38,9 +38,9 @@ class ScheduleSubmission extends Model
         return $this->belongsTo(Departments::class);
     }
 
-    public function term()
+    public function academicSemester()
     {
-        return $this->belongsTo(Terms::class);
+        return $this->belongsTo(Semester::class, 'semester_id');
     }
 
     public function parent()

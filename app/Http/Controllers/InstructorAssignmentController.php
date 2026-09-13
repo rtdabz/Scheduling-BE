@@ -8,7 +8,7 @@ use App\Models\Faculty;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
@@ -61,11 +61,11 @@ class InstructorAssignmentController extends Controller
         ]);
 
         $data = Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($departmentId, $programId) {
-            $activeTerm = Terms::query()->where('is_active', true)->first();
+            $activeSemester = Semester::query()->where('is_active', true)->first();
 
-            if (! $activeTerm) {
+            if (! $activeSemester) {
                 return [
-                    'active_term' => null,
+                    'active_semester' => null,
                     'current_department_id' => $departmentId,
                     'departments' => [],
                     'subjects' => [],
@@ -92,7 +92,7 @@ class InstructorAssignmentController extends Controller
 
             $schedules = Schedule::query()
                 ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
-                ->where('term_id', $activeTerm->id)
+                ->where('semester_id', $activeSemester->id)
                 ->whereIn('status', self::VISIBLE_STATUSES)
                 ->whereHas('course', fn ($query) => $query->where('status', 'active'))
                 // Own offerings, plus anything another college has delegated to this
@@ -130,12 +130,12 @@ class InstructorAssignmentController extends Controller
             // The picker shows each instructor's live load so an overload is
             // visible before Save is pressed, and the tier badge needs the same
             // numbers the confirmation gate projects from.
-            $this->facultyLoad->decorateMany($faculties, (int) $activeTerm->id);
+            $this->facultyLoad->decorateMany($faculties, (int) $activeSemester->id);
 
             $courses = $schedules->pluck('course')->filter()->unique('id')->values();
 
             return [
-                'active_term' => $activeTerm,
+                'active_semester' => $activeSemester,
                 'current_department_id' => $departmentId,
                 'departments' => $schedules->pluck('department')->filter()->unique('id')->values(),
                 'courses' => $courses,
@@ -256,11 +256,11 @@ class InstructorAssignmentController extends Controller
         // Assignment continues past the Basic Load into the overload allowance
         // and then pro bono, so this asks rather than refuses — but it asks
         // before the write, so answering No leaves the schedule untouched.
-        $activeTermId = $this->activeTermId();
+        $activeSemesterId = $this->activeSemesterId();
         if ($faculty !== null) {
             $incoming = array_values(array_filter([$this->loadPairForSchedule($schedule)]));
             $projection = $this->withAssignmentLabel(
-                $this->facultyLoad->projectLoad($faculty, $activeTermId, $incoming),
+                $this->facultyLoad->projectLoad($faculty, $activeSemesterId, $incoming),
                 $this->assignmentLabelForSchedule($schedule),
             );
 
@@ -294,10 +294,10 @@ class InstructorAssignmentController extends Controller
 
             $after = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
             $action = $facultyId === null ? 'instructor_assignment_released' : 'instructor_assigned';
-            $version = $this->historyRecorder->record($action, $before, $after, $request->user()?->id, $linkedSchedules->first()->term_id, $departmentId, 'instructor_assignment');
+            $version = $this->historyRecorder->record($action, $before, $after, $request->user()?->id, $linkedSchedules->first()->semester_id, $departmentId, 'instructor_assignment');
             SchedulingAuditLog::create([
                 'user_id' => $request->user()?->id,
-                'term_id' => $linkedSchedules->first()->term_id,
+                'semester_id' => $linkedSchedules->first()->semester_id,
                 'section_id' => $linkedSchedules->first()->section_id,
                 'department_id' => $departmentId,
                 'action' => $action,
@@ -332,7 +332,7 @@ class InstructorAssignmentController extends Controller
         // carries now that the assignment is committed.
         $load = $faculty === null
             ? null
-            : $this->facultyLoad->projectLoad($faculty->refresh(), $activeTermId, []);
+            : $this->facultyLoad->projectLoad($faculty->refresh(), $activeSemesterId, []);
 
         return response()->json([
             'schedule' => $updatedSchedules->first(),
@@ -349,14 +349,14 @@ class InstructorAssignmentController extends Controller
             return response()->json(['message' => 'Your account must belong to a department.'], 422);
         }
 
-        $activeTermId = $this->activeTermId();
-        if ($activeTermId === null || (int) $section->term_id !== $activeTermId) {
-            return response()->json(['message' => 'Instructor assignments can only be cleared for the active term.'], 422);
+        $activeSemesterId = $this->activeSemesterId();
+        if ($activeSemesterId === null || (int) $section->semester_id !== $activeSemesterId) {
+            return response()->json(['message' => 'Instructor assignments can only be cleared for the active semester.'], 422);
         }
 
         $sectionSchedules = Schedule::query()
             ->with('course')
-            ->where('term_id', $activeTermId)
+            ->where('semester_id', $activeSemesterId)
             ->where('section_id', $section->id)
             ->whereIn('status', self::ASSIGNABLE_STATUSES)
             ->where('faculty_assignment_done', false)
@@ -385,7 +385,7 @@ class InstructorAssignmentController extends Controller
             $previousFacultyIds,
             $facultyIds,
             $departmentId,
-            $activeTermId,
+            $activeSemesterId,
             $section,
         ) {
             $before = Schedule::query()->whereIn('id', $scheduleIds)->get();
@@ -396,13 +396,13 @@ class InstructorAssignmentController extends Controller
                 $before,
                 $after,
                 $request->user()?->id,
-                $activeTermId,
+                $activeSemesterId,
                 $departmentId,
                 'instructor_assignment',
             );
             SchedulingAuditLog::create([
                 'user_id' => $request->user()?->id,
-                'term_id' => $activeTermId,
+                'semester_id' => $activeSemesterId,
                 'section_id' => $section->id,
                 'department_id' => $departmentId,
                 'action' => 'instructor_assignment_released',
@@ -432,7 +432,7 @@ class InstructorAssignmentController extends Controller
             ->with(['department', 'program', 'availabilities'])
             ->whereIn('id', $facultyIds->all())
             ->get();
-        $this->facultyLoad->decorateMany($affectedFaculties, $activeTermId);
+        $this->facultyLoad->decorateMany($affectedFaculties, $activeSemesterId);
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         return response()->json([
@@ -493,7 +493,7 @@ class InstructorAssignmentController extends Controller
         }
 
         return Schedule::query()
-            ->where('term_id', $schedule->term_id)
+            ->where('semester_id', $schedule->semester_id)
             ->where('section_id', $schedule->section_id)
             ->where('course_id', $schedule->course_id)
             ->where('department_id', $schedule->department_id)

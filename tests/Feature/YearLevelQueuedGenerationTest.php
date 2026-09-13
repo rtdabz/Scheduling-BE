@@ -11,7 +11,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\GenerationCancellationToken;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
@@ -30,10 +30,10 @@ class YearLevelQueuedGenerationTest extends TestCase
     {
         Queue::fake();
 
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview/queue', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => [[
@@ -67,13 +67,13 @@ class YearLevelQueuedGenerationTest extends TestCase
 
     public function test_queued_generation_persists_structured_failure_without_retrying_domain_failure(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         $runId = (string) Str::uuid();
 
         ScheduleGenerationRun::create([
             'run_id' => $runId,
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'status' => 'queued',
@@ -104,12 +104,12 @@ class YearLevelQueuedGenerationTest extends TestCase
 
     public function test_worker_failure_marks_an_active_run_failed(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         $runId = (string) Str::uuid();
         $run = ScheduleGenerationRun::create([
             'run_id' => $runId,
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 3,
             'status' => 'running',
@@ -128,12 +128,12 @@ class YearLevelQueuedGenerationTest extends TestCase
 
     public function test_poll_reconciles_an_orphaned_running_run(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         $runId = (string) Str::uuid();
         ScheduleGenerationRun::create([
             'run_id' => $runId,
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 3,
             'status' => 'running',
@@ -148,12 +148,12 @@ class YearLevelQueuedGenerationTest extends TestCase
 
     public function test_active_run_lookup_recovers_generation_started_before_a_reload(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         $runId = (string) Str::uuid();
         ScheduleGenerationRun::create([
             'run_id' => $runId,
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 2,
             'status' => 'running',
@@ -161,7 +161,7 @@ class YearLevelQueuedGenerationTest extends TestCase
         ]);
 
         $this->actingAs($user)
-            ->getJson("/api/schedule-recommendations/active-generation-run?department_id={$department->id}&term_id={$term->id}")
+            ->getJson("/api/schedule-recommendations/active-generation-run?department_id={$department->id}&semester_id={$semester->id}")
             ->assertOk()
             ->assertJsonPath('run.run_id', $runId)
             ->assertJsonPath('run.year_level', 2);
@@ -169,11 +169,11 @@ class YearLevelQueuedGenerationTest extends TestCase
 
     public function test_active_run_lookup_reports_no_run_for_an_orphaned_generation(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         ScheduleGenerationRun::create([
             'run_id' => (string) Str::uuid(),
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 2,
             'status' => 'running',
@@ -181,18 +181,18 @@ class YearLevelQueuedGenerationTest extends TestCase
         ]);
 
         $this->actingAs($user)
-            ->getJson("/api/schedule-recommendations/active-generation-run?department_id={$department->id}&term_id={$term->id}")
+            ->getJson("/api/schedule-recommendations/active-generation-run?department_id={$department->id}&semester_id={$semester->id}")
             ->assertOk()
             ->assertJsonPath('run', null);
     }
 
     public function test_active_run_lookup_ignores_a_finished_run(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         ScheduleGenerationRun::create([
             'run_id' => (string) Str::uuid(),
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 2,
             'status' => 'completed',
@@ -201,19 +201,19 @@ class YearLevelQueuedGenerationTest extends TestCase
         ]);
 
         $this->actingAs($user)
-            ->getJson("/api/schedule-recommendations/active-generation-run?department_id={$department->id}&term_id={$term->id}")
+            ->getJson("/api/schedule-recommendations/active-generation-run?department_id={$department->id}&semester_id={$semester->id}")
             ->assertOk()
             ->assertJsonPath('run', null);
     }
 
     public function test_cancelling_a_running_run_marks_it_cancelled(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         $runId = (string) Str::uuid();
         ScheduleGenerationRun::create([
             'run_id' => $runId,
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'status' => 'running',
@@ -234,10 +234,10 @@ class YearLevelQueuedGenerationTest extends TestCase
         // The real queue table is what the cancel endpoint prunes, so this
         // case cannot run on the synchronous test driver.
         config(['queue.default' => 'database']);
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview/queue', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => [[
@@ -258,12 +258,12 @@ class YearLevelQueuedGenerationTest extends TestCase
 
     public function test_cancelling_a_finished_run_is_a_no_op(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         $runId = (string) Str::uuid();
         ScheduleGenerationRun::create([
             'run_id' => $runId,
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'status' => 'completed',
@@ -279,12 +279,12 @@ class YearLevelQueuedGenerationTest extends TestCase
 
     public function test_another_user_cannot_cancel_a_run(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         $runId = (string) Str::uuid();
         ScheduleGenerationRun::create([
             'run_id' => $runId,
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'status' => 'running',
@@ -305,12 +305,12 @@ class YearLevelQueuedGenerationTest extends TestCase
 
     public function test_a_cancelled_run_is_not_overwritten_by_the_worker(): void
     {
-        [$term, $department, $section, $course, $user] = $this->generationFixture();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
         $runId = (string) Str::uuid();
         ScheduleGenerationRun::create([
             'run_id' => $runId,
             'requested_by' => $user->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'status' => 'queued',
@@ -339,10 +339,10 @@ class YearLevelQueuedGenerationTest extends TestCase
         $this->assertNotNull($run->finished_at);
     }
 
-    /** @return array{Terms, Departments, Sections, Course, User} */
+    /** @return array{Semester, Departments, Sections, Course, User} */
     private function generationFixture(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -364,7 +364,7 @@ class YearLevelQueuedGenerationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id, 'program_id' => $departmentProgram->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([
@@ -401,6 +401,6 @@ class YearLevelQueuedGenerationTest extends TestCase
             'is_active' => true,
         ]));
 
-        return [$term, $department, $section, $course, $user];
+        return [$semester, $department, $section, $course, $user];
     }
 }

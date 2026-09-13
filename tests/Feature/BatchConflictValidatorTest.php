@@ -7,7 +7,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Schedule\BatchConflict;
 use App\Services\Scheduling\Schedule\BatchConflictValidator;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -41,12 +41,12 @@ class BatchConflictValidatorTest extends TestCase
 
     public function test_no_conflicts_for_non_overlapping_rows(): void
     {
-        [$term, $dept, $section, $room] = $this->fixture();
+        [$semester, $dept, $section, $room] = $this->fixture();
         $course = $this->course('BCV101', $dept);
 
         $rules = $this->rules([
-            $this->row($term, $dept, $section, $course, $room, 'Monday', '08:00', '09:00'),
-            $this->row($term, $dept, $section, $course, $room, 'Monday', '09:00', '10:00'),
+            $this->row($semester, $dept, $section, $course, $room, 'Monday', '08:00', '09:00'),
+            $this->row($semester, $dept, $section, $course, $room, 'Monday', '09:00', '10:00'),
         ]);
 
         $this->assertSame([], $rules);
@@ -54,12 +54,12 @@ class BatchConflictValidatorTest extends TestCase
 
     public function test_detects_section_conflict_between_overlapping_rows(): void
     {
-        [$term, $dept, $section, $room] = $this->fixture();
+        [$semester, $dept, $section, $room] = $this->fixture();
         $course = $this->course('BCV101', $dept);
 
         $rules = $this->rules([
-            $this->row($term, $dept, $section, $course, $room, 'Monday', '08:00', '09:30'),
-            $this->row($term, $dept, $section, $course, $room, 'Monday', '09:00', '10:00'),
+            $this->row($semester, $dept, $section, $course, $room, 'Monday', '08:00', '09:30'),
+            $this->row($semester, $dept, $section, $course, $room, 'Monday', '09:00', '10:00'),
         ]);
 
         $this->assertContains(BatchConflict::RULE_SECTION, $rules);
@@ -67,14 +67,14 @@ class BatchConflictValidatorTest extends TestCase
 
     public function test_detects_room_conflict_for_exclusive_room_across_sections(): void
     {
-        [$term, $dept, $sectionA, $room] = $this->fixture();
-        $sectionB = $this->section('BCV-1B', $dept, $term);
+        [$semester, $dept, $sectionA, $room] = $this->fixture();
+        $sectionB = $this->section('BCV-1B', $dept, $semester);
         $courseA = $this->course('BCV101', $dept);
         $courseB = $this->course('BCV102', $dept);
 
         $rules = $this->rules([
-            $this->row($term, $dept, $sectionA, $courseA, $room, 'Monday', '08:00', '09:30'),
-            $this->row($term, $dept, $sectionB, $courseB, $room, 'Monday', '09:00', '10:00'),
+            $this->row($semester, $dept, $sectionA, $courseA, $room, 'Monday', '08:00', '09:30'),
+            $this->row($semester, $dept, $sectionB, $courseB, $room, 'Monday', '09:00', '10:00'),
         ]);
 
         $this->assertContains(BatchConflict::RULE_ROOM, $rules);
@@ -83,15 +83,15 @@ class BatchConflictValidatorTest extends TestCase
 
     public function test_detects_faculty_conflict_across_sections(): void
     {
-        [$term, $dept, $sectionA, $room] = $this->fixture();
-        $sectionB = $this->section('BCV-1B', $dept, $term);
+        [$semester, $dept, $sectionA, $room] = $this->fixture();
+        $sectionB = $this->section('BCV-1B', $dept, $semester);
         $roomB = Rooms::create(['room_code' => 'BCV202', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $dept->id]);
         $courseA = $this->course('BCV101', $dept);
         $courseB = $this->course('BCV102', $dept);
 
         $rules = $this->rules([
-            array_merge($this->row($term, $dept, $sectionA, $courseA, $room, 'Monday', '08:00', '09:30'), ['faculty_id' => 41]),
-            array_merge($this->row($term, $dept, $sectionB, $courseB, $roomB, 'Monday', '09:00', '10:00'), ['faculty_id' => 41]),
+            array_merge($this->row($semester, $dept, $sectionA, $courseA, $room, 'Monday', '08:00', '09:30'), ['faculty_id' => 41]),
+            array_merge($this->row($semester, $dept, $sectionB, $courseB, $roomB, 'Monday', '09:00', '10:00'), ['faculty_id' => 41]),
         ]);
 
         $this->assertContains(BatchConflict::RULE_FACULTY, $rules);
@@ -103,13 +103,13 @@ class BatchConflictValidatorTest extends TestCase
      */
     public function test_detects_same_course_online_for_two_sections_at_once(): void
     {
-        [$term, $dept, $sectionA] = $this->fixture();
-        $sectionB = $this->section('BCV-1B', $dept, $term);
+        [$semester, $dept, $sectionA] = $this->fixture();
+        $sectionB = $this->section('BCV-1B', $dept, $semester);
         $course = $this->course('BCV101', $dept);
 
         $rules = $this->rules([
-            array_merge($this->row($term, $dept, $sectionA, $course, null, 'Monday', '08:00', '09:30'), ['mode' => 'online']),
-            array_merge($this->row($term, $dept, $sectionB, $course, null, 'Monday', '09:00', '10:00'), ['mode' => 'online']),
+            array_merge($this->row($semester, $dept, $sectionA, $course, null, 'Monday', '08:00', '09:30'), ['mode' => 'online']),
+            array_merge($this->row($semester, $dept, $sectionB, $course, null, 'Monday', '09:00', '10:00'), ['mode' => 'online']),
         ]);
 
         $this->assertContains(BatchConflict::RULE_SUBJECT_SECTION_TIME, $rules);
@@ -117,11 +117,11 @@ class BatchConflictValidatorTest extends TestCase
 
     public function test_shared_field_room_is_not_a_collision_across_departments(): void
     {
-        [$term, $deptA, $sectionA] = $this->fixture();
+        [$semester, $deptA, $sectionA] = $this->fixture();
         $deptB = Departments::create(['department_name' => 'Other Dept', 'department_code' => 'OTH']);
         $sectionB = Sections::create([
             'section_name' => 'OTH-1A', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $deptB->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $deptB->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
         $field = Rooms::create([
             'room_code' => 'FIELD', 'room_type' => 'field', 'status' => 'available',
@@ -131,8 +131,8 @@ class BatchConflictValidatorTest extends TestCase
         $courseB = $this->course('PATHFIT2', $deptB, 'field');
 
         $rules = $this->rules([
-            array_merge($this->row($term, $deptA, $sectionA, $courseA, $field, 'Monday', '08:00', '09:30'), ['mode' => 'field']),
-            array_merge($this->row($term, $deptB, $sectionB, $courseB, $field, 'Monday', '09:00', '10:00'), ['mode' => 'field']),
+            array_merge($this->row($semester, $deptA, $sectionA, $courseA, $field, 'Monday', '08:00', '09:30'), ['mode' => 'field']),
+            array_merge($this->row($semester, $deptB, $sectionB, $courseB, $field, 'Monday', '09:00', '10:00'), ['mode' => 'field']),
         ]);
 
         $this->assertNotContains(BatchConflict::RULE_ROOM, $rules);
@@ -140,7 +140,7 @@ class BatchConflictValidatorTest extends TestCase
 
     public function test_reports_room_capacity_conflict_once_the_department_limit_is_exceeded(): void
     {
-        [$term, $dept, $sectionA] = $this->fixture();
+        [$semester, $dept, $sectionA] = $this->fixture();
         $dept->update(['field_slot_limit' => 2]);
         $field = Rooms::create([
             'room_code' => 'FIELD', 'room_type' => 'field', 'status' => 'available',
@@ -149,10 +149,10 @@ class BatchConflictValidatorTest extends TestCase
 
         $rows = [];
         foreach (['A', 'B', 'C'] as $offset => $suffix) {
-            $section = $this->section("BCV-1{$suffix}", $dept, $term);
+            $section = $this->section("BCV-1{$suffix}", $dept, $semester);
             $course = $this->course("BCVF{$offset}", $dept, 'field');
             $rows[] = array_merge(
-                $this->row($term, $dept, $section, $course, $field, 'Monday', '08:00', '10:00'),
+                $this->row($semester, $dept, $section, $course, $field, 'Monday', '08:00', '10:00'),
                 ['mode' => 'field'],
             );
         }
@@ -175,7 +175,7 @@ class BatchConflictValidatorTest extends TestCase
      */
     public function test_counts_persisted_rows_against_shared_room_capacity(): void
     {
-        [$term, $dept, $sectionA] = $this->fixture();
+        [$semester, $dept, $sectionA] = $this->fixture();
         $dept->update(['field_slot_limit' => 2]);
         $field = Rooms::create([
             'room_code' => 'FIELD', 'room_type' => 'field', 'status' => 'available',
@@ -187,9 +187,9 @@ class BatchConflictValidatorTest extends TestCase
         foreach (['B', 'C'] as $offset => $suffix) {
             $attributes = array_merge(
                 $this->row(
-                    $term,
+                    $semester,
                     $dept,
-                    $this->section("BCV-1{$suffix}", $dept, $term),
+                    $this->section("BCV-1{$suffix}", $dept, $semester),
                     $this->course("PATHFITP{$offset}", $dept, 'field'),
                     $field,
                     'Monday',
@@ -202,7 +202,7 @@ class BatchConflictValidatorTest extends TestCase
         }
 
         $candidate = [array_merge(
-            $this->row($term, $dept, $sectionA, $courseA, $field, 'Monday', '09:00', '10:00'),
+            $this->row($semester, $dept, $sectionA, $courseA, $field, 'Monday', '09:00', '10:00'),
             ['mode' => 'field'],
         )];
 
@@ -219,19 +219,19 @@ class BatchConflictValidatorTest extends TestCase
 
     public function test_ignored_schedule_ids_are_excluded_from_online_capacity_counting(): void
     {
-        [$term, $dept, $sectionA] = $this->fixture();
+        [$semester, $dept, $sectionA] = $this->fixture();
         $dept->update(['online_slot_limit' => 1]);
         $courseA = $this->course('BCV101', $dept);
         $courseB = $this->course('BCV102', $dept);
-        $sectionB = $this->section('BCV-1B', $dept, $term);
+        $sectionB = $this->section('BCV-1B', $dept, $semester);
 
         $persisted = Schedule::create(array_merge(
-            $this->row($term, $dept, $sectionB, $courseB, null, 'Monday', '08:00', '10:00'),
+            $this->row($semester, $dept, $sectionB, $courseB, null, 'Monday', '08:00', '10:00'),
             ['mode' => 'online', 'status' => 'draft'],
         ));
 
         $candidate = [array_merge(
-            $this->row($term, $dept, $sectionA, $courseA, null, 'Monday', '09:00', '10:00'),
+            $this->row($semester, $dept, $sectionA, $courseA, null, 'Monday', '09:00', '10:00'),
             ['mode' => 'online'],
         )];
 
@@ -244,16 +244,16 @@ class BatchConflictValidatorTest extends TestCase
 
     public function test_accepts_subject_id_as_an_alias_for_course_id(): void
     {
-        [$term, $dept, $section, $room] = $this->fixture();
+        [$semester, $dept, $section, $room] = $this->fixture();
         $course = $this->course('BCV101', $dept);
 
-        $left = $this->row($term, $dept, $section, $course, $room, 'Monday', '08:00', '09:30');
+        $left = $this->row($semester, $dept, $section, $course, $room, 'Monday', '08:00', '09:30');
         unset($left['course_id']);
         $left['subject_id'] = $course->id;
 
         $rules = $this->rules([
             $left,
-            $this->row($term, $dept, $section, $course, $room, 'Monday', '09:00', '10:00'),
+            $this->row($semester, $dept, $section, $course, $room, 'Monday', '09:00', '10:00'),
         ]);
 
         $this->assertContains(BatchConflict::RULE_SECTION, $rules);
@@ -264,28 +264,28 @@ class BatchConflictValidatorTest extends TestCase
         $this->assertSame([], $this->rules([]));
     }
 
-    /** @return array{0: Terms, 1: Departments, 2: Sections, 3: Rooms} */
+    /** @return array{0: Semester, 1: Departments, 2: Sections, 3: Rooms} */
     private function fixture(): array
     {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
         $dept = Departments::create(['department_name' => 'Batch Dept', 'department_code' => 'BCV']);
-        $section = $this->section('BCV-1A', $dept, $term);
+        $section = $this->section('BCV-1A', $dept, $semester);
         $room = Rooms::create([
             'room_code' => 'BCV201', 'room_type' => 'lecture', 'status' => 'available',
             'department_id' => $dept->id, 'max_concurrent_classes' => 1,
         ]);
 
-        return [$term, $dept, $section, $room];
+        return [$semester, $dept, $section, $room];
     }
 
-    private function section(string $name, Departments $dept, Terms $term): Sections
+    private function section(string $name, Departments $dept, Semester $semester): Sections
     {
         return Sections::create([
             'section_name' => $name, 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $dept->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $dept->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
     }
 
@@ -302,7 +302,7 @@ class BatchConflictValidatorTest extends TestCase
 
     /** @return array<string, mixed> */
     private function row(
-        Terms $term,
+        Semester $semester,
         Departments $dept,
         Sections $section,
         Course $course,
@@ -312,7 +312,7 @@ class BatchConflictValidatorTest extends TestCase
         string $end,
     ): array {
         return [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'department_id' => $dept->id,

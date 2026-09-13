@@ -7,7 +7,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -28,8 +28,8 @@ class SplitScheduleRecommendationTest extends TestCase
         $this->grantCapabilities($user);
         $this->actingAs($user);
 
-        // 1. Setup Term
-        $term = Terms::create([
+        // 1. Setup Semester
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -70,7 +70,7 @@ class SplitScheduleRecommendationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $dept->id, 'program_id' => $deptProgram->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -79,7 +79,7 @@ class SplitScheduleRecommendationTest extends TestCase
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $dept->id, 'program_id' => $deptProgram->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
 
@@ -104,7 +104,7 @@ class SplitScheduleRecommendationTest extends TestCase
         // We request a recommendation for Monday at 07:00.
         // The top recommendation should be on Monday at 07:00.
         $payload = [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'department_id' => $dept->id,
@@ -129,7 +129,7 @@ class SplitScheduleRecommendationTest extends TestCase
         // But Room 2 is free.
         // Requesting for Room 1 on Monday at 07:00 should recommend Room 2 on Monday at 07:00.
         Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $sectionB->id,
             'course_id' => $course->id,
             'room_id' => $room1->id,
@@ -155,7 +155,7 @@ class SplitScheduleRecommendationTest extends TestCase
         // But they are free on Tuesday 07:00–09:00.
         // It should recommend Tuesday at 07:00, and NEVER change the time.
         Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $sectionB->id,
             'course_id' => $course->id,
             'room_id' => $room2->id,
@@ -186,7 +186,7 @@ class SplitScheduleRecommendationTest extends TestCase
         $this->grantCapabilities($user);
         $this->actingAs($user);
 
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
             'is_active' => true, 'is_enabled' => true,
         ]);
@@ -209,11 +209,11 @@ class SplitScheduleRecommendationTest extends TestCase
         ]);
         $section = Sections::create([
             'section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st',
-            'department_id' => $dept->id, 'program_id' => $deptProgram->id, 'term_id' => $term->id, 'status' => 'active',
+            'department_id' => $dept->id, 'program_id' => $deptProgram->id, 'semester_id' => $semester->id, 'status' => 'active',
         ]);
 
         $response = $this->postJson('/api/schedule-recommendations/recommend-split', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'department_id' => $dept->id,

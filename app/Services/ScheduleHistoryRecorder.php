@@ -15,7 +15,7 @@ class ScheduleHistoryRecorder
         Collection|array $before,
         Collection|array $after,
         ?int $actorUserId,
-        ?int $termId = null,
+        ?int $semesterId = null,
         ?int $departmentId = null,
         ?string $source = null,
         ?string $reason = null,
@@ -41,11 +41,11 @@ class ScheduleHistoryRecorder
         $ids = $beforeRows->keys()->merge($afterRows->keys())->unique()->values();
 
         $first = $afterRows->first() ?: $beforeRows->first();
-        $termId ??= $this->value($first, 'term_id');
+        $semesterId ??= $this->value($first, 'semester_id');
         $departmentId ??= $this->value($first, 'department_id');
 
         $version = ScheduleHistoryVersion::create([
-            'term_id' => $termId,
+            'semester_id' => $semesterId,
             'department_id' => $departmentId,
             'actor_user_id' => $actorUserId,
             'action' => $action,

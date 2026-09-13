@@ -9,7 +9,7 @@ use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -102,7 +102,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
 
         $this->actingAs($fixture['casSecretary'])
             ->postJson('/api/schedules', [
-                'term_id' => $fixture['term']->id,
+                'semester_id' => $fixture['semester']->id,
                 'section_id' => $fixture['section']->id,
                 'course_id' => $fixture['gec']->id,
                 'department_id' => $fixture['cas']->id,
@@ -579,7 +579,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
     private function meetingBlocks(array $fixture)
     {
         return collect(['Monday', 'Wednesday', 'Friday'])->map(fn (string $day): Schedule => Schedule::create([
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'section_id' => $fixture['section']->id,
             'course_id' => $fixture['gec']->id,
             'room_id' => $fixture['room']->id,
@@ -622,12 +622,12 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             'semester' => '1st',
             'department_id' => $fixture['cas']->id,
             'program_id' => $fixture['casProgram']->id,
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'status' => 'active',
         ]);
 
         return Schedule::create(array_merge([
-            'term_id' => $fixture['term']->id,
+            'semester_id' => $fixture['semester']->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => $fixture['casRoom']->id,
@@ -665,7 +665,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             'code' => 'BACAS',
             'name' => 'Arts and Sciences',
         ]);
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -675,7 +675,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         return [
             'it' => $it,
             'cas' => $cas,
-            'term' => $term,
+            'semester' => $semester,
             'room' => Rooms::create([
                 'room_code' => 'CIT 101',
                 'room_type' => 'lecture',
@@ -696,7 +696,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
                 'semester' => '1st',
                 'department_id' => $it->id,
                 'program_id' => $itProgram->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]),
             // IT owns it; CAS teaches it.

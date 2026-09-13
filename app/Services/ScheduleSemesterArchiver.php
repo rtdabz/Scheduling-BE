@@ -7,29 +7,29 @@ use App\Models\ScheduleHistoryItem;
 use App\Models\ScheduleHistoryVersion;
 use Illuminate\Support\Collection;
 
-class ScheduleTermArchiver
+class ScheduleSemesterArchiver
 {
     /** These states are reached only after VPAA approval. */
     public const VPAA_APPROVED_STATUSES = ['approved', 'faculty_assignment', 'reassignment', 'finalized'];
 
-    public function archive(Collection $schedules, int $actorUserId, int $termId): Collection
+    public function archive(Collection $schedules, int $actorUserId, int $semesterId): Collection
     {
         if ($schedules->isEmpty()) {
             return collect();
         }
 
-        $term = $schedules->first()->term;
+        $semester = $schedules->first()->academicSemester;
         $versions = collect();
 
         foreach ($schedules->groupBy('department_id') as $departmentSchedules) {
             $version = ScheduleHistoryVersion::create([
-                'term_id' => $termId,
-                'academic_year' => $term?->academic_year,
-                'semester' => $term?->semester,
+                'semester_id' => $semesterId,
+                'academic_year' => $semester?->academic_year,
+                'semester' => $semester?->semester,
                 'department_id' => $departmentSchedules->first()->department_id,
                 'actor_user_id' => $actorUserId,
-                'action' => 'schedule_term_archived',
-                'source' => 'term_change',
+                'action' => 'schedule_semester_archived',
+                'source' => 'semester_change',
                 'change_summary' => [
                     'history_scope' => 'entire_department_schedule',
                     'schedule_count' => $departmentSchedules->count(),
@@ -49,7 +49,7 @@ class ScheduleTermArchiver
                 'original_schedule_id' => $schedule->id,
                 'after_snapshot' => $snapshot,
                 'snapshot_metadata' => [
-                    'event' => 'term_change',
+                    'event' => 'semester_change',
                     'section_name' => $schedule->section?->section_name,
                     'section_year_level' => $schedule->section?->year_level,
                     'section_semester' => $schedule->section?->semester,

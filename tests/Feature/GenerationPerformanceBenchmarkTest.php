@@ -7,7 +7,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -95,7 +95,7 @@ class GenerationPerformanceBenchmarkTest extends TestCase
         int $lectureRooms,
         int $laboratoryRooms,
     ): array {
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -167,7 +167,7 @@ class GenerationPerformanceBenchmarkTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $department->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]);
             $sections[] = $section;

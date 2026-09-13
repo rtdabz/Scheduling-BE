@@ -9,7 +9,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\Domain\SchedulingGenerationMetrics;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
@@ -95,7 +95,7 @@ class CSPSolver
         }
 
         // Year-level generation re-supplies the same snapshot before every
-        // solver attempt. Clearing unconditionally would throw away the term
+        // solver attempt. Clearing unconditionally would throw away the semester
         // rows and the built domains on each call, which is exactly the work
         // these caches exist to avoid.
         $unchanged = $this->inputSnapshot !== null
@@ -105,7 +105,7 @@ class CSPSolver
         $this->inputSnapshot = $snapshot;
 
         if (! $unchanged) {
-            $this->termScheduleRowsCache = [];
+            $this->semesterScheduleRowsCache = [];
             $this->domainCache = [];
         }
     }
@@ -125,7 +125,7 @@ class CSPSolver
     public function beginGenerationContext(): void
     {
         $this->loadedCoursesById = [];
-        $this->termScheduleRowsCache = [];
+        $this->semesterScheduleRowsCache = [];
         $this->domainCache = [];
     }
 
@@ -195,7 +195,7 @@ class CSPSolver
     private array $loadedCoursesById = [];
 
     /** @var array<int, list<array<string, mixed>>> */
-    private array $termScheduleRowsCache = [];
+    private array $semesterScheduleRowsCache = [];
 
     /**
      * Built candidate sets keyed by domainCacheKey(), reused across the many
@@ -472,7 +472,7 @@ class CSPSolver
         }
 
         /** @var Sections $section */
-        if ($this->inputSnapshot !== null && $this->inputSnapshot->termId > 0) {
+        if ($this->inputSnapshot !== null && $this->inputSnapshot->semesterId > 0) {
             $sectionAttributes = $this->inputSnapshot->sectionsById[$sectionId] ?? null;
             if (! is_array($sectionAttributes)) {
                 throw new RuntimeException('The requested section is not present in the scheduling snapshot.');
@@ -481,17 +481,17 @@ class CSPSolver
             // Restore guarded identity/scheduling fields explicitly when
             // reconstructing a section from snapshot attributes.
             $section->id = (int) ($sectionAttributes['id'] ?? $sectionId);
-            $section->term_id = (int) ($sectionAttributes['term_id'] ?? $this->inputSnapshot->termId);
+            $section->semester_id = (int) ($sectionAttributes['semester_id'] ?? $this->inputSnapshot->semesterId);
             $section->department_id = (int) ($sectionAttributes['department_id'] ?? $this->inputSnapshot->departmentId);
             $section->year_level = (string) ($sectionAttributes['year_level'] ?? '');
             $section->semester = (string) ($sectionAttributes['semester'] ?? '');
-            $term = new Terms($this->inputSnapshot->term);
-            $term->id = (int) ($this->inputSnapshot->term['id'] ?? $this->inputSnapshot->termId);
-            $term->semester = (string) ($this->inputSnapshot->term['semester'] ?? '');
-            $section->setRelation('term', $term);
+            $semester = new Semester($this->inputSnapshot->semester);
+            $semester->id = (int) ($this->inputSnapshot->semester['id'] ?? $this->inputSnapshot->semesterId);
+            $semester->semester = (string) ($this->inputSnapshot->semester['semester'] ?? '');
+            $section->setRelation('academicSemester', $semester);
         } else {
             $section = Sections::query()
-                ->with('term')
+                ->with('academicSemester')
                 ->findOrFail($sectionId);
         }
         $resourceLimits = $this->inputSnapshot !== null
@@ -504,7 +504,7 @@ class CSPSolver
 
         $this->validateSectionForScheduling($section);
 
-        if ($this->inputSnapshot !== null && $this->inputSnapshot->termId === (int) $section->term_id) {
+        if ($this->inputSnapshot !== null && $this->inputSnapshot->semesterId === (int) $section->semester_id) {
             // Snapshot entries begin as attribute arrays, so transform them
             // with a base collection before wrapping the resulting Course
             // models in the Eloquent collection contract below.
@@ -678,7 +678,7 @@ class CSPSolver
         );
 
         $this->preloadExistingSchedules(
-            termId: (int) $section->term_id,
+            semesterId: (int) $section->semester_id,
             sectionId: (int) $section->id,
             departmentId: (int) $section->department_id,
             replaceCourseIds: $courseIds,
@@ -3314,7 +3314,7 @@ class CSPSolver
             }
 
             $cacheKey = implode('|', [
-                (int) $section->term_id,
+                (int) $section->semester_id,
                 (int) $section->id,
                 $candidate['course_id'],
                 $blockRoomId ?? 'none',
@@ -3360,7 +3360,7 @@ class CSPSolver
     private function withScheduleContext(array $assignment, Sections $section): array
     {
         return array_merge($assignment, [
-            'term_id' => (int) $section->term_id,
+            'semester_id' => (int) $section->semester_id,
             'section_id' => (int) $section->id,
             'department_id' => (int) $section->department_id,
         ]);
@@ -3751,7 +3751,7 @@ class CSPSolver
                     ];
                     $physicalRoomBlockTotal++;
 
-                    // Prefer rooms that are still empty or lightly used in the current term.
+                    // Prefer rooms that are still empty or lightly used in the current semester.
                     $score += ($this->existingRoomUseCounts[$blockRoomId] ?? 0) * 3;
                 }
 
@@ -3994,7 +3994,7 @@ class CSPSolver
 
             foreach ($assignment['blocks'] as $index => $block) {
                 $row = [
-                    'term_id' => (int) $assignment['term_id'],
+                    'semester_id' => (int) $assignment['semester_id'],
                     'section_id' => (int) $assignment['section_id'],
                     'course_id' => (int) $assignment['course_id'],
                     'faculty_id' => null,
@@ -4449,16 +4449,16 @@ class CSPSolver
             ));
         }
 
-        if (! $section->term) {
+        if (! $section->academicSemester) {
             throw new InvalidArgumentException(sprintf(
-                'Section %d is not linked to an academic term.',
+                'Section %d is not linked to an academic semester.',
                 $section->id,
             ));
         }
 
-        if ($section->term->semester !== $section->semester) {
+        if ($section->academicSemester->semester !== $section->semester) {
             throw new InvalidArgumentException(sprintf(
-                'Section %d semester does not match its academic term.',
+                'Section %d semester does not match its academic semester.',
                 $section->id,
             ));
         }
@@ -5024,7 +5024,7 @@ class CSPSolver
     {
         $activeSections = Sections::query()
             ->where('department_id', (int) $section->department_id)
-            ->where('term_id', (int) $section->term_id)
+            ->where('semester_id', (int) $section->semester_id)
             ->where('status', 'active')
             ->get(['id', 'year_level', 'semester']);
 
@@ -5343,7 +5343,7 @@ class CSPSolver
     }
 
     /**
-     * Pre-fetches all persisted schedules for the given term into memory and
+     * Pre-fetches all persisted schedules for the given semester into memory and
      * builds lookup indexes including:
      *   "r:{roomId}:{day}"     → time ranges already booked for that room on that day
      *   "s:{sectionId}:{day}" → time ranges already booked for that section on that day
@@ -5354,7 +5354,7 @@ class CSPSolver
      * previously issued inside the backtracking loop.
      */
     private function preloadExistingSchedules(
-        int $termId,
+        int $semesterId,
         int $sectionId,
         int $departmentId,
         array $replaceCourseIds = [],
@@ -5371,7 +5371,7 @@ class CSPSolver
             static fn (int $courseId): bool => $courseId > 0,
         )));
 
-        $scheduleRows = $this->termScheduleRowsCache[$termId] ??= $this->snapshotScheduleRows($termId);
+        $scheduleRows = $this->semesterScheduleRowsCache[$semesterId] ??= $this->snapshotScheduleRows($semesterId);
 
         $schedules = collect($scheduleRows)
             ->filter(function (array $schedule) use ($sectionId, $replaceCourseIds): bool {
@@ -5386,7 +5386,7 @@ class CSPSolver
             ->map(static fn (array $schedule): Schedule => new Schedule($schedule));
 
         foreach ($tentativeSchedules as $row) {
-            if (! is_array($row) || (int) ($row['term_id'] ?? $termId) !== $termId) {
+            if (! is_array($row) || (int) ($row['semester_id'] ?? $semesterId) !== $semesterId) {
                 continue;
             }
             $schedules->push(new Schedule([
@@ -5515,7 +5515,7 @@ class CSPSolver
             return $windows;
         }
 
-        return app(RoomAccessPolicy::class)->grantWindowsFor((int) $section->department_id, (int) $section->term_id);
+        return app(RoomAccessPolicy::class)->grantWindowsFor((int) $section->department_id, (int) $section->semester_id);
     }
 
     /**
@@ -5544,17 +5544,17 @@ class CSPSolver
     }
 
     /** @return list<array<string, mixed>> */
-    private function snapshotScheduleRows(int $termId): array
+    private function snapshotScheduleRows(int $semesterId): array
     {
-        if ($this->inputSnapshot !== null && $this->inputSnapshot->termId === $termId) {
+        if ($this->inputSnapshot !== null && $this->inputSnapshot->semesterId === $semesterId) {
             return array_values(array_filter(
                 $this->inputSnapshot->persistedSchedules,
-                static fn (array $schedule): bool => (int) ($schedule['term_id'] ?? $termId) === $termId,
+                static fn (array $schedule): bool => (int) ($schedule['semester_id'] ?? $semesterId) === $semesterId,
             ));
         }
 
         return Schedule::query()
-            ->where('term_id', $termId)
+            ->where('semester_id', $semesterId)
             ->get(['room_id', 'section_id', 'course_id', 'faculty_id', 'department_id', 'day', 'start_time', 'end_time', 'mode', 'status'])
             ->map(static fn (Schedule $schedule): array => $schedule->getAttributes())
             ->all();

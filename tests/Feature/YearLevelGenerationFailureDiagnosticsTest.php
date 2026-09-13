@@ -8,7 +8,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Engine\CSPSolver;
 use App\Services\Scheduling\Engine\RuleEngine;
@@ -21,7 +21,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
 
     public function test_feasibility_pre_check_blocks_before_the_search_and_reports_blocking_constraints(): void
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'IT']);
         // Schedule capabilities and section scheduling both require the
         // department to own a program.
@@ -44,7 +44,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $department->id, 'program_id' => $departmentProgram->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]);
         }
@@ -71,7 +71,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => array_map(static fn (Sections $section): array => [
@@ -99,12 +99,12 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
 
     public function test_retry_ladder_switches_the_fixed_pattern_and_reports_the_applied_adjustment(): void
     {
-        ['user' => $user, 'term' => $term, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
+        ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
 
         $this->app->instance(CSPSolver::class, $this->patternGatedSolver('TTh', (int) $course->id, $section, (int) $department->id));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => [[
@@ -130,14 +130,14 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
 
     public function test_exhausted_retries_return_a_diagnostic_report_with_recommendations(): void
     {
-        ['user' => $user, 'term' => $term, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
+        ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
 
         // No pattern the ladder can reach satisfies this solver, so every retry
         // strategy fails and the run must end in a diagnostic report.
         $this->app->instance(CSPSolver::class, $this->patternGatedSolver('unreachable', (int) $course->id, $section, (int) $department->id));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => [[
@@ -173,10 +173,10 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
 
     public function test_successful_baseline_generation_reports_no_applied_adjustment(): void
     {
-        ['user' => $user, 'term' => $term, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
+        ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             'section_configs' => [[
@@ -199,7 +199,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
         // room, but 'NEE 204' is a 'lecture' room" at save time: a laboratory-enabled
         // department, seven sections, three unsplit laboratory courses, and a room
         // mix where lecture rooms are the convenient choice.
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
@@ -230,7 +230,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
                 'year_level' => '1',
                 'semester' => '1st',
                 'department_id' => $department->id, 'program_id' => $departmentProgram->id,
-                'term_id' => $term->id,
+                'semester_id' => $semester->id,
                 'status' => 'active',
             ]);
         }
@@ -273,7 +273,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'department_id' => $department->id,
             'year_level' => 1,
             // No selected_split_session_course_ids: the laboratory courses stay unsplit,
@@ -322,7 +322,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
     /** @return array<string, mixed> */
     private function patternFixture(): array
     {
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
@@ -336,7 +336,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             'name' => 'Program '.$department->id,
         ]);
         $curriculum = Curriculum::create(['name' => 'IT Curriculum', 'department_id' => $department->id, 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
-        $section = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'term_id' => $term->id, 'status' => 'active']);
+        $section = Sections::create(['section_name' => 'IT 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'program_id' => $departmentProgram->id, 'semester_id' => $semester->id, 'status' => 'active']);
         $course = Course::create([
             'course_code' => 'GEC 101',
             'course_name' => 'Understanding the Self',
@@ -354,7 +354,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
         $room = Rooms::create(['room_code' => 'IT 101', 'building' => 'IT Building', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
 
         return [
-            'term' => $term,
+            'semester' => $semester,
             'department' => $department,
             'section' => $section,
             'course' => $course,
@@ -394,7 +394,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
                     'rank' => 1,
                     'score' => 0,
                     'schedules' => array_map(fn (string $day): array => [
-                        'term_id' => (int) $this->gatedSection->term_id,
+                        'semester_id' => (int) $this->gatedSection->semester_id,
                         'section_id' => (int) $this->gatedSection->id,
                         'course_id' => $this->gatedCourseId,
                         'faculty_id' => null,

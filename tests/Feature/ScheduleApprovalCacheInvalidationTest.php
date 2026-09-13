@@ -9,7 +9,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleSubmission;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -108,7 +108,7 @@ class ScheduleApprovalCacheInvalidationTest extends TestCase
             'code' => 'BSIT',
             'name' => 'Information Technology',
         ]);
-        $term = Terms::create([
+        $semester = Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -139,11 +139,11 @@ class ScheduleApprovalCacheInvalidationTest extends TestCase
             'semester' => '1st',
             'department_id' => $department->id,
             'program_id' => $program->id,
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $schedule = Schedule::create([
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'room_id' => $room->id,
@@ -162,7 +162,7 @@ class ScheduleApprovalCacheInvalidationTest extends TestCase
     {
         $submission = ScheduleSubmission::create([
             'department_id' => $department->id,
-            'term_id' => $section->term_id,
+            'semester_id' => $section->semester_id,
             'revision_number' => 1,
             'status' => $status,
             'submitted_at' => now(),

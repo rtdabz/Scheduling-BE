@@ -20,7 +20,7 @@ class Schedule extends Model
     ];
 
     protected $fillable = [
-        'term_id',
+        'semester_id',
         'section_id',
         // Which curriculum this row was generated from. Recorded rather than
         // derived: curricula are editable and a section can be re-pointed later.
@@ -153,9 +153,9 @@ class Schedule extends Model
         ScheduleSplit::query()->whereIn('schedule_id', $scheduleIds)->delete();
     }
 
-    public function term()
+    public function academicSemester()
     {
-        return $this->belongsTo(Terms::class);
+        return $this->belongsTo(Semester::class, 'semester_id');
     }
 
     public function section()

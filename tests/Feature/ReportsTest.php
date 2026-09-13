@@ -9,7 +9,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -120,12 +120,12 @@ class ReportsTest extends TestCase
     {
         $department = Departments::create(['department_name' => 'Information Technology', 'department_code' => 'IT']);
         $program = Program::create(['department_id' => $department->id, 'code' => 'BSIT', 'name' => 'Information Technology']);
-        $term = Terms::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
 
         return [
             'department' => $department,
             'program' => $program,
-            'term' => $term,
+            'semester' => $semester,
             'room' => Rooms::create(['room_code' => 'IT101', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]),
             'course' => Course::create([
                 'course_code' => 'IT101', 'course_name' => 'Intro', 'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3,
@@ -146,7 +146,7 @@ class ReportsTest extends TestCase
         return Sections::create([
             'section_name' => $name, 'year_level' => '1', 'semester' => '1st',
             'department_id' => $f['department']->id, 'program_id' => $programId ?? $f['program']->id,
-            'term_id' => $f['term']->id, 'status' => 'active',
+            'semester_id' => $f['semester']->id, 'status' => 'active',
         ]);
     }
 
@@ -154,7 +154,7 @@ class ReportsTest extends TestCase
     private function schedule(array $f, Sections $section, array $overrides = []): Schedule
     {
         return Schedule::create(array_merge([
-            'term_id' => $f['term']->id,
+            'semester_id' => $f['semester']->id,
             'section_id' => $section->id,
             'course_id' => $f['course']->id,
             'room_id' => $f['room']->id,

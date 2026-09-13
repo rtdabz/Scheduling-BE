@@ -22,7 +22,7 @@ class ActivityLogController extends Controller
             'event' => ['nullable', 'string', 'max:80'],
             'actor_id' => ['nullable', 'integer', 'exists:users,id'],
             'department_id' => ['nullable', 'integer', 'exists:departments,id'],
-            'term_id' => ['nullable', 'integer', 'exists:terms,id'],
+            'semester_id' => ['nullable', 'integer', 'exists:semesters,id'],
             'search' => ['nullable', 'string', 'max:100'],
             'export' => ['nullable', 'in:csv'],
         ]);
@@ -40,13 +40,13 @@ class ActivityLogController extends Controller
         $candidateLimit = min(10000, max(500, ($page * $perPage) + $perPage));
 
         $scheduling = SchedulingAuditLog::query()
-            ->with(['user:id,name,username,role', 'recommendation:id,department_id,term_id,section_id'])
+            ->with(['user:id,name,username,role', 'recommendation:id,department_id,semester_id,section_id'])
             ->when(in_array($category, ['authentication', 'user_management'], true), fn ($q) => $q->whereRaw('1 = 0'))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))
             ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('user_id', $id))
             ->when($validated['department_id'] ?? null, fn ($q, $id) => $q->where('department_id', $id))
-            ->when($validated['term_id'] ?? null, fn ($q, $id) => $q->where('term_id', $id))
+            ->when($validated['semester_id'] ?? null, fn ($q, $id) => $q->where('semester_id', $id))
             ->when($validated['event'] ?? null, fn ($q, $event) => $q->where('action', $event))
             ->when(in_array($category, ['scheduling', 'schedule_workflow', 'faculty_assignment'], true), function ($q) use ($category) {
                 if ($category === 'scheduling') {
@@ -66,7 +66,7 @@ class ActivityLogController extends Controller
         $authentication = AuthenticationAuditLog::query()
             ->with(['actor:id,name,username,role,department_id', 'subject:id,name,username,role,department_id'])
             ->when(in_array($category, ['scheduling', 'schedule_workflow', 'faculty_assignment'], true), fn ($q) => $q->whereRaw('1 = 0'))
-            ->when(($validated['term_id'] ?? null) !== null, fn ($q) => $q->whereRaw('1 = 0'))
+            ->when(($validated['semester_id'] ?? null) !== null, fn ($q) => $q->whereRaw('1 = 0'))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))
             ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('actor_user_id', $id))
@@ -82,11 +82,11 @@ class ActivityLogController extends Controller
             ->map(fn (AuthenticationAuditLog $log) => $this->authenticationEntry($log));
 
         $departmentId = $validated['department_id'] ?? null;
-        $termId = $validated['term_id'] ?? null;
+        $semesterId = $validated['semester_id'] ?? null;
         $entries = $scheduling->concat($authentication)
             ->filter(fn (array $entry) => (! $category || $entry['category'] === $category)
                 && (! $departmentId || (int) $entry['department_id'] === (int) $departmentId)
-                && (! $termId || (int) $entry['term_id'] === (int) $termId)
+                && (! $semesterId || (int) $entry['semester_id'] === (int) $semesterId)
                 && (! $search || str_contains(mb_strtolower(json_encode($entry)), $search)))
             ->sortByDesc(fn (array $entry) => $entry['occurred_at']->getTimestamp().'|'.$entry['id'])
             ->values();
@@ -97,7 +97,7 @@ class ActivityLogController extends Controller
             abort_if($total > 10000, 422, 'Narrow the filters before exporting more than 10,000 audit entries.');
             return response()->streamDownload(function () use ($entries) {
                 $output = fopen('php://output', 'w');
-                fputcsv($output, ['Timestamp', 'Category', 'Event', 'Actor', 'Role', 'Department ID', 'Term ID', 'Target', 'Metadata']);
+                fputcsv($output, ['Timestamp', 'Category', 'Event', 'Actor', 'Role', 'Department ID', 'Semester ID', 'Target', 'Metadata']);
                 foreach ($entries as $entry) {
                     fputcsv($output, [
                         $entry['occurred_at']->toISOString(),
@@ -106,7 +106,7 @@ class ActivityLogController extends Controller
                         $entry['actor']['name'] ?? 'System',
                         $entry['actor']['role'] ?? 'system',
                         $entry['department_id'],
-                        $entry['term_id'],
+                        $entry['semester_id'],
                         $entry['target']['type'].':'.($entry['target']['id'] ?? ''),
                         json_encode($entry['metadata']),
                     ]);
@@ -145,7 +145,7 @@ class ActivityLogController extends Controller
             'occurred_at' => $log->created_at,
             'actor' => $this->user($log->user),
             'department_id' => $log->department_id,
-            'term_id' => $log->term_id,
+            'semester_id' => $log->semester_id,
             'target' => ['type' => $log->schedule_recommendation_id ? 'schedule_recommendation' : 'schedule_workflow', 'id' => $log->schedule_recommendation_id ?? $log->section_id],
             'metadata' => $metadata,
         ];
@@ -166,7 +166,7 @@ class ActivityLogController extends Controller
             'occurred_at' => $log->created_at,
             'actor' => $this->user($actor),
             'department_id' => $log->subject?->department_id ?? $subjectSnapshot['department_id'] ?? null,
-            'term_id' => null,
+            'semester_id' => null,
             'target' => ['type' => 'user', 'id' => $log->subject_user_id ?? $subjectSnapshot['id'] ?? null],
             'metadata' => array_filter(array_merge($metadata, ['ip_address' => $log->ip_address, 'user_agent' => $log->user_agent])),
         ];

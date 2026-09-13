@@ -40,7 +40,7 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
             'department_code' => 'CCS',
             'status' => 'active',
         ]);
-        $term = \App\Models\Terms::create([
+        $semester = \App\Models\Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -51,7 +51,7 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
             'department_id' => $department->id,
             'year_level' => '1',
             'semester' => '1st',
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([
@@ -89,7 +89,7 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
             'department_code' => 'CCS',
             'status' => 'active',
         ]);
-        $term = \App\Models\Terms::create([
+        $semester = \App\Models\Semester::create([
             'academic_year' => '2026-2027',
             'semester' => '1st',
             'is_active' => true,
@@ -100,7 +100,7 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
             'department_id' => $department->id,
             'year_level' => '1',
             'semester' => '1st',
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'status' => 'active',
         ]);
         $course = Course::create([

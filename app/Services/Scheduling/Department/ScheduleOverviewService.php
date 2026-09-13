@@ -5,7 +5,7 @@ namespace App\Services\Scheduling\Department;
 use App\Models\Departments;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\DB;
  *
  * The screen used to derive its institution-wide numbers from the first N rows
  * of `/initial-data`, which is capped. Every count below is aggregated in SQL
- * over the whole term instead, so a department card never reports a subset of
+ * over the whole semester instead, so a department card never reports a subset of
  * its own schedule as the whole of it.
  *
  * Meetings are rolled up into the shapes the UI actually shows: a "class" is a
@@ -41,16 +41,16 @@ class ScheduleOverviewService
      */
     public function overview(?int $departmentId = null): array
     {
-        $term = Terms::query()->where('is_active', true)->first();
-        $termId = $term?->id;
+        $semester = Semester::query()->where('is_active', true)->first();
+        $semesterId = $semester?->id;
 
-        $sections = $this->sections($termId, $departmentId);
+        $sections = $this->sections($semesterId, $departmentId);
         $sectionIds = $sections->pluck('id')->all();
 
-        $meetingStats = $this->meetingStats($termId, $sectionIds);
-        $dayLoads = $this->dayLoads($termId, $sectionIds);
-        $statuses = $this->scheduleStatuses($termId, $sectionIds);
-        $conflicts = $this->conflicts($termId, $sectionIds);
+        $meetingStats = $this->meetingStats($semesterId, $sectionIds);
+        $dayLoads = $this->dayLoads($semesterId, $sectionIds);
+        $statuses = $this->scheduleStatuses($semesterId, $sectionIds);
+        $conflicts = $this->conflicts($semesterId, $sectionIds);
 
         $departments = $this->departments($departmentId);
 
@@ -79,10 +79,10 @@ class ScheduleOverviewService
             ->values();
 
         return [
-            'term' => $term ? [
-                'id' => $term->id,
-                'academic_year' => $term->academic_year,
-                'semester' => $term->semester,
+            'semester' => $semester ? [
+                'id' => $semester->id,
+                'academic_year' => $semester->academic_year,
+                'semester' => $semester->semester,
             ] : null,
             'departments' => $departmentRows->all(),
             'totals' => $this->totals($departmentRows),
@@ -90,12 +90,12 @@ class ScheduleOverviewService
     }
 
     /** @return Collection<int, Sections> */
-    private function sections(?int $termId, ?int $departmentId): Collection
+    private function sections(?int $semesterId, ?int $departmentId): Collection
     {
         return Sections::query()
             ->select('id', 'section_name', 'year_level', 'department_id', 'program_id')
             ->where('status', 'active')
-            ->when($termId, fn ($query) => $query->where('term_id', $termId))
+            ->when($semesterId, fn ($query) => $query->where('semester_id', $semesterId))
             ->when($departmentId, fn ($query) => $query->where('department_id', $departmentId))
             ->orderBy('year_level')
             ->orderBy('section_name')
@@ -121,13 +121,13 @@ class ScheduleOverviewService
      * @param  list<int>  $sectionIds
      * @return Collection<int, object>
      */
-    private function meetingStats(?int $termId, array $sectionIds): Collection
+    private function meetingStats(?int $semesterId, array $sectionIds): Collection
     {
         if ($sectionIds === []) {
             return collect();
         }
 
-        return $this->scheduleQuery($termId, $sectionIds)
+        return $this->scheduleQuery($semesterId, $sectionIds)
             ->select('schedules.section_id')
             ->selectRaw('COUNT(*) AS meetings')
             ->selectRaw('COUNT(DISTINCT schedules.course_id) AS classes')
@@ -147,13 +147,13 @@ class ScheduleOverviewService
      * @param  list<int>  $sectionIds
      * @return Collection<int, array<string, int>>
      */
-    private function dayLoads(?int $termId, array $sectionIds): Collection
+    private function dayLoads(?int $semesterId, array $sectionIds): Collection
     {
         if ($sectionIds === []) {
             return collect();
         }
 
-        return $this->scheduleQuery($termId, $sectionIds)
+        return $this->scheduleQuery($semesterId, $sectionIds)
             ->select('schedules.section_id', 'schedules.day')
             ->selectRaw('COUNT(*) AS meetings')
             ->groupBy('schedules.section_id', 'schedules.day')
@@ -166,13 +166,13 @@ class ScheduleOverviewService
      * @param  list<int>  $sectionIds
      * @return Collection<int, list<string>>
      */
-    private function scheduleStatuses(?int $termId, array $sectionIds): Collection
+    private function scheduleStatuses(?int $semesterId, array $sectionIds): Collection
     {
         if ($sectionIds === []) {
             return collect();
         }
 
-        return $this->scheduleQuery($termId, $sectionIds)
+        return $this->scheduleQuery($semesterId, $sectionIds)
             ->select('schedules.section_id', 'schedules.status')
             ->distinct()
             ->get()
@@ -183,7 +183,7 @@ class ScheduleOverviewService
     /**
      * Meetings involved in an overlap, counted per section and per kind.
      *
-     * Overlap is evaluated across the whole term, not per department: a faculty
+     * Overlap is evaluated across the whole semester, not per department: a faculty
      * member or a room double-booked by two colleges is a conflict for both.
      * `total` counts each meeting once however many kinds it trips, which is
      * what the card's single "conflicts" figure means.
@@ -191,7 +191,7 @@ class ScheduleOverviewService
      * @param  list<int>  $sectionIds
      * @return Collection<int, array<string, int>>
      */
-    private function conflicts(?int $termId, array $sectionIds): Collection
+    private function conflicts(?int $semesterId, array $sectionIds): Collection
     {
         if ($sectionIds === []) {
             return collect();
@@ -202,17 +202,17 @@ class ScheduleOverviewService
             ->pluck('id')
             ->all();
 
-        $flags = $this->scheduleQuery($termId, $sectionIds)
+        $flags = $this->scheduleQuery($semesterId, $sectionIds)
             ->select('schedules.id', 'schedules.section_id')
             ->selectSub(
-                $this->overlapExists($termId)
+                $this->overlapExists($semesterId)
                     ->whereColumn('other.faculty_id', 'schedules.faculty_id')
                     ->whereNotNull('schedules.faculty_id')
                     ->selectRaw('1'),
                 'faculty_hit',
             )
             ->selectSub(
-                $this->overlapExists($termId)
+                $this->overlapExists($semesterId)
                     ->whereColumn('other.room_id', 'schedules.room_id')
                     ->whereNotNull('schedules.room_id')
                     ->whereNotIn('schedules.mode', self::ROOMLESS_MODES)
@@ -222,7 +222,7 @@ class ScheduleOverviewService
                 'room_hit',
             )
             ->selectSub(
-                $this->overlapExists($termId)
+                $this->overlapExists($semesterId)
                     ->whereColumn('other.section_id', 'schedules.section_id')
                     ->selectRaw('1'),
                 'section_hit',
@@ -247,32 +247,32 @@ class ScheduleOverviewService
     }
 
     /**
-     * A correlated sub-query matching any *other* meeting of the same term that
+     * A correlated sub-query matching any *other* meeting of the same semester that
      * overlaps this one in time. Callers add the column that makes the overlap
      * a conflict (same faculty, same room, same section).
      *
-     * The `(term, key, day, start, end)` indexes added for the solver cover
+     * The `(semester, key, day, start, end)` indexes added for the solver cover
      * exactly this shape, so it stays an index lookup per row.
      */
-    private function overlapExists(?int $termId): QueryBuilder
+    private function overlapExists(?int $semesterId): QueryBuilder
     {
         return DB::table('schedules AS other')
             ->whereColumn('other.id', '!=', 'schedules.id')
             ->whereColumn('other.day', 'schedules.day')
             ->whereColumn('other.start_time', '<', 'schedules.end_time')
             ->whereColumn('other.end_time', '>', 'schedules.start_time')
-            ->when($termId, fn ($query) => $query->where('other.term_id', $termId))
+            ->when($semesterId, fn ($query) => $query->where('other.semester_id', $semesterId))
             ->whereNull('other.deleted_at')
             ->limit(1);
     }
 
     /** @param  list<int>  $sectionIds */
-    private function scheduleQuery(?int $termId, array $sectionIds): QueryBuilder
+    private function scheduleQuery(?int $semesterId, array $sectionIds): QueryBuilder
     {
         return DB::table('schedules')
             ->whereIn('schedules.section_id', $sectionIds)
             ->whereNull('schedules.deleted_at')
-            ->when($termId, fn ($query) => $query->where('schedules.term_id', $termId));
+            ->when($semesterId, fn ($query) => $query->where('schedules.semester_id', $semesterId));
     }
 
     /**

@@ -116,7 +116,7 @@ class CspWeekdayFirstPriorityTest extends TestCase
         return [
             'course_id' => $courseId,
             'section_id' => 1,
-            'term_id' => 1,
+            'semester_id' => 1,
             'department_id' => 1,
             'room_id' => 1,
             'room_type' => 'lecture',

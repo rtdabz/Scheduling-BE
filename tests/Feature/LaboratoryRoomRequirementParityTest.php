@@ -6,7 +6,7 @@ use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
-use App\Models\Terms;
+use App\Models\Semester;
 use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -27,47 +27,47 @@ class LaboratoryRoomRequirementParityTest extends TestCase
 
     public function test_unsplit_course_with_lab_hours_requires_a_laboratory_room(): void
     {
-        [$term, $dept, $section, $lecture, $laboratory] = $this->fixture();
+        [$semester, $dept, $section, $lecture, $laboratory] = $this->fixture();
         $course = $this->course('LAB101', lectureHours: 2, labHours: 3, roomTypeRequired: 'lecture');
 
-        $inLectureRoom = $this->rules($this->attempt($term, $dept, $section, $course, $lecture->id));
+        $inLectureRoom = $this->rules($this->attempt($semester, $dept, $section, $course, $lecture->id));
         $this->assertContains('room_type_match', $inLectureRoom);
 
-        $inLabRoom = $this->rules($this->attempt($term, $dept, $section, $course, $laboratory->id));
+        $inLabRoom = $this->rules($this->attempt($semester, $dept, $section, $course, $laboratory->id));
         $this->assertNotContains('room_type_match', $inLabRoom);
     }
 
     public function test_a_lab_only_course_also_requires_a_laboratory_room(): void
     {
-        [$term, $dept, $section, $lecture, $laboratory] = $this->fixture();
+        [$semester, $dept, $section, $lecture, $laboratory] = $this->fixture();
         $course = $this->course('LAB102', lectureHours: 0, labHours: 3, roomTypeRequired: 'lecture');
 
-        $this->assertContains('room_type_match', $this->rules($this->attempt($term, $dept, $section, $course, $lecture->id)));
-        $this->assertNotContains('room_type_match', $this->rules($this->attempt($term, $dept, $section, $course, $laboratory->id)));
+        $this->assertContains('room_type_match', $this->rules($this->attempt($semester, $dept, $section, $course, $lecture->id)));
+        $this->assertNotContains('room_type_match', $this->rules($this->attempt($semester, $dept, $section, $course, $laboratory->id)));
     }
 
     public function test_the_lecture_meeting_of_a_split_may_use_a_lecture_room(): void
     {
-        [$term, $dept, $section, $lecture, $laboratory] = $this->fixture();
+        [$semester, $dept, $section, $lecture, $laboratory] = $this->fixture();
         $course = $this->course('LAB103', lectureHours: 2, labHours: 3, roomTypeRequired: 'lecture');
 
         // meeting_type overrides the laboratory inference, which is why the client
         // has to accept either physical room type for a mixed split.
-        $lectureMeeting = $this->attempt($term, $dept, $section, $course, $lecture->id);
+        $lectureMeeting = $this->attempt($semester, $dept, $section, $course, $lecture->id);
         $lectureMeeting['meeting_type'] = 'lecture';
         $this->assertNotContains('room_type_match', $this->rules($lectureMeeting));
 
-        $labMeeting = $this->attempt($term, $dept, $section, $course, $laboratory->id);
+        $labMeeting = $this->attempt($semester, $dept, $section, $course, $laboratory->id);
         $labMeeting['meeting_type'] = 'laboratory';
         $this->assertNotContains('room_type_match', $this->rules($labMeeting));
     }
 
     public function test_the_online_lecture_of_a_split_is_validated_as_a_lecture_component(): void
     {
-        [$term, $dept, $section] = $this->fixture();
+        [$semester, $dept, $section] = $this->fixture();
         $course = $this->course('LAB-ONLINE-LEC', lectureHours: 2, labHours: 1, roomTypeRequired: 'laboratory');
 
-        $lectureMeeting = $this->attempt($term, $dept, $section, $course, null);
+        $lectureMeeting = $this->attempt($semester, $dept, $section, $course, null);
         $lectureMeeting['meeting_type'] = 'lecture';
         $lectureMeeting['mode'] = 'online';
 
@@ -81,17 +81,17 @@ class LaboratoryRoomRequirementParityTest extends TestCase
 
     public function test_a_lecture_only_course_is_unaffected(): void
     {
-        [$term, $dept, $section, $lecture] = $this->fixture();
+        [$semester, $dept, $section, $lecture] = $this->fixture();
         $course = $this->course('LEC101', lectureHours: 3, labHours: 0, roomTypeRequired: 'lecture');
 
-        $this->assertNotContains('room_type_match', $this->rules($this->attempt($term, $dept, $section, $course, $lecture->id)));
+        $this->assertNotContains('room_type_match', $this->rules($this->attempt($semester, $dept, $section, $course, $lecture->id)));
     }
 
     public function test_laboratory_course_may_remain_on_site_with_room_tba(): void
     {
-        [$term, $dept, $section] = $this->fixture();
+        [$semester, $dept, $section] = $this->fixture();
         $course = $this->course('LAB-TBA', lectureHours: 0, labHours: 3, roomTypeRequired: 'laboratory');
-        $attempt = $this->attempt($term, $dept, $section, $course, null);
+        $attempt = $this->attempt($semester, $dept, $section, $course, null);
 
         $rules = $this->rules($attempt);
 
@@ -103,9 +103,9 @@ class LaboratoryRoomRequirementParityTest extends TestCase
 
     public function test_laboratory_course_cannot_fallback_to_online(): void
     {
-        [$term, $dept, $section] = $this->fixture();
+        [$semester, $dept, $section] = $this->fixture();
         $course = $this->course('LAB-NO-ONLINE', lectureHours: 0, labHours: 3, roomTypeRequired: 'laboratory');
-        $attempt = $this->attempt($term, $dept, $section, $course, null);
+        $attempt = $this->attempt($semester, $dept, $section, $course, null);
         $attempt['mode'] = 'online';
 
         $this->assertContains('room_type_match', $this->rules($attempt));
@@ -113,9 +113,9 @@ class LaboratoryRoomRequirementParityTest extends TestCase
 
     public function test_lecture_only_course_may_fallback_to_online_but_not_room_tba(): void
     {
-        [$term, $dept, $section] = $this->fixture();
+        [$semester, $dept, $section] = $this->fixture();
         $course = $this->course('LEC-FALLBACK', lectureHours: 3, labHours: 0, roomTypeRequired: 'lecture');
-        $attempt = $this->attempt($term, $dept, $section, $course, null);
+        $attempt = $this->attempt($semester, $dept, $section, $course, null);
 
         $this->assertContains('room_type_match', $this->rules($attempt));
 
@@ -132,10 +132,10 @@ class LaboratoryRoomRequirementParityTest extends TestCase
         ));
     }
 
-    private function attempt(Terms $term, Departments $dept, Sections $section, Course $course, ?int $roomId): array
+    private function attempt(Semester $semester, Departments $dept, Sections $section, Course $course, ?int $roomId): array
     {
         return [
-            'term_id' => $term->id,
+            'semester_id' => $semester->id,
             'section_id' => $section->id,
             'course_id' => $course->id,
             'department_id' => $dept->id,
@@ -147,10 +147,10 @@ class LaboratoryRoomRequirementParityTest extends TestCase
         ];
     }
 
-    /** @return array{0: Terms, 1: Departments, 2: Sections, 3: Rooms, 4: Rooms} */
+    /** @return array{0: Semester, 1: Departments, 2: Sections, 3: Rooms, 4: Rooms} */
     private function fixture(): array
     {
-        $term = Terms::firstOrCreate(
+        $semester = Semester::firstOrCreate(
             ['academic_year' => '2026-2027', 'semester' => '1st'],
             ['is_active' => true, 'is_enabled' => true],
         );
@@ -159,7 +159,7 @@ class LaboratoryRoomRequirementParityTest extends TestCase
             ['department_name' => 'Lab Dept', 'scheduling_profile' => 'laboratory_enabled'],
         );
         $section = Sections::firstOrCreate(
-            ['section_name' => 'LAB-1A', 'department_id' => $dept->id, 'term_id' => $term->id],
+            ['section_name' => 'LAB-1A', 'department_id' => $dept->id, 'semester_id' => $semester->id],
             ['year_level' => '1', 'semester' => '1st', 'status' => 'active'],
         );
         $lecture = Rooms::firstOrCreate(
@@ -171,7 +171,7 @@ class LaboratoryRoomRequirementParityTest extends TestCase
             ['room_type' => 'laboratory', 'status' => 'available', 'department_id' => $dept->id],
         );
 
-        return [$term, $dept, $section, $lecture, $laboratory];
+        return [$semester, $dept, $section, $lecture, $laboratory];
     }
 
     private function course(string $code, int $lectureHours, int $labHours, string $roomTypeRequired): Course

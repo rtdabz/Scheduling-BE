@@ -7,7 +7,7 @@ namespace App\Services\Scheduling\Lock;
 interface SchedulingScopeLock
 {
     /**
-     * @param  list<int>  $termIds
+     * @param  list<int>  $semesterIds
      */
-    public function execute(array $termIds, callable $callback): mixed;
+    public function execute(array $semesterIds, callable $callback): mixed;
 }

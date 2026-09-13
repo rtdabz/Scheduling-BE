@@ -52,7 +52,7 @@ class SolverDomainContractsTest extends TestCase
                     'rank' => 1,
                     'score' => 420,
                     'schedules' => [[
-                        'term_id' => 2,
+                        'semester_id' => 2,
                         'section_id' => 3,
                         'course_id' => 4,
                         'department_id' => 5,
@@ -76,11 +76,11 @@ class SolverDomainContractsTest extends TestCase
         $candidates = $adapter->solve($configuration, new SchedulingSnapshot(
             fingerprint: str_repeat('a', 64),
             capturedAt: new DateTimeImmutable,
-            termId: 2,
+            semesterId: 2,
             departmentId: 5,
-            sectionsById: [3 => ['id' => 3, 'term_id' => 2, 'department_id' => 5]],
+            sectionsById: [3 => ['id' => 3, 'semester_id' => 2, 'department_id' => 5]],
             coursesById: [4 => ['id' => 4, 'lecture_hours' => 1, 'lab_hours' => 0, 'units' => 1]],
-            term: ['id' => 2],
+            semester: ['id' => 2],
         ));
 
         $this->assertSame($configuration->toArray(), $legacy->received);

@@ -26,7 +26,7 @@ use App\Http\Controllers\ScheduleSplitController;
 use App\Http\Controllers\SchedulingSettingsController;
 use App\Http\Controllers\SectionsController;
 use App\Http\Controllers\SystemNotificationController;
-use App\Http\Controllers\TermsController;
+use App\Http\Controllers\SemesterController;
 use App\Http\Controllers\TimeslotController;
 use App\Http\Controllers\VpaaDashboardController;
 use Illuminate\Support\Facades\Route;
@@ -72,10 +72,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::apiResource('departments', DepartmentsController::class)->except(['index', 'show']);
         Route::get('/departments/trash', [DepartmentsController::class, 'trash'])->name('departments.trash');
         Route::post('/departments/{id}/restore', [DepartmentsController::class, 'restore'])->name('departments.restore');
-        Route::apiResource('terms', TermsController::class)->except(['index', 'show']);
+        Route::apiResource('semesters', SemesterController::class)->except(['index', 'show']);
         Route::patch('/institution-settings', [InstitutionSettingsController::class, 'update']);
-        Route::patch('terms/{id}/activate', [TermsController::class, 'activate']);
-        Route::get('terms/activation-history', [TermsController::class, 'activationHistory']);
+        Route::patch('semesters/{id}/activate', [SemesterController::class, 'activate']);
+        Route::get('semesters/activation-history', [SemesterController::class, 'activationHistory']);
         Route::apiResource('programs', ProgramController::class)->only(['store', 'update', 'destroy']);
     });
 
@@ -122,21 +122,21 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
             Route::patch('rooms/{room}/assign', [RoomsController::class, 'assign']);
         });
 
-        Route::get('terms', [TermsController::class, 'index']);
-        Route::get('terms/active', [TermsController::class, 'active']);
-        Route::get('terms/{term}', [TermsController::class, 'show']);
+        Route::get('semesters', [SemesterController::class, 'index']);
+        Route::get('semesters/active', [SemesterController::class, 'active']);
+        Route::get('semesters/{semester}', [SemesterController::class, 'show']);
 
         Route::get('courses', [CoursesController::class, 'index']);
         Route::get('courses/{course}', [CoursesController::class, 'show']);
 
         Route::get('sections', [SectionsController::class, 'index']);
-        Route::get('sections/term/{termId}', [SectionsController::class, 'byTerm']);
+        Route::get('sections/semester/{semesterId}', [SectionsController::class, 'bySemester']);
         Route::get('sections/department/{departmentId}', [SectionsController::class, 'byDepartment']);
         Route::get('sections/{section}', [SectionsController::class, 'show']);
 
         // Schedule reads remain available to all four roles.
         Route::get('schedules/pending-department-count', [ScheduleController::class, 'pendingDepartmentCount']);
-        Route::get('schedules/term/{termId}', [ScheduleController::class, 'byTerm']);
+        Route::get('schedules/semester/{semesterId}', [ScheduleController::class, 'bySemester']);
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
         Route::apiResource('schedules', ScheduleController::class)->only(['index', 'show']);
         Route::apiResource('schedule-splits', ScheduleSplitController::class)->only(['index', 'show']);
@@ -199,7 +199,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     // Room requests: a department borrowing another department's vacant room
-    // for weekly windows of a term. Both lists are gated by capability, never
+    // for weekly windows of a semester. Both lists are gated by capability, never
     // role, so Manage Access decides who may ask and who may decide.
     Route::middleware('capability:room.request,room.review_requests')->group(function () {
         Route::get('room-requests', [RoomRequestController::class, 'index']);
