@@ -19,6 +19,7 @@ use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
+use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Services\TimeslotService;
@@ -906,10 +907,11 @@ class ScheduleController extends Controller
         $candidateRooms = Rooms::query()
             ->where('status', 'available')
             ->where('room_type', $requiredRoomType)
-            ->where(static function ($q) use ($deptId): void {
-                $q->whereNull('department_id')
-                    ->orWhere('department_id', $deptId);
-            })
+            ->tap(fn ($q) => app(RoomAccessPolicy::class)->scopeReachableRooms(
+                $q,
+                $deptId,
+                isset($op['term_id']) ? (int) $op['term_id'] : null,
+            ))
             ->orderBy('room_code')
             ->get();
 

@@ -13,6 +13,7 @@ use App\Models\Terms;
 use App\Models\User;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
+use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Closure;
@@ -156,14 +157,32 @@ class InitialDataController extends Controller
             fn () => Terms::query()->where('is_active', true)->first(),
         );
         $activeTermId = $activeTerm?->id;
+        // Rooms another department lent this one for the active term ride along
+        // with their windows, so the builder can offer them and say when.
+        $grantWindows = $departmentId !== null && $activeTermId !== null && $wants('rooms')
+            ? app(RoomAccessPolicy::class)->grantWindowsFor((int) $departmentId, (int) $activeTermId)
+            : [];
         $rooms = ! $wants('rooms') ? collect() : Rooms::query()
             ->with('department')
             ->when($departmentId !== null, fn (Builder $query) => $query->where(
                 fn (Builder $scope) => $scope
                     ->whereNull('department_id')
-                    ->orWhere('department_id', $departmentId),
+                    ->orWhere('department_id', $departmentId)
+                    ->when($grantWindows !== [], fn (Builder $granted) => $granted->orWhereIn('id', array_keys($grantWindows))),
             ))
-            ->get();
+            ->get()
+            ->each(function (Rooms $room) use ($grantWindows): void {
+                if (isset($grantWindows[(int) $room->id])) {
+                    $room->setAttribute('grant_windows', array_map(
+                        static fn (array $window): array => [
+                            'day' => $window['day'],
+                            'start_time' => substr($window['start_time'], 0, 5),
+                            'end_time' => substr($window['end_time'], 0, 5),
+                        ],
+                        $grantWindows[(int) $room->id],
+                    ));
+                }
+            });
 
         $activeCurriculumQuery = Curriculum::query()->where('status', 'active');
         if ($departmentId !== null) {

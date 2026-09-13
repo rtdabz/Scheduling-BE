@@ -8,6 +8,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
+use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
@@ -29,6 +30,9 @@ class YearLevelFeasibilityService
     /** Statuses whose existing schedules will be replaced by this run. */
     private const REPLACEABLE_STATUSES = ['draft', 'completed', 'revision'];
 
+    /** The run's term, so rooms granted to the department count as supply. */
+    private ?int $termId = null;
+
     /**
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
@@ -41,6 +45,7 @@ class YearLevelFeasibilityService
         }
 
         $department = $this->resolveDepartment($sections);
+        $this->termId = (int) $sections[array_key_first($sections)]->term_id ?: null;
         $courses = $this->courses($configsBySectionId);
         $slotsPerDay = SchedulingPolicy::totalSlots();
 
@@ -1108,10 +1113,9 @@ class YearLevelFeasibilityService
     {
         return Rooms::query()
             ->whereIn('room_type', $roomTypes)
-            ->where(function ($query) use ($department): void {
-                $query->whereNull('department_id')
-                    ->orWhere('department_id', (int) $department->id);
-            })
+            // A granted room counts in full even though it is open only in its
+            // windows: overstating supply never refuses a feasible run.
+            ->tap(fn ($query) => app(RoomAccessPolicy::class)->scopeReachableRooms($query, (int) $department->id, $this->termId))
             ->where(function ($query): void {
                 $query->where('status', 'available')->orWhereNull('status');
             })

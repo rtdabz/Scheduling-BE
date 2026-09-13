@@ -143,9 +143,17 @@ final class SchedulingSnapshotRepository
             ]);
 
         $referencedRoomIds = $schedules->pluck('room_id')->filter()->map('intval')->unique()->values()->all();
+        // Rooms another department lent this one for the term. Their windows
+        // ride on the room records, so a grant approved or revoked after the
+        // capture changes the fingerprint and no cached run is replayed.
+        $grantWindows = app(RoomAccessPolicy::class)->grantWindowsFor($departmentId, $termId);
+        $grantedRoomIds = array_keys($grantWindows);
         $rooms = Rooms::query()
-            ->where(function ($query) use ($departmentId, $referencedRoomIds): void {
+            ->where(function ($query) use ($departmentId, $referencedRoomIds, $grantedRoomIds): void {
                 $query->whereNull('department_id')->orWhere('department_id', $departmentId);
+                if ($grantedRoomIds !== []) {
+                    $query->orWhereIn('id', $grantedRoomIds);
+                }
                 if ($referencedRoomIds !== []) {
                     $query->orWhereIn('id', $referencedRoomIds);
                 }
@@ -183,7 +191,7 @@ final class SchedulingSnapshotRepository
             'online' => DepartmentResourceSlotLimitService::resolve($department->online_slot_limit),
             'field' => DepartmentResourceSlotLimitService::resolve($department->field_slot_limit),
         ];
-        $roomRecords = $this->withVirtualRooms($this->roomRecords($rooms), $resourceLimits);
+        $roomRecords = $this->withVirtualRooms($this->roomRecords($rooms, $grantWindows), $resourceLimits);
 
         $payload = [
             'schema_version' => SchedulingSnapshot::SCHEMA_VERSION,
@@ -316,9 +324,17 @@ final class SchedulingSnapshotRepository
     }
 
     /** @return array<int, array<string, mixed>> */
-    private function roomRecords(Collection $rooms): array
+    private function roomRecords(Collection $rooms, array $grantWindows = []): array
     {
         return $rooms->mapWithKeys(static fn (Rooms $room): array => [(int) $room->id => [
+            ...(isset($grantWindows[(int) $room->id]) ? ['grant_windows' => array_map(
+                static fn (array $window): array => [
+                    'day' => $window['day'],
+                    'start_time' => $window['start_time'],
+                    'end_time' => $window['end_time'],
+                ],
+                $grantWindows[(int) $room->id],
+            )] : []),
             'id' => (int) $room->id,
             'room_code' => (string) $room->room_code,
             'building' => $room->building === null ? null : (string) $room->building,

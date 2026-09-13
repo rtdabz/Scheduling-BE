@@ -10,6 +10,7 @@ use App\Models\Rooms;
 use App\Models\Sections;
 use App\Services\Scheduling\Department\DepartmentSchedulingProfileResolver;
 use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
+use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
@@ -240,9 +241,11 @@ class ScheduleGenerationPreflightService
         return Rooms::query()
             ->where('status', 'available')
             ->where('room_type', $roomType)
-            ->where(fn ($query) => $query
-                ->whereNull('department_id')
-                ->orWhere('department_id', (int) $section->department_id))
+            ->tap(fn ($query) => app(RoomAccessPolicy::class)->scopeReachableRooms(
+                $query,
+                (int) $section->department_id,
+                (int) $section->term_id,
+            ))
             ->exists();
     }
 

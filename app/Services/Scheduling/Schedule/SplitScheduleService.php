@@ -10,6 +10,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
 use App\Services\Scheduling\Engine\RuleEngine;
+use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use InvalidArgumentException;
 
@@ -83,7 +84,7 @@ final class SplitScheduleService
         };
 
         // Build the list of rooms to search over.
-        $rooms = $this->resolveRooms($course, $mode, $roomId, $departmentId, $meetingType);
+        $rooms = $this->resolveRooms($course, $mode, $roomId, $departmentId, $meetingType, (int) $section->term_id);
 
         $allowRoomTba = $mode === 'on-site'
             && SchedulingPolicy::allowsRoomTbaFallback($course, $departmentId, $meetingType);
@@ -254,6 +255,7 @@ final class SplitScheduleService
         ?int   $preferredRoomId,
         int    $departmentId,
         ?string $meetingType = null,
+        ?int $termId = null,
     ): \Illuminate\Database\Eloquent\Collection {
         $targetRoomType = match (true) {
             $mode === 'online' => 'online',
@@ -266,10 +268,7 @@ final class SplitScheduleService
         $query = Rooms::query()
             ->where('status', 'available')
             ->where('room_type', $targetRoomType)
-            ->where(static function ($q) use ($departmentId): void {
-                $q->whereNull('department_id')
-                  ->orWhere('department_id', $departmentId);
-            })
+            ->tap(fn ($q) => app(RoomAccessPolicy::class)->scopeReachableRooms($q, $departmentId, $termId))
             ->orderBy('room_code');
 
         $rooms = $query->get();

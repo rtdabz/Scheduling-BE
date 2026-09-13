@@ -12,6 +12,7 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Terms;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
+use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -613,10 +614,30 @@ class RuleEngine
             }
 
             if ($room->department_id !== null && (int) $room->department_id !== (int) $section->department_id) {
-                $violations[] = [
-                    'rule' => 'room_department_alignment',
-                    'message' => 'Selected room is not shared and does not belong to the selected section department.',
-                ];
+                // Another department's room is reachable only through an
+                // approved room request, and only inside its granted windows.
+                $grantWindows = $this->remember(
+                    'room-grants:'.$section->department_id.':'.$term->id,
+                    fn () => app(RoomAccessPolicy::class)->grantWindowsFor((int) $section->department_id, (int) $term->id),
+                )[(int) $room->id] ?? null;
+
+                if ($grantWindows === null) {
+                    $violations[] = [
+                        'rule' => 'room_department_alignment',
+                        'message' => 'Selected room is not shared and does not belong to the selected section department.',
+                    ];
+                } elseif (! RoomAccessPolicy::fitsWindows(
+                    $grantWindows,
+                    (string) ($attempt['day'] ?? ''),
+                    (string) ($attempt['start_time'] ?? '00:00'),
+                    (string) ($attempt['end_time'] ?? '00:00'),
+                )) {
+                    $violations[] = [
+                        'rule' => 'room_department_alignment',
+                        'message' => "Room {$room->room_code} is granted to your department only on "
+                            .RoomAccessPolicy::describe($grantWindows).'.',
+                    ];
+                }
             }
         }
 

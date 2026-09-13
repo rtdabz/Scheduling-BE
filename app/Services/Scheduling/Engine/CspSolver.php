@@ -14,6 +14,7 @@ use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\Domain\SchedulingGenerationMetrics;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
+use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use Illuminate\Database\Eloquent\Collection;
@@ -127,6 +128,14 @@ class CSPSolver
         $this->termScheduleRowsCache = [];
         $this->domainCache = [];
     }
+
+    /**
+     * Rooms owned by another department that this solve may use through an
+     * approved room request, keyed by room id, with their granted windows.
+     *
+     * @var array<int, list<array{day: string, start_time: string, end_time: string, start_minutes: int, end_minutes: int}>>
+     */
+    private array $roomGrantWindows = [];
 
     /** @var array<int, int> */
     private array $existingRoomUseCounts = [];
@@ -595,6 +604,8 @@ class CSPSolver
 
         $this->validateRoomTypes($requiredRoomTypes);
 
+        $this->roomGrantWindows = $this->grantWindowsForSection($section);
+
         if ($this->inputSnapshot !== null && $this->inputSnapshot->departmentId === (int) $section->department_id) {
             $rooms = collect($this->inputSnapshot->roomsById)
                 ->map(static function (array $attributes): Rooms {
@@ -605,7 +616,9 @@ class CSPSolver
                 })
                 ->filter(static fn (Rooms $room): bool => (string) $room->status === 'available')
                 ->filter(fn (Rooms $room): bool => in_array((string) $room->room_type, $requiredRoomTypes, true))
-                ->filter(fn (Rooms $room): bool => $room->department_id === null || (int) $room->department_id === (int) $section->department_id)
+                ->filter(fn (Rooms $room): bool => $room->department_id === null
+                    || (int) $room->department_id === (int) $section->department_id
+                    || isset($this->roomGrantWindows[(int) $room->id]))
                 ->sortBy('room_code')
                 ->values();
             $rooms = new Collection($rooms->all());
@@ -617,6 +630,9 @@ class CSPSolver
                     $query
                         ->whereNull('department_id')
                         ->orWhere('department_id', $section->department_id);
+                    if ($this->roomGrantWindows !== []) {
+                        $query->orWhereIn('id', array_keys($this->roomGrantWindows));
+                    }
                 })
                 ->orderBy('room_code')
                 ->get();
@@ -668,6 +684,7 @@ class CSPSolver
             replaceCourseIds: $courseIds,
             tentativeSchedules: $this->tentativeSchedules,
         );
+        $this->blockRoomsOutsideGrantWindows();
 
         $solverSeed = $seed !== null ? (int) $seed : random_int(1, 1000000);
 
@@ -5470,6 +5487,58 @@ class CSPSolver
             // slots that conflict with an already-assigned faculty member.
             if (! empty($schedule->faculty_id)) {
                 $this->existingScheduleIndex["f:{$schedule->faculty_id}:{$schedule->day}"][] = $timeRange;
+            }
+        }
+    }
+
+    /**
+     * Granted windows for the section's department. The snapshot carries them
+     * on the room records so they are part of its fingerprint; the legacy
+     * database path reads the approved requests directly.
+     *
+     * @return array<int, list<array{day: string, start_time: string, end_time: string, start_minutes: int, end_minutes: int}>>
+     */
+    private function grantWindowsForSection(Sections $section): array
+    {
+        if ($this->inputSnapshot !== null && $this->inputSnapshot->departmentId === (int) $section->department_id) {
+            $windows = [];
+            foreach ($this->inputSnapshot->roomsById as $roomId => $attributes) {
+                foreach ((array) ($attributes['grant_windows'] ?? []) as $window) {
+                    $windows[(int) $roomId][] = RoomAccessPolicy::window(
+                        (string) $window['day'],
+                        (string) $window['start_time'],
+                        (string) $window['end_time'],
+                    );
+                }
+            }
+
+            return $windows;
+        }
+
+        return app(RoomAccessPolicy::class)->grantWindowsFor((int) $section->department_id, (int) $section->term_id);
+    }
+
+    /**
+     * Books every granted room as occupied outside its windows, so domain
+     * pruning drops those placements through the same conflict check that
+     * keeps two classes out of one room. Without it the generator would build
+     * candidates the RuleEngine refuses.
+     */
+    private function blockRoomsOutsideGrantWindows(): void
+    {
+        foreach ($this->roomGrantWindows as $roomId => $windows) {
+            $copies = max(1, $this->roomCapacities[$roomId] ?? 1);
+            foreach (RoomAccessPolicy::blockedRanges($windows, SchedulingPolicy::PERSISTABLE_DAYS) as $day => $ranges) {
+                foreach ($ranges as $range) {
+                    for ($copy = 0; $copy < $copies; $copy++) {
+                        $this->existingScheduleIndex["r:{$roomId}:{$day}"][] = [
+                            'start_time' => '',
+                            'end_time' => '',
+                            'start_minutes' => $range['start_minutes'],
+                            'end_minutes' => $range['end_minutes'],
+                        ];
+                    }
+                }
             }
         }
     }

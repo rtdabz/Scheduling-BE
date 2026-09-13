@@ -102,6 +102,22 @@ return [
             'description' => 'Approve or return department schedules as Vice President for Academic Affairs.',
             'allowed_roles' => ['vpaa'],
         ],
+        'room.request' => [
+            'requires' => ['schedule.view'],
+            'module' => 'room_requests',
+            'requires_program' => true,
+            'title' => 'Request Rooms',
+            'description' => "Ask the VPAA to use another department's vacant room during specific weekly windows.",
+        ],
+        'room.review_requests' => [
+            'requires' => ['schedule.view'],
+            'module' => 'room_requests',
+            'title' => 'Review Room Requests',
+            'description' => 'Approve, reject, or revoke room requests between departments.',
+            // Lending a room crosses department lines, so the decision stays
+            // with the office that owns room administration.
+            'allowed_roles' => ['vpaa'],
+        ],
     ],
 
     'modules' => [
@@ -125,6 +141,10 @@ return [
             'title' => 'Approval Workflow',
             'description' => 'Multi-stage administrative review and endorsement actions.',
         ],
+        'room_requests' => [
+            'title' => 'Room Requests',
+            'description' => "Borrowing another department's vacant rooms for a term.",
+        ],
     ],
 
     /*
@@ -144,6 +164,7 @@ return [
             'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
             'schedule.approve_dean', 'schedule.approve_vpaa',
             'faculty.manage_designations',
+            'room.request', 'room.review_requests',
         ],
         'dean' => ['schedule.view', 'schedule.approve_dean'],
         'secretary' => [],
@@ -172,6 +193,7 @@ return [
             'permissions' => [
                 'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
                 'schedule.generate', 'schedule.submit', 'schedule.withdraw', 'schedule.assign_instructor',
+                'room.request',
             ],
         ],
     ],

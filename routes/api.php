@@ -16,6 +16,8 @@ use App\Http\Controllers\FacultyController;
 use App\Http\Controllers\InitialDataController;
 use App\Http\Controllers\InstitutionSettingsController;
 use App\Http\Controllers\InstructorAssignmentController;
+use App\Http\Controllers\ReportsController;
+use App\Http\Controllers\RoomRequestController;
 use App\Http\Controllers\RoomsController;
 use App\Http\Controllers\ScheduleController;
 use App\Http\Controllers\ScheduleHistoryController;
@@ -78,6 +80,14 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     Route::middleware('capability:schedule.view')->get('/schedule-history', [ScheduleHistoryController::class, 'index']);
+
+    // Printed Department Schedule and Teaching Load. Department scoping is
+    // enforced in the controller, so a granted capability is enough to reach it.
+    Route::middleware('capability:schedule.view')->group(function () {
+        Route::get('/reports', [ReportsController::class, 'index']);
+        Route::get('/reports/departments/{department}', [ReportsController::class, 'show'])
+            ->whereNumber('department');
+    });
 
     // Common readable & scheduling administration routes across all roles.
     Route::middleware('capability:schedule.view')->group(function () {
@@ -186,6 +196,23 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('capability:schedule.approve_vpaa')->group(function () {
         Route::post('departments/{id}/approve-by-vpaa', [DepartmentScheduleController::class, 'approveByVpaa']);
         Route::post('departments/{id}/return-by-vpaa', [DepartmentScheduleController::class, 'returnByVpaa']);
+    });
+
+    // Room requests: a department borrowing another department's vacant room
+    // for weekly windows of a term. Both lists are gated by capability, never
+    // role, so Manage Access decides who may ask and who may decide.
+    Route::middleware('capability:room.request,room.review_requests')->group(function () {
+        Route::get('room-requests', [RoomRequestController::class, 'index']);
+        Route::get('room-requests/rooms/{room}/occupancy', [RoomRequestController::class, 'occupancy'])->whereNumber('room');
+    });
+    Route::middleware('capability:room.request')->group(function () {
+        Route::post('room-requests', [RoomRequestController::class, 'store']);
+        Route::post('room-requests/{roomRequest}/cancel', [RoomRequestController::class, 'cancel'])->whereNumber('roomRequest');
+    });
+    Route::middleware('capability:room.review_requests')->group(function () {
+        Route::post('room-requests/{roomRequest}/approve', [RoomRequestController::class, 'approve'])->whereNumber('roomRequest');
+        Route::post('room-requests/{roomRequest}/reject', [RoomRequestController::class, 'reject'])->whereNumber('roomRequest');
+        Route::post('room-requests/{roomRequest}/revoke', [RoomRequestController::class, 'revoke'])->whereNumber('roomRequest');
     });
 
     // The three timeslot reads describe the grid every scheduling screen draws
