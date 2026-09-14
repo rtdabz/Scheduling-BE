@@ -42,8 +42,10 @@ class BatchConflictValidator
         // Normalize once. The pairwise pass is O(n²) over indexes, so parsing
         // times inside the loops would parse each row n times.
         $normalized = [];
+        $standingOverrides = FacultyConflictOverride::standingIds($rows);
         foreach ($rows as $index => $row) {
             $normalized[$index] = $this->normalizeRow($row);
+            $normalized[$index]['faculty_override'] = isset($standingOverrides[(int) ($row['id'] ?? 0)]);
         }
 
         $courses = $this->courseCodeMap($normalized);
@@ -150,7 +152,13 @@ class BatchConflictValidator
                     $add(BatchConflict::RULE_ROOM);
                 }
 
-                if ($left['faculty_id'] !== null && $left['faculty_id'] === $right['faculty_id']) {
+                // A clash both meetings were deliberately assigned over stays allowed
+                // while neither has moved (see FacultyConflictOverride).
+                if (
+                    $left['faculty_id'] !== null
+                    && $left['faculty_id'] === $right['faculty_id']
+                    && ! ($left['faculty_override'] && $right['faculty_override'])
+                ) {
                     $add(BatchConflict::RULE_FACULTY);
                 }
             }

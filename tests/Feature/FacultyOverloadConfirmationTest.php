@@ -124,33 +124,33 @@ class FacultyOverloadConfirmationTest extends TestCase
             ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 21);
     }
 
-    public function test_past_the_ceiling_is_rejected_even_when_overload_is_confirmed(): void
+    public function test_past_every_allowance_is_still_assignable_as_pro_bono(): void
     {
         $fixture = $this->fixture();
-        // The full ceiling: Basic Load, overload allowance and pro bono all used.
+        // Basic Load, overload allowance and pro bono units all used.
         $this->carryLoad($fixture, 21);
         $target = $this->assignable($fixture, 3);
 
+        // No ceiling refuses it: it is asked about like any overload...
         $this->actingAs($fixture['user'])
             ->patchJson("/api/instructor-assignments/{$target->id}", [
                 'faculty_id' => $fixture['faculty']->id,
             ])
-            ->assertStatus(422)
-            ->assertJsonPath('violations.0.rule', 'faculty_unit_ceiling')
-            ->assertJsonPath('violations.0.severity', 'hard')
-            ->assertJsonPath('violations.0.projected_units', 24)
-            ->assertJsonPath('violations.0.unit_ceiling', 21);
+            ->assertStatus(409)
+            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'probono')
+            ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 24);
 
-        // Overload confirmation only applies inside the configured ceiling.
+        // ...and saved as pro bono once confirmed.
         $this->actingAs($fixture['user'])
             ->patchJson("/api/instructor-assignments/{$target->id}", [
                 'faculty_id' => $fixture['faculty']->id,
                 'confirm_overload' => true,
             ])
-            ->assertStatus(422)
-            ->assertJsonPath('violations.0.rule', 'faculty_unit_ceiling');
+            ->assertOk()
+            ->assertJsonPath('load.tier', 'probono')
+            ->assertJsonPath('warnings', []);
 
-        $this->assertNull($target->refresh()->faculty_id);
+        $this->assertSame($fixture['faculty']->id, $target->refresh()->faculty_id);
     }
 
     public function test_re_saving_the_instructor_who_already_holds_the_class_does_not_prompt(): void
@@ -170,6 +170,24 @@ class FacultyOverloadConfirmationTest extends TestCase
             ->assertJsonPath('load.added_units', 0)
             ->assertJsonPath('load.projected_units', 18)
             ->assertJsonPath('load.tier', 'overload');
+    }
+
+    public function test_an_overload_only_instructor_is_prompted_for_their_first_units(): void
+    {
+        // A Basic Load of 0 with overload granted is a part-timer carrying only
+        // overload, not an unconfigured record: every unit is overload.
+        $fixture = $this->fixture(['max_units' => 0, 'deload_units' => 0, 'overload_units' => 15, 'probono_units' => 0]);
+        $target = $this->assignable($fixture, 3);
+
+        $this->actingAs($fixture['user'])
+            ->patchJson("/api/instructor-assignments/{$target->id}", [
+                'faculty_id' => $fixture['faculty']->id,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'overload')
+            ->assertJsonPath('overload_confirmation.instructors.0.basic_load', 0);
+
+        $this->assertNull($target->refresh()->faculty_id);
     }
 
     public function test_an_instructor_with_no_basic_load_is_never_prompted(): void

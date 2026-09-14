@@ -11,6 +11,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
+use App\Services\Scheduling\Schedule\FacultyConflictOverride;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -18,6 +19,7 @@ use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
@@ -246,11 +248,22 @@ class InstructorAssignmentController extends Controller
             $violations = array_merge($violations, $this->ruleEngine->validate($attempt));
         }
 
+        // The instructor's own clashes may be assigned over on purpose; anything
+        // else still refuses. Both sides of an overridden clash are marked below.
+        $overriddenIds = [];
         if ($violations !== []) {
-            return response()->json([
-                'message' => 'The instructor assignment conflicts with an existing schedule.',
-                'violations' => $violations,
-            ], 422);
+            if (
+                $facultyId === null
+                || ! $request->boolean(FacultyConflictOverride::REQUEST_FLAG)
+                || ! FacultyConflictOverride::onlyOverridable($violations)
+            ) {
+                return response()->json(
+                    FacultyConflictOverride::refusal('The instructor assignment conflicts with an existing schedule.', $violations),
+                    422,
+                );
+            }
+
+            $overriddenIds = array_merge($linkedScheduleIds, FacultyConflictOverride::partnerIds($violations));
         }
 
         // Assignment continues past the Basic Load into the overload allowance
@@ -263,11 +276,6 @@ class InstructorAssignmentController extends Controller
                 $this->facultyLoad->projectLoad($faculty, $activeSemesterId, $incoming),
                 $this->assignmentLabelForSchedule($schedule),
             );
-
-            $ceilingError = $this->facultyCeilingExceededResponse([$projection]);
-            if ($ceilingError !== null) {
-                return $ceilingError;
-            }
 
             if (! $request->boolean('confirm_overload')) {
                 $confirmation = $this->overloadConfirmationResponse([$projection]);
@@ -286,11 +294,22 @@ class InstructorAssignmentController extends Controller
             $facultyId,
             $previousFacultyId,
             $departmentId,
+            $overriddenIds,
         ) {
             $before = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
+            // A bulk update fires no model events, so the Schedule hook cannot clear
+            // a stale override here. Only meetings whose instructor actually changes
+            // lose it: re-saving the same instructor keeps the override standing.
+            Schedule::query()
+                ->whereIn('id', $linkedScheduleIds)
+                ->where(fn ($query) => $facultyId === null
+                    ? $query->whereNotNull('faculty_id')
+                    : $query->whereNull('faculty_id')->orWhere('faculty_id', '!=', $facultyId))
+                ->update(['faculty_conflict_override' => false]);
             Schedule::query()
                 ->whereIn('id', $linkedScheduleIds)
                 ->update(['faculty_id' => $facultyId]);
+            FacultyConflictOverride::flag($overriddenIds);
 
             $after = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
             $action = $facultyId === null ? 'instructor_assignment_released' : 'instructor_assigned';
@@ -337,12 +356,42 @@ class InstructorAssignmentController extends Controller
         return response()->json([
             'schedule' => $updatedSchedules->first(),
             'schedules' => $updatedSchedules,
-            'warnings' => $load === null ? [] : $this->loadWarnings($load),
+            // Past the allowances is pro bono rather than a breach, so there is
+            // nothing left to warn about after the save.
+            'warnings' => [],
             'load' => $load,
         ]);
     }
 
     public function clearSection(Request $request, Sections $section): JsonResponse
+    {
+        return $this->clearSectionInstructors($request, collect([$section]));
+    }
+
+    /**
+     * POST /api/instructor-assignments/clear
+     *
+     * The department-wide "clear all instructors". Clearing one section at a
+     * time left every other section's assignments -- and so each instructor's
+     * load -- in place, which read as a clear that had not worked.
+     */
+    public function clearSections(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'section_ids' => ['required', 'array', 'min:1'],
+            'section_ids.*' => ['integer', 'distinct', 'exists:sections,id'],
+        ]);
+
+        return $this->clearSectionInstructors(
+            $request,
+            Sections::query()->whereIn('id', $validated['section_ids'])->get(),
+        );
+    }
+
+    /**
+     * @param  Collection<int, Sections>  $sections
+     */
+    private function clearSectionInstructors(Request $request, Collection $sections): JsonResponse
     {
         $departmentId = (int) ($request->user()?->department_id ?? 0);
         if ($departmentId === 0) {
@@ -350,14 +399,19 @@ class InstructorAssignmentController extends Controller
         }
 
         $activeSemesterId = $this->activeSemesterId();
-        if ($activeSemesterId === null || (int) $section->semester_id !== $activeSemesterId) {
+        if ($activeSemesterId === null || $sections->contains(
+            static fn (Sections $section): bool => (int) $section->semester_id !== $activeSemesterId
+        )) {
             return response()->json(['message' => 'Instructor assignments can only be cleared for the active semester.'], 422);
         }
+
+        $sectionIds = $sections->pluck('id')->map('intval')->values()->all();
+        $section = $sections->count() === 1 ? $sections->first() : null;
 
         $sectionSchedules = Schedule::query()
             ->with('course')
             ->where('semester_id', $activeSemesterId)
-            ->where('section_id', $section->id)
+            ->whereIn('section_id', $sectionIds)
             ->whereIn('status', self::ASSIGNABLE_STATUSES)
             ->where('faculty_assignment_done', false)
             ->whereNotNull('faculty_id')
@@ -368,7 +422,9 @@ class InstructorAssignmentController extends Controller
 
         if ($targetSchedules->isEmpty()) {
             return response()->json([
-                'message' => 'This section has no instructor assignments that your account can clear.',
+                'message' => $section !== null
+                    ? 'This section has no instructor assignments that your account can clear.'
+                    : 'These sections have no instructor assignments that your account can clear.',
             ], 422);
         }
 
@@ -387,9 +443,10 @@ class InstructorAssignmentController extends Controller
             $departmentId,
             $activeSemesterId,
             $section,
+            $sectionIds,
         ) {
             $before = Schedule::query()->whereIn('id', $scheduleIds)->get();
-            Schedule::query()->whereIn('id', $scheduleIds)->update(['faculty_id' => null]);
+            Schedule::query()->whereIn('id', $scheduleIds)->update(['faculty_id' => null, 'faculty_conflict_override' => false]);
             $after = Schedule::query()->whereIn('id', $scheduleIds)->get();
             $version = $this->historyRecorder->record(
                 'instructor_assignment_released',
@@ -403,12 +460,13 @@ class InstructorAssignmentController extends Controller
             SchedulingAuditLog::create([
                 'user_id' => $request->user()?->id,
                 'semester_id' => $activeSemesterId,
-                'section_id' => $section->id,
+                'section_id' => $section?->id,
                 'department_id' => $departmentId,
                 'action' => 'instructor_assignment_released',
                 'history_version_id' => $version->id,
                 'metadata' => [
-                    'reason' => 'section_clear',
+                    'reason' => $section !== null ? 'section_clear' : 'sections_clear',
+                    'section_ids' => $sectionIds,
                     'schedule_ids' => $scheduleIds,
                     'course_ids' => $targetSchedules->pluck('course_id')->map('intval')->unique()->values()->all(),
                     'previous_faculty_ids' => $previousFacultyIds,
@@ -436,42 +494,16 @@ class InstructorAssignmentController extends Controller
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         return response()->json([
-            'message' => 'All eligible instructor assignments for the section were cleared.',
-            'section_id' => $section->id,
+            'message' => $section !== null
+                ? 'All eligible instructor assignments for the section were cleared.'
+                : 'All eligible instructor assignments for the selected sections were cleared.',
+            'section_id' => $section?->id,
+            'section_ids' => $sectionIds,
             'schedules_updated' => $updatedSchedules->count(),
             'courses_cleared' => $targetSchedules->pluck('course_id')->unique()->count(),
             'schedules' => $updatedSchedules,
             'faculties' => $affectedFaculties,
         ]);
-    }
-
-    /**
-     * The unit allowances are a soft rule: a chair may still need to overload
-     * someone, so a load past the ceiling reports a warning next to the saved
-     * schedule rather than refusing it. The overload confirmation already asked
-     * before the write — this is the record of where the load landed.
-     *
-     * @param  array<string, mixed>  $load  a post-write FacultyLoadService::projectLoad() result
-     * @return array<int, array<string, mixed>>
-     */
-    private function loadWarnings(array $load): array
-    {
-        $ceiling = (int) $load['unit_ceiling'];
-        $assigned = (int) $load['projected_units'];
-
-        if ($ceiling <= 0 || $assigned <= $ceiling) {
-            return [];
-        }
-
-        return [[
-            'rule' => 'faculty_unit_ceiling',
-            'severity' => 'soft',
-            'message' => "{$load['faculty_name']} now carries {$assigned} units, above their {$ceiling}-unit ceiling "
-                ."(Basic Load {$load['basic_load']}, plus overload {$load['overload_units']} and pro bono {$load['probono_units']}).",
-            'assigned_units' => $assigned,
-            'required_units' => (int) $load['basic_load'],
-            'unit_ceiling' => $ceiling,
-        ]];
     }
 
     /**

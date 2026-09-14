@@ -12,6 +12,7 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
+use App\Services\Scheduling\Schedule\FacultyConflictOverride;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
@@ -176,24 +177,29 @@ class RuleEngine
     ): ?array {
         $ignoreScheduleIds = $this->normalizeIgnoreScheduleIds($ignoreScheduleId);
 
-        $conflict = Schedule::where('faculty_id', $facultyId)
+        $conflicts = Schedule::where('faculty_id', $facultyId)
             ->where('semester_id', $semesterId)
             ->where('day', $day)
             ->when($ignoreScheduleIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreScheduleIds))
             ->where('start_time', '<', $endTime)
             ->where('end_time', '>', $startTime)
             ->with(['course', 'section'])
-            ->first();
+            ->orderBy('start_time')
+            ->get();
 
-        if (! $conflict) {
+        if ($conflicts->isEmpty()) {
             return null;
         }
+
+        $conflict = $conflicts->first();
 
         return [
             'rule' => 'faculty_conflict',
             'message' => "Faculty is already teaching on {$day} from {$conflict->start_time} to {$conflict->end_time} "
                 ."for {$conflict->course?->course_code} ({$conflict->section?->section_name}).",
             'conflicting_schedule_id' => $conflict->id,
+            // Every clashing meeting, so an override can mark all of them.
+            'conflicting_schedule_ids' => $conflicts->pluck('id')->map(static fn ($id): int => (int) $id)->all(),
         ];
     }
 
@@ -537,10 +543,10 @@ class RuleEngine
             ->first());
 
         if ($activeCurriculum) {
-            $pivot = DB::table('curriculum_course')
+            $pivot = $this->remember('curriculum_course:'.$activeCurriculum->id.':'.$course->id, fn () => DB::table('curriculum_course')
                 ->where('curriculum_id', $activeCurriculum->id)
                 ->where('course_id', $course->id)
-                ->first();
+                ->first());
 
             if ($pivot) {
                 $course->year_level = (string) $pivot->year_level;
@@ -991,7 +997,9 @@ class RuleEngine
             }
         }
 
-        return $violations;
+        // An instructor conflict someone already chose to override does not come
+        // back on the next save of the same meeting.
+        return FacultyConflictOverride::withoutStanding($attempt, $violations);
     }
 
     /**

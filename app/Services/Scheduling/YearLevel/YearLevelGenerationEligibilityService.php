@@ -8,7 +8,7 @@ use Illuminate\Support\Collection;
 
 final class YearLevelGenerationEligibilityService
 {
-    public const BLOCKED_MESSAGE = 'Schedules for this year level have already been plotted. Generation is unavailable unless the entire year level is withdrawn.';
+    public const BLOCKED_MESSAGE = 'Schedules for this year level have already been plotted. Generation is unavailable unless the entire year level is recalled.';
 
     private const PLOTTING_STATUSES = ['draft', 'completed'];
 

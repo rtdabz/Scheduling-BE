@@ -5,7 +5,11 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
+use App\Models\Faculty;
 use App\Models\Program;
+use App\Models\Rooms;
+use App\Models\Schedule;
+use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -560,6 +564,99 @@ class CourseTeachingAssignmentTest extends TestCase
         $this->assertSame(['GEC 101'], $incoming->all());
     }
 
+    public function test_a_course_that_already_has_an_instructor_cannot_be_given_to_another_college(): void
+    {
+        $fixture = $this->fixture();
+        $semester = $this->activateSemester('1st');
+        $this->assignInstructor($fixture, $semester, $fixture['gec']);
+
+        $this->actingAs($fixture['itSecretary'])
+            ->patchJson("/api/course-teaching-assignments/{$fixture['gec']->id}", [
+                'teaching_department_id' => $fixture['cas']->id,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('instructor_assigned_classes', 1)
+            ->assertJsonPath('message', 'GEC 101 already has an instructor assigned in 1 class this semester, so another department cannot be assigned to teach it. Remove those instructor assignments first.');
+
+        $this->assertNull($fixture['gec']->refresh()->teaching_department_id);
+    }
+
+    public function test_the_batch_refuses_every_course_that_already_has_an_instructor(): void
+    {
+        $fixture = $this->fixture();
+        $semester = $this->activateSemester('1st');
+        $this->assignInstructor($fixture, $semester, $fixture['gec']);
+
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/batch', [
+                'course_ids' => [$fixture['gec']->id, $fixture['minor']->id],
+                'teaching_department_id' => $fixture['cas']->id,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('locked_course_ids', [$fixture['gec']->id]);
+
+        // All or nothing: the free course is not delegated behind the refusal.
+        $this->assertNull($fixture['gec']->refresh()->teaching_department_id);
+        $this->assertNull($fixture['minor']->refresh()->teaching_department_id);
+    }
+
+    public function test_a_delegated_course_with_an_instructor_cannot_be_handed_back(): void
+    {
+        $fixture = $this->fixture();
+        $semester = $this->activateSemester('1st');
+        $fixture['gec']->update(['teaching_department_id' => $fixture['cas']->id]);
+        $this->assignInstructor($fixture, $semester, $fixture['gec'], $fixture['cas']);
+
+        $this->actingAs($fixture['itSecretary'])
+            ->deleteJson("/api/course-teaching-assignments/{$fixture['gec']->id}")
+            ->assertStatus(422);
+
+        $this->assertSame($fixture['cas']->id, (int) $fixture['gec']->refresh()->teaching_department_id);
+    }
+
+    public function test_saving_the_same_college_again_is_not_refused(): void
+    {
+        $fixture = $this->fixture();
+        $semester = $this->activateSemester('1st');
+        $fixture['gec']->update(['teaching_department_id' => $fixture['cas']->id]);
+        $this->assignInstructor($fixture, $semester, $fixture['gec'], $fixture['cas']);
+
+        $this->actingAs($fixture['itSecretary'])
+            ->patchJson("/api/course-teaching-assignments/{$fixture['gec']->id}", [
+                'teaching_department_id' => $fixture['cas']->id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('course.instructor_assigned_classes', 1);
+    }
+
+    public function test_a_course_whose_classes_have_no_instructor_can_still_be_delegated(): void
+    {
+        $fixture = $this->fixture();
+        $semester = $this->activateSemester('1st');
+        $this->assignInstructor($fixture, $semester, $fixture['gec'], null, withInstructor: false);
+
+        $this->actingAs($fixture['itSecretary'])
+            ->patchJson("/api/course-teaching-assignments/{$fixture['gec']->id}", [
+                'teaching_department_id' => $fixture['cas']->id,
+            ])
+            ->assertOk();
+    }
+
+    public function test_the_listing_reports_how_many_classes_already_have_an_instructor(): void
+    {
+        $fixture = $this->fixture();
+        $semester = $this->activateSemester('1st');
+        $this->assignInstructor($fixture, $semester, $fixture['gec']);
+
+        $courses = collect($this->actingAs($fixture['itSecretary'])
+            ->getJson('/api/course-teaching-assignments')
+            ->assertOk()
+            ->json('courses'))->keyBy('course_code');
+
+        $this->assertSame(1, $courses['GEC 101']['instructor_assigned_classes']);
+        $this->assertSame(0, $courses['PATH FIT 1']['instructor_assigned_classes']);
+    }
+
     /** @return array<string, mixed> */
     private function fixture(): array
     {
@@ -657,6 +754,48 @@ class CourseTeachingAssignmentTest extends TestCase
         Cache::flush();
 
         return $semester;
+    }
+
+    /**
+     * One class of the course, with an instructor from the given college (the
+     * owner by default) unless `withInstructor` is false.
+     *
+     * @param  array<string, mixed>  $fixture
+     */
+    private function assignInstructor(array $fixture, Semester $semester, Course $course, ?Departments $teachingCollege = null, bool $withInstructor = true): Schedule
+    {
+        $college = $teachingCollege ?? $fixture['it'];
+        $section = Sections::create([
+            'section_name' => 'BSIT 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $fixture['it']->id,
+            'program_id' => $fixture['program']->id,
+            'semester_id' => $semester->id,
+            'status' => 'active',
+        ]);
+        $room = Rooms::create(['room_code' => 'RM101', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $fixture['it']->id]);
+        $faculty = $withInstructor ? Faculty::create([
+            'first_name' => 'Juan',
+            'last_name' => 'Dela Cruz',
+            'employment_type' => 'full-time',
+            'department_id' => $college->id,
+            'status' => 'active',
+        ]) : null;
+
+        return Schedule::create([
+            'semester_id' => $semester->id,
+            'section_id' => $section->id,
+            'course_id' => $course->id,
+            'room_id' => $room->id,
+            'department_id' => $fixture['it']->id,
+            'faculty_id' => $faculty?->id,
+            'day' => 'Monday',
+            'start_time' => '08:00',
+            'end_time' => '09:00',
+            'mode' => 'on-site',
+            'status' => 'faculty_assignment',
+        ]);
     }
 
     private function course(string $code, string $category, ?int $departmentId, ?int $programId = null): Course

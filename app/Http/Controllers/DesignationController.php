@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Designation;
+use App\Services\FacultyDesignationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +19,8 @@ use Illuminate\Validation\Rule;
  */
 class DesignationController extends Controller
 {
+    public function __construct(private readonly FacultyDesignationService $holdings) {}
+
     public function index(Request $request): JsonResponse
     {
         // Pickers want only what can still be assigned; the management screen
@@ -27,7 +30,8 @@ class DesignationController extends Controller
         $designations = Designation::query()
             ->when($activeOnly, fn ($query) => $query->active())
             ->ordered()
-            ->withCount('faculties')
+            ->with('parent:id,name')
+            ->withCount(['faculties', 'children'])
             ->get();
 
         return response()->json($designations);
@@ -35,26 +39,34 @@ class DesignationController extends Controller
 
     public function show(Designation $designation): JsonResponse
     {
-        return response()->json($designation->loadCount('faculties'));
+        return response()->json($designation->load('parent:id,name')->loadCount(['faculties', 'children']));
     }
 
     public function store(Request $request): JsonResponse
     {
-        $validated = $request->validate($this->rules());
+        $validated = $request->validate($this->rules($request));
+        $payload = $this->normalize($validated);
+        if ($refusal = $this->refuseParent($payload['parent_id'] ?? null)) {
+            return $refusal;
+        }
 
-        $designation = Designation::create($this->normalize($validated));
+        $designation = Designation::create($payload);
         $this->flush();
 
         return response()->json([
             'message' => 'Designation created successfully.',
-            'data' => $designation->loadCount('faculties'),
+            'data' => $designation->load('parent:id,name')->loadCount(['faculties', 'children']),
         ], 201);
     }
 
     public function update(Request $request, Designation $designation): JsonResponse
     {
-        $validated = $request->validate($this->rules($designation->id));
+        $validated = $request->validate($this->rules($request, $designation));
         $payload = $this->normalize($validated, $designation);
+        if (array_key_exists('parent_id', $payload)
+            && ($refusal = $this->refuseParent($payload['parent_id'], $designation))) {
+            return $refusal;
+        }
 
         // The deload an instructor carries is a copy of their designation's, so
         // that SchedulingPolicy reads one column rather than a join. Changing
@@ -69,9 +81,10 @@ class DesignationController extends Controller
         DB::transaction(function () use ($designation, $payload, $deloadChanged, &$holdersUpdated): void {
             $designation->update($payload);
 
+            // A holder's deload is the sum across every designation they hold,
+            // so it is recomputed rather than overwritten with this one figure.
             if ($deloadChanged) {
-                $holdersUpdated = $designation->faculties()
-                    ->update(['deload_units' => (int) $payload['deload_units']]);
+                $holdersUpdated = $this->holdings->refreshHolders($designation);
             }
         });
 
@@ -80,7 +93,7 @@ class DesignationController extends Controller
         return response()->json([
             'message' => 'Designation updated successfully.',
             'holders_updated' => $holdersUpdated,
-            'data' => $designation->fresh()->loadCount('faculties'),
+            'data' => $designation->fresh()->load('parent:id,name')->loadCount(['faculties', 'children']),
         ]);
     }
 
@@ -100,20 +113,77 @@ class DesignationController extends Controller
             ], 409);
         }
 
+        $children = $designation->children()->count();
+        if ($children > 0) {
+            return response()->json([
+                'message' => "This designation cannot be archived while it has {$children} sub-designation(s). "
+                    .'Archive or move those first.',
+                'children_count' => $children,
+            ], 409);
+        }
+
         $designation->delete();
         $this->flush();
 
         return response()->json(['message' => 'Designation archived successfully.']);
     }
 
-    /** @return array<string, mixed> */
-    private function rules(?int $ignoreId = null): array
+    /**
+     * Refuses a parent that would break the one-level hierarchy, or a move that
+     * would turn a designation instructors hold into a heading nobody can hold.
+     */
+    private function refuseParent(?int $parentId, ?Designation $designation = null): ?JsonResponse
     {
+        if ($parentId === null) {
+            return null;
+        }
+
+        $refuse = static fn (string $message): JsonResponse => response()->json([
+            'message' => $message,
+            'errors' => ['parent_id' => [$message]],
+        ], 422);
+
+        if ($designation !== null && $parentId === (int) $designation->id) {
+            return $refuse('A designation cannot sit under itself.');
+        }
+
+        $parent = Designation::query()->withCount('faculties')->find($parentId);
+        if ($parent === null) {
+            return $refuse('The parent designation no longer exists.');
+        }
+        if ($parent->parent_id !== null) {
+            return $refuse("{$parent->name} is itself a sub-designation. Sub-designations go one level deep.");
+        }
+        if ($designation !== null && $designation->children()->exists()) {
+            return $refuse("{$designation->name} has sub-designations of its own, so it cannot become one.");
+        }
+        // Once it has sub-designations the parent is a heading, which no
+        // instructor may hold -- so it has to be released from its holders first.
+        if ($parent->faculties_count > 0 && ! $parent->children()->exists()) {
+            return $refuse("{$parent->name} is held by {$parent->faculties_count} instructor(s). Clear it from them before adding sub-designations under it.");
+        }
+
+        return null;
+    }
+
+    /** @return array<string, mixed> */
+    private function rules(Request $request, ?Designation $existing = null): array
+    {
+        // Names are unique among siblings: "Coordinator" may exist under two
+        // different parents.
+        $parentId = $request->has('parent_id')
+            ? ($request->input('parent_id') === null || $request->input('parent_id') === '' ? null : (int) $request->input('parent_id'))
+            : $existing?->parent_id;
+
         return [
+            'parent_id' => ['sometimes', 'nullable', 'integer', Rule::exists('designations', 'id')->whereNull('deleted_at')],
             'name' => [
-                $ignoreId === null ? 'required' : 'sometimes',
+                $existing === null ? 'required' : 'sometimes',
                 'required', 'string', 'max:255',
-                Rule::unique('designations', 'name')->ignore($ignoreId)->whereNull('deleted_at'),
+                Rule::unique('designations', 'name')
+                    ->ignore($existing?->id)
+                    ->whereNull('deleted_at')
+                    ->where(fn ($query) => $parentId === null ? $query->whereNull('parent_id') : $query->where('parent_id', $parentId)),
             ],
             'code' => ['sometimes', 'nullable', 'string', 'max:50'],
             // No upper bound is imposed here: a full deload is a real
@@ -147,6 +217,10 @@ class DesignationController extends Controller
 
         if (array_key_exists('code', $payload) && $payload['code'] !== null) {
             $payload['code'] = strtoupper($payload['code']);
+        }
+
+        if (array_key_exists('parent_id', $payload)) {
+            $payload['parent_id'] = $payload['parent_id'] === null || $payload['parent_id'] === '' ? null : (int) $payload['parent_id'];
         }
 
         if (array_key_exists('sort_order', $payload) && $payload['sort_order'] === null) {

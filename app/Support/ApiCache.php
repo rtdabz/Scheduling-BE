@@ -53,6 +53,9 @@ class ApiCache
         // cannot overwrite one another's invalidation version.
         Cache::add($versionKey, 1);
         Cache::increment($versionKey);
+
+        // Whatever invalidated a group changed data that open pages show.
+        app(LiveUpdates::class)->touchCacheGroup($name);
     }
 
     public static function forgetGroups(array $names): void

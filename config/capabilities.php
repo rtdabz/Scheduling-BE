@@ -85,7 +85,7 @@ return [
             'requires' => ['schedule.view'],
             'module' => 'submission_workflow',
             'requires_program' => true,
-            'title' => 'Withdraw Submission',
+            'title' => 'Recall Submission',
             'description' => 'Recall pending department schedule submissions for further editing.',
         ],
         'schedule.approve_dean' => [
@@ -135,7 +135,7 @@ return [
         ],
         'submission_workflow' => [
             'title' => 'Submission Workflow',
-            'description' => 'Department schedule submission and withdrawal lifecycle.',
+            'description' => 'Department schedule submission and recall lifecycle.',
         ],
         'approval_workflow' => [
             'title' => 'Approval Workflow',

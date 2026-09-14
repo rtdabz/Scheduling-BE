@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Models\Designation;
 use App\Models\Faculty;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Collection;
@@ -21,30 +20,40 @@ class UserFacultyProfileService
 
     public const MODES = [self::MODE_CREATE, self::MODE_LINK, self::MODE_NONE];
 
-    public function createFor(User $user, ?int $designationId = null): Faculty
+    public function __construct(private readonly FacultyDesignationService $designations) {}
+
+    /**
+     * @param  list<int>  $designationIds  up to three; validated by the caller
+     */
+    public function createFor(User $user, array $designationIds = []): Faculty
     {
         [$firstName, $middleName, $lastName] = $this->splitName($user->name);
 
-        return Faculty::create([
+        $faculty = Faculty::create([
             'user_id' => $user->id,
             'administrative_role' => $user->role,
-            'designation_id' => $designationId,
             'first_name' => $firstName,
             'middle_name' => $middleName,
             'last_name' => $lastName,
             'employment_type' => 'full-time',
             'max_units' => 21,
             'overload_units' => 0,
-            // Copied rather than joined: SchedulingPolicy::facultyBasicLoad()
-            // reads this column, so an unset deload would schedule a dean at a
-            // full load.
-            'deload_units' => $this->deloadFor($designationId),
+            'deload_units' => 0,
             'probono_units' => 0,
             'department_id' => $user->department_id,
             'program_id' => $user->program_id,
             'status' => 'active',
             'profile_picture' => $user->profile_picture,
         ]);
+
+        // Copied rather than joined: SchedulingPolicy::facultyBasicLoad() reads
+        // the deload column, so the designations have to be written through the
+        // service or a dean would be scheduled at a full load.
+        if ($designationIds !== []) {
+            $this->designations->sync($faculty, $designationIds);
+        }
+
+        return $faculty;
     }
 
     /**
@@ -53,10 +62,12 @@ class UserFacultyProfileService
      * otherwise treat as two people and double-book.
      *
      * The instructor keeps their own name, load and history. Only the account
-     * link, the mirrored role and (when one is chosen) the designation change.
+     * link, the mirrored role and (when any are chosen) the designations change.
      * Must run inside the caller's transaction so the row lock holds.
+     *
+     * @param  list<int>  $designationIds  empty keeps the instructor's current ones
      */
-    public function linkTo(User $user, int $facultyId, ?int $designationId = null): Faculty
+    public function linkTo(User $user, int $facultyId, array $designationIds = []): Faculty
     {
         $faculty = Faculty::query()
             ->whereKey($facultyId)
@@ -71,16 +82,13 @@ class UserFacultyProfileService
             ]);
         }
 
-        $attributes = [
+        $faculty->update([
             'user_id' => $user->id,
             'administrative_role' => $user->role,
-        ];
-        if ($designationId !== null) {
-            $attributes['designation_id'] = $designationId;
-            $attributes['deload_units'] = $this->deloadFor($designationId);
+        ]);
+        if ($designationIds !== []) {
+            $this->designations->sync($faculty, $designationIds);
         }
-
-        $faculty->update($attributes);
 
         return $faculty;
     }
@@ -139,15 +147,6 @@ class UserFacultyProfileService
     public function deleteFor(User $user): void
     {
         $user->facultyProfile?->delete();
-    }
-
-    private function deloadFor(?int $designationId): int
-    {
-        if ($designationId === null) {
-            return 0;
-        }
-
-        return (int) (Designation::query()->whereKey($designationId)->value('deload_units') ?? 0);
     }
 
     private function splitName(string $name): array

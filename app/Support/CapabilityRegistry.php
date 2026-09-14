@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\User;
+use Spatie\Permission\Models\Role;
 
 class CapabilityRegistry
 {
@@ -79,6 +80,46 @@ class CapabilityRegistry
         }
 
         return array_keys($resolved);
+    }
+
+    /**
+     * The direct grants to store for a role: the requested names plus the
+     * prerequisites the role does not already provide.
+     *
+     * A dean inherits `schedule.view`, so granting a dean `schedule.create`
+     * used to store a second, direct copy of it. Names the VPAA asked for
+     * explicitly are always kept; only prerequisites pulled in on their behalf
+     * are dropped when the role covers them. Call it again whenever the role
+     * changes, so a prerequisite the old role supplied is stored for the new one.
+     *
+     * @param  iterable<string>  $names
+     * @return list<string>
+     */
+    public function expandForRole(iterable $names, string $role): array
+    {
+        $requested = [];
+        foreach ($names as $name) {
+            $requested[(string) $name] = true;
+        }
+        $fromRole = array_fill_keys($this->rolePermissions($role), true);
+
+        return array_values(array_filter(
+            $this->expand(array_keys($requested)),
+            fn (string $name): bool => isset($requested[$name]) || ! isset($fromRole[$name]),
+        ));
+    }
+
+    /**
+     * What the stored role grants, read from the database rather than config so
+     * a role that was re-synced by hand is still answered truthfully.
+     *
+     * @return list<string>
+     */
+    public function rolePermissions(string $role): array
+    {
+        $model = Role::query()->where('name', strtolower($role))->where('guard_name', 'api')->first();
+
+        return $model?->permissions->pluck('name')->values()->all() ?? [];
     }
 
     public function isAssignableTo(User $user, string $name): bool

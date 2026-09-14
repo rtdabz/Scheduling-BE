@@ -11,6 +11,12 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
+    // Channel auth lives under /api and uses the same bearer tokens as every
+    // other API call; the default /broadcasting/auth route expects a session.
+    ->withBroadcasting(
+        __DIR__.'/../routes/channels.php',
+        ['prefix' => 'api', 'middleware' => ['api', 'auth:sanctum', 'active']],
+    )
     ->withMiddleware(function (Middleware $middleware) {
         // Lets repeat GETs of unchanged JSON come back as a bodyless 304
         // instead of re-sending (and re-parsing) the whole payload.

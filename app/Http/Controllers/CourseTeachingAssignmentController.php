@@ -6,6 +6,7 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
+use App\Models\Schedule;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -71,6 +72,7 @@ class CourseTeachingAssignmentController extends Controller
 
         $curriculumIds = $this->activeCurriculumIds($departmentId, $programId);
         $courses = $this->departmentCourses($departmentId, $curriculumIds, $activePeriod);
+        $instructorClasses = $this->classesWithInstructor($courses->pluck('id')->map('intval')->all());
         $incoming = Course::query()->with(['department', 'teachingDepartment', 'teachingProgram', 'program'])
             ->where('status', 'active')->where('teaching_department_id', $departmentId)
             ->where(fn ($query) => $query->whereNull('department_id')->orWhere('department_id', '!=', $departmentId))
@@ -111,7 +113,7 @@ class CourseTeachingAssignmentController extends Controller
                 ->get(['id', 'department_id', 'code', 'name', 'cluster']),
             'incoming_cross_department_courses' => $incoming,
             'courses' => $courses
-                ->map(fn (Course $course): array => $this->present($course))
+                ->map(fn (Course $course): array => $this->present($course, $instructorClasses[(int) $course->id] ?? 0))
                 ->sortBy([['year_level', 'asc'], ['course_code', 'asc']])
                 ->values(),
         ]);
@@ -334,13 +336,17 @@ class CourseTeachingAssignmentController extends Controller
             ], 422);
         }
 
+        if ($locked = $this->refuseIfInstructorAssigned($course, $teachingDepartmentId)) {
+            return $locked;
+        }
+
         $this->store($course, $teachingDepartmentId, $teachingProgramId, $request->user());
 
         return response()->json([
             'message' => $teachingDepartmentId === null
                 ? 'Teaching college cleared.'
                 : 'Teaching college saved.',
-            'course' => $this->present($course),
+            'course' => $this->present($course, $this->classesWithInstructor([(int) $course->id])[(int) $course->id] ?? 0),
         ]);
     }
 
@@ -360,6 +366,17 @@ class CourseTeachingAssignmentController extends Controller
         $courses = Course::query()->whereIn('id', $validated['course_ids'])->get();
         if ($courses->contains(fn (Course $course) => ! SchedulingPolicy::isDelegableCourse($course))) {
             return response()->json(['message' => 'Major courses cannot be delegated.'], 422);
+        }
+        $instructorClasses = $this->classesWithInstructor($courses->pluck('id')->map('intval')->all());
+        $locked = $courses->filter(fn (Course $course): bool => ($instructorClasses[(int) $course->id] ?? 0) > 0
+            && $this->effectiveTeachingDepartmentId($course, $targetId) !== $this->effectiveTeachingDepartmentId($course, $this->storedTeachingDepartmentId($course)));
+        if ($locked->isNotEmpty()) {
+            $codes = $locked->pluck('course_code')->sort()->values()->implode(', ');
+
+            return response()->json([
+                'message' => "{$codes} already ".($locked->count() === 1 ? 'has' : 'have').' an instructor assigned this semester, so another department cannot be assigned to teach '.($locked->count() === 1 ? 'it' : 'them').'. Remove those instructor assignments first.',
+                'locked_course_ids' => $locked->pluck('id')->map('intval')->values()->all(),
+            ], 422);
         }
         DB::transaction(fn () => $courses->each(function (Course $course) use ($targetId, $targetProgramId): void {
             $course->update(['teaching_department_id' => $targetId, 'teaching_program_id' => $targetProgramId]);
@@ -386,12 +403,83 @@ class CourseTeachingAssignmentController extends Controller
     /** Hand the course back to the derived rule — the college that owns it. */
     public function destroy(Request $request, Course $course): JsonResponse
     {
+        if ($locked = $this->refuseIfInstructorAssigned($course, null)) {
+            return $locked;
+        }
+
         $this->store($course, null, null, $request->user());
 
         return response()->json([
             'message' => 'Teaching college removed.',
-            'course' => $this->present($course),
+            'course' => $this->present($course, 0),
         ]);
+    }
+
+    /**
+     * Classes -- a course in one section -- that already have an instructor in
+     * the active semester, keyed by course id.
+     *
+     * Once someone is teaching a course, the question "which college teaches it"
+     * has been answered in practice. Handing it to another college then would
+     * leave those classes with an instructor the new college never chose and the
+     * rule engine now considers ineligible.
+     *
+     * @param  list<int>  $courseIds
+     * @return array<int, int>
+     */
+    private function classesWithInstructor(array $courseIds): array
+    {
+        $semester = $this->activeSemester();
+        if ($semester === null || $courseIds === []) {
+            return [];
+        }
+
+        return Schedule::query()
+            ->where('semester_id', $semester->id)
+            ->whereIn('course_id', $courseIds)
+            ->whereNotNull('faculty_id')
+            ->selectRaw('course_id, COUNT(DISTINCT section_id) AS classes')
+            ->groupBy('course_id')
+            ->pluck('classes', 'course_id')
+            ->mapWithKeys(static fn ($classes, $courseId): array => [(int) $courseId => (int) $classes])
+            ->all();
+    }
+
+    private function storedTeachingDepartmentId(Course $course): ?int
+    {
+        return $course->teaching_department_id === null ? null : (int) $course->teaching_department_id;
+    }
+
+    /**
+     * The college that actually teaches the course under a given override: the
+     * override itself, or the owner when none is recorded.
+     */
+    private function effectiveTeachingDepartmentId(Course $course, ?int $override): ?int
+    {
+        return $override ?? ($course->department_id === null ? null : (int) $course->department_id);
+    }
+
+    /**
+     * Refuses a change of teaching college while any class of the course already
+     * has an instructor. Saving the same college again is not a change and passes.
+     */
+    private function refuseIfInstructorAssigned(Course $course, ?int $teachingDepartmentId): ?JsonResponse
+    {
+        $unchanged = $this->effectiveTeachingDepartmentId($course, $teachingDepartmentId)
+            === $this->effectiveTeachingDepartmentId($course, $this->storedTeachingDepartmentId($course));
+        if ($unchanged) {
+            return null;
+        }
+
+        $classes = $this->classesWithInstructor([(int) $course->id])[(int) $course->id] ?? 0;
+        if ($classes === 0) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => "{$course->course_code} already has an instructor assigned in {$classes} ".($classes === 1 ? 'class' : 'classes').' this semester, so another department cannot be assigned to teach it. Remove those instructor assignments first.',
+            'instructor_assigned_classes' => $classes,
+        ], 422);
     }
 
     /**
@@ -438,7 +526,7 @@ class CourseTeachingAssignmentController extends Controller
     /**
      * @return array<string, mixed>
      */
-    private function present(Course $course): array
+    private function present(Course $course, int $instructorAssignedClasses = 0): array
     {
         return [
             'id' => (int) $course->id,
@@ -469,6 +557,9 @@ class CourseTeachingAssignmentController extends Controller
             'curriculum_program_name' => $course->getAttribute('curriculum_program_name'),
             'curriculum_program_cluster' => $course->getAttribute('curriculum_program_cluster'),
             'delegable' => SchedulingPolicy::isDelegableCourse($course),
+            // Classes this semester that already have an instructor. While any do,
+            // the teaching college cannot be changed.
+            'instructor_assigned_classes' => $instructorAssignedClasses,
             // The college that ends up teaching it once the fallback is applied, so
             // the UI can show the effective answer next to the stored override.
             'effective_teaching_department_id' => SchedulingPolicy::assignedTeachingDepartmentId($course),

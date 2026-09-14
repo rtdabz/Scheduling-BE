@@ -846,12 +846,6 @@ final class SchedulingPolicy
             'description' => 'Prefer on-site physical room assignments over online delivery when physical rooms are available.',
             'enforced_by' => ['csp'],
         ],
-        'faculty_unit_ceiling' => [
-            'severity' => 'hard',
-            'category' => 'workload',
-            'description' => 'Keep an instructor at or below their unit ceiling (maximum units, less deload, plus overload and pro bono allowances).',
-            'enforced_by' => ['instructor_assignment'],
-        ],
     ];
 
     public static function catalog(): array
@@ -958,9 +952,9 @@ final class SchedulingPolicy
     /**
      * Which band a total load of $units falls in for this instructor. The bands
      * stack in the order the allowances are granted: Basic Load first, then the
-     * overload allowance, then pro bono. A load past all three is beyond the
-     * ceiling — still assignable, since the ceiling is deliberately soft, but
-     * named so the confirmation can say as much.
+     * overload allowance. Once both are used up, every further unit is pro bono,
+     * whether or not pro bono units were granted -- there is no ceiling past
+     * which an assignment is refused.
      */
     public static function facultyLoadTier(mixed $faculty, int $units): string
     {
@@ -974,9 +968,7 @@ final class SchedulingPolicy
             return self::LOAD_TIER_OVERLOAD;
         }
 
-        return $units <= self::facultyUnitCeiling($faculty)
-            ? self::LOAD_TIER_PROBONO
-            : self::LOAD_TIER_BEYOND_CEILING;
+        return self::LOAD_TIER_PROBONO;
     }
 
     public static function loadTierLabel(string $tier): string

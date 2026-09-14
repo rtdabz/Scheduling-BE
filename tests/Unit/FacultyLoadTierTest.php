@@ -12,7 +12,8 @@ use PHPUnit\Framework\TestCase;
  *
  * The instructor below has a 21-unit maximum with 6 units deloaded — 15 units of
  * Basic Load — plus 3 units of overload allowance and 3 of pro bono, so the bands
- * are 0–15 basic, 16–18 overload, 19–21 pro bono, 22+ beyond the ceiling.
+ * are 0–15 basic, 16–18 overload, and everything from 19 up pro bono: once the
+ * paid allowances are used, every further unit is pro bono.
  */
 class FacultyLoadTierTest extends TestCase
 {
@@ -41,32 +42,32 @@ class FacultyLoadTierTest extends TestCase
         $this->assertSame(SchedulingPolicy::LOAD_TIER_PROBONO, $this->tierFor(21));
     }
 
-    public function test_a_load_past_the_ceiling_is_named_as_such(): void
+    public function test_a_load_past_every_allowance_stays_pro_bono(): void
     {
-        $this->assertSame(SchedulingPolicy::LOAD_TIER_BEYOND_CEILING, $this->tierFor(22));
-        $this->assertSame(SchedulingPolicy::LOAD_TIER_BEYOND_CEILING, $this->tierFor(60));
+        $this->assertSame(SchedulingPolicy::LOAD_TIER_PROBONO, $this->tierFor(22));
+        $this->assertSame(SchedulingPolicy::LOAD_TIER_PROBONO, $this->tierFor(60));
     }
 
     public function test_an_ungranted_band_is_skipped_rather_than_widened(): void
     {
-        // No allowances granted, so there is no overload band to climb: the unit
-        // after Basic Load is already past the ceiling.
+        // No overload granted, so there is no overload band to climb: the unit
+        // after Basic Load is already pro bono.
         $none = $this->instructor(['overload_units' => 0, 'probono_units' => 0]);
 
         $this->assertSame(SchedulingPolicy::LOAD_TIER_BASIC, SchedulingPolicy::facultyLoadTier($none, 15));
-        $this->assertSame(SchedulingPolicy::LOAD_TIER_BEYOND_CEILING, SchedulingPolicy::facultyLoadTier($none, 16));
+        $this->assertSame(SchedulingPolicy::LOAD_TIER_PROBONO, SchedulingPolicy::facultyLoadTier($none, 16));
 
-        // Overload granted but no pro bono: the pro bono band collapses instead of
-        // absorbing the overflow.
+        // Overload granted but no pro bono units: past the overload allowance is
+        // still pro bono.
         $noProbono = $this->instructor(['probono_units' => 0]);
 
         $this->assertSame(SchedulingPolicy::LOAD_TIER_OVERLOAD, SchedulingPolicy::facultyLoadTier($noProbono, 18));
-        $this->assertSame(SchedulingPolicy::LOAD_TIER_BEYOND_CEILING, SchedulingPolicy::facultyLoadTier($noProbono, 19));
+        $this->assertSame(SchedulingPolicy::LOAD_TIER_PROBONO, SchedulingPolicy::facultyLoadTier($noProbono, 19));
     }
 
     public function test_an_instructor_with_nothing_configured_has_no_basic_load(): void
     {
-        // Every band is empty, so any load reads as beyond the ceiling. It is
+        // Every paid band is empty, so any load reads as pro bono. It is
         // FacultyLoadService::projectLoad() that spares these instructors, by
         // requiring a Basic Load above zero before it asks anything — the tier
         // alone is not what decides whether the user is prompted.
@@ -74,7 +75,7 @@ class FacultyLoadTierTest extends TestCase
 
         $this->assertSame(0, SchedulingPolicy::facultyBasicLoad($unconfigured));
         $this->assertSame(SchedulingPolicy::LOAD_TIER_BASIC, SchedulingPolicy::facultyLoadTier($unconfigured, 0));
-        $this->assertSame(SchedulingPolicy::LOAD_TIER_BEYOND_CEILING, SchedulingPolicy::facultyLoadTier($unconfigured, 1));
+        $this->assertSame(SchedulingPolicy::LOAD_TIER_PROBONO, SchedulingPolicy::facultyLoadTier($unconfigured, 1));
     }
 
     public function test_a_deload_larger_than_the_maximum_cannot_go_negative(): void

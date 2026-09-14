@@ -418,7 +418,7 @@ class DepartmentScheduleController extends Controller
             sort($revisionYears);
 
             return response()->json([
-                'message' => 'Cannot submit while withdrawn sections are still under revision.',
+                'message' => 'Cannot submit while recalled sections are still under revision.',
                 'blocked_years' => $revisionYears,
             ], 422);
         }
@@ -715,33 +715,14 @@ class DepartmentScheduleController extends Controller
             ->where('status', 'finalized')
             ->exists()) {
             return response()->json([
-                'message' => 'Finalized schedules cannot be withdrawn. Reopen the finalized workflow first.',
+                'message' => 'Finalized schedules cannot be recalled. Use Reassignment to reopen them first.',
             ], 422);
         }
 
-        // Reassignment is a persisted workflow stage, not proof that an
-        // instructor is still assigned. Once every instructor has been cleared
-        // and the assignment handoff is open, the section is eligible to return
-        // to revision through the normal withdrawal workflow.
-        $blockedReassignmentSectionIds = (clone $query)
-            ->whereIn('section_id', $sectionIds)
-            ->where('status', 'reassignment')
-            ->where(function ($reassignmentQuery): void {
-                $reassignmentQuery
-                    ->whereNotNull('faculty_id')
-                    ->orWhere('faculty_assignment_done', true);
-            })
-            ->distinct()
-            ->pluck('section_id')
-            ->map(static fn ($sectionId): int => (int) $sectionId)
-            ->values()
-            ->all();
-        if ($blockedReassignmentSectionIds !== []) {
-            return response()->json([
-                'message' => 'Reassignment sections can be withdrawn only after all instructors are cleared and instructor assignment is reopened.',
-                'blocked_section_ids' => $blockedReassignmentSectionIds,
-            ], 422);
-        }
+        // A section under Reassignment is recalled like any other approved
+        // section. Recalling releases every instructor on it (below), so it no
+        // longer has to be cleared first -- which a department could not do
+        // anyway for a delegated course whose instructor another college chose.
 
         $currentStatuses = (clone $query)
             ->whereIn('section_id', $sectionIds)
@@ -752,7 +733,7 @@ class DepartmentScheduleController extends Controller
 
         if ($currentStatuses->isEmpty()) {
             return response()->json([
-                'message' => 'No submitted or VPAA-approved schedule is available to withdraw.',
+                'message' => 'No submitted or VPAA-approved schedule is available to recall.',
             ], 422);
         }
 
@@ -766,7 +747,7 @@ class DepartmentScheduleController extends Controller
 
         if (array_diff($sectionIds, $withdrawableSelectedSectionIds) !== []) {
             return response()->json([
-                'message' => 'One or more selected sections are not currently eligible for withdrawal.',
+                'message' => 'One or more selected sections cannot be recalled right now.',
             ], 422);
         }
 
@@ -833,7 +814,39 @@ class DepartmentScheduleController extends Controller
             ->values();
         $primarySubmission = $affectedSubmissions->first();
 
-        $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses, $affectedSubmissions, $submissionSections, $user) {
+        $semesterId = $this->activeSemesterId();
+        $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses, $affectedSubmissions, $submissionSections, $user, $semesterId) {
+            // A withdrawn section's instructors are released. Its rows leave the
+            // assignment statuses -- off every assignment screen and out of the
+            // instructor's load -- but the faculty conflict rule counts any row
+            // that carries an instructor, so a kept instructor went on blocking
+            // that person from every other class at the same hour, through a
+            // class nobody could see or clear. The previous instructor of each
+            // meeting is recorded below, so the release can be traced.
+            $released = $this->departmentScheduleQuery($id)
+                ->whereIn('section_id', $sectionIds)
+                ->whereIn('status', $withdrawableStatuses)
+                ->whereNotNull('faculty_id')
+                ->get(['id', 'section_id', 'faculty_id']);
+
+            if ($released->isNotEmpty()) {
+                Schedule::query()
+                    ->whereIn('id', $released->pluck('id'))
+                    ->update([
+                        'faculty_id' => null,
+                        'faculty_conflict_override' => false,
+                        'updated_at' => now(),
+                    ]);
+            }
+
+            // Instructor assignment starts over once the revision is approved, so
+            // no recalled row may keep a "done" handoff from the last round.
+            $this->departmentScheduleQuery($id)
+                ->whereIn('section_id', $sectionIds)
+                ->whereIn('status', $withdrawableStatuses)
+                ->where('faculty_assignment_done', true)
+                ->update(['faculty_assignment_done' => false, 'updated_at' => now()]);
+
             $completed = $this->departmentScheduleQuery($id)
                 ->whereIn('section_id', $sectionIds)
                 ->whereIn('status', $withdrawableStatuses)
@@ -841,12 +854,6 @@ class DepartmentScheduleController extends Controller
                     'status' => 'completed',
                     'updated_at' => now(),
                 ]);
-
-            $preserved = $this->departmentScheduleQuery($id)
-                ->whereIn('section_id', $sectionIds)
-                ->where('status', 'completed')
-                ->whereNotNull('faculty_id')
-                ->get(['id', 'semester_id', 'section_id', 'course_id', 'faculty_id']);
 
             $revision = $this->departmentScheduleQuery($id)
                 ->whereIn('section_id', $sectionIds)
@@ -873,16 +880,36 @@ class DepartmentScheduleController extends Controller
                 ]);
             }
 
+            foreach ($released->groupBy('section_id') as $sectionId => $rows) {
+                SchedulingAuditLog::create([
+                    'user_id' => $user->id,
+                    'semester_id' => $semesterId,
+                    'section_id' => (int) $sectionId,
+                    'department_id' => $id,
+                    'action' => 'instructor_assignment_released',
+                    'metadata' => [
+                        'reason' => 'schedule_withdrawn',
+                        'released_count' => $rows->count(),
+                        'schedule_ids' => $rows->pluck('id')->map('intval')->values()->all(),
+                        'previous_faculty_ids' => $rows->mapWithKeys(
+                            static fn (Schedule $row): array => [(string) $row->id => (int) $row->faculty_id]
+                        )->all(),
+                        'faculty_ids' => $rows->pluck('faculty_id')->map('intval')->unique()->values()->all(),
+                    ],
+                    'created_at' => now(),
+                ]);
+            }
+
             return [
                 'completed' => $completed,
                 'revision' => $revision,
-                'instructors_preserved' => $preserved->count(),
+                'instructors_released' => $released->count(),
                 'submission_ids' => $affectedSubmissions->pluck('id')->map('intval')->values()->all(),
             ];
         });
 
-        // The assignment workspace caches its payload for five minutes. Withdrawn
-        // rows leave its visible statuses even though their faculty IDs persist.
+        // The assignment workspace and the faculty loads cache their payloads;
+        // withdrawn rows leave the assignment statuses and lose their instructors.
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         $semester = Semester::query()->find($this->activeSemesterId());
@@ -891,7 +918,7 @@ class DepartmentScheduleController extends Controller
                 'schedules_updated' => $updated['revision'],
                 'sections_unlocked' => count($sectionIds),
                 'withdrawal_stage' => $withdrawalStage,
-                'instructors_preserved' => $updated['instructors_preserved'],
+                'instructors_released' => $updated['instructors_released'],
                 'selected_section_ids' => $sectionIds,
                 'schedule_submission_ids' => $updated['submission_ids'],
                 'submission_section_ids' => $submissionSections->all(),
@@ -900,9 +927,9 @@ class DepartmentScheduleController extends Controller
         $this->notifications->notifyRoles(
             ['vpaa', 'dean', 'secretary', 'program_head'],
             'schedule_withdrawn',
-            'Schedule submission withdrawn',
+            'Schedule submission recalled',
             $this->notifications->departmentWorkflowMessage(
-                'withdrew',
+                'recalled',
                 $department,
                 $semester,
                 $user,
@@ -917,19 +944,19 @@ class DepartmentScheduleController extends Controller
                 'sections_unlocked' => count($sectionIds),
                 'selected_section_ids' => $sectionIds,
                 'withdrawal_stage' => $withdrawalStage,
-                'instructors_preserved' => $updated['instructors_preserved'],
+                'instructors_released' => $updated['instructors_released'],
                 'schedule_submission_id' => $primarySubmission?->id,
                 'schedule_submission_ids' => $updated['submission_ids'],
             ],
         );
 
         return response()->json([
-            'message' => 'Selected section schedules withdrawn for revision.',
+            'message' => 'Selected section schedules recalled for revision.',
             'department_name' => $department->department_name,
             'schedules_updated' => $updated['revision'],
             'sections_unlocked' => count($sectionIds),
             'withdrawal_stage' => $withdrawalStage,
-            'instructors_preserved' => $updated['instructors_preserved'],
+            'instructors_released' => $updated['instructors_released'],
             'schedule_submission_id' => $primarySubmission?->id,
             'schedule_submission_ids' => $updated['submission_ids'],
         ]);

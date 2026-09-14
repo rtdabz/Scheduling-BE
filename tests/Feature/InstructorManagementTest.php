@@ -52,6 +52,38 @@ class InstructorManagementTest extends TestCase
             ->assertJsonPath('unit_ceiling', 21);
     }
 
+    public function test_a_name_suffix_is_stored_and_limited_to_the_offered_list(): void
+    {
+        $f = $this->fixture();
+
+        $id = $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', $this->payload($f) + ['suffix' => 'Jr.'])
+            ->assertCreated()
+            ->assertJsonPath('suffix', 'Jr.')
+            ->json('id');
+
+        $this->actingAs($f['vpaa'])
+            ->putJson("/api/faculties/{$id}", ['suffix' => null])
+            ->assertOk()
+            ->assertJsonPath('suffix', null);
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', $this->payload($f) + ['suffix' => 'Esq.'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('suffix');
+    }
+
+    public function test_a_basic_load_of_zero_is_accepted_for_an_overload_only_instructor(): void
+    {
+        $f = $this->fixture();
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', ['max_units' => 0, 'overload_units' => 15] + $this->payload($f))
+            ->assertCreated()
+            ->assertJsonPath('max_units', 0)
+            ->assertJsonPath('overload_units', 15);
+    }
+
     public function test_vpaa_cannot_update_load_allowances(): void
     {
         $f = $this->fixture();

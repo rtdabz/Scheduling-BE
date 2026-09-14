@@ -7,6 +7,7 @@ use App\Models\Program;
 use App\Models\User;
 use App\Notifications\WicarsAccountCreatedNotification;
 use App\Services\AuthenticationAuditService;
+use App\Services\FacultyDesignationService;
 use App\Services\UserFacultyProfileService;
 use App\Support\ApiCache;
 use App\Support\CapabilityRegistry;
@@ -54,14 +55,16 @@ class UserController extends Controller
                 'nullable',
                 'integer',
             ],
-            'designation_id' => ['nullable', 'integer', Rule::exists('designations', 'id')->whereNull('deleted_at')->where('status', 'active')],
+            'designation_id' => ['nullable', 'integer'],
+            'designation_ids' => ['nullable', 'array'],
         ]);
         $this->ensureRoleDepartmentHierarchy($validated['role'], (int) $validated['department_id']);
         $this->validatePermissionAssignments($validated['permissions'] ?? [], $validated['role']);
         $facultyMode = $validated['faculty_mode'] ?? UserFacultyProfileService::MODE_CREATE;
-        $designationId = isset($validated['designation_id']) ? (int) $validated['designation_id'] : null;
+        $designationIds = app(FacultyDesignationService::class)->idsFrom($request);
+        app(FacultyDesignationService::class)->validate($designationIds);
 
-        $user = DB::transaction(function () use ($validated, $request, $facultyMode, $designationId) {
+        $user = DB::transaction(function () use ($validated, $request, $facultyMode, $designationIds) {
             $user = User::create([
                 'name' => $this->displayName($validated),
                 'first_name' => trim($validated['first_name']),
@@ -79,12 +82,12 @@ class UserController extends Controller
                 'program_id' => $validated['role'] === 'program_head' ? $validated['program_id'] : null,
             ]);
             $faculty = match ($facultyMode) {
-                UserFacultyProfileService::MODE_LINK => $this->facultyProfiles->linkTo($user, (int) $validated['faculty_id'], $designationId),
-                UserFacultyProfileService::MODE_CREATE => $this->facultyProfiles->createFor($user, $designationId),
+                UserFacultyProfileService::MODE_LINK => $this->facultyProfiles->linkTo($user, (int) $validated['faculty_id'], $designationIds),
+                UserFacultyProfileService::MODE_CREATE => $this->facultyProfiles->createFor($user, $designationIds),
                 default => null,
             };
             $user->syncRoles([$user->role]);
-            $user->syncPermissions($this->capabilities->expand($validated['permissions'] ?? []));
+            $user->syncPermissions($this->capabilities->expandForRole($validated['permissions'] ?? [], $user->role));
             $this->audit->record($request, 'user_created', $user, [
                 'role' => $user->role,
                 'google_login_allowed' => $user->allow_google_login,
@@ -144,7 +147,7 @@ class UserController extends Controller
             : $user->getDirectPermissions()->pluck('name')->all();
         $this->validatePermissionAssignments($permissions, $validated['role']);
 
-        DB::transaction(function () use ($validated, $request, $user) {
+        DB::transaction(function () use ($validated, $request, $user, $permissions) {
             $user->update([
                 'name' => $this->displayName($validated),
                 'first_name' => trim($validated['first_name']),
@@ -161,9 +164,10 @@ class UserController extends Controller
             ]);
             $user->syncRoles([$user->role]);
             $syncedProfile = $this->facultyProfiles->sync($user);
-            if (array_key_exists('permissions', $validated)) {
-                $user->syncPermissions($this->capabilities->expand($validated['permissions']));
-            }
+            // Re-expanded even when no permissions were sent: a prerequisite the
+            // previous role supplied has to be stored directly once the role
+            // no longer does, or its dependents stop working.
+            $user->syncPermissions($this->capabilities->expandForRole($permissions, $user->role));
 
             if (! $user->is_active) {
                 $user->tokens()->delete();
@@ -271,6 +275,9 @@ class UserController extends Controller
             'catalog_metadata' => $this->capabilities->catalogFor($user),
             'modules' => $this->capabilities->modulesFor($user),
             'presets' => $this->capabilities->presets(),
+            // Program-bound capabilities are refused by CapabilityMiddleware
+            // until the department owns a program; the matrix warns about it.
+            'scheduling_ready' => $this->schedulingReady($user),
         ]);
     }
 
@@ -302,7 +309,7 @@ class UserController extends Controller
         // Expanded so a capability is never saved without the reads it depends
         // on: an account granted instructor assignment but not `schedule.view`
         // reached a page it was allowed to open and 403'd fetching its data.
-        $newDirect = $this->capabilities->expand($requested);
+        $newDirect = $this->capabilities->expandForRole($requested, (string) $user->role);
         $previousDirect = $user->getDirectPermissions()->pluck('name')->values()->all();
 
         $added = array_values(array_diff($newDirect, $previousDirect));
@@ -377,10 +384,13 @@ class UserController extends Controller
             ->setAttribute('direct_permissions', $direct)
             ->setAttribute('inherited_permissions', $inherited)
             ->setAttribute('permissions', $effective)
-            ->setAttribute(
-                'scheduling_ready',
-                $user->department_id === null || Program::query()->where('department_id', $user->department_id)->exists(),
-            );
+            ->setAttribute('scheduling_ready', $this->schedulingReady($user));
+    }
+
+    private function schedulingReady(User $user): bool
+    {
+        return $user->department_id === null
+            || Program::query()->where('department_id', $user->department_id)->exists();
     }
 
     private function displayName(array $validated): string

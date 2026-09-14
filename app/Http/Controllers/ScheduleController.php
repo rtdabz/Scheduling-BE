@@ -8,6 +8,7 @@ use App\Models\Course;
 use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\ScheduleSplit;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
@@ -15,6 +16,7 @@ use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Schedule\BatchConflict;
 use App\Services\Scheduling\Schedule\BatchConflictValidator;
+use App\Services\Scheduling\Schedule\FacultyConflictOverride;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Engine\RuleEngine;
@@ -24,10 +26,12 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Services\TimeslotService;
 use App\Support\ApiCache;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class ScheduleController extends Controller
 {
@@ -36,6 +40,23 @@ class ScheduleController extends Controller
     private const REPLACEABLE_BATCH_STATUSES = ['draft', 'completed', 'revision'];
 
     private const PLOTTING_EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
+
+    /**
+     * Relations returned with a batch save and the schedule listings, trimmed to
+     * the columns the timetable views read (the same set /initial-data uses).
+     * Loading them whole repeated unbounded columns — departments.logo,
+     * faculties.profile_picture — once per meeting row, so saving a year level
+     * sent megabytes back to the grid.
+     */
+    private const BATCH_RESPONSE_RELATIONS = [
+        'academicSemester:id,academic_year,semester',
+        'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
+        'course:id,course_code,course_name,lecture_hours,lab_hours,units,course_category,room_type_required,year_level,semester,department_id,teaching_department_id,teaching_program_id,program_id',
+        'faculty:id,first_name,last_name,middle_name,department_id,program_id',
+        'room:id,room_code,building,room_type,allow_lecture_usage,department_id',
+        'department:id,department_name,department_code',
+        'program',
+    ];
 
     protected RuleEngine $ruleEngine;
 
@@ -161,20 +182,49 @@ class ScheduleController extends Controller
         return response()->json($schedule, 201);
     }
 
+    /**
+     * Per-batch lookup memos, live only while batch() runs. The controller
+     * instance is cached on its route, so a memo kept past the call would serve
+     * a later request stale answers.
+     *
+     * @var array<int, string|null>|null
+     */
+    private ?array $roomTypes = null;
+
+    /** @var array<string, string|null>|null */
+    private ?array $delegatedCourseMessages = null;
+
     public function batch(Request $request): JsonResponse
     {
+        $this->roomTypes = [];
+        $this->delegatedCourseMessages = [];
+
+        try {
+            return $this->runBatch($request);
+        } finally {
+            $this->roomTypes = null;
+            $this->delegatedCourseMessages = null;
+        }
+    }
+
+    private function runBatch(Request $request): JsonResponse
+    {
+        // Reference columns are checked for existence by
+        // assertBatchReferencesExist() below, one query per table. An `exists`
+        // rule per wildcard field ran a query per operation per column: seven
+        // per meeting row, the largest share of a year-level save.
         $validated = $request->validate([
             'operations' => 'required_without:delete_ids|array',
-            'operations.*.id' => 'nullable|integer|exists:schedules,id',
+            'operations.*.id' => 'nullable|integer',
             // Existing rows support partial updates; create-only requirements are
             // enforced below after persisted data has been hydrated.
-            'operations.*.semester_id' => 'sometimes|integer|exists:semesters,id',
-            'operations.*.section_id' => 'sometimes|integer|exists:sections,id',
-            'operations.*.course_id' => 'sometimes|integer|exists:courses,id',
-            'operations.*.subject_id' => 'sometimes|integer|exists:courses,id',
-            'operations.*.faculty_id' => 'nullable|integer|exists:faculties,id',
-            'operations.*.room_id' => 'nullable|integer|exists:rooms,id',
-            'operations.*.department_id' => 'sometimes|integer|exists:departments,id',
+            'operations.*.semester_id' => 'sometimes|integer',
+            'operations.*.section_id' => 'sometimes|integer',
+            'operations.*.course_id' => 'sometimes|integer',
+            'operations.*.subject_id' => 'sometimes|integer',
+            'operations.*.faculty_id' => 'nullable|integer',
+            'operations.*.room_id' => 'nullable|integer',
+            'operations.*.department_id' => 'sometimes|integer',
             'operations.*.day' => SchedulingPolicy::allowedDaysRule('sometimes'),
             'operations.*.start_time' => 'sometimes|date_format:H:i',
             'operations.*.end_time' => 'sometimes|date_format:H:i|after:operations.*.start_time',
@@ -186,11 +236,12 @@ class ScheduleController extends Controller
             'operations.*.meeting_index' => 'nullable|integer|min:1',
             'operations.*.status' => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
             'delete_ids' => 'sometimes|array',
-            'delete_ids.*' => 'integer|exists:schedules,id',
+            'delete_ids.*' => 'integer',
             'replace_section_ids' => 'sometimes|array',
-            'replace_section_ids.*' => 'integer|exists:sections,id',
-            'replace_semester_id' => 'nullable|integer|exists:semesters,id',
+            'replace_section_ids.*' => 'integer',
+            'replace_semester_id' => 'nullable|integer',
         ]);
+        $this->assertBatchReferencesExist($validated);
 
         $deleteIds = $validated['delete_ids'] ?? [];
         $replaceSectionIds = array_values(array_unique(array_map('intval', $validated['replace_section_ids'] ?? [])));
@@ -270,6 +321,7 @@ class ScheduleController extends Controller
             ], 422);
         }
 
+        $departmentHasProgram = [];
         foreach ($validated['operations'] as $operation) {
             if (
                 ! isset($operation['id'])
@@ -278,7 +330,7 @@ class ScheduleController extends Controller
             ) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
             }
-            if (! isset($operation['id']) && isset($operation['department_id']) && ! $this->authorization->departmentHasProgram((int) $operation['department_id'])) {
+            if (! isset($operation['id']) && isset($operation['department_id']) && ! ($departmentHasProgram[(int) $operation['department_id']] ??= $this->authorization->departmentHasProgram((int) $operation['department_id']))) {
                 return response()->json(['message' => 'Create at least one Program under this Department before scheduling.'], 422);
             }
         }
@@ -348,7 +400,7 @@ class ScheduleController extends Controller
             );
             if ($changesPlotting && ! in_array($existing->status, self::PLOTTING_EDITABLE_STATUSES, true)) {
                 return response()->json([
-                    'message' => 'This schedule is locked at its current approval stage. Withdraw or return it to revision before editing the timetable.',
+                    'message' => 'This schedule is locked at its current approval stage. Recall it or return it to revision before editing the timetable.',
                 ], 422);
             }
         }
@@ -371,6 +423,7 @@ class ScheduleController extends Controller
         try {
             $this->withScheduleWriteLock($this->conflictScopeSemesterIds($validated['operations'], $deleteIds), function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds): void {
                 DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds): void {
+                    $sectionsById = [];
                     $allViolations = array_merge(
                         $this->checkIntraBatchConflicts($validated['operations'], $mergedIgnoreIds),
                         $this->ruleEngine->validateConfiguredMeetingGroups($validated['operations']),
@@ -386,7 +439,10 @@ class ScheduleController extends Controller
                             $attemptData['course_id'] = $attemptData['subject_id'];
                         }
 
-                        $section = Sections::find($attemptData['section_id'] ?? 0);
+                        $sectionId = (int) ($attemptData['section_id'] ?? 0);
+                        // A year level repeats each section across every meeting
+                        // row; one lookup per section serves both loops below.
+                        $section = $sectionsById[$sectionId] ??= Sections::find($sectionId);
                         if ($section?->program_id === null) {
                             $allViolations[] = ['operation_index' => $index, 'message' => 'This section cannot be scheduled until it is assigned to a Program.'];
 
@@ -413,10 +469,27 @@ class ScheduleController extends Controller
                     $deletedBefore = collect();
                     if (! empty($deleteIds)) {
                         $deletedBefore = Schedule::whereIn('id', $deleteIds)->get();
-                        Schedule::whereIn('id', $deleteIds)->delete();
-                        // A bulk delete fires no model events; retire the split
-                        // rows so they do not outlive their schedules.
-                        Schedule::retireSplitsFor($deleteIds);
+                        // Clearing or regenerating a timetable discards working
+                        // drafts that never entered approval. Archiving them only
+                        // filled the Archive page with rows that could be restored
+                        // on top of the replacement timetable, so they are removed
+                        // outright; the history snapshot below still records them.
+                        // The schedule_splits foreign key cascades.
+                        $workingIds = $deletedBefore
+                            ->filter(static fn (Schedule $schedule): bool => in_array($schedule->status, self::REPLACEABLE_BATCH_STATUSES, true))
+                            ->pluck('id')
+                            ->all();
+                        $archivedIds = array_values(array_diff(array_map('intval', $deleteIds), $workingIds));
+                        if ($workingIds !== []) {
+                            ScheduleSplit::withTrashed()->whereIn('schedule_id', $workingIds)->forceDelete();
+                            Schedule::withTrashed()->whereIn('id', $workingIds)->forceDelete();
+                        }
+                        if ($archivedIds !== []) {
+                            Schedule::whereIn('id', $archivedIds)->delete();
+                            // A bulk delete fires no model events; retire the split
+                            // rows so they do not outlive their schedules.
+                            Schedule::retireSplitsFor($archivedIds);
+                        }
                         $deletedScheduleIds = array_map('intval', $deleteIds);
                     }
 
@@ -438,7 +511,8 @@ class ScheduleController extends Controller
                         }
 
                         if (! isset($op['program_id'])) {
-                            $op['program_id'] = Sections::whereKey($op['section_id'] ?? 0)->value('program_id');
+                            $sectionId = (int) ($op['section_id'] ?? 0);
+                            $op['program_id'] = ($sectionsById[$sectionId] ??= Sections::find($sectionId))?->program_id;
                         }
 
                         if (isset($op['id'])) {
@@ -455,7 +529,7 @@ class ScheduleController extends Controller
 
                     $savedSchedules = Schedule::query()
                         ->whereIn('id', $savedIds)
-                        ->with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'program'])
+                        ->with(self::BATCH_RESPONSE_RELATIONS)
                         ->get()
                         ->sortBy(static fn (Schedule $schedule): int => array_search((int) $schedule->id, $savedIds, true))
                         ->values()
@@ -1125,9 +1199,9 @@ class ScheduleController extends Controller
         return response()->json($schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'program']));
     }
 
-    public function bySemester(int|string $semesterId)
+    public function bySemester(Request $request, int|string $semesterId)
     {
-        $schedules = Schedule::with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])
+        $schedules = $this->scopedScheduleListQuery($request)
             ->where('semester_id', $semesterId)
             ->latest()
             ->limit(1000)
@@ -1136,15 +1210,34 @@ class ScheduleController extends Controller
         return response()->json($schedules);
     }
 
-    public function bySection(int|string $sectionId)
+    public function bySection(Request $request, int|string $sectionId)
     {
-        $schedules = Schedule::with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])
+        $schedules = $this->scopedScheduleListQuery($request)
             ->where('section_id', $sectionId)
             ->latest()
             ->limit(1000)
             ->get();
 
         return response()->json($schedules);
+    }
+
+    /**
+     * Schedule rows the requester may read. These listings used to return every
+     * department's rows to any signed-in user. A department user now gets the
+     * same slice /initial-data gives them: their own department's rows, plus
+     * meetings another college delegated to them to teach. VPAA is unscoped.
+     */
+    private function scopedScheduleListQuery(Request $request): Builder
+    {
+        $scope = $this->authorization->departmentScope($request);
+
+        return Schedule::query()
+            ->with(self::BATCH_RESPONSE_RELATIONS)
+            ->when($scope !== null, fn (Builder $query) => $query->where(
+                fn (Builder $owned) => $owned
+                    ->where('department_id', $scope)
+                    ->orWhereHas('course', fn (Builder $course) => $course->where('teaching_department_id', $scope)),
+            ));
     }
 
     public function update(Request $request, Schedule $schedule)
@@ -1215,11 +1308,6 @@ class ScheduleController extends Controller
                     $this->facultyLoad->projectLoad($faculty, $this->activeSemesterId(), [$pair]),
                     $this->assignmentLabelForSchedule($schedule),
                 );
-                $ceilingError = $this->facultyCeilingExceededResponse([$projection]);
-                if ($ceilingError !== null) {
-                    return $ceilingError;
-                }
-
                 if (! $request->boolean('confirm_overload')) {
                     $confirmation = $this->overloadConfirmationResponse([$projection]);
 
@@ -1259,7 +1347,7 @@ class ScheduleController extends Controller
         );
         if ($changesPlotting && ! in_array($schedule->status, self::PLOTTING_EDITABLE_STATUSES, true)) {
             return response()->json([
-                'message' => 'This schedule is locked at its current approval stage. Withdraw or return it to revision before editing the timetable.',
+                'message' => 'This schedule is locked at its current approval stage. Recall it or return it to revision before editing the timetable.',
             ], 422);
         }
 
@@ -1285,13 +1373,22 @@ class ScheduleController extends Controller
         // them. This is the path drag-relocate and faculty assignment use.
         $semesterId = (int) ($validated['semester_id'] ?? $schedule->semester_id);
 
+        // Only an instructor assignment can override its own conflicts; a
+        // relocation or any other edit is always checked in full.
+        $overrideConflicts = ($validated['faculty_id'] ?? null) !== null
+            && $request->boolean(FacultyConflictOverride::REQUEST_FLAG);
+
         try {
-            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds): void {
-                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds): void {
+            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts): void {
+                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts): void {
                     $violations = $this->ruleEngine->validate($attemptData);
+                    $overriddenIds = [];
 
                     if (! empty($violations)) {
-                        throw new ScheduleConflictException($violations, 'Schedule update conflicts with existing entries.');
+                        if (! $overrideConflicts || ! FacultyConflictOverride::onlyOverridable($violations)) {
+                            throw new ScheduleConflictException($violations, 'Schedule update conflicts with existing entries.');
+                        }
+                        array_push($overriddenIds, (int) $schedule->id, ...FacultyConflictOverride::partnerIds($violations));
                     }
 
                     $schedule->update($validated);
@@ -1310,18 +1407,26 @@ class ScheduleController extends Controller
                             );
                             $relatedViolations = $this->ruleEngine->validate($relatedAttempt);
                             if (! empty($relatedViolations)) {
-                                throw new ScheduleConflictException(
-                                    $relatedViolations,
-                                    'Instructor assignment conflicts with a related hybrid schedule.',
-                                );
+                                if (! $overrideConflicts || ! FacultyConflictOverride::onlyOverridable($relatedViolations)) {
+                                    throw new ScheduleConflictException(
+                                        $relatedViolations,
+                                        'Instructor assignment conflicts with a related hybrid schedule.',
+                                    );
+                                }
+                                array_push($overriddenIds, (int) $relatedSchedule->id, ...FacultyConflictOverride::partnerIds($relatedViolations));
                             }
                             $relatedSchedule->update(['faculty_id' => $validated['faculty_id']]);
                         }
                     }
+
+                    FacultyConflictOverride::flag($overriddenIds);
                 });
             });
         } catch (ScheduleConflictException $exception) {
-            return response()->json($exception->payload(), 422);
+            return response()->json(
+                FacultyConflictOverride::refusal($exception->getMessage(), $exception->violations()),
+                422,
+            );
         }
 
         $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department']);
@@ -1385,13 +1490,72 @@ class ScheduleController extends Controller
         return (int) $user->department_id;
     }
 
+    /**
+     * The `exists` checks for a batch payload, one query per referenced table.
+     * Same semantics as the rule it replaces: a plain lookup on the key column,
+     * so soft-deleted rows still count, and the same error key and message.
+     *
+     * @param  array<string, mixed>  $validated
+     */
+    private function assertBatchReferencesExist(array $validated): void
+    {
+        $tables = [
+            'id' => 'schedules', 'semester_id' => 'semesters', 'section_id' => 'sections',
+            'course_id' => 'courses', 'subject_id' => 'courses', 'faculty_id' => 'faculties',
+            'room_id' => 'rooms', 'department_id' => 'departments',
+        ];
+
+        /** @var array<string, array<string, int>> $references table => [error key => id] */
+        $references = [];
+        foreach ($validated['operations'] ?? [] as $index => $operation) {
+            foreach ($tables as $field => $table) {
+                if (isset($operation[$field])) {
+                    $references[$table]["operations.{$index}.{$field}"] = (int) $operation[$field];
+                }
+            }
+        }
+        foreach ($validated['delete_ids'] ?? [] as $index => $id) {
+            $references['schedules']["delete_ids.{$index}"] = (int) $id;
+        }
+        foreach ($validated['replace_section_ids'] ?? [] as $index => $id) {
+            $references['sections']["replace_section_ids.{$index}"] = (int) $id;
+        }
+        if (isset($validated['replace_semester_id'])) {
+            $references['semesters']['replace_semester_id'] = (int) $validated['replace_semester_id'];
+        }
+
+        $errors = [];
+        foreach ($references as $table => $idsByKey) {
+            $found = array_flip(DB::table($table)
+                ->whereIn('id', array_values(array_unique($idsByKey)))
+                ->pluck('id')
+                ->map('intval')
+                ->all());
+            foreach ($idsByKey as $key => $id) {
+                if (! isset($found[$id])) {
+                    $errors[$key] = __('validation.exists', ['attribute' => str_replace('_', ' ', $key)]);
+                }
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+    }
+
     private function clearOnlineRoomId(array $payload): array
     {
         $roomId = (int) ($payload['room_id'] ?? 0);
         if ($roomId > 0) {
-            $roomType = Rooms::query()
+            // A batch names the same few rooms on many rows.
+            $lookup = static fn (): ?string => Rooms::query()
                 ->whereKey($roomId)
                 ->value('room_type');
+            $roomType = match (true) {
+                $this->roomTypes === null => $lookup(),
+                array_key_exists($roomId, $this->roomTypes) => $this->roomTypes[$roomId],
+                default => $this->roomTypes[$roomId] = $lookup(),
+            };
 
             if ($roomType === 'online') {
                 $payload['mode'] = 'online';
@@ -1421,6 +1585,20 @@ class ScheduleController extends Controller
             return null;
         }
 
+        // Every meeting row of a course asks the same question within a batch.
+        $cacheKey = "{$courseId}:{$targetDepartmentId}:{$semesterId}";
+        if ($this->delegatedCourseMessages === null) {
+            return $this->resolveDelegatedCourseScheduleMessage($courseId, $targetDepartmentId, $semesterId);
+        }
+        if (array_key_exists($cacheKey, $this->delegatedCourseMessages)) {
+            return $this->delegatedCourseMessages[$cacheKey];
+        }
+
+        return $this->delegatedCourseMessages[$cacheKey] = $this->resolveDelegatedCourseScheduleMessage($courseId, $targetDepartmentId, $semesterId);
+    }
+
+    private function resolveDelegatedCourseScheduleMessage(int $courseId, int $targetDepartmentId, int $semesterId): ?string
+    {
         $course = Course::query()->find($courseId);
         $teachingDepartmentId = (int) ($course?->teaching_department_id ?? 0);
         if ($course === null || $teachingDepartmentId === 0 || $teachingDepartmentId !== $targetDepartmentId) {
@@ -1587,7 +1765,13 @@ class ScheduleController extends Controller
             'assignments.*.schedule_ids' => 'required|array|min:1',
             'assignments.*.schedule_ids.*' => 'integer|exists:schedules,id',
             'assignments.*.faculty_id' => 'nullable|integer|exists:faculties,id',
+            // Assign this instructor even though they clash (double-booked, or
+            // outside a part-timer's availability). Per assignment so a batch
+            // can override one class without waving through another.
+            'assignments.*.override_conflicts' => 'sometimes|boolean',
         ]);
+        // The retry after "Assign anyway" overrides every assignment in the batch.
+        $overrideAll = $request->boolean(FacultyConflictOverride::REQUEST_FLAG);
 
         $expandedAssignments = [];
         foreach ($validated['assignments'] as $assignment) {
@@ -1731,11 +1915,6 @@ class ScheduleController extends Controller
             }
         }
 
-        $ceilingError = $this->facultyCeilingExceededResponse($projections);
-        if ($ceilingError !== null) {
-            return $ceilingError;
-        }
-
         if (! $request->boolean('confirm_overload')) {
             $confirmation = $this->overloadConfirmationResponse($projections);
 
@@ -1754,11 +1933,14 @@ class ScheduleController extends Controller
             ->all();
 
         try {
-            $this->withScheduleWriteLock($semesterIds, function () use ($validated, $schedules): void {
-                DB::transaction(function () use ($validated, $schedules): void {
+            $this->withScheduleWriteLock($semesterIds, function () use ($validated, $schedules, $overrideAll): void {
+                DB::transaction(function () use ($validated, $schedules, $overrideAll): void {
+                    $overriddenIds = [];
+
                     foreach ($validated['assignments'] as $assignment) {
                         $facultyId = $assignment['faculty_id'] ?? null;
                         $facultyId = $facultyId === null ? null : (int) $facultyId;
+                        $override = $facultyId !== null && ($overrideAll || (bool) ($assignment['override_conflicts'] ?? false));
 
                         foreach ($assignment['schedule_ids'] as $scheduleId) {
                             $schedule = $schedules->get((int) $scheduleId);
@@ -1782,24 +1964,37 @@ class ScheduleController extends Controller
                             ));
 
                             if (! empty($violations)) {
-                                throw new ScheduleConflictException(
-                                    array_map(
-                                        static fn (array $violation): array => array_merge($violation, [
-                                            'schedule_id' => (int) $schedule->id,
-                                        ]),
-                                        $violations,
-                                    ),
-                                    'Instructor assignment conflicts with existing entries.',
-                                );
+                                if ($override && FacultyConflictOverride::onlyOverridable($violations)) {
+                                    // Both sides of the clash carry the override, so a
+                                    // later save of either does not raise it again.
+                                    array_push($overriddenIds, (int) $schedule->id, ...FacultyConflictOverride::partnerIds($violations));
+                                } else {
+                                    throw new ScheduleConflictException(
+                                        array_map(
+                                            static fn (array $violation): array => array_merge($violation, [
+                                                'schedule_id' => (int) $schedule->id,
+                                            ]),
+                                            $violations,
+                                        ),
+                                        'Instructor assignment conflicts with existing entries.',
+                                    );
+                                }
                             }
 
                             $schedule->update(['faculty_id' => $facultyId]);
                         }
                     }
+
+                    // After the updates: the model hook clears a stale override on a
+                    // reassigned meeting, and this must not be undone by it.
+                    FacultyConflictOverride::flag($overriddenIds);
                 });
             });
         } catch (ScheduleConflictException $exception) {
-            return response()->json($exception->payload(), 422);
+            return response()->json(
+                FacultyConflictOverride::refusal($exception->getMessage(), $exception->violations()),
+                422,
+            );
         }
 
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);

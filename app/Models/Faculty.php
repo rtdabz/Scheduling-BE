@@ -18,6 +18,7 @@ class Faculty extends Model
         'first_name',
         'last_name',
         'middle_name',
+        'suffix',
         'employment_type',
         'max_units',
         'overload_units',
@@ -29,9 +30,22 @@ class Faculty extends Model
         'profile_picture',
     ];
 
+    /**
+     * The instructor's primary designation -- the first of `designations`, kept
+     * in step by FacultyDesignationService for readers that want just one.
+     */
     public function designation()
     {
         return $this->belongsTo(Designation::class, 'designation_id');
+    }
+
+    /** Every designation the instructor holds (up to three), in their listed order. */
+    public function designations()
+    {
+        return $this->belongsToMany(Designation::class, 'designation_faculty')
+            ->withPivot('position')
+            ->withTimestamps()
+            ->orderByPivot('position');
     }
 
     public function department()

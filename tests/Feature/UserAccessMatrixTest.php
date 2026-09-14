@@ -173,6 +173,70 @@ class UserAccessMatrixTest extends TestCase
 
         $this->assertSame([], $this->secretary->fresh()->getDirectPermissions()->pluck('name')->all());
     }
+    public function test_a_prerequisite_the_role_already_gives_is_not_stored_as_a_direct_grant(): void
+    {
+        Sanctum::actingAs($this->vpaa, ['*']);
+
+        $this->patchJson("/api/user/{$this->dean->id}/permissions", [
+            'permissions' => ['schedule.create'],
+        ])->assertOk()
+            ->assertJsonPath('data.direct', ['schedule.create']);
+
+        $this->assertFalse($this->dean->fresh()->hasDirectPermission('schedule.view'));
+        $this->assertTrue($this->dean->fresh()->hasCapability('schedule.view'));
+    }
+
+    public function test_an_explicitly_requested_capability_is_kept_even_when_the_role_gives_it(): void
+    {
+        Sanctum::actingAs($this->vpaa, ['*']);
+
+        $this->patchJson("/api/user/{$this->dean->id}/permissions", [
+            'permissions' => ['schedule.view'],
+        ])->assertOk();
+
+        $this->assertTrue($this->dean->fresh()->hasDirectPermission('schedule.view'));
+    }
+
+    public function test_changing_role_stores_a_prerequisite_the_old_role_supplied(): void
+    {
+        Sanctum::actingAs($this->vpaa, ['*']);
+        $this->patchJson("/api/user/{$this->dean->id}/permissions", [
+            'permissions' => ['schedule.create'],
+        ])->assertOk();
+
+        // A secretary inherits nothing, so Create Schedules would stand without View.
+        $this->putJson("/api/user/{$this->dean->id}", [
+            'first_name' => 'Former',
+            'last_name' => 'Dean',
+            'email' => $this->dean->email,
+            'role' => 'secretary',
+            'is_active' => true,
+            'department_id' => $this->department->id,
+        ])->assertOk();
+
+        $user = $this->dean->fresh();
+        $this->assertTrue($user->hasDirectPermission('schedule.create'));
+        $this->assertTrue($user->hasDirectPermission('schedule.view'));
+    }
+
+    public function test_permissions_breakdown_reports_whether_the_department_has_a_program(): void
+    {
+        $bare = Departments::create([
+            'department_code' => 'CAS',
+            'department_name' => 'College of Arts and Sciences',
+        ]);
+        $this->secretary->update(['department_id' => $bare->id]);
+
+        Sanctum::actingAs($this->vpaa, ['*']);
+
+        $this->getJson("/api/user/{$this->secretary->id}/permissions")
+            ->assertOk()
+            ->assertJsonPath('scheduling_ready', false);
+        $this->getJson("/api/user/{$this->dean->id}/permissions")
+            ->assertOk()
+            ->assertJsonPath('scheduling_ready', true);
+    }
+
     public function test_invalid_permission_names_are_rejected(): void
     {
         Sanctum::actingAs($this->vpaa, ['*']);

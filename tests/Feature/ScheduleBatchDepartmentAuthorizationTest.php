@@ -120,7 +120,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
                 'deleted_schedule_ids' => [$schedule->id],
             ]);
 
-        $this->assertSoftDeleted('schedules', [
+        $this->assertDatabaseMissing('schedules', [
             'id' => $schedule->id,
         ]);
     }
@@ -157,8 +157,10 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
         ]);
 
         $response->assertOk();
-        $this->assertSoftDeleted('schedules', ['id' => $oldDraft->id]);
-        $this->assertSoftDeleted('schedules', ['id' => $oldRevision->id]);
+        $this->assertDatabaseMissing('schedules', ['id' => $oldDraft->id]);
+        $this->assertDatabaseMissing('schedules', ['id' => $oldRevision->id]);
+        // Cleared drafts are removed outright, so nothing lands in the Archive page.
+        $this->assertSame(0, Schedule::onlyTrashed()->count());
         $this->assertDatabaseHas('schedules', ['id' => $finalized->id]);
         $this->assertDatabaseHas('schedules', [
             'section_id' => $sectionA->id,
@@ -369,6 +371,65 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
 
         $response->assertOk();
         $this->assertSame('submitted', $foreignSchedule->refresh()->status);
+    }
+
+    public function test_batch_rejects_unknown_references_with_field_keyed_errors(): void
+    {
+        [$deptA, , $semester, $roomA, , $courseA, , $sectionA] = $this->fixture();
+        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
+
+        $this->actingAs($user)->postJson('/api/schedules/batch', [
+            'operations' => [[
+                'semester_id' => $semester->id,
+                'section_id' => $sectionA->id,
+                'course_id' => $courseA->id,
+                'room_id' => $roomA->id + 999,
+                'department_id' => $deptA->id,
+                'day' => 'Tuesday',
+                'start_time' => '10:00',
+                'end_time' => '11:00',
+                'mode' => 'on-site',
+                'status' => 'draft',
+            ]],
+            'delete_ids' => [987654],
+        ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['operations.0.room_id', 'delete_ids.0'])
+            ->assertJsonMissingValidationErrors(['operations.0.section_id', 'operations.0.course_id']);
+
+        $this->assertSame(0, Schedule::query()->count());
+    }
+
+    public function test_schedule_listings_are_scoped_to_the_requesting_department(): void
+    {
+        [$deptA, $deptB, $semester, $roomA, $roomB, $courseA, $courseB, $sectionA, $sectionB] = $this->fixture();
+        $secretaryA = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $deptA->id]));
+        $own = $this->schedule($deptA, $semester, $roomA, $courseA, $sectionA);
+        $foreign = $this->schedule($deptB, $semester, $roomB, $courseB, $sectionB);
+        // Department B owns this meeting but delegated its teaching to A.
+        $delegatedCourse = Course::create([
+            'course_code' => 'GEC101', 'course_name' => 'Delegated Course', 'lecture_hours' => 1, 'lab_hours' => 0,
+            'units' => 1, 'course_category' => 'minor', 'room_type_required' => 'lecture', 'year_level' => '1',
+            'semester' => '1st', 'department_id' => $deptB->id, 'teaching_department_id' => $deptA->id, 'status' => 'active',
+        ]);
+        $delegated = $this->schedule($deptB, $semester, $roomB, $delegatedCourse, $sectionB, ['start_time' => '10:00', 'end_time' => '11:00']);
+
+        $ids = fn ($response): array => collect($response->assertOk()->json())->pluck('id')->sort()->values()->all();
+
+        $this->assertSame(
+            [$own->id, $delegated->id],
+            $ids($this->actingAs($secretaryA)->getJson("/api/schedules/semester/{$semester->id}")),
+        );
+        $this->assertSame(
+            [$delegated->id],
+            $ids($this->actingAs($secretaryA)->getJson("/api/schedules/section/{$sectionB->id}")),
+        );
+        $semesterRows = $this->actingAs($secretaryA)->getJson("/api/schedules/semester/{$semester->id}")->json();
+        $this->assertArrayNotHasKey('logo', $semesterRows[0]['department']);
+        $this->assertNotContains($foreign->id, array_column($semesterRows, 'id'));
+
+        $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
+        $this->assertCount(3, $this->actingAs($vpaa)->getJson("/api/schedules/semester/{$semester->id}")->assertOk()->json());
     }
 
     private function fixture(): array

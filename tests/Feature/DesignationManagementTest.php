@@ -7,6 +7,7 @@ use App\Models\Designation;
 use App\Models\Faculty;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\FacultyDesignationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -71,7 +72,7 @@ class DesignationManagementTest extends TestCase
     {
         $f = $this->fixture();
         $dean = Designation::create(['name' => 'Dean', 'deload_units' => 6]);
-        $f['faculty']->update(['designation_id' => $dean->id, 'deload_units' => 6]);
+        $this->hold($f['faculty'], [$dean]);
 
         $this->actingAs($f['vpaa'])
             ->patchJson("/api/faculties/{$f['faculty']->id}", ['designation_id' => null])
@@ -137,7 +138,7 @@ class DesignationManagementTest extends TestCase
     {
         $f = $this->fixture();
         $dean = Designation::create(['name' => 'Dean', 'deload_units' => 6]);
-        $f['faculty']->update(['designation_id' => $dean->id, 'deload_units' => 6]);
+        $this->hold($f['faculty'], [$dean]);
 
         $this->actingAs($f['vpaa'])
             ->patchJson("/api/designations/{$dean->id}", ['deload_units' => 9])
@@ -151,7 +152,8 @@ class DesignationManagementTest extends TestCase
     {
         $f = $this->fixture();
         $dean = Designation::create(['name' => 'Dean', 'deload_units' => 6]);
-        $f['faculty']->update(['designation_id' => $dean->id, 'deload_units' => 4]);
+        $this->hold($f['faculty'], [$dean]);
+        $f['faculty']->forceFill(['deload_units' => 4])->save();
 
         $this->actingAs($f['vpaa'])
             ->patchJson("/api/designations/{$dean->id}", ['name' => 'College Dean'])
@@ -165,7 +167,7 @@ class DesignationManagementTest extends TestCase
     {
         $f = $this->fixture();
         $dean = Designation::create(['name' => 'Dean', 'deload_units' => 6]);
-        $f['faculty']->update(['designation_id' => $dean->id, 'deload_units' => 6]);
+        $this->hold($f['faculty'], [$dean]);
 
         $this->actingAs($f['vpaa'])
             ->deleteJson("/api/designations/{$dean->id}")
@@ -191,7 +193,7 @@ class DesignationManagementTest extends TestCase
     {
         $f = $this->fixture();
         $dean = Designation::create(['name' => 'Dean', 'deload_units' => 6]);
-        $f['faculty']->update(['designation_id' => $dean->id, 'deload_units' => 6]);
+        $this->hold($f['faculty'], [$dean]);
 
         $this->actingAs($f['secretary'])
             ->getJson('/api/designations')
@@ -282,6 +284,154 @@ class DesignationManagementTest extends TestCase
             ->assertJsonValidationErrors(['permissions.1']);
 
         $this->assertFalse($f['secretary']->fresh()->hasCapability('faculty.manage_designations'));
+    }
+
+    public function test_an_instructor_can_hold_several_designations_and_their_deloads_add_up(): void
+    {
+        $f = $this->fixture();
+        $chair = Designation::create(['name' => 'Program Chairperson', 'deload_units' => 3]);
+        $coach = Designation::create(['name' => 'Extra-Curricular Coach', 'deload_units' => 2]);
+        $adviser = Designation::create(['name' => 'SBO Adviser', 'deload_units' => 1]);
+
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/faculties/{$f['faculty']->id}", ['designation_ids' => [$coach->id, $chair->id, $adviser->id]])
+            ->assertOk()
+            ->assertJsonPath('deload_units', 6)
+            ->assertJsonPath('required_units', 15)
+            ->assertJsonPath('designations.0.id', $coach->id)
+            ->assertJsonPath('designations.2.id', $adviser->id)
+            // The first listed is the primary designation older readers use.
+            ->assertJsonPath('designation_id', $coach->id);
+    }
+
+    public function test_an_instructor_cannot_hold_more_than_three_designations(): void
+    {
+        $f = $this->fixture();
+        $ids = collect(range(1, 4))
+            ->map(fn (int $i) => Designation::create(['name' => "Post {$i}", 'deload_units' => 1])->id)
+            ->all();
+
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/faculties/{$f['faculty']->id}", ['designation_ids' => $ids])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['designation_ids']);
+
+        $this->assertSame(0, $f['faculty']->designations()->count());
+    }
+
+    public function test_clearing_the_list_releases_every_deload(): void
+    {
+        $f = $this->fixture();
+        $chair = Designation::create(['name' => 'Program Chairperson', 'deload_units' => 3]);
+        $coach = Designation::create(['name' => 'Extra-Curricular Coach', 'deload_units' => 2]);
+        $this->hold($f['faculty'], [$chair, $coach]);
+
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/faculties/{$f['faculty']->id}", ['designation_ids' => []])
+            ->assertOk()
+            ->assertJsonPath('deload_units', 0)
+            ->assertJsonPath('designation_id', null);
+
+        $this->assertSame(0, $f['faculty']->designations()->count());
+    }
+
+    public function test_a_sub_designation_is_created_under_a_parent_and_labelled_with_it(): void
+    {
+        $f = $this->fixture();
+        $director = Designation::create(['name' => 'Director', 'deload_units' => 0]);
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/designations', ['name' => "Networking Dev't", 'deload_units' => 9, 'parent_id' => $director->id])
+            ->assertCreated()
+            ->assertJsonPath('data.parent_id', $director->id)
+            ->assertJsonPath('data.label', "Director · Networking Dev't");
+    }
+
+    public function test_sub_designation_names_only_have_to_be_unique_among_siblings(): void
+    {
+        $f = $this->fixture();
+        $director = Designation::create(['name' => 'Director', 'deload_units' => 0]);
+        $office = Designation::create(['name' => 'Office Head', 'deload_units' => 0]);
+        Designation::create(['name' => 'Coordinator', 'deload_units' => 3, 'parent_id' => $director->id]);
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/designations', ['name' => 'Coordinator', 'deload_units' => 3, 'parent_id' => $office->id])
+            ->assertCreated();
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/designations', ['name' => 'Coordinator', 'deload_units' => 3, 'parent_id' => $director->id])
+            ->assertStatus(422);
+    }
+
+    public function test_sub_designations_go_only_one_level_deep(): void
+    {
+        $f = $this->fixture();
+        $director = Designation::create(['name' => 'Director', 'deload_units' => 0]);
+        $networking = Designation::create(['name' => "Networking Dev't", 'deload_units' => 9, 'parent_id' => $director->id]);
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/designations', ['name' => 'Cabling', 'deload_units' => 1, 'parent_id' => $networking->id])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['parent_id']);
+    }
+
+    public function test_a_heading_with_sub_designations_cannot_be_assigned(): void
+    {
+        $f = $this->fixture();
+        $director = Designation::create(['name' => 'Director', 'deload_units' => 0]);
+        Designation::create(['name' => "Networking Dev't", 'deload_units' => 9, 'parent_id' => $director->id]);
+
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/faculties/{$f['faculty']->id}", ['designation_ids' => [$director->id]])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['designation_ids']);
+    }
+
+    public function test_a_held_designation_cannot_become_a_heading(): void
+    {
+        $f = $this->fixture();
+        $director = Designation::create(['name' => 'Director', 'deload_units' => 6]);
+        $this->hold($f['faculty'], [$director]);
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/designations', ['name' => "Networking Dev't", 'deload_units' => 9, 'parent_id' => $director->id])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['parent_id']);
+    }
+
+    public function test_a_parent_with_sub_designations_cannot_be_archived(): void
+    {
+        $f = $this->fixture();
+        $director = Designation::create(['name' => 'Director', 'deload_units' => 0]);
+        Designation::create(['name' => "Networking Dev't", 'deload_units' => 9, 'parent_id' => $director->id]);
+
+        $this->actingAs($f['vpaa'])
+            ->deleteJson("/api/designations/{$director->id}")
+            ->assertStatus(409)
+            ->assertJsonPath('children_count', 1);
+    }
+
+    public function test_editing_one_deload_keeps_the_rest_of_a_holders_total(): void
+    {
+        $f = $this->fixture();
+        $chair = Designation::create(['name' => 'Program Chairperson', 'deload_units' => 3]);
+        $coach = Designation::create(['name' => 'Extra-Curricular Coach', 'deload_units' => 2]);
+        $this->hold($f['faculty'], [$chair, $coach]);
+
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/designations/{$chair->id}", ['deload_units' => 6])
+            ->assertOk()
+            ->assertJsonPath('holders_updated', 1);
+
+        $this->assertSame(8, (int) $f['faculty']->fresh()->deload_units);
+    }
+
+    /**
+     * @param  list<Designation>  $designations
+     */
+    private function hold(Faculty $faculty, array $designations): void
+    {
+        app(FacultyDesignationService::class)->sync($faculty, array_map(fn (Designation $d): int => (int) $d->id, $designations));
     }
 
     /** @return array<string, mixed> */

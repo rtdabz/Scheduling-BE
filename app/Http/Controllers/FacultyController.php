@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Designation;
 use App\Models\Faculty;
 use App\Models\Semester;
+use App\Services\FacultyDesignationService;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
@@ -37,14 +37,21 @@ class FacultyController extends Controller
     private const DEFAULT_MAX_UNITS = 21;
 
     /**
-     * The designation an instructor holds. Not a load field and not part of
-     * their identity, so it is permitted alongside either set -- but only for a
-     * caller holding `faculty.manage_designations`, and the deload it implies
-     * is always read from the designation record rather than the request.
+     * The designations an instructor holds (up to three), and the older
+     * single-designation field. Not load fields and not part of their identity,
+     * so they are permitted alongside either set -- but only for a caller
+     * holding `faculty.manage_designations`, and the deload they imply is always
+     * read from the designation records rather than the request.
      */
-    private const DESIGNATION_FIELD = 'designation_id';
+    private const DESIGNATION_FIELDS = ['designation_ids', 'designation_id'];
 
-    public function __construct(private readonly FacultyLoadService $facultyLoad) {}
+    /** Name suffixes the roster accepts; the form offers exactly these. */
+    private const NAME_SUFFIXES = ['Jr.', 'Sr.', 'II', 'III', 'IV', 'V'];
+
+    public function __construct(
+        private readonly FacultyLoadService $facultyLoad,
+        private readonly FacultyDesignationService $designations,
+    ) {}
 
     public function index(Request $request)
     {
@@ -75,12 +82,13 @@ class FacultyController extends Controller
             'first_name' => 'required|string|max:255',
             'last_name' => 'required|string|max:255',
             'middle_name' => 'nullable|string|max:255',
+            'suffix' => ['nullable', Rule::in(self::NAME_SUFFIXES)],
             'employment_type' => 'required|in:full-time,part-time',
             // The units come from the roster editor, so a part-time instructor
             // is not created carrying a full-time load. Which of the two the
             // form fills depends on the load type it was given. Deload and pro
             // bono are maintained by the Secretary.
-            'max_units' => 'sometimes|integer|min:1',
+            'max_units' => 'sometimes|integer|min:0',
             'overload_units' => 'nullable|integer|min:0',
             'deload_units' => 'nullable|integer|min:0',
             'probono_units' => 'nullable|integer|min:0',
@@ -88,12 +96,14 @@ class FacultyController extends Controller
             'program_id' => $this->programRule($departmentId ?? $request->input('department_id')),
             'status' => 'nullable|in:active,inactive',
             'profile_picture' => 'nullable|string',
-            'designation_id' => 'nullable|exists:designations,id',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
+
+        $designationIds = $this->designations->idsFrom($request);
+        $this->designations->validate($designationIds);
 
         // Only the validated keys are assigned. `user_id` and
         // `administrative_role` are fillable but belong to the user-account link,
@@ -117,15 +127,17 @@ class FacultyController extends Controller
             $payload['department_id'] = $departmentId;
         }
 
-        // The deload a designation carries is copied onto the instructor rather
+        // The deload the designations carry is copied onto the instructor rather
         // than joined at read time, because SchedulingPolicy::facultyBasicLoad()
         // -- and the snapshot the generator runs against -- read one column.
-        $payload['deload_units'] = $this->deloadForDesignation(
-            $payload['designation_id'] ?? null,
-            $payload['deload_units'],
-        );
+        $faculty = DB::transaction(function () use ($payload, $designationIds): Faculty {
+            $faculty = Faculty::create($payload);
+            if ($designationIds !== []) {
+                $this->designations->sync($faculty, $designationIds);
+            }
 
-        $faculty = Faculty::create($payload);
+            return $faculty;
+        });
         ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
         return response()->json($this->present($faculty), 201);
@@ -148,7 +160,7 @@ class FacultyController extends Controller
 
         $departmentId = $this->resolveDepartmentId($request);
         $loadOnly = $this->isLoadOnlyEditor($request);
-        $submitsDesignation = $request->has(self::DESIGNATION_FIELD);
+        $submitsDesignation = $this->designations->submitted($request);
 
         // Assigning a designation moves the instructor's deload, so it is gated
         // on the capability that owns the designation list rather than on the
@@ -157,7 +169,7 @@ class FacultyController extends Controller
         if ($submitsDesignation && ! ($request->user()?->hasCapability('faculty.manage_designations') ?? false)) {
             return response()->json([
                 'message' => 'You are not permitted to change an instructor designation.',
-                'errors' => ['designation_id' => ['Requires the Manage Designations capability.']],
+                'errors' => ['designation_ids' => ['Requires the Manage Designations capability.']],
             ], 403);
         }
 
@@ -172,17 +184,16 @@ class FacultyController extends Controller
         }
 
         $rules = [
-            'max_units' => 'sometimes|required|integer|min:1',
+            'max_units' => 'sometimes|required|integer|min:0',
             'overload_units' => 'sometimes|nullable|integer|min:0',
             'deload_units' => 'sometimes|nullable|integer|min:0',
             'probono_units' => 'sometimes|nullable|integer|min:0',
-            'designation_id' => 'sometimes|nullable|exists:designations,id',
         ];
 
         if ($loadOnly) {
             $rejected = array_diff(
                 array_keys($request->all()),
-                [...self::LOAD_FIELDS, self::DESIGNATION_FIELD],
+                [...self::LOAD_FIELDS, ...self::DESIGNATION_FIELDS],
             );
             if ($rejected !== []) {
                 return response()->json([
@@ -196,6 +207,7 @@ class FacultyController extends Controller
                 'first_name' => 'sometimes|required|string|max:255',
                 'last_name' => 'sometimes|required|string|max:255',
                 'middle_name' => 'nullable|string|max:255',
+                'suffix' => ['nullable', Rule::in(self::NAME_SUFFIXES)],
                 'employment_type' => 'sometimes|required|in:full-time,part-time',
                 'department_id' => 'sometimes|required|exists:departments,id',
                 'program_id' => $this->programRule(
@@ -219,18 +231,21 @@ class FacultyController extends Controller
             $payload['department_id'] = $departmentId;
         }
 
-        // Designation wins over a hand-typed deload in the same request: the
-        // designation record is the source of the figure, and the request is
-        // never trusted for it. Clearing the designation releases the deload
-        // back to zero, which is what "no longer a chairperson" means.
+        $designationIds = $submitsDesignation ? $this->designations->idsFrom($request) : [];
         if ($submitsDesignation) {
-            $payload['deload_units'] = $this->deloadForDesignation(
-                $payload['designation_id'] ?? null,
-                0,
-            );
+            $this->designations->validate($designationIds, $faculty);
         }
 
-        $faculty->update($payload);
+        // Designations win over a hand-typed deload in the same request: the
+        // designation records are the source of the figure, and the request is
+        // never trusted for it. Clearing them releases the deload back to zero,
+        // which is what "no longer a chairperson" means.
+        DB::transaction(function () use ($faculty, $payload, $submitsDesignation, $designationIds): void {
+            $faculty->update($payload);
+            if ($submitsDesignation) {
+                $this->designations->sync($faculty, $designationIds);
+            }
+        });
         ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
         return response()->json($this->present($faculty->refresh()));
@@ -262,28 +277,11 @@ class FacultyController extends Controller
         ]);
     }
 
-    /**
-     * The deload units a designation carries, or $fallback when the instructor
-     * holds none. Read from the designation row rather than the request so a
-     * caller cannot grant themselves an arbitrary deload -- and so the number
-     * always matches what the Designations screen shows.
-     */
-    private function deloadForDesignation(mixed $designationId, int $fallback): int
-    {
-        if ($designationId === null) {
-            return $fallback;
-        }
-
-        $designation = Designation::find($designationId);
-
-        return $designation === null ? $fallback : (int) $designation->deload_units;
-    }
-
     private function present(Faculty $faculty): Faculty
     {
         return $this->facultyLoad
             ->decorate($faculty, $this->activeSemesterId())
-            ->load(['department', 'program', 'availabilities', 'designation']);
+            ->load(['department', 'program', 'availabilities', 'designation.parent', 'designations.parent']);
     }
 
     private function activeSemesterId(): ?int

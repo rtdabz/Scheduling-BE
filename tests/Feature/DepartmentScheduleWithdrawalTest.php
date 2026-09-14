@@ -320,6 +320,67 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $this->assertDatabaseCount('scheduling_audit_logs', 1);
     }
 
+    /**
+     * Reassignment no longer has to be emptied first: recalling releases the
+     * instructors itself, including one another college assigned to a delegated
+     * course, which the department could not have cleared.
+     */
+    public function test_a_reassignment_section_with_instructors_can_be_recalled(): void
+    {
+        [$department, $semester, $room, $course, $firstSection] = $this->fixture();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $otherCollege = Departments::create(['department_name' => 'Arts and Sciences', 'department_code' => 'CAS']);
+        $delegatedInstructor = $this->instructor($otherCollege);
+
+        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, [
+            'status' => 'reassignment',
+            'faculty_id' => $delegatedInstructor->id,
+            'faculty_assignment_done' => true,
+        ]);
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
+            ->assertOk()
+            ->assertJsonPath('instructors_released', 1)
+            ->assertJsonPath('message', 'Selected section schedules recalled for revision.');
+
+        $schedule->refresh();
+        $this->assertSame('revision', $schedule->status);
+        $this->assertNull($schedule->faculty_id);
+        $this->assertFalse((bool) $schedule->faculty_assignment_done);
+    }
+
+    /**
+     * A withdrawn class leaves the assignment screens and the instructor's load,
+     * so it must not keep blocking that instructor from other classes at the same
+     * time -- nobody can see it to clear it.
+     */
+    public function test_a_withdrawn_class_no_longer_blocks_its_instructor_elsewhere(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $instructor = $this->instructor($department);
+        $otherRoom = Rooms::create(['room_code' => 'CIT 102', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
+
+        $this->schedule($department, $semester, $room, $course, $firstSection, [
+            'status' => 'faculty_assignment',
+            'faculty_id' => $instructor->id,
+        ]);
+        $sameHour = $this->schedule($department, $semester, $otherRoom, $course, $secondSection, [
+            'status' => 'faculty_assignment',
+        ]);
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+
+        $this->actingAs($secretary)
+            ->patchJson("/api/instructor-assignments/{$sameHour->id}", ['faculty_id' => $instructor->id])
+            ->assertOk();
+
+        $this->assertSame($instructor->id, (int) $sameHour->refresh()->faculty_id);
+    }
+
     private function instructor(Departments $department): Faculty
     {
         return Faculty::create([

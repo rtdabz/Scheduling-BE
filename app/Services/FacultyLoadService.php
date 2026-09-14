@@ -16,7 +16,7 @@ class FacultyLoadService
     public function get(?int $departmentId, ?int $semesterId, ?int $programId = null): Collection
     {
         $faculties = Faculty::query()
-            ->with(['department', 'program', 'availabilities', 'user', 'designation'])
+            ->with(['department', 'program', 'availabilities', 'user', 'designation.parent', 'designations.parent'])
             ->when($departmentId !== null, fn ($query) => $query->where('department_id', $departmentId))
             ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
             ->orderBy('last_name')
@@ -126,9 +126,11 @@ class FacultyLoadService
             'tier_label' => SchedulingPolicy::loadTierLabel($tier),
             // Only an assignment that *adds* units can cause an overload: a
             // re-save of the instructor who already holds the class must not
-            // prompt. An instructor with no Basic Load configured has no
-            // threshold to cross, so there is nothing to confirm.
-            'requires_confirmation' => $basic > 0 && $added > 0 && $projected > $basic,
+            // prompt. An instructor with no allowance configured at all has no
+            // threshold to cross, so there is nothing to confirm. A Basic Load
+            // of 0 with overload granted (a part-timer carrying only overload)
+            // is configured: every unit they take is overload.
+            'requires_confirmation' => SchedulingPolicy::facultyUnitCeiling($faculty) > 0 && $added > 0 && $projected > $basic,
         ];
     }
 

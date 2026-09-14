@@ -16,6 +16,7 @@ use App\Http\Controllers\FacultyController;
 use App\Http\Controllers\InitialDataController;
 use App\Http\Controllers\InstitutionSettingsController;
 use App\Http\Controllers\InstructorAssignmentController;
+use App\Http\Controllers\RealtimeConfigController;
 use App\Http\Controllers\ReportsController;
 use App\Http\Controllers\RoomRequestController;
 use App\Http\Controllers\RoomsController;
@@ -48,6 +49,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::get('/notifications', [SystemNotificationController::class, 'index']);
     Route::patch('/notifications/read-all', [SystemNotificationController::class, 'markAllAsRead']);
     Route::patch('/notifications/{notification}/read', [SystemNotificationController::class, 'markAsRead']);
+    Route::get('/realtime-config', RealtimeConfigController::class);
 
     // VPAA-only administration
     Route::middleware('role:vpaa')->group(function () {
@@ -269,6 +271,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('capability:schedule.assign_instructor')->group(function () {
         Route::get('instructor-assignments', [InstructorAssignmentController::class, 'index']);
         Route::delete('instructor-assignments/sections/{section}', [InstructorAssignmentController::class, 'clearSection']);
+        Route::post('instructor-assignments/clear', [InstructorAssignmentController::class, 'clearSections']);
         Route::patch('instructor-assignments/{schedule}', [InstructorAssignmentController::class, 'update']);
 
     });

@@ -28,6 +28,7 @@ class Schedule extends Model
         'course_id',
         'faculty_id',
         'faculty_assignment_done',
+        'faculty_conflict_override',
         'room_id',
         'department_id',
         'program_id',
@@ -43,7 +44,10 @@ class Schedule extends Model
         'status',
     ];
 
-    protected $casts = ['faculty_assignment_done' => 'boolean'];
+    protected $casts = [
+        'faculty_assignment_done' => 'boolean',
+        'faculty_conflict_override' => 'boolean',
+    ];
 
     protected ?string $tempSplitGroupId = null;
 
@@ -103,9 +107,28 @@ class Schedule extends Model
 
     protected static function booted()
     {
+        // An instructor-conflict override was approved for this instructor at
+        // this day and time. Once any of those change it no longer describes the
+        // meeting, so it is cleared and the new placement is checked afresh.
+        // Bulk query-builder updates fire no events; those paths set the column
+        // themselves (see FacultyConflictOverride).
+        static::updating(function (Schedule $schedule): void {
+            if (
+                $schedule->faculty_conflict_override
+                && ! $schedule->isDirty('faculty_conflict_override')
+                && $schedule->movesInstructorOrTime()
+            ) {
+                $schedule->faculty_conflict_override = false;
+            }
+        });
+
         static::saved(function (Schedule $schedule) {
             if ($schedule->tempSplitGroupId !== null || $schedule->tempMeetingType !== null || $schedule->tempMeetingIndex !== null) {
-                $split = $schedule->split ?: new ScheduleSplit;
+                // A row inserted by this save cannot own a split yet; asking
+                // the relation cost a query per created meeting.
+                $split = ($schedule->wasRecentlyCreated && ! $schedule->relationLoaded('split'))
+                    ? new ScheduleSplit
+                    : ($schedule->split ?: new ScheduleSplit);
                 $split->schedule_id = $schedule->id;
                 if ($schedule->tempSplitGroupId !== null) {
                     $split->split_group_id = $schedule->tempSplitGroupId;
@@ -138,6 +161,30 @@ class Schedule extends Model
         static::restored(function (Schedule $schedule): void {
             ScheduleSplit::withTrashed()->where('schedule_id', $schedule->id)->restore();
         });
+    }
+
+    /**
+     * Whether this pending update changes the instructor, day or time. Times are
+     * compared as HH:MM because a save may send "07:00" for a stored "07:00:00",
+     * which is the same meeting and must not clear an override.
+     */
+    public function movesInstructorOrTime(): bool
+    {
+        if ((int) $this->getOriginal('faculty_id') !== (int) $this->faculty_id) {
+            return true;
+        }
+
+        if ((string) $this->getOriginal('day') !== (string) $this->day) {
+            return true;
+        }
+
+        foreach (['start_time', 'end_time'] as $column) {
+            if (substr((string) $this->getOriginal($column), 0, 5) !== substr((string) $this->{$column}, 0, 5)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
