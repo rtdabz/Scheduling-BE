@@ -156,7 +156,12 @@ return new class extends Migration
     private function renameIndex(string $table, string $from, string $to): void
     {
         if (Schema::hasIndex($table, $from)) {
-            Schema::table($table, fn (Blueprint $blueprint) => $blueprint->renameIndex($from, $to));
+            try {
+                Schema::table($table, fn (Blueprint $blueprint) => $blueprint->renameIndex($from, $to));
+            } catch (\Throwable) {
+                // MariaDB < 10.5.2 does not support ALTER TABLE ... RENAME INDEX.
+                // The existing index continues to cover the column under its previous name.
+            }
         }
     }
 
