@@ -2,12 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Room\StoreRoomRequest;
+use App\Http\Requests\Room\UpdateRoomRequest;
 use App\Models\Rooms;
-use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Validation\Rule;
 
 class RoomsController extends Controller
 {
@@ -24,17 +24,9 @@ class RoomsController extends Controller
     /**
      * Store a newly created resource in storage.
      */
-    public function store(Request $request)
+    public function store(StoreRoomRequest $request)
     {
-        $validated = $request->validate([
-            'room_code' => 'required|string|max:255|unique:rooms,room_code',
-            'building' => 'nullable|string|in:NEE Building,Building 1,Building 2,Building 3,Building 4,Building 5,Building 6',
-            'room_type' => SchedulingPolicy::allowedRoomTypesRule('required|string'),
-            'allow_lecture_usage' => 'sometimes|boolean',
-            'status' => SchedulingPolicy::allowedRoomStatusesRule('nullable|string'),
-            'department_id' => 'nullable|exists:departments,id',
-            'max_concurrent_classes' => 'sometimes|integer|min:1|max:20',
-        ]);
+        $validated = $request->validated();
 
         $validated['max_concurrent_classes'] = (int) ($validated['max_concurrent_classes'] ?? (
             in_array(($validated['room_type'] ?? null), ['field', 'online'], true) ? 3 : 1
@@ -68,19 +60,10 @@ class RoomsController extends Controller
     /**
      * Update the specified resource in storage.
      */
-    public function update(Request $request, $id)
+    public function update(UpdateRoomRequest $request, $id)
     {
         $room = Rooms::findOrFail($id);
-
-        $validated = $request->validate([
-            'room_code' => ['sometimes', 'required', 'string', 'max:255', Rule::unique('rooms')->ignore($room->id)],
-            'building' => 'nullable|string|in:NEE Building,Building 1,Building 2,Building 3,Building 4,Building 5,Building 6',
-            'room_type' => SchedulingPolicy::allowedRoomTypesRule('sometimes|required|string'),
-            'allow_lecture_usage' => 'sometimes|boolean',
-            'status' => SchedulingPolicy::allowedRoomStatusesRule('sometimes|nullable|string'),
-            'department_id' => 'nullable|exists:departments,id',
-            'max_concurrent_classes' => 'sometimes|integer|min:1|max:20',
-        ]);
+        $validated = $request->validated();
 
         if (! in_array(($validated['room_type'] ?? $room->room_type), ['field', 'online'], true) && array_key_exists('max_concurrent_classes', $validated)) {
             $validated['max_concurrent_classes'] = 1;

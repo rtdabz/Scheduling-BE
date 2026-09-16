@@ -323,7 +323,6 @@ class RuleEngineSplitValidationTest extends TestCase
         $rules = collect($violations)->pluck('rule')->all();
         $this->assertNotContains('room_exists', $rules);
         $this->assertContains('room_type_match', $rules);
-        $this->assertNotContains('delivery_room_alignment', $rules);
     }
 
     public function test_online_capacity_uses_department_configured_limit(): void

@@ -30,6 +30,7 @@ class SchedulingConstraintCatalogTest extends TestCase
     {
         $paths = [
             app_path('Services/Scheduling/Engine/RuleEngine.php'),
+            ...glob(app_path('Services/Scheduling/Engine/Rules/*.php')),
             app_path('Http/Controllers/ScheduleController.php'),
             app_path('Http/Controllers/ScheduleRecommendationController.php'),
             app_path('Http/Controllers/InstructorAssignmentController.php'),

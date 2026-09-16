@@ -3,11 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Program\StoreProgramRequest;
+use App\Http\Requests\Program\UpdateProgramRequest;
 use App\Models\Program;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Validation\Rule;
 
 class ProgramController extends Controller
 {
@@ -33,21 +34,9 @@ class ProgramController extends Controller
         return response()->json($programs);
     }
 
-    public function store(Request $request): JsonResponse
+    public function store(StoreProgramRequest $request): JsonResponse
     {
-        $validated = $request->validate([
-            'department_id' => ['required', 'exists:departments,id'],
-            'cluster' => ['nullable', 'string', 'max:255'],
-            'code' => [
-                'required',
-                'string',
-                'max:50',
-                Rule::unique('programs', 'code')->where(
-                    fn ($query) => $query->where('department_id', $request->input('department_id'))
-                ),
-            ],
-            'name' => ['nullable', 'string', 'max:255'],
-        ]);
+        $validated = $request->validated();
 
         $program = Program::create([
             'department_id' => $validated['department_id'],
@@ -63,18 +52,9 @@ class ProgramController extends Controller
         ], 201);
     }
 
-    public function update(Request $request, Program $program): JsonResponse
+    public function update(UpdateProgramRequest $request, Program $program): JsonResponse
     {
-        $validated = $request->validate([
-            'cluster' => ['nullable', 'string', 'max:255'],
-            'code' => [
-                'sometimes', 'required', 'string', 'max:50',
-                Rule::unique('programs', 'code')
-                    ->ignore($program->id)
-                    ->where(fn ($query) => $query->where('department_id', $program->department_id)),
-            ],
-            'name' => ['sometimes', 'nullable', 'string', 'max:255'],
-        ]);
+        $validated = $request->validated();
 
         $program->update([
             ...$validated,

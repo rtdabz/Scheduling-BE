@@ -27,7 +27,7 @@ class UserFacultyProfileService
      */
     public function createFor(User $user, array $designationIds = []): Faculty
     {
-        [$firstName, $middleName, $lastName] = $this->splitName($user->name);
+        [$firstName, $middleName, $lastName, $suffix] = $this->nameParts($user);
 
         $faculty = Faculty::create([
             'user_id' => $user->id,
@@ -35,6 +35,7 @@ class UserFacultyProfileService
             'first_name' => $firstName,
             'middle_name' => $middleName,
             'last_name' => $lastName,
+            'suffix' => $suffix,
             'employment_type' => 'full-time',
             'max_units' => 21,
             'overload_units' => 0,
@@ -121,13 +122,14 @@ class UserFacultyProfileService
             return null;
         }
 
-        [$firstName, $middleName, $lastName] = $this->splitName($user->name);
+        [$firstName, $middleName, $lastName, $suffix] = $this->nameParts($user);
 
         $faculty->update([
             'administrative_role' => $user->role,
             'first_name' => $firstName,
             'middle_name' => $middleName,
             'last_name' => $lastName,
+            'suffix' => $suffix,
             'department_id' => $user->department_id,
             'program_id' => $user->program_id,
             'profile_picture' => $user->profile_picture,
@@ -147,6 +149,21 @@ class UserFacultyProfileService
     public function deleteFor(User $user): void
     {
         $user->facultyProfile?->delete();
+    }
+
+    /**
+     * The account's structured name fields when it has them. Older accounts
+     * only carry a display name, which is split on spaces as a fallback.
+     *
+     * @return array{0: string, 1: ?string, 2: string, 3: ?string}
+     */
+    private function nameParts(User $user): array
+    {
+        if (filled($user->first_name) && filled($user->last_name)) {
+            return [$user->first_name, $user->middle_initial ?: null, $user->last_name, $user->suffix ?: null];
+        }
+
+        return [...$this->splitName((string) $user->name), null];
     }
 
     private function splitName(string $name): array

@@ -3,14 +3,14 @@
 ## Previous generation flow
 
 1. `RuleEngine` and scheduling policy define hard constraints.
-2. `CSPSolver` searches for valid schedules and applies internal search heuristics.
+2. `CspSolver` searches for valid schedules and applies internal search heuristics.
 3. Callers generally accepted the first ranked CSP result.
 4. The selected result was validated again by `RuleEngine` before persistence.
 
 ## Current generation flow
 
 1. `RuleEngine` and scheduling policy continue to define hard constraints.
-2. `CSPSolver` produces a pool of valid, diverse candidates.
+2. `CspSolver` produces a pool of valid, diverse candidates.
 3. `ScheduleQualityEvaluator` scores each complete candidate and ranks them by
    descending quality score. Callers invoke `ScheduleQualityEvaluator::rank`
    directly; the former `ScheduleCandidateOptimizer` wrapper was removed once

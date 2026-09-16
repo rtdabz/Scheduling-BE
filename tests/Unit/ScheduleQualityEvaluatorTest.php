@@ -4,10 +4,14 @@ namespace Tests\Unit;
 
 use App\Models\Sections;
 use App\Services\Scheduling\Generation\ScheduleQualityEvaluator;
-use PHPUnit\Framework\TestCase;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
 
 class ScheduleQualityEvaluatorTest extends TestCase
 {
+    // The evaluator reads department settings, so it needs a booted app and schema.
+    use RefreshDatabase;
+
     private ScheduleQualityEvaluator $evaluator;
 
     protected function setUp(): void
@@ -241,8 +245,13 @@ class ScheduleQualityEvaluatorTest extends TestCase
         $scatteredScore = $this->evaluator->evaluate($scattered, $sections);
 
         $this->assertGreaterThan($scatteredScore['quality_score'], $clusteredScore['quality_score']);
-        $this->assertSame(0, $clusteredScore['score_breakdown']['section_day_spread']);
-        $this->assertGreaterThan(0, $scatteredScore['score_breakdown']['section_day_spread']);
+        // The spread penalty counts days beyond what the section's minutes need.
+        // Eight hours fit in one day, so two days still cost one extra day, but
+        // four days cost three.
+        $this->assertLessThan(
+            $scatteredScore['score_breakdown']['section_day_spread'],
+            $clusteredScore['score_breakdown']['section_day_spread'],
+        );
     }
 
     public function test_short_section_gaps_are_penalized_heavily_to_prefer_consecutive_blocks(): void

@@ -31,12 +31,13 @@ class RoomRequestTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_secretary_without_the_capability_cannot_request_a_room(): void
+    /** Every secretary inherits `room.request`; a dean of the same department does not. */
+    public function test_an_account_without_the_capability_cannot_request_a_room(): void
     {
         $f = $this->fixture();
-        $f['secretary']->revokePermissionTo('room.request');
+        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $f['secretary']->department_id]);
 
-        $this->actingAs($f['secretary']->fresh())
+        $this->actingAs($dean)
             ->postJson('/api/room-requests', $this->payload($f))
             ->assertForbidden();
     }

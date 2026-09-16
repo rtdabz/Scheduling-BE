@@ -13,6 +13,9 @@ class ScheduleHistoryTest extends TestCase
 {
     use RefreshDatabase;
 
+    /** The history endpoint lists semester archive snapshots only. */
+    private const ARCHIVE = ['source' => 'semester_change', 'action' => 'schedule_semester_archived'];
+
     public function test_only_vpaa_can_read_schedule_history(): void
     {
         $secretary = User::factory()->create(['role' => 'secretary']);
@@ -25,18 +28,20 @@ class ScheduleHistoryTest extends TestCase
     public function test_vpaa_receives_newest_history_first(): void
     {
         $vpaa = User::factory()->create(['role' => 'vpaa']);
-        $created = ScheduleHistoryVersion::create(['actor_user_id' => $vpaa->id, 'action' => 'created', 'created_at' => now()->subMinute()]);
-        ScheduleHistoryItem::create(['history_version_id' => $created->id, 'original_schedule_id' => 10, 'after_snapshot' => ['day' => 'Monday']]);
-        $updated = ScheduleHistoryVersion::create(['actor_user_id' => $vpaa->id, 'action' => 'updated', 'change_summary' => ['day' => 'Tuesday'], 'created_at' => now()]);
-        ScheduleHistoryItem::create(['history_version_id' => $updated->id, 'original_schedule_id' => 10, 'after_snapshot' => ['day' => 'Tuesday']]);
+        $older = ScheduleHistoryVersion::create([...self::ARCHIVE, 'actor_user_id' => $vpaa->id, 'created_at' => now()->subMinute()]);
+        ScheduleHistoryItem::create(['history_version_id' => $older->id, 'original_schedule_id' => 10, 'after_snapshot' => ['day' => 'Monday']]);
+        $newer = ScheduleHistoryVersion::create([...self::ARCHIVE, 'actor_user_id' => $vpaa->id, 'created_at' => now()]);
+        ScheduleHistoryItem::create(['history_version_id' => $newer->id, 'original_schedule_id' => 10, 'after_snapshot' => ['day' => 'Tuesday']]);
+        // Ordinary edits are not listed: the page only shows semester archives.
+        ScheduleHistoryVersion::create(['actor_user_id' => $vpaa->id, 'action' => 'updated']);
 
         $this->actingAs($vpaa, 'sanctum')
             ->getJson('/api/schedule-history')
             ->assertOk()
             ->assertJsonPath('meta.total', 2)
-            ->assertJsonPath('data.0.action', 'updated')
+            ->assertJsonPath('data.0.id', $newer->id)
             ->assertJsonPath('data.0.snapshot.day', 'Tuesday')
-            ->assertJsonPath('data.1.action', 'created');
+            ->assertJsonPath('data.1.id', $older->id);
     }
 
     public function test_secretary_is_limited_to_their_department(): void
@@ -53,7 +58,8 @@ class ScheduleHistoryTest extends TestCase
             User::factory()->create(['role' => 'secretary', 'department_id' => $departmentId]),
             ['schedule.view'],
         );
-        $version = ScheduleHistoryVersion::create(['department_id' => $departmentId, 'action' => 'updated']);
+        $version = ScheduleHistoryVersion::create([...self::ARCHIVE, 'department_id' => $departmentId]);
+        ScheduleHistoryVersion::create([...self::ARCHIVE, 'department_id' => null]);
         ScheduleHistoryItem::create(['history_version_id' => $version->id, 'after_snapshot' => ['day' => 'Friday']]);
 
         $this->actingAs($secretary, 'sanctum')

@@ -23,3 +23,10 @@
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
 </IfModule>
+
+# Compress JSON responses. /api/initial-data is ~180KB of repetitive JSON that
+# shrinks to a fraction of that, which matters most on a slow connection.
+# ConditionalGetJson tolerates the "-gzip" suffix mod_deflate adds to ETags.
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE application/json text/html text/plain text/css application/javascript
+</IfModule>

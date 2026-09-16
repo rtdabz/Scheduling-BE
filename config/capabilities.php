@@ -13,9 +13,8 @@
  * `requires` lists the capabilities a grant cannot stand without. Every
  * schedule screen reads the timetable before it can change it, so granting
  * instructor assignment while withholding `schedule.view` produced an account
- * whose only unlocked pages answered 403 to their own data fetches. Grants are
- * expanded over this list when they are saved, so a prerequisite can never be
- * left behind.
+ * whose only unlocked pages answered 403 to their own data fetches. A role's
+ * defaults must therefore include everything its capabilities require.
  */
 return [
     'permissions' => [
@@ -148,13 +147,13 @@ return [
     ],
 
     /*
-     * Permissions inherited from the role itself, for every account that holds
-     * it. Deliberately sparse: what a secretary, program head or director may
-     * do differs from one appointment to the next, so their power is granted
-     * per account instead. An inherited permission cannot be taken away from
-     * one user without taking it from the whole role, which is exactly the
-     * rigidity this system is meant to avoid.
+     * What every account holding a role may do. Access is decided by role
+     * alone -- there are no per-account grants -- so two secretaries always
+     * hold the same power, and changing it means editing this list and adding
+     * a migration that re-syncs the stored roles.
      *
+     * Secretaries and program heads build their department's timetable end to
+     * end; approvals, room review and designations stay with the dean and VPAA.
      * The VPAA keeps the full set: it is the break-glass account.
      */
     'role_defaults' => [
@@ -167,34 +166,18 @@ return [
             'room.request', 'room.review_requests',
         ],
         'dean' => ['schedule.view', 'schedule.approve_dean'],
-        'secretary' => [],
-        'program_head' => [],
+        'secretary' => [
+            'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
+            'schedule.generate', 'schedule.submit', 'schedule.withdraw',
+            'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
+            'room.request',
+        ],
+        'program_head' => [
+            'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
+            'schedule.generate', 'schedule.submit', 'schedule.withdraw',
+            'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
+            'room.request',
+        ],
         'director' => [],
-    ],
-
-    'presets' => [
-        'view_only' => [
-            'label' => 'Reviewer (View Only)',
-            'description' => 'Reads schedules and history without changing anything.',
-            'permissions' => ['schedule.view'],
-        ],
-        'assign_only' => [
-            'label' => 'Instructor Assigner',
-            'description' => 'Assigns faculty to courses, including courses delegated from other colleges.',
-            'permissions' => [
-                'schedule.view',
-                'schedule.assign_instructor',
-                'schedule.assign_instructor_cross_department',
-            ],
-        ],
-        'full_workspace' => [
-            'label' => 'Schedule Builder',
-            'description' => 'Builds and submits the department timetable, and assigns its instructors.',
-            'permissions' => [
-                'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
-                'schedule.generate', 'schedule.submit', 'schedule.withdraw', 'schedule.assign_instructor',
-                'room.request',
-            ],
-        ],
     ],
 ];

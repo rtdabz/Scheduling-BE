@@ -114,7 +114,9 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
                 'status' => 'faculty_assignment',
             ])
             ->assertStatus(422)
-            ->assertJsonPath('message', 'GEC 101 already has a schedule owned by the source department. Assign the instructor to the existing schedule; do not create another schedule.');
+            // The section belongs to the source department, so the request is
+            // refused before the duplicate check is ever reached.
+            ->assertJsonPath('message', 'The schedule Department, Program, and Section must match.');
 
         $this->assertSame(3, Schedule::query()->where('course_id', $fixture['gec']->id)->count());
     }

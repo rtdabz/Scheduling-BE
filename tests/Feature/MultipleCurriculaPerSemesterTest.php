@@ -11,6 +11,7 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -368,6 +369,45 @@ class MultipleCurriculaPerSemesterTest extends TestCase
 
         $this->assertSame('4', (string) $fromOld['year_level']);
         $this->assertSame('3', (string) $fromNew['year_level']);
+    }
+
+    /**
+     * The validator used to read the department's first active curriculum, so a
+     * cohort on the newer one was judged against the older placement.
+     */
+    public function test_the_validator_reads_placements_from_the_curriculum_the_section_follows(): void
+    {
+        $fixture = $this->fixture();
+        $shared = $this->course('SHARED 1', $fixture['department']->id);
+        $this->place($fixture['old'], $shared, 4);
+        $this->place($fixture['new'], $shared, 3);
+
+        $year3 = Sections::create([
+            'section_name' => 'IT 3A', 'year_level' => '3', 'semester' => '1st',
+            'department_id' => $fixture['department']->id,
+            'program_id' => $fixture['program']->id,
+            'curriculum_id' => $fixture['new']->id,
+            'semester_id' => $fixture['semester']->id,
+            'status' => 'active',
+        ]);
+
+        $violations = app(RuleEngine::class)->validate([
+            'semester_id' => $fixture['semester']->id,
+            'section_id' => $year3->id,
+            'course_id' => $shared->id,
+            'department_id' => $fixture['department']->id,
+            'room_id' => Rooms::query()->firstOrFail()->id,
+            'day' => 'Monday',
+            'start_time' => '08:00',
+            'end_time' => '09:00',
+            'mode' => 'on-site',
+        ]);
+
+        $rules = array_column($violations, 'rule');
+        $this->assertNotContains('subject_section_year_alignment', $rules);
+        $this->assertNotContains('subject_section_semester_alignment', $rules);
+        // The catalogue default on the course row is never overwritten.
+        $this->assertSame('1', (string) $shared->refresh()->year_level);
     }
 
     /**

@@ -252,8 +252,8 @@ class DesignationManagementTest extends TestCase
     }
 
     /**
-     * `faculty.manage_designations` is VPAA-only: Manage Access will not offer
-     * it to any other role, so the VPAA is the only caller that can assign one.
+     * `faculty.manage_designations` is VPAA-only: no other role's defaults
+     * include it, so the VPAA is the only caller that can assign one.
      */
     public function test_the_vpaa_may_assign_a_designation(): void
     {
@@ -268,22 +268,15 @@ class DesignationManagementTest extends TestCase
     }
 
     /**
-     * The capability is not delegable, so Manage Access refuses to attach it
-     * to any other role -- the config gate and the route gate have to agree,
-     * or a grant made in the UI would quietly outlive the policy.
+     * The capability is not delegable, so no role but the VPAA inherits it --
+     * the secretary a department relies on for loading still cannot hold it.
      */
-    public function test_the_capability_cannot_be_granted_to_another_role(): void
+    public function test_no_other_role_holds_the_capability(): void
     {
         $f = $this->fixture();
 
-        $this->actingAs($f['vpaa'])
-            ->patchJson("/api/user/{$f['secretary']->id}/permissions", [
-                'permissions' => ['schedule.view', 'faculty.manage_designations'],
-            ])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['permissions.1']);
-
         $this->assertFalse($f['secretary']->fresh()->hasCapability('faculty.manage_designations'));
+        $this->assertTrue($f['vpaa']->fresh()->hasCapability('faculty.manage_designations'));
     }
 
     public function test_an_instructor_can_hold_several_designations_and_their_deloads_add_up(): void

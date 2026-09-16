@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 
@@ -10,7 +10,7 @@ class CspWeekdayFirstPriorityTest extends TestCase
 {
     public function test_weekday_physical_candidate_ranks_before_weekend_and_online_candidates(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
 
         $weekdayPhysical = $this->candidate('Monday', 'on-site', 1, 'lecture');
@@ -29,7 +29,7 @@ class CspWeekdayFirstPriorityTest extends TestCase
 
     public function test_online_lecture_can_enter_the_same_search_tier_on_saturday(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $dayTier = new ReflectionMethod($solver, 'candidateSearchDayTier');
         $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
 
@@ -42,7 +42,7 @@ class CspWeekdayFirstPriorityTest extends TestCase
 
     public function test_hybrid_online_lecture_is_not_demoted_when_its_pair_contains_saturday(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $dayTier = new ReflectionMethod($solver, 'candidateSearchDayTier');
         $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
 
@@ -55,7 +55,7 @@ class CspWeekdayFirstPriorityTest extends TestCase
 
     public function test_section_gaps_score_progressively_worse_as_they_grow(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $score = new ReflectionMethod($solver, 'calculateScore');
 
         $compact = $score->invoke($solver, [
@@ -83,7 +83,7 @@ class CspWeekdayFirstPriorityTest extends TestCase
 
     public function test_day_balance_prefers_an_unloaded_monday_to_saturday_day_before_reusing_a_loaded_day(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $penalty = new ReflectionMethod($solver, 'candidateDayBalancePenalty');
 
         $monday = $this->candidate('Monday', 'on-site', 1, 'lecture');

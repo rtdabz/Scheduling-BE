@@ -19,9 +19,12 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware) {
         // Lets repeat GETs of unchanged JSON come back as a bodyless 304
-        // instead of re-sending (and re-parsing) the whole payload.
+        // instead of re-sending (and re-parsing) the whole payload. A write
+        // resent with the same Idempotency-Key (a retry after a slow connection
+        // gave up) replays its first outcome instead of running twice.
         $middleware->appendToGroup('api', [
             \App\Http\Middleware\ConditionalGetJson::class,
+            \App\Http\Middleware\IdempotentRequests::class,
         ]);
 
         $middleware->alias([

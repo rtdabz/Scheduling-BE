@@ -2,13 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Designation\StoreDesignationRequest;
+use App\Http\Requests\Designation\UpdateDesignationRequest;
 use App\Models\Designation;
 use App\Services\FacultyDesignationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rule;
 
 /**
  * CRUD for the administrative designations an instructor may hold.
@@ -42,10 +43,9 @@ class DesignationController extends Controller
         return response()->json($designation->load('parent:id,name')->loadCount(['faculties', 'children']));
     }
 
-    public function store(Request $request): JsonResponse
+    public function store(StoreDesignationRequest $request): JsonResponse
     {
-        $validated = $request->validate($this->rules($request));
-        $payload = $this->normalize($validated);
+        $payload = $this->normalize($request->validated());
         if ($refusal = $this->refuseParent($payload['parent_id'] ?? null)) {
             return $refusal;
         }
@@ -59,10 +59,9 @@ class DesignationController extends Controller
         ], 201);
     }
 
-    public function update(Request $request, Designation $designation): JsonResponse
+    public function update(UpdateDesignationRequest $request, Designation $designation): JsonResponse
     {
-        $validated = $request->validate($this->rules($request, $designation));
-        $payload = $this->normalize($validated, $designation);
+        $payload = $this->normalize($request->validated(), $designation);
         if (array_key_exists('parent_id', $payload)
             && ($refusal = $this->refuseParent($payload['parent_id'], $designation))) {
             return $refusal;
@@ -164,36 +163,6 @@ class DesignationController extends Controller
         }
 
         return null;
-    }
-
-    /** @return array<string, mixed> */
-    private function rules(Request $request, ?Designation $existing = null): array
-    {
-        // Names are unique among siblings: "Coordinator" may exist under two
-        // different parents.
-        $parentId = $request->has('parent_id')
-            ? ($request->input('parent_id') === null || $request->input('parent_id') === '' ? null : (int) $request->input('parent_id'))
-            : $existing?->parent_id;
-
-        return [
-            'parent_id' => ['sometimes', 'nullable', 'integer', Rule::exists('designations', 'id')->whereNull('deleted_at')],
-            'name' => [
-                $existing === null ? 'required' : 'sometimes',
-                'required', 'string', 'max:255',
-                Rule::unique('designations', 'name')
-                    ->ignore($existing?->id)
-                    ->whereNull('deleted_at')
-                    ->where(fn ($query) => $parentId === null ? $query->whereNull('parent_id') : $query->where('parent_id', $parentId)),
-            ],
-            'code' => ['sometimes', 'nullable', 'string', 'max:50'],
-            // No upper bound is imposed here: a full deload is a real
-            // arrangement, and the ceiling is max_units, which varies per
-            // instructor. FacultyBasicLoad already floors the result at zero.
-            'deload_units' => ['sometimes', 'required', 'integer', 'min:0', 'max:100'],
-            'description' => ['sometimes', 'nullable', 'string', 'max:255'],
-            'status' => ['sometimes', 'required', 'in:active,inactive'],
-            'sort_order' => ['sometimes', 'nullable', 'integer', 'min:0'],
-        ];
     }
 
     /**

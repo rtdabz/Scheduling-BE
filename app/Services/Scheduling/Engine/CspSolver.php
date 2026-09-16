@@ -23,7 +23,7 @@ use Illuminate\Support\Str;
 use InvalidArgumentException;
 use RuntimeException;
 
-class CSPSolver
+class CspSolver
 {
     /**
      * Physical rooms offered to each component of a split candidate at any one
@@ -32,11 +32,6 @@ class CSPSolver
     private const SPLIT_ROOM_OPTIONS_PER_SLOT = 6;
 
     private const SOFT_FIELD_EVENING_PENALTY = 6;
-
-    private const SPLIT_LECTURE_LAB_START_PAIR_LIMIT = 6;
-
-    /** @var list<int> */
-    private const CLASSROOM_SCHEDULABLE_BLOCK_SLOTS = [3, 4, 6];
 
     private const CLASSROOM_GAP_SCHEDULABLE_SLOT_SOFT_PENALTY = 1800;
 
@@ -49,18 +44,6 @@ class CSPSolver
      * a section across the week or keeping its day compact.
      */
     private const TIME_PREFERENCE_SOFT_PENALTY = 250;
-
-    /**
-     * The teaching periods a section can be restricted to are defined once, on
-     * SchedulingPolicy::PREFERRED_PERIOD_WINDOWS.
-     *
-     * Unlike the per-course time preference above, a period is a hard window: a
-     * section assigned to one is only ever offered candidates that fit inside it,
-     * so the generator cannot place an 8:00 AM class for an afternoon cohort. A
-     * window that cannot hold the section's courses fails the run rather than
-     * quietly spilling outside it, which is why the feasibility pre-check reads
-     * the same definition and refuses up front.
-     */
 
     private const CLASSROOM_GAP_LEFTOVER_SLOT_SOFT_PENALTY = 7000;
 
@@ -1592,36 +1575,13 @@ class CSPSolver
             return 0;
         }
 
-        $bestRemainder = $this->classroomBestRemainderAfterSchedulableBlocks($gapSlots);
+        $bestRemainder = SchedulingPolicy::classroomBestRemainderAfterSchedulableBlocks($gapSlots);
         $filledSlots = $gapSlots - $bestRemainder;
 
         return ($gapSlots === 5 ? self::CLASSROOM_FIVE_SLOT_GAP_SOFT_PENALTY : 0)
             + ($gapSlots === 6 ? self::CLASSROOM_SIX_SLOT_GAP_SOFT_PENALTY : 0)
             + ($filledSlots * self::CLASSROOM_GAP_SCHEDULABLE_SLOT_SOFT_PENALTY)
             + ($bestRemainder * self::CLASSROOM_GAP_LEFTOVER_SLOT_SOFT_PENALTY);
-    }
-
-    private function classroomBestRemainderAfterSchedulableBlocks(int $gapSlots): int
-    {
-        $reachable = array_fill(0, $gapSlots + 1, false);
-        $reachable[0] = true;
-
-        for ($slots = 1; $slots <= $gapSlots; $slots++) {
-            foreach (self::CLASSROOM_SCHEDULABLE_BLOCK_SLOTS as $blockSlots) {
-                if ($slots >= $blockSlots && $reachable[$slots - $blockSlots]) {
-                    $reachable[$slots] = true;
-                    break;
-                }
-            }
-        }
-
-        for ($usedSlots = $gapSlots; $usedSlots >= 0; $usedSlots--) {
-            if ($reachable[$usedSlots]) {
-                return $gapSlots - $usedSlots;
-            }
-        }
-
-        return $gapSlots;
     }
 
     private function buildVariables(
@@ -1710,6 +1670,7 @@ class CSPSolver
                 $domain = $cached['domain'];
                 $emptyAfterRequirements = $cached['empty_after_requirements'];
                 $emptyAfterPeriod = $cached['empty_after_period'] ?? false;
+                $emptyAfterForcedDay = $cached['empty_after_forced_day'] ?? false;
             } else {
             $domain = match (true) {
                 $hasBothComponents && $preferredPattern === null => $this->buildDefaultLectureLabDomain(
@@ -1780,8 +1741,10 @@ class CSPSolver
 
             $emptyAfterRequirements = $domain === [] && isset($requirementsByCourseId[(int) $course->id]);
 
-            if ($forcedDay !== null) {
+            $emptyAfterForcedDay = false;
+            if ($forcedDay !== null && $domain !== []) {
                 $domain = $this->filterDomainByForcedDay($domain, $forcedDay);
+                $emptyAfterForcedDay = $domain === [];
             }
 
             $emptyAfterPeriod = false;
@@ -1805,6 +1768,7 @@ class CSPSolver
                 'domain' => $domain,
                 'empty_after_requirements' => $emptyAfterRequirements,
                 'empty_after_period' => $emptyAfterPeriod,
+                'empty_after_forced_day' => $emptyAfterForcedDay,
             ];
             }
 
@@ -1821,6 +1785,18 @@ class CSPSolver
                     (string) ($sectionId > 0 ? (Sections::query()->find($sectionId)?->section_name ?? 'Section') : 'Section'),
                     (string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id)),
                     $this->preferredPeriodLabel($this->preferredPeriod),
+                ));
+            }
+
+            // The course could meet on other days; the department's forced day is
+            // what rules every candidate out (e.g. a field course forced onto
+            // Sunday), so point at that setting rather than at room conflicts.
+            if ($throwOnEmptyDomain && $emptyAfterForcedDay) {
+                throw new RuntimeException(sprintf(
+                    '%s / %s is forced to meet on %s, but this course cannot be scheduled on that day. Change or clear the forced day for this course.',
+                    (string) ($sectionId > 0 ? (Sections::query()->find($sectionId)?->section_name ?? 'Section') : 'Section'),
+                    (string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id)),
+                    (string) $forcedDay,
                 ));
             }
 

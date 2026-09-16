@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 
@@ -14,7 +14,7 @@ class CspPreferredPeriodTest extends TestCase
      */
     public function test_only_candidates_inside_the_window_survive(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $filter = new ReflectionMethod($solver, 'filterDomainByWindow');
 
         $domain = [
@@ -36,7 +36,7 @@ class CspPreferredPeriodTest extends TestCase
 
     public function test_a_meeting_that_overruns_the_window_is_rejected(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $filter = new ReflectionMethod($solver, 'filterDomainByWindow');
 
         // Starts at 10:00, inside morning, but runs to 12:00 — past 11:30. The
@@ -48,7 +48,7 @@ class CspPreferredPeriodTest extends TestCase
 
     public function test_every_meeting_of_a_split_candidate_must_fit(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $filter = new ReflectionMethod($solver, 'filterDomainByWindow');
 
         $bothInside = ['blocks' => [
@@ -66,7 +66,7 @@ class CspPreferredPeriodTest extends TestCase
 
     public function test_unknown_periods_are_ignored_rather_than_restricting(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $normalize = new ReflectionMethod($solver, 'normalizePreferredPeriod');
 
         $this->assertSame('morning', $normalize->invoke($solver, 'Morning'));
@@ -78,7 +78,7 @@ class CspPreferredPeriodTest extends TestCase
 
     public function test_the_window_is_named_in_full_for_failure_messages(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $label = new ReflectionMethod($solver, 'preferredPeriodLabel');
 
         // One wording for the window everywhere it is shown: the solver's

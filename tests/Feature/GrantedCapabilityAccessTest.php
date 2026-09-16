@@ -106,7 +106,8 @@ class GrantedCapabilityAccessTest extends TestCase
 
     public function test_account_without_the_assignment_capability_is_still_refused(): void
     {
-        Sanctum::actingAs($this->account('secretary', ['schedule.view']));
+        // A dean holds `schedule.view` by role but not instructor assignment.
+        Sanctum::actingAs($this->account('dean', []));
         $faculty = $this->instructor();
 
         $this->putJson("/api/faculties/{$faculty->id}", ['max_units' => 24])->assertForbidden();

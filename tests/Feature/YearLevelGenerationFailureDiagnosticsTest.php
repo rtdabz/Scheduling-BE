@@ -10,7 +10,7 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -101,7 +101,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
     {
         ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
 
-        $this->app->instance(CSPSolver::class, $this->patternGatedSolver('TTh', (int) $course->id, $section, (int) $department->id));
+        $this->app->instance(CspSolver::class, $this->patternGatedSolver('TTh', (int) $course->id, $section, (int) $department->id));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
             'semester_id' => $semester->id,
@@ -136,7 +136,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
 
         // No pattern the ladder can reach satisfies this solver, so every retry
         // strategy fails and the run must end in a diagnostic report.
-        $this->app->instance(CSPSolver::class, $this->patternGatedSolver('unreachable', (int) $course->id, $section, (int) $department->id));
+        $this->app->instance(CspSolver::class, $this->patternGatedSolver('unreachable', (int) $course->id, $section, (int) $department->id));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
             'semester_id' => $semester->id,
@@ -371,9 +371,9 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
      * specific fixed pattern. Everything else returns no solution with zero
      * iterations, which is how a structurally impossible pattern presents.
      */
-    private function patternGatedSolver(string $requiredPattern, int $courseId, Sections $section, int $departmentId): CSPSolver
+    private function patternGatedSolver(string $requiredPattern, int $courseId, Sections $section, int $departmentId): CspSolver
     {
-        return new class($requiredPattern, $courseId, $section, $departmentId) extends CSPSolver
+        return new class($requiredPattern, $courseId, $section, $departmentId) extends CspSolver
         {
             public function __construct(
                 private readonly string $requiredPattern,

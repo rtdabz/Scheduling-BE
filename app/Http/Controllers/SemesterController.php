@@ -2,14 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Semester\StoreSemesterRequest;
+use App\Http\Requests\Semester\UpdateSemesterRequest;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\ScheduleSemesterArchiver;
-use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
@@ -30,13 +30,8 @@ class SemesterController extends Controller
     /**
      * Store a newly created resource in storage.
      */
-    public function store(Request $request)
+    public function store(StoreSemesterRequest $request)
     {
-        $request->validate([
-            'semester' => SchedulingPolicy::allowedSemestersRule('required'),
-            'academic_year' => 'nullable|string|max:50',
-        ]);
-
         $academicYear = $request->academic_year;
         if (! $academicYear) {
             $currentYear = now()->month >= 6 ? now()->year : now()->year - 1;
@@ -78,14 +73,10 @@ class SemesterController extends Controller
      * Update an existing semester. Only the academic year and the enabled flag are
      * editable -- changing the semester would collide with the sibling rows.
      */
-    public function update(Request $request, $id)
+    public function update(UpdateSemesterRequest $request, $id)
     {
         $semester = Semester::findOrFail($id);
-
-        $validated = $request->validate([
-            'academic_year' => ['sometimes', 'required', 'string', 'regex:/^\d{4}-\d{4}$/'],
-            'is_enabled' => ['sometimes', 'boolean'],
-        ]);
+        $validated = $request->validated();
 
         if (array_key_exists('academic_year', $validated)) {
             [$start, $end] = array_map('intval', explode('-', $validated['academic_year']));

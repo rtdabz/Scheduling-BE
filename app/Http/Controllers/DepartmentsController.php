@@ -2,12 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Department\StoreDepartmentRequest;
+use App\Http\Requests\Department\UpdateDepartmentRequest;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
 class DepartmentsController extends Controller
@@ -34,14 +35,9 @@ class DepartmentsController extends Controller
     /**
      * Store a newly created department in the database.
      */
-    public function store(Request $request)
+    public function store(StoreDepartmentRequest $request)
     {
-        $validated = $request->validate([
-            'department_name' => 'required|string|max:255|unique:departments,department_name',
-            'department_code' => 'required|string|max:20|unique:departments,department_code',
-            'scheduling_profile' => 'sometimes|in:standard,laboratory_enabled',
-            'logo' => 'nullable|string',
-        ]);
+        $validated = $request->validated();
 
         $department = Departments::create($validated);
         ApiCache::forgetGroups(['departments.index', 'initial.data']);
@@ -70,14 +66,9 @@ class DepartmentsController extends Controller
     /**
      * Update the specified department in the database.
      */
-    public function update(Request $request, Departments $department)
+    public function update(UpdateDepartmentRequest $request, Departments $department)
     {
-        $validated = $request->validate([
-            'department_name' => 'sometimes|required|string|max:255|unique:departments,department_name,'.$department->id,
-            'department_code' => 'sometimes|required|string|max:20|unique:departments,department_code,'.$department->id,
-            'scheduling_profile' => 'sometimes|in:standard,laboratory_enabled',
-            'logo' => 'nullable|string',
-        ]);
+        $validated = $request->validated();
 
         if (($validated['scheduling_profile'] ?? null) === 'standard' && $this->hasLaboratoryCourses($department)) {
             return response()->json([

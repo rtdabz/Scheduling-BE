@@ -75,6 +75,11 @@ class ConditionalGetJson
     /**
      * If-None-Match is a comma-separated list and may be "*". Weak validators
      * (W/"...") compare equal to their strong form for our purposes.
+     *
+     * Apache's mod_deflate rewrites an outgoing ETag to "...-gzip" (and brotli
+     * to "...-br"), and the browser echoes that form back. Without stripping
+     * the suffix, enabling compression would quietly turn every 304 into a
+     * full 200 download.
      */
     private function matches(?string $ifNoneMatch, string $etag): bool
     {
@@ -86,7 +91,11 @@ class ConditionalGetJson
             return true;
         }
 
-        $normalise = static fn (string $tag): string => ltrim(trim($tag), 'W/');
+        $normalise = static fn (string $tag): string => (string) preg_replace(
+            '/-(gzip|br)"$/',
+            '"',
+            ltrim(trim($tag), 'W/'),
+        );
 
         foreach (explode(',', $ifNoneMatch) as $candidate) {
             if ($normalise($candidate) === $normalise($etag)) {

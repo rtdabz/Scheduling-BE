@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use ReflectionProperty;
@@ -16,9 +16,9 @@ use ReflectionProperty;
  */
 class CspSundayTeachingDayTest extends TestCase
 {
-    private function solver(bool $sundayIsRegularTeachingDay): CSPSolver
+    private function solver(bool $sundayIsRegularTeachingDay): CspSolver
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $flag = new ReflectionProperty($solver, 'sundayIsRegularTeachingDay');
         $flag->setValue($solver, $sundayIsRegularTeachingDay);
 

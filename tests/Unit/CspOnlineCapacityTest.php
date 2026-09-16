@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Models\Rooms;
 use Illuminate\Database\Eloquent\Collection;
@@ -19,7 +19,7 @@ final class CspOnlineCapacityTest extends TestCase
                 return 2;
             }
         };
-        $solver = new CSPSolver($limits);
+        $solver = new CspSolver($limits);
         $conflicts = new ReflectionMethod($solver, 'conflictsWithTentativeAssignments');
 
         $candidate = $this->onlineCandidate(2, 4);
@@ -45,7 +45,7 @@ final class CspOnlineCapacityTest extends TestCase
                 return 2;
             }
         };
-        $solver = new CSPSolver($limits);
+        $solver = new CspSolver($limits);
         $conflicts = new ReflectionMethod($solver, 'conflictsWithTentativeAssignments');
 
         self::assertFalse($conflicts->invoke(
@@ -59,7 +59,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_non_hybrid_lecture_lab_options_exhaust_lecture_rooms_before_online(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $method = new ReflectionMethod($solver, 'splitLectureOptions');
         $options = $method->invoke(
             $solver,
@@ -79,7 +79,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_hybrid_lecture_lab_options_keep_online_lecture_configuration(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $method = new ReflectionMethod($solver, 'splitLectureOptions');
         $options = $method->invoke($solver, new Collection, true, false);
 
@@ -90,7 +90,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_non_hybrid_online_lecture_fallback_is_ranked_after_physical_split(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
         $physical = [
             'mode' => 'on-site',
@@ -119,7 +119,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_minor_split_slot_search_keeps_all_ranked_start_pairs(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $pairs = new ReflectionMethod($solver, 'rankedSplitStartPairs');
 
         $result = $pairs->invoke($solver, [0, 2, 4, 6], [0, 2, 4, 6], null);
@@ -130,7 +130,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_lecture_lab_pair_search_can_remain_bounded(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $pairs = new ReflectionMethod($solver, 'rankedSplitStartPairs');
 
         self::assertCount(6, $pairs->invoke($solver, [0, 2, 4, 6], [0, 2, 4, 6], 6));
@@ -138,7 +138,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_unconfigured_minor_physical_slot_is_ranked_before_online(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
 
         $physical = [
@@ -169,7 +169,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_configured_minor_split_is_ranked_before_single_meeting_then_online(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
 
         $splitPhysical = [
@@ -211,7 +211,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_hybrid_physical_lab_candidates_are_exhausted_before_room_tba(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $groups = new ReflectionMethod($solver, 'candidateGroupsByDayPriority');
 
         $tba = [
@@ -246,7 +246,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_split_day_pairs_never_use_same_day_and_saturday_is_normal_physical_tier(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $pairs = new ReflectionMethod($solver, 'splitLectureLabDayPairs');
         $course = new \App\Models\Course([
             'course_category' => 'major',
@@ -266,7 +266,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_saturday_physical_candidates_precede_online_and_room_tba_fallbacks(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $groups = new ReflectionMethod($solver, 'candidateGroupsByDayPriority');
 
         $physicalSaturday = [
@@ -297,7 +297,7 @@ final class CspOnlineCapacityTest extends TestCase
 
     public function test_four_non_overlapping_courses_can_share_a_day_when_resources_allow(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $conflicts = new ReflectionMethod($solver, 'conflictsWithTentativeAssignments');
 
         $assignments = [];

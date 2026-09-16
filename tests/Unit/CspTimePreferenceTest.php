@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use ReflectionProperty;
@@ -71,7 +71,7 @@ class CspTimePreferenceTest extends TestCase
 
     public function test_unknown_values_and_foreign_courses_are_dropped(): void
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $normalize = new ReflectionMethod($solver, 'normalizeTimePreferences');
 
         $normalized = $normalize->invoke(
@@ -86,9 +86,9 @@ class CspTimePreferenceTest extends TestCase
     }
 
     /** @param array<int, string> $preferences */
-    private function solverPreferring(array $preferences): CSPSolver
+    private function solverPreferring(array $preferences): CspSolver
     {
-        $solver = new CSPSolver;
+        $solver = new CspSolver;
         $property = new ReflectionProperty($solver, 'timePreferencesByCourseId');
         $property->setValue($solver, $preferences);
 

@@ -78,7 +78,10 @@ class ScheduleController extends Controller
     {
         $perPage = min(max((int) $request->query('per_page', 500), 1), 1000);
         $query = Schedule::with([
-            'academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'program',
+            'academicSemester', 'section', 'course', 'faculty', 'room', 'program',
+            // Departments carry their logo inline as base64; nesting the whole row
+            // on every meeting multiplied it by up to a thousand.
+            'department:id,department_name,department_code',
         ]);
 
         if ($request->has('semester_id') && $request->semester_id) {
@@ -724,7 +727,7 @@ class ScheduleController extends Controller
                 // Non-time violations — check if it's a room type mismatch that
                 // can be fixed by swapping to a compatible room automatically.
                 $hasRoomAssignmentIssue = collect($violations)->contains(
-                    fn ($v) => in_array(($v['rule'] ?? ''), ['room_type_match', 'delivery_room_alignment'], true)
+                    fn ($v) => in_array(($v['rule'] ?? ''), ['room_type_match', 'room_exists'], true)
                 );
 
                 if ($hasRoomAssignmentIssue) {
@@ -858,7 +861,7 @@ class ScheduleController extends Controller
         }
 
         $hasRoomAssignmentIssue = collect($violations)->contains(
-            fn ($v) => in_array(($v['rule'] ?? ''), ['room_type_match', 'delivery_room_alignment'], true)
+            fn ($v) => in_array(($v['rule'] ?? ''), ['room_type_match', 'room_exists'], true)
         );
 
         if ($hasRoomAssignmentIssue) {

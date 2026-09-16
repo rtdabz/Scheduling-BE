@@ -4,7 +4,7 @@ namespace Tests\Unit;
 
 use App\Enums\DepartmentSchedulingProfile;
 use App\Models\Sections;
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleQualityEvaluator;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
@@ -288,9 +288,9 @@ class YearLevelScheduleFairnessScoreTest extends TestCase
         );
     }
 
-    private function solverWithFairnessTargets(): CSPSolver
+    private function solverWithFairnessTargets(): CspSolver
     {
-        return new class extends CSPSolver
+        return new class extends CspSolver
         {
             public function departmentRoomFairness(): array
             {

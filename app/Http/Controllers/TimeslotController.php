@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Timeslot\StoreTimeslotOverrideRequest;
+use App\Http\Requests\Timeslot\UpdateTimeslotOverrideRequest;
+use App\Http\Requests\Timeslot\UpdateTimeslotSettingsRequest;
 use App\Models\TimeslotOverride;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\TimeslotService;
@@ -12,8 +15,6 @@ use Illuminate\Http\Request;
 
 class TimeslotController extends Controller
 {
-    private const TIME_FORMAT_RULE = 'regex:/^(0?[1-9]|1[0-2]):[0-5][0-9]\s?(AM|PM)$/i';
-
     public function __construct(private readonly TimeslotService $timeslotService)
     {
     }
@@ -42,13 +43,9 @@ class TimeslotController extends Controller
         ]);
     }
 
-    public function updateSettings(Request $request): JsonResponse
+    public function updateSettings(UpdateTimeslotSettingsRequest $request): JsonResponse
     {
-        $validated = $request->validate([
-            'opening_time' => ['required', 'string', self::TIME_FORMAT_RULE],
-            'closing_time' => ['required', 'string', self::TIME_FORMAT_RULE],
-            'slot_interval' => ['required', 'integer', 'min:1', 'max:720'],
-        ]);
+        $validated = $request->validated();
 
         $this->validateClosingTime($validated);
 
@@ -71,9 +68,9 @@ class TimeslotController extends Controller
         ]);
     }
 
-    public function storeOverride(Request $request): JsonResponse
+    public function storeOverride(StoreTimeslotOverrideRequest $request): JsonResponse
     {
-        $validated = $request->validate($this->overrideRules());
+        $validated = $request->validated();
 
         $override = TimeslotOverride::query()->create([
             'duration_minutes' => (int) $validated['duration_minutes'],
@@ -89,9 +86,9 @@ class TimeslotController extends Controller
         ], 201);
     }
 
-    public function updateOverride(Request $request, int $id): JsonResponse
+    public function updateOverride(UpdateTimeslotOverrideRequest $request, int $id): JsonResponse
     {
-        $validated = $request->validate($this->overrideRules(required: false));
+        $validated = $request->validated();
         $override = TimeslotOverride::query()->findOrFail($id);
 
         $override->fill(collect($validated)
@@ -146,20 +143,6 @@ class TimeslotController extends Controller
     public function getAvailableSlots(int $duration): array
     {
         return $this->timeslotService->generateStartTimes($duration);
-    }
-
-    /**
-     * @return array<string, array<int, mixed>>
-     */
-    private function overrideRules(bool $required = true): array
-    {
-        $presence = $required ? 'required' : 'sometimes';
-
-        return [
-            'duration_minutes' => [$presence, 'integer', 'min:1', 'max:720'],
-            'start_time' => [$presence, 'string', self::TIME_FORMAT_RULE],
-            'is_active' => [$presence, 'boolean'],
-        ];
     }
 
     private function serializeOverride(TimeslotOverride $override): array

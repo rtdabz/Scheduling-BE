@@ -45,8 +45,7 @@ class FacultyController extends Controller
      */
     private const DESIGNATION_FIELDS = ['designation_ids', 'designation_id'];
 
-    /** Name suffixes the roster accepts; the form offers exactly these. */
-    private const NAME_SUFFIXES = ['Jr.', 'Sr.', 'II', 'III', 'IV', 'V'];
+    private const NAME_SUFFIXES = Faculty::NAME_SUFFIXES;
 
     public function __construct(
         private readonly FacultyLoadService $facultyLoad,

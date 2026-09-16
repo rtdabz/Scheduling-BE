@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Section\BatchStoreSectionsRequest;
+use App\Http\Requests\Section\StoreSectionRequest;
+use App\Http\Requests\Section\UpdateSectionRequest;
 use App\Models\Curriculum;
 use App\Models\Program;
 use App\Models\Sections;
@@ -12,7 +15,6 @@ use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rule;
 
 class SectionsController extends Controller
 {
@@ -52,16 +54,10 @@ class SectionsController extends Controller
     }
 
     // Create section
-    public function store(Request $request)
+    public function store(StoreSectionRequest $request)
     {
+        $validated = $request->validated();
         $activeSemester = $this->getActiveSystemSemester();
-        $validated = $request->validate([
-            'section_name' => 'required|string|max:255',
-            'year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
-            'department_id' => 'required|exists:departments,id',
-            'program_id' => ['required', 'integer', Rule::exists('programs', 'id')->where(fn ($q) => $q->where('department_id', $request->input('department_id')))],
-            'curriculum_id' => 'nullable|integer|exists:curriculum,id',
-        ]);
 
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only manage sections for your department.'], 403);
@@ -98,17 +94,10 @@ class SectionsController extends Controller
     }
 
     // Create batch sections
-    public function batchStore(Request $request)
+    public function batchStore(BatchStoreSectionsRequest $request)
     {
+        $validated = $request->validated();
         $activeSemester = $this->getActiveSystemSemester();
-        $validated = $request->validate([
-            'sections' => 'required|array|min:1|max:50',
-            'sections.*.section_name' => 'required|string|max:255',
-            'sections.*.year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
-            'sections.*.department_id' => 'required|exists:departments,id',
-            'sections.*.program_id' => 'required|integer|exists:programs,id',
-            'sections.*.curriculum_id' => 'nullable|integer|exists:curriculum,id',
-        ]);
 
         $departmentIds = collect($validated['sections'])
             ->pluck('department_id')
@@ -180,22 +169,10 @@ class SectionsController extends Controller
     }
 
     // Update section
-    public function update(Request $request, Sections $section)
+    public function update(UpdateSectionRequest $request, Sections $section)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $section->department_id)) {
-            return response()->json(['message' => 'You can only manage sections for your department.'], 403);
-        }
-
-        $validated = $request->validate([
-            'section_name' => 'sometimes|string|max:255',
-            'year_level' => SchedulingPolicy::allowedYearLevelsRule('sometimes'),
-            'semester' => SchedulingPolicy::allowedSemestersRule('sometimes'),
-            'department_id' => 'sometimes|exists:departments,id',
-            'program_id' => ['sometimes', 'integer', Rule::exists('programs', 'id')->where(fn ($q) => $q->where('department_id', $request->input('department_id', $section->department_id)))],
-            'semester_id' => 'sometimes|exists:semesters,id',
-            'curriculum_id' => 'sometimes|nullable|integer|exists:curriculum,id',
-            'status' => SchedulingPolicy::allowedActiveStatusesRule('sometimes'),
-        ]);
+        // Access to the section's current department is checked in UpdateSectionRequest::authorize().
+        $validated = $request->validated();
 
         if (isset($validated['department_id']) && ! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only move sections within your department.'], 403);

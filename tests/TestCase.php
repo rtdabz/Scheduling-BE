@@ -38,12 +38,11 @@ abstract class TestCase extends BaseTestCase
      * Every capability a scheduling account can hold without being a dean or
      * the VPAA.
      *
-     * Capabilities are granted per account rather than inherited from the role
-     * (config/capabilities.php keeps 'secretary', 'program_head' and 'director'
-     * deliberately empty), so a factory-built user holds none and is denied by
-     * CapabilityMiddleware before any controller runs. Tests whose subject is
-     * something else -- generation, conflicts, teaching load -- need an account
-     * that is already configured for the workspace, which is what this is.
+     * Secretaries and program heads inherit these from their role, but a
+     * factory user whose role is not synced (or a dean) holds none and is
+     * denied by CapabilityMiddleware before any controller runs. Tests whose
+     * subject is something else -- generation, conflicts, teaching load -- use
+     * this to make the account's workspace access explicit.
      *
      * The two approval capabilities are excluded on purpose: config restricts
      * them to dean and vpaa, so granting them here would let a secretary hold a
@@ -65,7 +64,7 @@ abstract class TestCase extends BaseTestCase
     ];
 
     /**
-     * Grants a user its scheduling capabilities, as User Management would.
+     * Grants a user scheduling capabilities directly, on top of its role.
      *
      * Pass an explicit list when the test's subject is the capability check
      * itself -- granting everything would hide the denial it means to assert.

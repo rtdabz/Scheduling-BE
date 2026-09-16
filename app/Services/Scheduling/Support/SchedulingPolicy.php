@@ -271,8 +271,6 @@ final class SchedulingPolicy
 
     public const CUSTOM_PATTERN_REGEX = '/^days:([0-6])-([0-6])$/';
 
-    public const SOFT_SATURDAY_PENALTY = 8;
-
     public const SOFT_LATE_START_AFTER_SLOT = 22;
 
     public const SOFT_LATE_SLOT_PENALTY = 2;
@@ -305,6 +303,44 @@ final class SchedulingPolicy
 
     /** Prefer a feasible weekday physical placement over online delivery. */
     public const SOFT_WEEKDAY_ONLINE_MIGRATION_PENALTY = 12000;
+
+    /**
+     * Meeting lengths, in slots, that a leftover gap can still be filled with.
+     *
+     * @var list<int>
+     */
+    public const CLASSROOM_SCHEDULABLE_BLOCK_SLOTS = [3, 4, 6];
+
+    /**
+     * Slots left over once a gap is packed with as many schedulable blocks as
+     * it can hold -- the part of the gap no future meeting can ever use.
+     *
+     * Shared because the solver ranks candidates mid-search while the quality
+     * evaluator scores finished plans: if the two disagreed on what counts as
+     * wasted, the plan the search picked would not be the plan scored best.
+     */
+    public static function classroomBestRemainderAfterSchedulableBlocks(int $gapSlots): int
+    {
+        $reachable = array_fill(0, max(0, $gapSlots) + 1, false);
+        $reachable[0] = true;
+
+        for ($slots = 1; $slots <= $gapSlots; $slots++) {
+            foreach (self::CLASSROOM_SCHEDULABLE_BLOCK_SLOTS as $blockSlots) {
+                if ($slots >= $blockSlots && $reachable[$slots - $blockSlots]) {
+                    $reachable[$slots] = true;
+                    break;
+                }
+            }
+        }
+
+        for ($usedSlots = $gapSlots; $usedSlots >= 0; $usedSlots--) {
+            if ($reachable[$usedSlots]) {
+                return $gapSlots - $usedSlots;
+            }
+        }
+
+        return $gapSlots;
+    }
 
     /**
      * Canonical inventory of scheduling constraints and workflow violations.
@@ -535,23 +571,11 @@ final class SchedulingPolicy
             'description' => 'Delivery mode must be on-site, online, or field.',
             'enforced_by' => ['request_validation', 'csp'],
         ],
-        'delivery_room_alignment' => [
-            'severity' => 'hard',
-            'category' => 'delivery',
-            'description' => 'Online schedules must use online rooms, field schedules must use field rooms, and on-site schedules must use physical lecture or laboratory rooms.',
-            'enforced_by' => ['rule_engine'],
-        ],
         'hybrid_mode' => [
             'severity' => 'hard',
             'category' => 'delivery',
             'description' => 'Field schedules cannot be marked hybrid.',
             'enforced_by' => ['request_validation', 'csp'],
-        ],
-        'nstp_day_constraint' => [
-            'severity' => 'hard',
-            'category' => 'calendar',
-            'description' => 'NSTP courses use the institutional Monday-Sunday scheduling grid.',
-            'enforced_by' => ['rule_engine', 'csp'],
         ],
         'field_day_constraint' => [
             'severity' => 'hard',
@@ -725,6 +749,12 @@ final class SchedulingPolicy
             'category' => 'meeting_group',
             'description' => 'The combined duration of a minor split group must equal the course contact-hour requirement.',
             'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'class_duration' => [
+            'severity' => 'hard',
+            'category' => 'time',
+            'description' => "A section's meetings for one course may not add up to more weekly time than the course carries (the larger of the Generator's single-block and lecture/laboratory shapes).",
+            'enforced_by' => ['rule_engine'],
         ],
         'split_group_day_separation' => [
             'severity' => 'hard',

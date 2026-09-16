@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Services\Scheduling\Lock\DatabaseSchedulingScopeLock;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Support\SchedulingQueryCounter;
+use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Engine\Solver\CspYearLevelSchedulingSolverAdapter;
 use App\Services\Scheduling\Engine\Solver\CspSchedulingSolverAdapter;
 use App\Services\Scheduling\Engine\Solver\SchedulingSolver;
@@ -24,7 +25,9 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->bind(SchedulingSolver::class, CspSchedulingSolverAdapter::class);
         $this->app->bind(YearLevelSchedulingSolver::class, static function ($app): YearLevelSchedulingSolver {
-            return new CspYearLevelSchedulingSolverAdapter($app->make(\App\Services\Scheduling\Engine\CspSolver::class));
+            // Container keys are case-sensitive even though PHP class names are
+            // not, so always spell it CspSolver, matching the class and its file.
+            return new CspYearLevelSchedulingSolverAdapter($app->make(CspSolver::class));
         });
         $this->app->bind(SchedulingScopeLock::class, DatabaseSchedulingScopeLock::class);
         $this->app->singleton(SchedulingQueryCounter::class);

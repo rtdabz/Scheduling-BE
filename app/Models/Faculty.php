@@ -9,6 +9,9 @@ class Faculty extends Model
 {
     use SoftDeletes;
 
+    /** Name suffixes instructors and accounts accept; the forms offer exactly these. */
+    public const NAME_SUFFIXES = ['Jr.', 'Sr.', 'II', 'III', 'IV', 'V'];
+
     protected $table = 'faculties';
 
     protected $fillable = [

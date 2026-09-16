@@ -59,10 +59,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // silently understates campus-wide utilisation and hides clashes.
         Route::get('/vpaa/dashboard-insights', VpaaDashboardController::class);
         Route::get('/user', [UserController::class, 'index']);
-        Route::get('/user/permissions', [UserController::class, 'permissions']);
         Route::get('/user/linkable-faculty', [UserController::class, 'linkableFaculty']);
-        Route::get('/user/{user}/permissions', [UserController::class, 'userPermissions']);
-        Route::patch('/user/{user}/permissions', [UserController::class, 'updatePermissions']);
         Route::post('/user', [UserController::class, 'store']);
         Route::put('/user/{user}', [UserController::class, 'update']);
         Route::delete('/user/{user}', [UserController::class, 'destroy']);
@@ -203,7 +200,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
     // Room requests: a department borrowing another department's vacant room
     // for weekly windows of a semester. Both lists are gated by capability, never
-    // role, so Manage Access decides who may ask and who may decide.
+    // role, so the role defaults in config/capabilities.php decide who may ask
+    // and who may decide.
     Route::middleware('capability:room.request,room.review_requests')->group(function () {
         Route::get('room-requests', [RoomRequestController::class, 'index']);
         Route::get('room-requests/rooms/{room}/occupancy', [RoomRequestController::class, 'occupancy'])->whereNumber('room');
@@ -239,8 +237,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     // Maintaining the designation list is its own capability rather than a role
-    // gate, so the VPAA can delegate it through Manage Access without a code
-    // change. Reads stay open to every scheduling role above.
+    // gate, so which roles hold it is decided in config/capabilities.php.
+    // Reads stay open to every scheduling role above.
     Route::middleware('capability:faculty.manage_designations')->group(function () {
         Route::post('designations', [DesignationController::class, 'store']);
         Route::match(['put', 'patch'], 'designations/{designation}', [DesignationController::class, 'update']);

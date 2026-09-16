@@ -47,9 +47,21 @@ class InstructorManagementTest extends TestCase
             ->postJson('/api/faculties', $this->payload($f))
             ->assertCreated()
             ->assertJsonPath('assigned_units', 0)
-            ->assertJsonPath('max_units', 21)
-            ->assertJsonPath('required_units', 21)
-            ->assertJsonPath('unit_ceiling', 21);
+            ->assertJsonPath('max_units', 18)
+            ->assertJsonPath('required_units', 18)
+            ->assertJsonPath('unit_ceiling', 18);
+    }
+
+    public function test_store_falls_back_to_the_default_basic_load(): void
+    {
+        $f = $this->fixture();
+        $payload = $this->payload($f);
+        unset($payload['max_units']);
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', $payload)
+            ->assertCreated()
+            ->assertJsonPath('max_units', 21);
     }
 
     public function test_a_name_suffix_is_stored_and_limited_to_the_offered_list(): void
@@ -84,15 +96,22 @@ class InstructorManagementTest extends TestCase
             ->assertJsonPath('overload_units', 15);
     }
 
-    public function test_vpaa_cannot_update_load_allowances(): void
+    public function test_vpaa_edits_basic_load_but_not_the_secretary_allowances(): void
     {
         $f = $this->fixture();
 
+        // Basic Load and Overload are part of the roster record the VPAA edits.
         $this->actingAs($f['vpaa'])
             ->patchJson("/api/faculties/{$f['faculty']->id}", ['max_units' => 30])
-            ->assertForbidden();
+            ->assertOk();
+        $this->assertSame(30, (int) $f['faculty']->refresh()->max_units);
 
-        $this->assertSame(18, (int) $f['faculty']->refresh()->max_units);
+        // Deload and pro bono stay with the Secretary.
+        foreach (['deload_units', 'probono_units'] as $field) {
+            $this->actingAs($f['vpaa'])
+                ->patchJson("/api/faculties/{$f['faculty']->id}", [$field => 3])
+                ->assertForbidden();
+        }
     }
 
     public function test_unvalidated_columns_cannot_be_mass_assigned(): void
@@ -197,9 +216,9 @@ class InstructorManagementTest extends TestCase
     public function test_an_account_without_the_assignment_capability_cannot_write(): void
     {
         $f = $this->fixture();
-        $head = User::factory()->create(['role' => 'program_head', 'department_id' => $f['department']->id]);
+        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $f['department']->id]);
 
-        $this->actingAs($head)
+        $this->actingAs($dean)
             ->patchJson("/api/faculties/{$f['faculty']->id}", ['max_units' => 30])
             ->assertForbidden();
     }
@@ -260,26 +279,20 @@ class InstructorManagementTest extends TestCase
     }
 
     /**
-     * Availability follows the assignment capability, not the role name. Both
-     * accounts below are secretaries: what separates them is the grant.
+     * Availability follows the assignment capability, not the role name: a
+     * secretary holds it by role, while a dean holds only `schedule.view`.
      */
     public function test_availability_is_writable_only_with_the_assignment_capability(): void
     {
         $f = $this->fixture();
         $window = ['availabilities' => [['day_index' => 3, 'start_time' => '08:00', 'end_time' => '10:00']]];
 
-        $granted = $this->grantCapabilities(
-            User::factory()->create(['role' => 'secretary', 'department_id' => $f['department']->id]),
-            ['schedule.view', 'schedule.assign_instructor'],
-        );
+        $granted = User::factory()->create(['role' => 'secretary', 'department_id' => $f['department']->id]);
         $this->actingAs($granted)
             ->putJson("/api/faculties/{$f['faculty']->id}/availabilities", $window)
             ->assertOk();
 
-        $viewerOnly = $this->grantCapabilities(
-            User::factory()->create(['role' => 'secretary', 'department_id' => $f['department']->id]),
-            ['schedule.view'],
-        );
+        $viewerOnly = User::factory()->create(['role' => 'dean', 'department_id' => $f['department']->id]);
         $this->actingAs($viewerOnly)
             ->putJson("/api/faculties/{$f['faculty']->id}/availabilities", $window)
             ->assertForbidden();

@@ -298,8 +298,9 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
             'room_id' => $fieldRoom->id,
             'department_id' => $deptA->id,
             'day' => 'Monday',
+            // The course's full two hours: four sections at once is the point.
             'start_time' => '07:00',
-            'end_time' => '10:00',
+            'end_time' => '09:00',
             'mode' => 'field',
             'status' => 'draft',
         ])->all();

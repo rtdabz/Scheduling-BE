@@ -2,14 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Course\StoreCourseRequest;
+use App\Http\Requests\Course\UpdateCourseRequest;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use App\Services\Scheduling\Support\SchedulingPolicy;
-use Illuminate\Validation\Rule;
 
 class CoursesController extends Controller
 {
@@ -180,34 +180,9 @@ class CoursesController extends Controller
         }));
     }
 
-    public function store(Request $request)
+    public function store(StoreCourseRequest $request)
     {
-        if ($request->has('course_code')) {
-            $request->merge([
-                'course_code' => $this->normalizeCourseCode($request->input('course_code')),
-            ]);
-        }
-
-        $validated = $request->validate([
-            'course_code' => [
-                'required',
-                'string',
-                Rule::unique('courses', 'course_code')->where(function ($query) use ($request) {
-                    return $query->where('department_id', $request->department_id);
-                }),
-            ],
-            'course_name' => 'required|string',
-            'lecture_hours' => 'required|integer|min:0|max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LECTURE_SLOTS_PER_UNIT),
-            'lab_hours' => 'required|integer|min:0|max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LABORATORY_SLOTS_PER_UNIT),
-            'units' => 'required|integer|min:0',
-            'course_category' => 'required|in:major,minor',
-            'room_type_required' => 'required|in:lecture,laboratory,field,online',
-            'year_level' => 'nullable|in:1,2,3,4',
-            'semester' => 'nullable|in:1st,2nd,summer',
-            'department_id' => 'nullable|exists:departments,id',
-            'program_id' => $this->programRule($request->input('department_id')),
-            'status' => 'nullable|in:active,inactive',
-        ]);
+        $validated = $request->validated();
 
         $requestedDepartmentId = $validated['department_id'] ?? null;
         if ($requestedDepartmentId !== null && ! $this->authorization->payloadBelongsToDepartment($request, (int) $requestedDepartmentId)) {
@@ -231,45 +206,10 @@ class CoursesController extends Controller
         return response()->json($course->load(['department', 'program']));
     }
 
-    public function update(Request $request, Course $course)
+    public function update(UpdateCourseRequest $request, Course $course)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
-        }
-        if ($request->has('course_code')) {
-            $request->merge([
-                'course_code' => $this->normalizeCourseCode($request->input('course_code')),
-            ]);
-        }
-
-        $validated = $request->validate([
-            'course_code' => [
-                'sometimes',
-                'required',
-                'string',
-                Rule::unique('courses', 'course_code')
-                    ->ignore($course->id)
-                    ->where(function ($query) use ($request, $course) {
-                        $deptId = $request->has('department_id') ? $request->department_id : $course->department_id;
-
-                        return $query->where('department_id', $deptId);
-                    }),
-            ],
-            'course_name' => 'sometimes|required|string',
-            'lecture_hours' => 'sometimes|required|integer|min:0|max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LECTURE_SLOTS_PER_UNIT),
-            'lab_hours' => 'sometimes|required|integer|min:0|max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LABORATORY_SLOTS_PER_UNIT),
-            'units' => 'sometimes|required|integer|min:0',
-            'course_category' => 'sometimes|required|in:major,minor',
-            'room_type_required' => 'sometimes|required|in:lecture,laboratory,field,online',
-            'year_level' => 'sometimes|required|in:1,2,3,4',
-            'semester' => 'sometimes|required|in:1st,2nd,summer',
-            'department_id' => 'nullable|exists:departments,id',
-            'program_id' => $this->programRule(
-                $request->has('department_id') ? $request->input('department_id') : $course->department_id
-            ),
-            'status' => 'nullable|in:active,inactive',
-        ]);
-
+        // Department access is checked in UpdateCourseRequest::authorize().
+        $validated = $request->validated();
         $validated = $this->clearProgramForNonMajor(
             $validated,
             $validated['course_category'] ?? $course->course_category,
@@ -300,27 +240,6 @@ class CoursesController extends Controller
         return $validated;
     }
 
-    /**
-     * A major's program decides which instructors may teach it, so the program has
-     * to belong to the department that offers the course.
-     *
-     * @return array<int, mixed>
-     */
-    private function programRule(mixed $departmentId): array
-    {
-        if ($departmentId === null || $departmentId === '') {
-            return ['nullable', 'integer', 'exists:programs,id'];
-        }
-
-        return [
-            'nullable',
-            'integer',
-            Rule::exists('programs', 'id')->where(
-                fn ($query) => $query->where('department_id', (int) $departmentId),
-            ),
-        ];
-    }
-
     public function destroy(Request $request, Course $course)
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) {
@@ -330,10 +249,5 @@ class CoursesController extends Controller
         ApiCache::forgetGroups(['courses.index', 'initial.data']);
 
         return response()->json(['message' => 'Course archived successfully']);
-    }
-
-    private function normalizeCourseCode(mixed $courseCode): string
-    {
-        return trim(preg_replace('/\s+/', ' ', strtoupper((string) $courseCode)));
     }
 }

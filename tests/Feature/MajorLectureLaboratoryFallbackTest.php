@@ -8,7 +8,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
 use App\Models\Semester;
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -37,7 +37,7 @@ class MajorLectureLaboratoryFallbackTest extends TestCase
             'department_id' => $section->department_id,
         ]);
 
-        $solutions = app(CSPSolver::class)->solveRanked(
+        $solutions = app(CspSolver::class)->solveRanked(
             sectionId: (int) $section->id,
             courseIds: [$course->id],
             maxSolutions: 1,
@@ -63,7 +63,7 @@ class MajorLectureLaboratoryFallbackTest extends TestCase
             'department_id' => $section->department_id,
         ]);
 
-        $solutions = app(CSPSolver::class)->solveRanked(
+        $solutions = app(CspSolver::class)->solveRanked(
             sectionId: (int) $section->id,
             courseIds: [$course->id],
             maxSolutions: 1,

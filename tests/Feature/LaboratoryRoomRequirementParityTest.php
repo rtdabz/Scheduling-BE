@@ -97,7 +97,6 @@ class LaboratoryRoomRequirementParityTest extends TestCase
 
         $this->assertNotContains('room_type_match', $rules);
         $this->assertNotContains('room_exists', $rules);
-        $this->assertNotContains('delivery_room_alignment', $rules);
         $this->assertSame('laboratory', $course->fresh()->room_type_required);
     }
 
@@ -121,6 +120,35 @@ class LaboratoryRoomRequirementParityTest extends TestCase
 
         $attempt['mode'] = 'online';
         $this->assertNotContains('room_type_match', $this->rules($attempt));
+    }
+
+    public function test_a_field_schedule_in_a_lecture_room_reports_one_room_error(): void
+    {
+        [$semester, $dept, $section, $lectureRoom] = $this->fixture();
+        $course = $this->course('FIELD-ONE-ERROR', lectureHours: 3, labHours: 0, roomTypeRequired: 'lecture');
+        $attempt = $this->attempt($semester, $dept, $section, $course, $lectureRoom->id);
+        $attempt['mode'] = 'field';
+
+        $roomRules = array_values(array_filter(
+            $this->rules($attempt),
+            static fn (string $rule): bool => str_starts_with($rule, 'room_') || str_starts_with($rule, 'delivery_'),
+        ));
+
+        $this->assertSame(['room_type_match'], $roomRules);
+    }
+
+    public function test_a_missing_room_is_reported_once(): void
+    {
+        [$semester, $dept, $section] = $this->fixture();
+        $course = $this->course('LEC-NO-ROOM', lectureHours: 3, labHours: 0, roomTypeRequired: 'lecture');
+
+        $unselected = $this->rules($this->attempt($semester, $dept, $section, $course, null));
+        $this->assertContains('room_type_match', $unselected);
+        $this->assertNotContains('room_exists', $unselected);
+
+        $dangling = $this->rules($this->attempt($semester, $dept, $section, $course, 999999));
+        $this->assertContains('room_exists', $dangling);
+        $this->assertNotContains('room_type_match', $dangling);
     }
 
     /** @return list<string> */

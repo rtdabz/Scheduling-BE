@@ -11,10 +11,11 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Department\DepartmentSchedulingAuditService;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class DepartmentSchedulingPreflightTest extends TestCase
@@ -180,7 +181,12 @@ class DepartmentSchedulingPreflightTest extends TestCase
             ->assertJsonPath('issues.0.code', 'missing_lecture_room');
     }
 
-    public function test_standard_solver_reports_an_actionable_empty_room_domain(): void
+    /**
+     * With no lecture room the preflight above reports the gap, but the solver
+     * itself no longer dead-ends: a lecture-only course falls back to online
+     * delivery rather than taking a laboratory it is not entitled to.
+     */
+    public function test_standard_solver_moves_a_lecture_online_when_no_lecture_room_is_usable(): void
     {
         [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
         $this->attachCourse($department, $course, $section);
@@ -188,16 +194,48 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'room_code' => 'BA Lab',
             'building' => 'Building 1',
             'room_type' => 'laboratory',
-            'allow_lecture_usage' => true,
+            'allow_lecture_usage' => false,
             'status' => 'available',
             'department_id' => $department->id,
         ]);
         $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('BA 1A / BA 101 has no eligible scheduling candidates');
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: (int) $section->id,
+            courseIds: [$course->id],
+            requirementsByCourseId: $requirements,
+            maxSolutions: 1,
+            maxIterations: 1000,
+            timeoutSeconds: 1,
+        );
 
-        app(CSPSolver::class)->solveRanked(
+        $this->assertNotEmpty($solutions);
+        foreach ($solutions[0]['schedules'] as $row) {
+            $this->assertSame('online', $row['mode']);
+            $this->assertNull($row['room_id']);
+        }
+    }
+
+    public function test_a_forced_day_the_course_cannot_use_is_named_as_the_cause(): void
+    {
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        // Field courses are limited to weekdays, so forcing one onto Sunday
+        // leaves nothing to choose from.
+        $course->update(['room_type_required' => 'field']);
+        $this->attachCourse($department, $course, $section);
+        DB::table('department_forced_course_days')->insert([
+            'department_id' => $department->id,
+            'course_id' => $course->id,
+            'day' => 'Sunday',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('BA 1A / BA 101 is forced to meet on Sunday, but this course cannot be scheduled on that day.');
+
+        app(CspSolver::class)->solveRanked(
             sectionId: (int) $section->id,
             courseIds: [$course->id],
             requirementsByCourseId: $requirements,

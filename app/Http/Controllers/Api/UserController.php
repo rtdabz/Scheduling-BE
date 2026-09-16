@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\User\StoreUserRequest;
+use App\Http\Requests\User\UpdateUserRequest;
 use App\Models\Program;
 use App\Models\User;
 use App\Notifications\WicarsAccountCreatedNotification;
@@ -15,8 +17,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\Rule;
-use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
 class UserController extends Controller
@@ -27,39 +27,10 @@ class UserController extends Controller
         private readonly CapabilityRegistry $capabilities,
     ) {}
 
-    public function store(Request $request): JsonResponse
+    public function store(StoreUserRequest $request): JsonResponse
     {
-        $validated = $request->validate([
-            'first_name' => 'required|string|max:100',
-            'middle_initial' => ['nullable', 'string', 'size:1', 'alpha'],
-            'last_name' => 'required|string|max:100',
-            'username' => 'required|string|max:255|unique:users,username',
-            'email' => 'required|email|max:255|unique:users,email',
-            'password' => ['required', Password::min(10)->letters()->mixedCase()->numbers()],
-            'role' => 'required|string|in:dean,program_head,secretary,director',
-            'permissions' => ['sometimes', 'array'],
-            'permissions.*' => ['string', Rule::in($this->capabilities->names())],
-            'is_active' => 'sometimes|boolean',
-            'allow_google_login' => 'sometimes|boolean',
-            'department_id' => 'required|exists:departments,id',
-            'profile_picture' => 'nullable|string',
-            'program_id' => [
-                'nullable',
-                Rule::requiredIf(fn () => $request->input('role') === 'program_head'),
-                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id'))),
-            ],
-            // Defaults to `create` so existing API clients keep their behaviour.
-            'faculty_mode' => ['sometimes', 'string', Rule::in(UserFacultyProfileService::MODES)],
-            'faculty_id' => [
-                Rule::requiredIf(fn () => $request->input('faculty_mode') === UserFacultyProfileService::MODE_LINK),
-                'nullable',
-                'integer',
-            ],
-            'designation_id' => ['nullable', 'integer'],
-            'designation_ids' => ['nullable', 'array'],
-        ]);
+        $validated = $request->validated();
         $this->ensureRoleDepartmentHierarchy($validated['role'], (int) $validated['department_id']);
-        $this->validatePermissionAssignments($validated['permissions'] ?? [], $validated['role']);
         $facultyMode = $validated['faculty_mode'] ?? UserFacultyProfileService::MODE_CREATE;
         $designationIds = app(FacultyDesignationService::class)->idsFrom($request);
         app(FacultyDesignationService::class)->validate($designationIds);
@@ -70,6 +41,7 @@ class UserController extends Controller
                 'first_name' => trim($validated['first_name']),
                 'middle_initial' => isset($validated['middle_initial']) ? strtoupper(trim($validated['middle_initial'])) : null,
                 'last_name' => trim($validated['last_name']),
+                'suffix' => $validated['suffix'] ?? null,
                 'username' => strtolower(trim($validated['username'])),
                 'email' => strtolower(trim($validated['email'])),
                 'password' => Hash::make($validated['password']),
@@ -87,7 +59,6 @@ class UserController extends Controller
                 default => null,
             };
             $user->syncRoles([$user->role]);
-            $user->syncPermissions($this->capabilities->expandForRole($validated['permissions'] ?? [], $user->role));
             $this->audit->record($request, 'user_created', $user, [
                 'role' => $user->role,
                 'google_login_allowed' => $user->allow_google_login,
@@ -117,42 +88,19 @@ class UserController extends Controller
         ], 201);
     }
 
-    public function update(Request $request, User $user): JsonResponse
+    public function update(UpdateUserRequest $request, User $user): JsonResponse
     {
-        if ($user->role === 'vpaa') {
-            return response()->json(['message' => 'The VPAA account cannot be changed here.'], 403);
-        }
-
-        $validated = $request->validate([
-            'first_name' => 'required|string|max:100',
-            'middle_initial' => ['nullable', 'string', 'size:1', 'alpha'],
-            'last_name' => 'required|string|max:100',
-            'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
-            'role' => 'required|string|in:dean,program_head,secretary,director',
-            'permissions' => ['sometimes', 'array'],
-            'permissions.*' => ['string', Rule::in($this->capabilities->names())],
-            'is_active' => 'required|boolean',
-            'allow_google_login' => 'sometimes|boolean',
-            'department_id' => 'required|exists:departments,id',
-            'profile_picture' => 'nullable|string',
-            'program_id' => [
-                'nullable',
-                Rule::requiredIf(fn () => $request->input('role') === 'program_head'),
-                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id'))),
-            ],
-        ]);
+        // The VPAA account is refused in UpdateUserRequest::authorize().
+        $validated = $request->validated();
         $this->ensureRoleDepartmentHierarchy($validated['role'], (int) $validated['department_id']);
-        $permissions = array_key_exists('permissions', $validated)
-            ? $validated['permissions']
-            : $user->getDirectPermissions()->pluck('name')->all();
-        $this->validatePermissionAssignments($permissions, $validated['role']);
 
-        DB::transaction(function () use ($validated, $request, $user, $permissions) {
+        DB::transaction(function () use ($validated, $request, $user) {
             $user->update([
                 'name' => $this->displayName($validated),
                 'first_name' => trim($validated['first_name']),
                 'middle_initial' => isset($validated['middle_initial']) ? strtoupper(trim($validated['middle_initial'])) : null,
                 'last_name' => trim($validated['last_name']),
+                'suffix' => $validated['suffix'] ?? null,
                 'email' => strtolower(trim($validated['email'])),
                 'role' => $validated['role'],
                 'is_active' => $validated['is_active'],
@@ -164,10 +112,6 @@ class UserController extends Controller
             ]);
             $user->syncRoles([$user->role]);
             $syncedProfile = $this->facultyProfiles->sync($user);
-            // Re-expanded even when no permissions were sent: a prerequisite the
-            // previous role supplied has to be stored directly once the role
-            // no longer does, or its dependents stop working.
-            $user->syncPermissions($this->capabilities->expandForRole($permissions, $user->role));
 
             if (! $user->is_active) {
                 $user->tokens()->delete();
@@ -254,98 +198,6 @@ class UserController extends Controller
         return response()->json($users);
     }
 
-    public function permissions(): JsonResponse
-    {
-        return response()->json($this->capabilities->names());
-    }
-
-    public function userPermissions(User $user): JsonResponse
-    {
-        $inherited = $user->getPermissionsViaRoles()->pluck('name')->sort()->values()->all();
-        $direct = $user->getDirectPermissions()->pluck('name')->sort()->values()->all();
-        $effective = $user->getAllPermissions()->pluck('name')->sort()->values()->all();
-        $catalog = $this->capabilities->names();
-
-        return response()->json([
-            'user_id' => $user->id,
-            'inherited' => $inherited,
-            'direct' => $direct,
-            'effective' => $effective,
-            'catalog' => $catalog,
-            'catalog_metadata' => $this->capabilities->catalogFor($user),
-            'modules' => $this->capabilities->modulesFor($user),
-            'presets' => $this->capabilities->presets(),
-            // Program-bound capabilities are refused by CapabilityMiddleware
-            // until the department owns a program; the matrix warns about it.
-            'scheduling_ready' => $this->schedulingReady($user),
-        ]);
-    }
-
-    public function updatePermissions(Request $request, User $user): JsonResponse
-    {
-        if ($user->role === 'vpaa') {
-            return response()->json(['message' => 'The VPAA account permissions cannot be changed.'], 403);
-        }
-
-        $validated = $request->validate([
-            'permissions' => ['present', 'array'],
-            'permissions.*' => ['string', Rule::in($this->capabilities->names())],
-        ]);
-
-        $requested = array_values(array_unique($validated['permissions']));
-        $assignmentErrors = [];
-        // Validated against what was asked for, so the error index still points
-        // at the offending entry in the request.
-        foreach ($requested as $index => $permission) {
-            if (! $this->capabilities->isAssignableTo($user, $permission)) {
-                $assignmentErrors["permissions.$index"] = [
-                    "The {$permission} capability is not assignable to the {$user->role} role.",
-                ];
-            }
-        }
-        if ($assignmentErrors !== []) {
-            throw ValidationException::withMessages($assignmentErrors);
-        }
-        // Expanded so a capability is never saved without the reads it depends
-        // on: an account granted instructor assignment but not `schedule.view`
-        // reached a page it was allowed to open and 403'd fetching its data.
-        $newDirect = $this->capabilities->expandForRole($requested, (string) $user->role);
-        $previousDirect = $user->getDirectPermissions()->pluck('name')->values()->all();
-
-        $added = array_values(array_diff($newDirect, $previousDirect));
-        $removed = array_values(array_diff($previousDirect, $newDirect));
-
-        DB::transaction(function () use ($request, $user, $newDirect, $added, $removed) {
-            $user->syncPermissions($newDirect);
-
-            $this->audit->record($request, 'user_updated', $user, [
-                'action' => 'permissions_updated',
-                'permission_changes' => [
-                    'added' => $added,
-                    'removed' => $removed,
-                ],
-                'direct_permissions' => $newDirect,
-            ]);
-        });
-
-        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
-
-        $freshUser = $user->fresh();
-        $inherited = $freshUser->getPermissionsViaRoles()->pluck('name')->sort()->values()->all();
-        $direct = $freshUser->getDirectPermissions()->pluck('name')->sort()->values()->all();
-        $effective = $freshUser->getAllPermissions()->pluck('name')->sort()->values()->all();
-
-        return response()->json([
-            'message' => 'User permissions updated successfully.',
-            'data' => [
-                'user_id' => $freshUser->id,
-                'inherited' => $inherited,
-                'direct' => $direct,
-                'effective' => $effective,
-            ],
-        ]);
-    }
-
     private function ensureRoleDepartmentHierarchy(string $role, int $departmentId): void
     {
         if (in_array($role, ['dean', 'secretary', 'director'], true) || Program::query()->where('department_id', $departmentId)->exists()) {
@@ -357,33 +209,10 @@ class UserController extends Controller
         ]);
     }
 
-    /** @param list<string> $permissions */
-    private function validatePermissionAssignments(array $permissions, string $role): void
-    {
-        $errors = [];
-        foreach (array_values(array_unique($permissions)) as $index => $permission) {
-            if (! $this->capabilities->isAssignableToRole($role, $permission)) {
-                $errors["permissions.$index"] = [
-                    "The {$permission} capability is not assignable to the {$role} role.",
-                ];
-            }
-        }
-
-        if ($errors !== []) {
-            throw ValidationException::withMessages($errors);
-        }
-    }
-
     private function withAccessState(User $user): User
     {
-        $direct = $user->getDirectPermissions()->pluck('name')->values()->all();
-        $inherited = $user->getPermissionsViaRoles()->pluck('name')->values()->all();
-        $effective = $user->capabilityNames();
-
         return $user
-            ->setAttribute('direct_permissions', $direct)
-            ->setAttribute('inherited_permissions', $inherited)
-            ->setAttribute('permissions', $effective)
+            ->setAttribute('permissions', $user->capabilityNames())
             ->setAttribute('scheduling_ready', $this->schedulingReady($user));
     }
 
@@ -401,6 +230,7 @@ class UserController extends Controller
                 ? strtoupper(trim($validated['middle_initial'])).'.'
                 : null,
             trim($validated['last_name']),
+            $validated['suffix'] ?? null,
         ])));
     }
 }

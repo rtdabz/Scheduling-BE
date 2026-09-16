@@ -7,7 +7,8 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Services\Scheduling\Engine\CSPSolver;
+use App\Services\Scheduling\Engine\CspSolver;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -19,7 +20,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
     private Sections $section;
     private Course $course;
     private Rooms $lectureRoom;
-    private CSPSolver $solver;
+    private CspSolver $solver;
 
     protected function setUp(): void
     {
@@ -69,7 +70,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
             'department_id' => $this->department->id,
         ]);
 
-        $this->solver = app(CSPSolver::class);
+        $this->solver = app(CspSolver::class);
     }
 
     public function test_uses_preferred_pattern_when_vacant(): void
@@ -121,8 +122,9 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
                 'department_id' => $this->department->id,
                 'semester_id' => $this->section->semester_id,
                 'day' => $day,
-                'start_time' => '07:00:00',
-                'end_time' => '19:00:00',
+                // Block the whole configured day, not a hard-coded window.
+                'start_time' => SchedulingPolicy::openingTime(),
+                'end_time' => SchedulingPolicy::closingTime(),
                 'mode' => 'on-site',
                 'status' => 'draft',
             ]);
@@ -179,8 +181,9 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
                 'department_id' => $this->department->id,
                 'semester_id' => $this->section->semester_id,
                 'day' => $day,
-                'start_time' => '07:00:00',
-                'end_time' => '19:00:00',
+                // Block the whole configured day, not a hard-coded window.
+                'start_time' => SchedulingPolicy::openingTime(),
+                'end_time' => SchedulingPolicy::closingTime(),
                 'mode' => 'on-site',
                 'status' => 'draft',
             ]);
@@ -229,8 +232,9 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
                 'department_id' => $this->department->id,
                 'semester_id' => $this->section->semester_id,
                 'day' => $day,
-                'start_time' => '07:00:00',
-                'end_time' => '19:00:00',
+                // Block the whole configured day, not a hard-coded window.
+                'start_time' => SchedulingPolicy::openingTime(),
+                'end_time' => SchedulingPolicy::closingTime(),
                 'mode' => 'on-site',
                 'status' => 'draft',
             ]);
@@ -276,8 +280,9 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
                 'department_id' => $this->department->id,
                 'semester_id' => $this->section->semester_id,
                 'day' => $day,
-                'start_time' => '07:00:00',
-                'end_time' => '19:00:00',
+                // Block the whole configured day, not a hard-coded window.
+                'start_time' => SchedulingPolicy::openingTime(),
+                'end_time' => SchedulingPolicy::closingTime(),
                 'mode' => 'on-site',
                 'status' => 'draft',
             ]);

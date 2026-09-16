@@ -28,7 +28,6 @@ class DayCategoryConstraintParityTest extends TestCase
         $rules = $this->violationRulesForEachDay($this->course('CWTS1', 'Civic Welfare Training', 'major', 'field'));
 
         foreach ($rules as $day => $dayRules) {
-            $this->assertNotContains('nstp_day_constraint', $dayRules, "NSTP should be allowed on {$day}");
             $this->assertNotContains('field_day_constraint', $dayRules, "NSTP should not hit the field rule on {$day}");
             $this->assertNotContains('major_sunday_mode_constraint', $dayRules, "NSTP should not hit the Sunday rule on {$day}");
         }

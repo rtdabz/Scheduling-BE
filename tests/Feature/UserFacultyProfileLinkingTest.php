@@ -58,6 +58,28 @@ class UserFacultyProfileLinkingTest extends TestCase
         ]);
     }
 
+    public function test_suffix_is_saved_and_carried_onto_the_new_profile(): void
+    {
+        $user = $this->createUser(['first_name' => 'Juan', 'middle_initial' => 'd', 'last_name' => 'Dela Cruz', 'suffix' => 'Jr.'])
+            ->assertCreated()
+            ->assertJsonPath('data.name', 'Juan D. Dela Cruz Jr.')
+            ->assertJsonPath('data.suffix', 'Jr.');
+
+        // Taken from the name fields, so a two-word surname is not split apart.
+        $this->assertDatabaseHas('faculties', [
+            'user_id' => $user->json('data.id'),
+            'first_name' => 'Juan',
+            'middle_name' => 'D',
+            'last_name' => 'Dela Cruz',
+            'suffix' => 'Jr.',
+        ]);
+    }
+
+    public function test_an_unknown_suffix_is_refused(): void
+    {
+        $this->createUser(['suffix' => 'Esq.'])->assertJsonValidationErrors('suffix');
+    }
+
     public function test_create_mode_applies_the_designation_deload(): void
     {
         $designation = $this->designation(6);
