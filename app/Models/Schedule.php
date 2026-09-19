@@ -11,6 +11,24 @@ class Schedule extends Model
 
     protected $table = 'schedules';
 
+    /**
+     * Relations returned with any schedule response (batch save, listings, update,
+     * status and faculty changes, recommendation accept/apply), trimmed to
+     * the columns the timetable views read (the same set /initial-data uses).
+     * Loading them whole repeated unbounded columns — departments.logo,
+     * faculties.profile_picture — once per meeting row, so saving a year level
+     * sent megabytes back to the grid.
+     */
+    public const RESPONSE_RELATIONS = [
+        'academicSemester:id,academic_year,semester',
+        'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
+        'course:id,course_code,course_name,lecture_hours,lab_hours,units,course_category,room_type_required,year_level,semester,department_id,teaching_department_id,teaching_program_id,program_id',
+        'faculty:id,first_name,last_name,middle_name,department_id,program_id',
+        'room:id,room_code,building,room_type,allow_lecture_usage,department_id',
+        'department:id,department_name,department_code',
+        'program',
+    ];
+
     protected $with = ['split'];
 
     protected $appends = [

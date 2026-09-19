@@ -41,23 +41,6 @@ class ScheduleController extends Controller
 
     private const PLOTTING_EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
 
-    /**
-     * Relations returned with a batch save and the schedule listings, trimmed to
-     * the columns the timetable views read (the same set /initial-data uses).
-     * Loading them whole repeated unbounded columns — departments.logo,
-     * faculties.profile_picture — once per meeting row, so saving a year level
-     * sent megabytes back to the grid.
-     */
-    private const BATCH_RESPONSE_RELATIONS = [
-        'academicSemester:id,academic_year,semester',
-        'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
-        'course:id,course_code,course_name,lecture_hours,lab_hours,units,course_category,room_type_required,year_level,semester,department_id,teaching_department_id,teaching_program_id,program_id',
-        'faculty:id,first_name,last_name,middle_name,department_id,program_id',
-        'room:id,room_code,building,room_type,allow_lecture_usage,department_id',
-        'department:id,department_name,department_code',
-        'program',
-    ];
-
     protected RuleEngine $ruleEngine;
 
     public function __construct(
@@ -532,7 +515,7 @@ class ScheduleController extends Controller
 
                     $savedSchedules = Schedule::query()
                         ->whereIn('id', $savedIds)
-                        ->with(self::BATCH_RESPONSE_RELATIONS)
+                        ->with(Schedule::RESPONSE_RELATIONS)
                         ->get()
                         ->sortBy(static fn (Schedule $schedule): int => array_search((int) $schedule->id, $savedIds, true))
                         ->values()
@@ -1221,7 +1204,7 @@ class ScheduleController extends Controller
         $scope = $this->authorization->departmentScope($request);
 
         return Schedule::query()
-            ->with(self::BATCH_RESPONSE_RELATIONS)
+            ->with(Schedule::RESPONSE_RELATIONS)
             ->when($scope !== null, fn (Builder $query) => $query->where(
                 fn (Builder $owned) => $owned
                     ->where('department_id', $scope)
@@ -1428,7 +1411,7 @@ class ScheduleController extends Controller
                 'schedule' => $schedule,
                 'schedules' => Schedule::query()
                     ->whereIn('id', $manualFacultyScheduleIds)
-                    ->with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])
+                    ->with(Schedule::RESPONSE_RELATIONS)
                     ->get(),
             ]);
         }
@@ -1982,7 +1965,7 @@ class ScheduleController extends Controller
             'message' => 'Instructor assignments completed successfully.',
             'schedules' => Schedule::query()
                 ->whereIn('id', $scheduleIds)
-                ->with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])
+                ->with(Schedule::RESPONSE_RELATIONS)
                 ->get(),
             'schedules_updated' => count($scheduleIds),
         ]);
@@ -2005,7 +1988,7 @@ class ScheduleController extends Controller
             $this->notifications->notifyCrossDepartmentCompletion($first, $request->user(), $schedules->modelKeys());
         }
 
-        return response()->json(['schedules' => Schedule::query()->whereIn('id', $validated['ids'])->with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])->get()]);
+        return response()->json(['schedules' => Schedule::query()->whereIn('id', $validated['ids'])->with(Schedule::RESPONSE_RELATIONS)->get()]);
     }
 
     public function batchStatus(Request $request): JsonResponse
@@ -2122,7 +2105,7 @@ class ScheduleController extends Controller
                 $updateValues['faculty_assignment_done'] = true;
             }
             $updated = Schedule::whereIn('id', $validated['ids'])->update($updateValues);
-            $schedules = Schedule::whereIn('id', $validated['ids'])->with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])->get();
+            $schedules = Schedule::whereIn('id', $validated['ids'])->with(Schedule::RESPONSE_RELATIONS)->get();
             $version = $this->historyRecorder->record('schedule_batch_status_updated', $before, $schedules, $request->user()?->id, null, null, 'batch_status', null, ['status' => $validated['status']]);
             SchedulingAuditLog::create([
                 'user_id' => $request->user()?->id,

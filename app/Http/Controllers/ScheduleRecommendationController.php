@@ -1240,22 +1240,7 @@ class ScheduleRecommendationController extends Controller
                         throw new InvalidArgumentException('Only pending recommendations can be accepted.');
                     }
 
-                    $committedPlan = $this->planCommitter->commit($plan, $user?->id);
-                    $createdIds = array_values(array_map(
-                        'intval',
-                        $committedPlan->metadata['created_schedule_ids'] ?? [],
-                    ));
-                    $recommendation->update([
-                        'status' => 'accepted',
-                        'accepted_by' => $user?->id,
-                        'accepted_at' => now(),
-                    ]);
-                    $this->recordAudit(
-                        action: 'recommendation_accepted',
-                        userId: $user?->id,
-                        recommendation: $recommendation,
-                        metadata: ['created_schedule_ids' => $createdIds, 'plan_id' => $recommendation->input_payload['_scheduling']['schedule_plan']['plan_id'] ?? null],
-                    );
+                    [$committedPlan, $createdIds] = $this->commitAndAccept($recommendation, $plan, $user?->id);
 
                     return [
                         $committedPlan,
@@ -1267,7 +1252,7 @@ class ScheduleRecommendationController extends Controller
                 return response()->json([
                     'message' => 'Recommendation accepted and schedules created successfully.',
                     'recommendation' => $recommendation,
-                    'schedules' => Schedule::query()->whereIn('id', $createdIds)->with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])->get(),
+                    'schedules' => Schedule::query()->whereIn('id', $createdIds)->with(Schedule::RESPONSE_RELATIONS)->get(),
                     'schedule_plan' => $committedPlan,
                 ]);
             } catch (SchedulePlanCommitException|InvalidArgumentException|RuntimeException $exception) {
@@ -1485,9 +1470,7 @@ class ScheduleRecommendationController extends Controller
                         'input_payload' => ScheduleRecommendationPayload::fromPrepared($validated, $preparedConfiguration, $bestPlan)->toArray(),
                         'recommended_schedules' => $bestSolution['schedules'],
                     ]);
-                    $committedPlan = $this->planCommitter->commit($bestPlan, $user?->id);
-                    $createdIds = array_values(array_map('intval', $committedPlan->metadata['created_schedule_ids'] ?? []));
-                    $recommendation->update(['status' => 'accepted', 'accepted_by' => $user?->id, 'accepted_at' => now()]);
+                    [$committedPlan, $createdIds] = $this->commitAndAccept($recommendation, $bestPlan, $user?->id, autoApplied: true);
 
                     return [$committedPlan, $recommendation, $createdIds];
                 });
@@ -1496,7 +1479,7 @@ class ScheduleRecommendationController extends Controller
                     'message' => 'Schedule generated and placed into Timetable Grid successfully.',
                     'department_profile' => $profile->value,
                     'generation_metrics' => $generated->generationMetrics,
-                    'schedules' => Schedule::query()->whereIn('id', $createdIds)->with(['academicSemester', 'section', 'course', 'faculty', 'room', 'department'])->get(),
+                    'schedules' => Schedule::query()->whereIn('id', $createdIds)->with(Schedule::RESPONSE_RELATIONS)->get(),
                     'recommendation' => $recommendation,
                     'schedule_plan' => $committedPlan,
                 ]);
@@ -1509,6 +1492,39 @@ class ScheduleRecommendationController extends Controller
             'message' => 'The generated result did not include a typed schedule plan. Regenerate the schedule before applying it.',
             'generation_metrics' => $generated->generationMetrics,
         ], 422);
+    }
+
+    /**
+     * Commits a recommendation's plan and marks it accepted, inside the
+     * caller's transaction. Accept and auto-apply both land here so they leave
+     * the same audit trail; auto-apply used to commit and accept without a
+     * recommendation_accepted record, so its schedules had no acceptance
+     * history.
+     *
+     * @return array{0: SchedulePlan, 1: list<int>}
+     */
+    private function commitAndAccept(ScheduleRecommendation $recommendation, SchedulePlan $plan, ?int $userId, bool $autoApplied = false): array
+    {
+        $committedPlan = $this->planCommitter->commit($plan, $userId);
+        $createdIds = array_values(array_map('intval', $committedPlan->metadata['created_schedule_ids'] ?? []));
+
+        $recommendation->update([
+            'status' => 'accepted',
+            'accepted_by' => $userId,
+            'accepted_at' => now(),
+        ]);
+        $this->recordAudit(
+            action: 'recommendation_accepted',
+            userId: $userId,
+            recommendation: $recommendation,
+            metadata: [
+                'created_schedule_ids' => $createdIds,
+                'plan_id' => $plan->planId,
+                ...($autoApplied ? ['auto_applied' => true] : []),
+            ],
+        );
+
+        return [$committedPlan, $createdIds];
     }
 
     private function recordAudit(
