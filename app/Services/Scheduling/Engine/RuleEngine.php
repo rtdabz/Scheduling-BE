@@ -3,7 +3,6 @@
 namespace App\Services\Scheduling\Engine;
 
 use App\Models\Sections;
-use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\Engine\Rules\AttemptRecords;
 use App\Services\Scheduling\Engine\Rules\ClassDurationRule;
 use App\Services\Scheduling\Engine\Rules\CurriculumPlacementRule;
@@ -61,7 +60,7 @@ class RuleEngine
 
     private readonly MeetingGroupRule $meetingGroups;
 
-    public function __construct(?DepartmentResourceSlotLimitService $resourceLimits = null)
+    public function __construct()
     {
         // One lookup cache per engine: a batch save validates many meetings that
         // share a semester, section and room, and should fetch each only once.
@@ -74,9 +73,9 @@ class RuleEngine
         $this->instructorAvailability = new InstructorAvailabilityRule;
         $this->instructorConflicts = new InstructorConflictRule;
         $this->sectionConflicts = new SectionConflictRule;
-        $this->roomAvailability = new RoomAvailabilityRule($lookups, $resourceLimits ?? new DepartmentResourceSlotLimitService);
+        $this->roomAvailability = new RoomAvailabilityRule($lookups);
         $this->roomTypes = new RoomTypeRule($lookups);
-        $this->operatingHours = new OperatingHoursRule($lookups);
+        $this->operatingHours = new OperatingHoursRule;
         $this->meetingDays = new MeetingDayRule($lookups);
         $this->deliveryModes = new DeliveryModeRule($lookups);
         $this->classDuration = new ClassDurationRule($lookups);
@@ -125,8 +124,6 @@ class RuleEngine
                 $hasMissingRecord ? null : $this->roomTypeFor($attempt),
                 $this->meetingDays->preferredPattern($day, $attempt['preferred_pattern'] ?? null),
                 $this->operatingHours->withinOperatingHours($startTime, $endTime),
-                $this->roomAvailability->onlineCapacity($attempt),
-                $this->deliveryModes->sectionOnlineLimit($attempt),
                 $records === null ? null : $this->classDuration->check($attempt, $records),
             ]),
         ];
@@ -134,17 +131,6 @@ class RuleEngine
         // An instructor conflict someone already chose to override does not come
         // back on the next save of the same meeting.
         return FacultyConflictOverride::withoutStanding($attempt, array_values($violations));
-    }
-
-    /**
-     * The rules that need the attempt's records to exist first.
-     *
-     * @param  array<string, mixed>  $attempt
-     * @return list<array<string, mixed>>
-     */
-    public function checkRelationalIntegrity(array $attempt): array
-    {
-        return $this->recordRules($attempt)['violations'];
     }
 
     /**

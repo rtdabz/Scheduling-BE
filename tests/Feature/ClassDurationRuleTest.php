@@ -71,6 +71,19 @@ class ClassDurationRuleTest extends TestCase
         $this->assertNotNull($this->durationViolation($f, 'Monday', '08:00', '12:00', ignore: $first->id));
     }
 
+    public function test_rejected_and_revision_meetings_still_count_toward_the_week(): void
+    {
+        // Both are live classes awaiting a fix and resubmission, not dead rows.
+        $f = $this->fixture();
+        $meeting = $this->persist($f, 'Monday', '08:00', '11:00');
+
+        foreach (['rejected', 'revision'] as $status) {
+            $meeting->update(['status' => $status]);
+
+            $this->assertNotNull($this->durationViolation($f, 'Friday', '08:00', '11:00'), $status);
+        }
+    }
+
     /** @return array<string, mixed>|null */
     private function durationViolation(array $f, string $day, string $start, string $end, ?int $ignore = null): ?array
     {

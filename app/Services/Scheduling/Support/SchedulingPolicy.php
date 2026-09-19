@@ -6,6 +6,7 @@ namespace App\Services\Scheduling\Support;
 
 use App\Models\Course;
 use App\Models\Departments;
+use App\Models\Rooms;
 use App\Services\TimeslotService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -16,12 +17,14 @@ final class SchedulingPolicy
 {
     public const SLOT_MINUTES = 30;
 
-    /** End of the ordinary field-course day. Shared by generation and validation. */
-    public const FIELD_DAY_END_TIME = '17:00:00';
+    /** Field end time used until the VPAA sets one (schedule_settings.field_end_time). */
+    public const DEFAULT_FIELD_DAY_END_TIME = '17:00:00';
 
     private static ?string $cachedOpeningTime = null;
 
     private static ?string $cachedClosingTime = null;
+
+    private static ?string $cachedFieldDayEndTime = null;
 
     /** @var array<int, list<int>> */
     private static array $cachedStartSlotsByDuration = [];
@@ -74,10 +77,6 @@ final class SchedulingPolicy
     public const ROOM_TYPES = ['lecture', 'laboratory', 'field', 'online'];
 
     public const ROOM_STATUSES = ['available', 'not available'];
-
-    public const COURSE_CATEGORIES = ['major', 'minor'];
-
-    public const SUBJECT_CATEGORIES = ['major', 'minor'];
 
     public const YEAR_LEVELS = ['1', '2', '3', '4'];
 
@@ -189,6 +188,93 @@ final class SchedulingPolicy
     }
 
     /**
+     * The periods one course of a section may meet in: its own Preferred
+     * Meeting from Setup Courses' Configure (`preferred_periods_by_course_id`,
+     * one or more periods) when set, otherwise the section's single period.
+     * Null means any time. The override moves one course -- e.g. a field
+     * course out of an Evening section -- without moving the section's others.
+     *
+     * @param  array<string, mixed>  $config  a section config
+     * @return list<string>|null in day order
+     */
+    public static function coursePreferredPeriods(array $config, int $courseId): ?array
+    {
+        $overrides = is_array($config['preferred_periods_by_course_id'] ?? null)
+            ? $config['preferred_periods_by_course_id']
+            : [];
+
+        $own = self::normalizePreferredPeriods($overrides[$courseId] ?? $overrides[(string) $courseId] ?? null);
+        if ($own !== null) {
+            return $own;
+        }
+
+        $section = self::normalizePreferredPeriod($config['preferred_period'] ?? null);
+
+        return $section === null ? null : [$section];
+    }
+
+    /**
+     * One period or a list of them, deduplicated in day order; null when none
+     * is a known period.
+     *
+     * @return list<string>|null
+     */
+    public static function normalizePreferredPeriods(mixed $periods): ?array
+    {
+        $chosen = [];
+        foreach ((array) $periods as $period) {
+            $normalized = self::normalizePreferredPeriod($period);
+            if ($normalized !== null) {
+                $chosen[$normalized] = true;
+            }
+        }
+
+        $ordered = array_values(array_filter(
+            self::preferredPeriods(),
+            static fn (string $period): bool => isset($chosen[$period]),
+        ));
+
+        return $ordered === [] ? null : $ordered;
+    }
+
+    /**
+     * The slot windows a set of periods allows. Touching windows merge, so
+     * Morning + Afternoon is one 7:00 AM - 4:00 PM window a meeting may
+     * straddle, while Morning + Evening stays two.
+     *
+     * @param  list<string>  $periods
+     * @return list<array{0: int, 1: int}>
+     */
+    public static function preferredPeriodsSlotRanges(array $periods): array
+    {
+        $ranges = [];
+        foreach (self::normalizePreferredPeriods($periods) ?? [] as $period) {
+            [$from, $to] = self::preferredPeriodSlotRange($period);
+            if ($to <= $from) {
+                continue;
+            }
+
+            $last = array_key_last($ranges);
+            if ($last !== null && $from <= $ranges[$last][1]) {
+                $ranges[$last][1] = max($ranges[$last][1], $to);
+            } else {
+                $ranges[] = [$from, $to];
+            }
+        }
+
+        return $ranges;
+    }
+
+    /** @param  list<string>  $periods */
+    public static function preferredPeriodsLabel(array $periods): string
+    {
+        return implode(' or ', array_map(
+            static fn (string $period): string => self::preferredPeriodLabel($period),
+            $periods,
+        ));
+    }
+
+    /**
      * The window as grid slots, clamped to the institution's operating hours.
      *
      * Clamping matters: the windows are fixed wall-clock ranges while the grid is
@@ -214,12 +300,38 @@ final class SchedulingPolicy
         ];
     }
 
-    /** Bookable slots inside the window, i.e. the longest meeting it can hold. */
-    public static function preferredPeriodSlotCount(string $period): int
+    /**
+     * Step 1's Preferred Days, in calendar order, or null when the run may use
+     * every day. Unknown names are dropped; choosing all seven days, or none,
+     * means no restriction. The solver, the feasibility pre-check and the
+     * request validation all read the choice through here.
+     *
+     * @return list<string>|null
+     */
+    public static function normalizeAllowedDays(mixed $days): ?array
     {
-        [$from, $to] = self::preferredPeriodSlotRange($period);
+        if (! is_array($days)) {
+            return null;
+        }
 
-        return max(0, $to - $from);
+        $chosen = array_flip(array_map(
+            static fn (mixed $day): string => ucfirst(strtolower(trim((string) $day))),
+            $days,
+        ));
+        $normalized = array_values(array_filter(self::DAYS, static fn (string $day): bool => isset($chosen[$day])));
+
+        return $normalized === [] || count($normalized) === count(self::DAYS) ? null : $normalized;
+    }
+
+    /**
+     * How many of these days a run with Preferred Days may still use.
+     *
+     * @param  list<string>  $days
+     * @param  list<string>|null  $allowedDays
+     */
+    public static function countAllowedDays(array $days, ?array $allowedDays): int
+    {
+        return $allowedDays === null ? count($days) : count(array_intersect($days, $allowedDays));
     }
 
     /** Human wording for the window, e.g. 'Morning (7:00 AM - 11:30 AM)'. */
@@ -258,6 +370,12 @@ final class SchedulingPolicy
     public const LECTURE_SLOTS_PER_UNIT = 2;
 
     public const LABORATORY_SLOTS_PER_UNIT = 6;
+
+    /** A course's units as weekly minutes: one unit is one hour on the timetable. */
+    public static function unitMinutes(mixed $units): int
+    {
+        return (int) round((float) ($units ?? 0) * 60);
+    }
 
     /**
      * The largest number of units a single component may carry and still fit
@@ -523,18 +641,6 @@ final class SchedulingPolicy
             'description' => 'An assigned faculty member cannot teach overlapping classes in the same semester.',
             'enforced_by' => ['rule_engine', 'batch_conflict_validator'],
         ],
-        'room_capacity_conflict' => [
-            'severity' => 'hard',
-            'category' => 'resource_capacity',
-            'description' => 'Concurrent use of a shared room or field resource cannot exceed its configured slot limit.',
-            'enforced_by' => ['rule_engine', 'batch_conflict_validator', 'csp'],
-        ],
-        'online_capacity_conflict' => [
-            'severity' => 'hard',
-            'category' => 'resource_capacity',
-            'description' => 'Concurrent online classes cannot exceed the department online slot limit.',
-            'enforced_by' => ['rule_engine', 'batch_conflict_validator', 'csp'],
-        ],
         'room_type_match' => [
             'severity' => 'hard',
             'category' => 'room',
@@ -562,7 +668,7 @@ final class SchedulingPolicy
         'forced_course_day' => [
             'severity' => 'hard',
             'category' => 'meeting_pattern',
-            'description' => 'A course with a department forced-day configuration must be scheduled on that day.',
+            'description' => 'A course with a Required Day must be scheduled on that day.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'delivery_mode' => [
@@ -598,13 +704,7 @@ final class SchedulingPolicy
         'field_evening_window' => [
             'severity' => 'hard',
             'category' => 'time',
-            'description' => 'Field courses must end by the configured daytime boundary unless evening field scheduling is enabled.',
-            'enforced_by' => ['rule_engine', 'csp'],
-        ],
-        'section_online_limit' => [
-            'severity' => 'hard',
-            'category' => 'resource_capacity',
-            'description' => 'A section cannot exceed the configured maximum number of distinct online courses.',
+            'description' => 'Field courses must end by the institution\'s field end time (Settings, Operating hours).',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'subject_section_alignment' => [
@@ -718,7 +818,7 @@ final class SchedulingPolicy
         'hybrid_component_shape' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
-            'description' => 'Hybrid component duration, delivery mode, and resource type must match the generated meeting requirement.',
+            'description' => 'An Integrated Hybrid lecture is online and its laboratory on-site, at the lengths chosen for the course; each Hybrid Split meeting lasts the fixed Hybrid Split length.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'minor_split_component_count' => [
@@ -728,14 +828,14 @@ final class SchedulingPolicy
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         // The 'minor_split_' prefix is historical: these rules now govern every
-        // balanced two-day split, which since Major Lecture Split Sessions
-        // includes lecture-only majors. The codes are persisted in violation
-        // payloads and in the audit trail, so they are left alone on purpose --
-        // {@see balancedSplitEligible} is the rule they actually express.
+        // balanced two-day split, which includes lecture-only majors. The codes
+        // are persisted in violation payloads and in the audit trail, so they
+        // are left alone on purpose -- {@see balancedSplitEligible} is the rule
+        // they actually express.
         'minor_split_eligibility' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
-            'description' => 'Balanced split sessions are available only for eligible minor courses, or lecture-only majors, under the matching department setting.',
+            'description' => 'Balanced split sessions are available only for eligible minor courses or lecture-only majors selected in Step 2.',
             'enforced_by' => ['rule_engine', 'csp', 'schedule_generation_preflight'],
         ],
         'minor_split_pattern' => [
@@ -747,7 +847,7 @@ final class SchedulingPolicy
         'minor_split_duration' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
-            'description' => 'The combined duration of a minor split group must equal the course contact-hour requirement.',
+            'description' => 'The combined duration of a minor split group must not exceed the course contact-hour requirement.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'class_duration' => [
@@ -883,19 +983,9 @@ final class SchedulingPolicy
         return self::CONSTRAINT_CATALOG;
     }
 
-    public static function hardConstraintIds(): array
+    public static function allowedDaysRule(string $prefix = ''): string
     {
-        return self::constraintIdsBySeverity('hard');
-    }
-
-    public static function softConstraintIds(): array
-    {
-        return self::constraintIdsBySeverity('soft');
-    }
-
-    public static function allowedDaysRule(string $prefix): string
-    {
-        return $prefix.'|in:'.implode(',', self::PERSISTABLE_DAYS);
+        return ltrim($prefix.'|in:'.implode(',', self::PERSISTABLE_DAYS), '|');
     }
 
     public static function allowedDeliveryModesRule(string $prefix): string
@@ -919,11 +1009,6 @@ final class SchedulingPolicy
         $rules[] = Rule::in(self::ROOM_STATUSES);
 
         return $rules;
-    }
-
-    public static function allowedSubjectCategoriesRule(string $prefix): string
-    {
-        return $prefix.'|in:'.implode(',', self::SUBJECT_CATEGORIES);
     }
 
     public static function allowedYearLevelsRule(string $prefix): string
@@ -1020,10 +1105,23 @@ final class SchedulingPolicy
         return self::$cachedClosingTime;
     }
 
+    /**
+     * The latest time a field class may end: the institution's field end time,
+     * set beside the operating hours. Kept inside operating hours, so a closing
+     * time moved earlier than it simply becomes the limit.
+     */
+    public static function fieldDayEndTime(): string
+    {
+        self::loadOperatingHours();
+
+        return self::$cachedFieldDayEndTime;
+    }
+
     public static function clearTimeCache(): void
     {
         self::$cachedOpeningTime = null;
         self::$cachedClosingTime = null;
+        self::$cachedFieldDayEndTime = null;
         self::$cachedStartSlotsByDuration = [];
     }
 
@@ -1215,22 +1313,34 @@ final class SchedulingPolicy
         ));
     }
 
-    private static function constraintIdsBySeverity(string $severity): array
+    /**
+     * Reads a course attribute from either form a course travels in: the model
+     * (RuleEngine, solver) or the snapshot's array (constraint kernel). Every
+     * course classification below goes through this, so both validators get
+     * one answer for one course.
+     *
+     * @param  Course|array<string, mixed>  $course
+     */
+    private static function courseAttribute(Course|array $course, string $key, ?string $legacyKey = null): mixed
     {
-        return array_keys(array_filter(
-            self::CONSTRAINT_CATALOG,
-            static fn (array $constraint): bool => $constraint['severity'] === $severity,
-        ));
+        $value = is_array($course) ? ($course[$key] ?? null) : $course->{$key};
+        if ($value === null && $legacyKey !== null) {
+            $value = is_array($course) ? ($course[$legacyKey] ?? null) : $course->{$legacyKey};
+        }
+
+        return $value;
     }
 
     /**
      * Returns true when the course is an NSTP-type course (ROTC, CWTS, or LTS).
+     *
+     * @param  Course|array<string, mixed>  $course
      */
-    public static function isNstpCourse(Course $course): bool
+    public static function isNstpCourse(Course|array $course): bool
     {
-        $code = strtoupper((string) ($course->course_code ?? $course->subject_code ?? ''));
-        $name = strtoupper((string) ($course->course_name ?? $course->subject_name ?? ''));
-        $category = strtolower((string) ($course->course_category ?? $course->subject_category ?? ''));
+        $code = strtoupper((string) (self::courseAttribute($course, 'course_code', 'subject_code') ?? ''));
+        $name = strtoupper((string) (self::courseAttribute($course, 'course_name', 'subject_name') ?? ''));
+        $category = strtolower((string) (self::courseAttribute($course, 'course_category', 'subject_category') ?? ''));
 
         if (in_array($category, ['nstp', 'rotc', 'cwts', 'lts'], true)) {
             return true;
@@ -1247,21 +1357,33 @@ final class SchedulingPolicy
 
     /**
      * Returns true when the course requires a field room (PATHFIT, NSTP, etc.).
+     *
+     * $fieldCourseCodes, when given, replaces the database lookup: the
+     * constraint kernel passes the codes captured in its snapshot, which the
+     * snapshot already scoped to the scheduling department.
+     *
+     * @param  Course|array<string, mixed>  $course
+     * @param  list<string>|null  $fieldCourseCodes
      */
-    public static function isFieldCourse(Course $course, ?int $departmentId = null): bool
+    public static function isFieldCourse(Course|array $course, ?int $departmentId = null, ?array $fieldCourseCodes = null): bool
     {
-        if ($course->room_type_required === 'field') {
+        if (self::courseAttribute($course, 'room_type_required') === 'field') {
             return true;
         }
 
-        if (self::isNstpCourse($course)) {
-            return true;
-        }
-
+        // A course's name never makes it a field course: NSTP/ROTC/CWTS used
+        // to be field by keyword, with no way to turn it off. Field is the
+        // department's choice, made by giving the course a field room.
         // Configured field-course codes are per department. A course with no
         // owning department is a shared minor, whose field-ness is global.
-        $departmentId ??= $course->department_id === null ? null : (int) $course->department_id;
-        $code = self::normalizeCourseCode((string) ($course->course_code ?? $course->subject_code ?? ''));
+        $code = self::normalizeCourseCode((string) (self::courseAttribute($course, 'course_code', 'subject_code') ?? ''));
+
+        if ($fieldCourseCodes !== null) {
+            return in_array($code, array_map(self::normalizeCourseCode(...), $fieldCourseCodes), true);
+        }
+
+        $courseDepartmentId = self::courseAttribute($course, 'department_id');
+        $departmentId ??= $courseDepartmentId === null ? null : (int) $courseDepartmentId;
 
         return isset(self::fieldCourseCodeMap($departmentId)[$code]);
     }
@@ -1274,10 +1396,11 @@ final class SchedulingPolicy
         return str_starts_with($normalized, 'GEC');
     }
 
-    public static function isLaboratoryCourse(Course $course): bool
+    /** @param Course|array<string, mixed> $course */
+    public static function isLaboratoryCourse(Course|array $course): bool
     {
-        return (int) ($course->lab_hours ?? 0) > 0
-            || (string) ($course->room_type_required ?? '') === 'laboratory';
+        return (int) (self::courseAttribute($course, 'lab_hours') ?? 0) > 0
+            || (string) (self::courseAttribute($course, 'room_type_required') ?? '') === 'laboratory';
     }
 
     /**
@@ -1303,6 +1426,47 @@ final class SchedulingPolicy
     public static function laboratoryComponentMinutes(Course $course, array|Departments|null $settings = null): int
     {
         return self::laboratoryComponentSlots($course, $settings) * self::SLOT_MINUTES;
+    }
+
+    /**
+     * The lecture half of a lecture/laboratory split (Integrated Hybrid): one
+     * hour per lecture unit, read from the course so it is never a fixed length.
+     * Paired with {@see laboratoryComponentSlots}; the two stay separate meetings.
+     *
+     * @param  array<string, mixed>|Course  $course
+     */
+    public static function lectureComponentSlots(array|Course $course): int
+    {
+        $lectureUnits = (int) ($course instanceof Course ? ($course->lecture_hours ?? 0) : ($course['lecture_hours'] ?? 0));
+
+        return max(0, $lectureUnits) * self::LECTURE_SLOTS_PER_UNIT;
+    }
+
+    /**
+     * The most weekly time a section may spend on one course: the larger of
+     * the Generator's two shapes, one block of `units × 60` minutes or a
+     * lecture/laboratory split. `class_duration` refuses a save past it, so a
+     * custom duration chosen in Setup Courses is capped here too.
+     *
+     * Accepts the model (RuleEngine) or the snapshot's array form (constraint
+     * kernel) so both validators share one ceiling.
+     *
+     * @param  Course|array<string, mixed>  $course
+     * @param  array<string, mixed>|Departments|null  $settings
+     */
+    public static function courseWeeklyCeilingMinutes(Course|array $course, array|Departments|null $settings = null): int
+    {
+        $value = static fn (string $key): mixed => is_array($course) ? ($course[$key] ?? 0) : ($course->{$key} ?? 0);
+
+        $singleBlock = self::unitMinutes($value('units'));
+        $lectureMinutes = max(0, (int) $value('lecture_hours')) * self::LECTURE_SLOTS_PER_UNIT * self::SLOT_MINUTES;
+        $laboratoryMinutes = (int) $value('lab_hours') > 0
+            ? (is_array($course)
+                ? self::laboratoryComponentSlotsForArray($course, $settings) * self::SLOT_MINUTES
+                : self::laboratoryComponentMinutes($course, $settings))
+            : 0;
+
+        return max($singleBlock, $lectureMinutes + $laboratoryMinutes);
     }
 
     /**
@@ -1373,12 +1537,16 @@ final class SchedulingPolicy
      * for them while the day rules said the opposite. Passing the scheduling
      * department keeps one answer for one course in one run.
      */
-    public static function effectiveRoomType(Course $course, ?int $departmentId, ?string $meetingType = null): string
+    /**
+     * @param  Course|array<string, mixed>  $course
+     * @param  list<string>|null  $fieldCourseCodes  see isFieldCourse()
+     */
+    public static function effectiveRoomType(Course|array $course, ?int $departmentId, ?string $meetingType = null, ?array $fieldCourseCodes = null): string
     {
         // A field designation is a course-level invariant. Component metadata
         // must not downgrade a field course to a regular lecture/laboratory
         // room requirement.
-        if (self::isFieldCourse($course, $departmentId)) {
+        if (self::isFieldCourse($course, $departmentId, $fieldCourseCodes)) {
             return 'field';
         }
 
@@ -1388,7 +1556,7 @@ final class SchedulingPolicy
 
         return self::isLaboratoryCourse($course)
             ? 'laboratory'
-            : ((string) ($course->room_type_required ?: 'lecture'));
+            : ((string) (self::courseAttribute($course, 'room_type_required') ?: 'lecture'));
     }
 
     /**
@@ -1398,15 +1566,23 @@ final class SchedulingPolicy
      * assign. A lecture is never left unresolved: its fallback is online
      * delivery, which is a real placement rather than a pending decision.
      */
-    public static function allowsRoomTbaFallback(Course $course, ?int $departmentId, ?string $meetingType = null): bool
+    /**
+     * @param  Course|array<string, mixed>  $course
+     * @param  list<string>|null  $fieldCourseCodes  see isFieldCourse()
+     */
+    public static function allowsRoomTbaFallback(Course|array $course, ?int $departmentId, ?string $meetingType = null, ?array $fieldCourseCodes = null): bool
     {
-        return self::effectiveRoomType($course, $departmentId, $meetingType) === 'laboratory';
+        return self::effectiveRoomType($course, $departmentId, $meetingType, $fieldCourseCodes) === 'laboratory';
     }
 
-    public static function allowsOnlineRoomFallback(Course $course, ?int $departmentId, ?string $meetingType = null): bool
+    /**
+     * @param  Course|array<string, mixed>  $course
+     * @param  list<string>|null  $fieldCourseCodes  see isFieldCourse()
+     */
+    public static function allowsOnlineRoomFallback(Course|array $course, ?int $departmentId, ?string $meetingType = null, ?array $fieldCourseCodes = null): bool
     {
-        return self::effectiveRoomType($course, $departmentId, $meetingType) === 'lecture'
-            && ! self::isFieldCourse($course, $departmentId)
+        return self::effectiveRoomType($course, $departmentId, $meetingType, $fieldCourseCodes) === 'lecture'
+            && ! self::isFieldCourse($course, $departmentId, $fieldCourseCodes)
             // A split course retains the parent course's laboratory metadata.
             // When the row explicitly identifies its lecture component, apply
             // the lecture delivery rule instead of rejecting it because another
@@ -1455,10 +1631,11 @@ final class SchedulingPolicy
      * that department's own instructors — never delegated the way a GEC service
      * course is handed to the college that offers it.
      */
-    public static function isMajorCourse(Course $course): bool
+    /** @param Course|array<string, mixed> $course */
+    public static function isMajorCourse(Course|array $course): bool
     {
         return strtolower(trim(
-            (string) ($course->course_category ?? $course->subject_category ?? '')
+            (string) (self::courseAttribute($course, 'course_category', 'subject_category') ?? '')
         )) === 'major';
     }
 
@@ -1489,14 +1666,13 @@ final class SchedulingPolicy
             : strtolower(trim((string) ($course['course_category'] ?? $course['subject_category'] ?? ''))) === 'major';
 
         if (! $isMajor) {
-            return (bool) ($departmentSettings['gec_split_schedule_override_enabled'] ?? false);
+            return true;
         }
 
         $lectureHours = (int) ($course instanceof Course ? ($course->lecture_hours ?? 0) : ($course['lecture_hours'] ?? 0));
         $labHours = (int) ($course instanceof Course ? ($course->lab_hours ?? 0) : ($course['lab_hours'] ?? 0));
 
-        return (bool) ($departmentSettings['major_lecture_split_schedule_override_enabled'] ?? false)
-            && $lectureHours > 0
+        return $lectureHours > 0
             && $labHours === 0;
     }
 
@@ -1508,9 +1684,84 @@ final class SchedulingPolicy
     public static function balancedSplitSettings(?Departments $department): array
     {
         return [
-            'gec_split_schedule_override_enabled' => (bool) ($department?->gec_split_schedule_override_enabled ?? false),
-            'major_lecture_split_schedule_override_enabled' => (bool) ($department?->major_lecture_split_schedule_override_enabled ?? false),
+            'gec_split_schedule_override_enabled' => true,
+            'major_lecture_split_schedule_override_enabled' => true,
         ];
+    }
+
+    /**
+     * Hybrid Split is the fixed shape of one online and one on-site lecture
+     * meeting of this length each. A course qualifies when those two meetings
+     * are exactly its weekly contact time (`units × 60`), so the unit count
+     * that fits follows from this one number rather than being hard-coded.
+     * It is a course property, so departments do not opt in through settings.
+     */
+    public const HYBRID_SPLIT_MEETING_MINUTES = 90;
+
+    /**
+     * Whether an Integrated course (lecture and laboratory as two sessions)
+     * meets fully face-to-face. Its delivery decides the lecture: On-site
+     * keeps it in a lecture room; otherwise it is Integrated Hybrid and the
+     * lecture is online. The laboratory is on site either way.
+     *
+     * @param  array<int|string, mixed>  $deliveryModesByCourseId
+     */
+    public static function isIntegratedOnSite(array $deliveryModesByCourseId, int $courseId): bool
+    {
+        return ($deliveryModesByCourseId[$courseId] ?? $deliveryModesByCourseId[(string) $courseId] ?? null) === 'on-site';
+    }
+
+    public static function hybridSplitEligible(array|Course $course): bool
+    {
+        $units = (float) ($course instanceof Course ? ($course->units ?? 0) : ($course['units'] ?? 0));
+        $lectureHours = (int) ($course instanceof Course ? ($course->lecture_hours ?? 0) : ($course['lecture_hours'] ?? 0));
+        $laboratoryHours = (int) ($course instanceof Course ? ($course->lab_hours ?? 0) : ($course['lab_hours'] ?? 0));
+
+        return self::unitMinutes($units) === 2 * self::HYBRID_SPLIT_MEETING_MINUTES
+            && $lectureHours > 0
+            && $laboratoryHours === 0;
+    }
+
+    public static function hybridSplitMeetingSlots(): int
+    {
+        return intdiv(self::HYBRID_SPLIT_MEETING_MINUTES, self::SLOT_MINUTES);
+    }
+
+    /**
+     * Whether a laboratory may host this course's lecture meeting: only for a
+     * lecture-only major, and only in a laboratory flagged for lecture use.
+     * RoomTypeRule, the generator, the Preferred Room check and the constraint
+     * kernel (array form, from the snapshot) all ask here.
+     *
+     * A course with no category is not a major: the column is required, so a
+     * missing value means the record was loaded without it, and guessing
+     * "major" let a manual save accept what the kernel refused.
+     *
+     * @param  Course|array<string, mixed>  $course
+     * @param  Rooms|array<string, mixed>  $room
+     */
+    public static function laboratoryServesLecture(Course|array $course, Rooms|array $room): bool
+    {
+        $roomValue = static fn (string $key): mixed => is_array($room) ? ($room[$key] ?? null) : $room->{$key};
+
+        return self::isLectureOnlyMajor($course)
+            && (string) $roomValue('room_type') === 'laboratory'
+            && (bool) $roomValue('allow_lecture_usage');
+    }
+
+    /**
+     * A major with lecture units, no laboratory units and a lecture room type:
+     * the course shape a lecture-flagged laboratory may host, and the one the
+     * solver schedules right after laboratory majors.
+     *
+     * @param  Course|array<string, mixed>  $course
+     */
+    public static function isLectureOnlyMajor(Course|array $course): bool
+    {
+        return self::isMajorCourse($course)
+            && (int) (self::courseAttribute($course, 'lecture_hours') ?? 0) > 0
+            && (int) (self::courseAttribute($course, 'lab_hours') ?? 0) === 0
+            && (string) (self::courseAttribute($course, 'room_type_required') ?? 'lecture') === 'lecture';
     }
 
     /**
@@ -1631,12 +1882,15 @@ final class SchedulingPolicy
 
     private static function loadOperatingHours(): void
     {
-        if (self::$cachedOpeningTime !== null && self::$cachedClosingTime !== null) {
+        if (self::$cachedOpeningTime !== null && self::$cachedClosingTime !== null && self::$cachedFieldDayEndTime !== null) {
             return;
         }
 
         $settings = app(TimeslotService::class)->settings();
         self::$cachedOpeningTime = self::normalizeTime($settings->opening_time);
         self::$cachedClosingTime = self::normalizeTime($settings->closing_time);
+
+        $fieldEnd = self::normalizeTime((string) ($settings->field_end_time ?? self::DEFAULT_FIELD_DAY_END_TIME));
+        self::$cachedFieldDayEndTime = min(max($fieldEnd, self::$cachedOpeningTime), self::$cachedClosingTime);
     }
 }

@@ -98,6 +98,15 @@ final class ValidateGenerationConfiguration
                 ['section_semester' => $section['semester'] ?? null, 'semester_period' => $snapshot->semester['semester'] ?? null],
             );
         }
+
+        // Same check RuleEngine makes on every manual save (CurriculumPlacementRule).
+        if (! (bool) ($snapshot->semester['is_enabled'] ?? true)) {
+            $violations[] = $this->violation(
+                'semester_enabled',
+                'Selected academic semester is disabled for scheduling.',
+                ['semester_id' => $snapshot->semesterId],
+            );
+        }
     }
 
     /**
@@ -115,6 +124,7 @@ final class ValidateGenerationConfiguration
             'preferred_patterns' => array_keys($configuration->preferredPatternsByCourseId),
             'selected_split_session_course_ids' => $configuration->selectedSplitSessionCourseIds,
             'balanced_split_course_ids' => $configuration->balancedSplitCourseIds,
+            'hybrid_split_course_ids' => $configuration->hybridSplitCourseIds,
             'delivery_modes_by_course_id' => array_keys($configuration->deliveryModesByCourseId),
             'requirements_by_course_id' => array_keys($configuration->requirementsByCourseId),
             'anchored_schedules' => array_keys($configuration->anchoredSchedulesByCourseId),
@@ -218,14 +228,14 @@ final class ValidateGenerationConfiguration
             $mode = $configuration->deliveryModesByCourseId[$courseId] ?? $configuration->deliveryMode;
             $isLectureLabSplit = in_array($courseId, $configuration->selectedSplitSessionCourseIds, true);
             $isMinorSplit = in_array($courseId, $configuration->balancedSplitCourseIds, true);
+            $isHybridSplit = in_array($courseId, $configuration->hybridSplitCourseIds, true);
 
-            if ($isLectureLabSplit && (! (bool) ($snapshot->departmentSettings['lecture_lab_schedule_override_enabled'] ?? false)
-                || ! SchedulingConstraintPredicates::isMajorCourse($course)
+            if ($isLectureLabSplit && (! SchedulingConstraintPredicates::isMajorCourse($course)
                 || (int) ($course['lecture_hours'] ?? 0) <= 0
                 || (int) ($course['lab_hours'] ?? 0) <= 0)) {
                 $violations[] = $this->violation(
                     'hybrid_eligibility',
-                    'Lecture/laboratory splitting requires an eligible major course and the department override.',
+                    'Hybrid Laboratory requires a major course with both lecture and laboratory hours.',
                     $this->courseContext($course),
                 );
                 $recommendations[] = $this->disableSplitRecommendation($configuration, $course, 'disable_lecture_lab_split');
@@ -234,17 +244,25 @@ final class ValidateGenerationConfiguration
             if ($isMinorSplit && ! SchedulingPolicy::balancedSplitEligible($course, $snapshot->departmentSettings)) {
                 $violations[] = $this->violation(
                     'minor_split_eligibility',
-                    'Balanced split sessions require an eligible minor or lecture-only major course and the matching department setting.',
+                    'Split Session requires an eligible minor or lecture-only major course.',
                     $this->courseContext($course),
                 );
                 $recommendations[] = $this->disableSplitRecommendation($configuration, $course, 'disable_minor_split');
+            }
+
+            if ($isHybridSplit && ! SchedulingPolicy::hybridSplitEligible($course)) {
+                $violations[] = $this->violation(
+                    'hybrid_eligibility',
+                    'Hybrid Split requires an eligible three-unit lecture course selected for Split Session.',
+                    $this->courseContext($course),
+                );
             }
 
             // A course cannot be two kinds of split at once. The lecture-only
             // restriction on a major's balanced split already makes this
             // unreachable, so reaching it means one of the two eligibility gates
             // was widened without the other being reconsidered.
-            if ($isMinorSplit && $isLectureLabSplit) {
+            if (($isMinorSplit && $isLectureLabSplit) || ($isHybridSplit && $isLectureLabSplit)) {
                 $violations[] = $this->violation(
                     'minor_split_eligibility',
                     'A course cannot use both lecture/laboratory splitting and balanced split sessions.',
@@ -306,7 +324,6 @@ final class ValidateGenerationConfiguration
         }
 
         foreach ([
-            'lecture_lab_schedule_override_enabled',
             'custom_lab_duration_override_enabled',
             'custom_lab_duration_6_hours_enabled',
             'custom_lab_duration_5_hours_enabled',
@@ -341,6 +358,7 @@ final class ValidateGenerationConfiguration
         ));
         $hasLectureRoom = collect($availableRooms)->contains(static fn (array $room): bool => ($room['room_type'] ?? null) === 'lecture');
         $hasLaboratoryRoom = collect($availableRooms)->contains(static fn (array $room): bool => ($room['room_type'] ?? null) === 'laboratory');
+        $hybridSplitIds = array_map('intval', $configuration->hybridSplitCourseIds);
 
         foreach ($configuration->courseIds as $courseId) {
             $course = $snapshot->coursesById[$courseId] ?? null;
@@ -350,11 +368,12 @@ final class ValidateGenerationConfiguration
 
             $mode = $configuration->deliveryModesByCourseId[$courseId] ?? $configuration->deliveryMode;
             $isLectureLabSplit = in_array($courseId, $configuration->selectedSplitSessionCourseIds, true);
+            $isHybridSplit = in_array($courseId, $hybridSplitIds, true);
             $isLaboratory = SchedulingConstraintPredicates::isLaboratoryCourse($course);
 
             $explicitlyOnSite = ($configuration->deliveryModesByCourseId[$courseId] ?? null) === 'on-site';
             $standardProfile = ($snapshot->departmentSettings['scheduling_profile'] ?? 'standard') === 'standard';
-            if ($mode === 'on-site' && ! $isLaboratory && ! $isLectureLabSplit && ! $hasLectureRoom
+            if ($mode === 'on-site' && ! $isLaboratory && ! $isLectureLabSplit && ! $isHybridSplit && ! $hasLectureRoom
                 && ($standardProfile || $explicitlyOnSite)) {
                 $violations[] = $this->violation(
                     'no_physical_rooms',
@@ -411,7 +430,7 @@ final class ValidateGenerationConfiguration
             if (count($courseIds) >= 2) {
                 $violations[] = $this->violation(
                     'same_day_concentration',
-                    sprintf('All %d forced-day courses are assigned to %s. The schedule may be too concentrated and should be reviewed.', count($courseIds), $day),
+                    sprintf('All %d Required Day courses are assigned to %s. The schedule may be too concentrated and should be reviewed.', count($courseIds), $day),
                     ['day' => $day, 'course_ids' => $courseIds, 'course_count' => count($courseIds)],
                     'warning',
                 );
@@ -430,7 +449,7 @@ final class ValidateGenerationConfiguration
                         'A course forced to one day cannot satisfy a configuration that requires meetings on different days.',
                         ['day' => $day, ...$this->courseContext($course, $courseId)],
                     );
-                    $recommendations[] = $this->forcedDayRecommendation($configuration, $snapshot, $day, [$courseId], 'Clear the forced day or remove the multi-day course configuration.');
+                    $recommendations[] = $this->forcedDayRecommendation($configuration, $snapshot, $day, [$courseId], 'Clear the Required Day or remove the multi-day course configuration.');
                 } else {
                     $singleMeetingIds[] = $courseId;
                 }
@@ -452,7 +471,7 @@ final class ValidateGenerationConfiguration
                         'available_slots' => $availableSlots,
                     ],
                 );
-                $recommendations[] = $this->forcedDayRecommendation($configuration, $snapshot, $day, $singleMeetingIds, 'Release enough forced-day rules to fit the section within operating hours.');
+                $recommendations[] = $this->forcedDayRecommendation($configuration, $snapshot, $day, $singleMeetingIds, 'Clear enough Required Days to fit the section within operating hours.');
             }
 
             $this->validateForcedDayRoomPressure(
@@ -582,7 +601,7 @@ final class ValidateGenerationConfiguration
                 $day,
                 $demandCourseIds[$roomType],
                 sprintf(
-                    'Release some %s forced-day rules, add %s room capacity, or accept the %s fallback for the overflow.',
+                    'Clear some %s Required Days, add %s room capacity, or accept the %s fallback for the overflow.',
                     $day,
                     $roomType,
                     $roomType === 'laboratory' ? 'Room TBA' : 'online',
@@ -830,8 +849,8 @@ final class ValidateGenerationConfiguration
 
         return $this->recommendation(
             id: 'clear-forced-day-'.strtolower($day).'-'.implode('-', $courseIds),
-            title: "Reduce the {$day} forced-day concentration",
-            cause: "The selected forced-day rules concentrate too much demand on {$day}.",
+            title: "Reduce the {$day} Required Day concentration",
+            cause: "The selected Required Days concentrate too much demand on {$day}.",
             adjustment: $suggestedAdjustment,
             impact: 'medium',
             configuration: $configuration,

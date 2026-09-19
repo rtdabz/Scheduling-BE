@@ -8,11 +8,14 @@ use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
+use App\Services\Scheduling\Engine\Rules\MeetingDayRule;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 /**
- * field_day_constraint, minor_day_constraint, forced_course_day.
- * Kernel counterpart of Rules\MeetingDayRule.
+ * preferred_pattern, field_day_constraint, minor_day_constraint,
+ * forced_course_day. Kernel counterpart of Rules\MeetingDayRule;
+ * preferred_pattern runs that rule's own static check. valid_day needs no
+ * kernel version: ScheduleRow refuses an unsupported day when it is built.
  */
 final class MeetingDayConstraints
 {
@@ -23,6 +26,11 @@ final class MeetingDayConstraints
     public function forRow(ScheduleRow $row, array $course, SchedulingSnapshot $snapshot): array
     {
         $violations = [];
+
+        $pattern = MeetingDayRule::preferredPattern($row->day, $row->preferredPattern);
+        if ($pattern !== null) {
+            $violations[] = ConstraintSupport::violation($pattern['rule'], $pattern['message']);
+        }
 
         // NSTP may use any day, so it is exempt from the category limits below.
         if (! SchedulingConstraintPredicates::isNstpCourse($course)) {

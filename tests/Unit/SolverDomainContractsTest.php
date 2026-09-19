@@ -8,36 +8,14 @@ use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use DateTimeImmutable;
-use App\Services\Scheduling\Engine\Solver\LegacyCspDomainCompiler;
 use App\Services\Scheduling\Engine\Solver\CspSchedulingSolverAdapter;
 use App\Services\Scheduling\Engine\Solver\SchedulingSolver;
-use App\Services\Scheduling\Engine\Solver\SolverDomainCompilation;
-use App\Services\Scheduling\Engine\Solver\SolverDomainParityReporter;
 use App\Services\Scheduling\Engine\Solver\SolverResultMapper;
-use App\Services\Scheduling\Engine\Solver\SolverVariableDomain;
+use RuntimeException;
 use Tests\TestCase;
 
 class SolverDomainContractsTest extends TestCase
 {
-    public function test_domain_compilation_round_trips_legacy_variables_and_metrics(): void
-    {
-        $compilation = new SolverDomainCompilation(
-            snapshotFingerprint: str_repeat('a', 64),
-            variables: [
-                new SolverVariableDomain(7, [['blocks' => [['day' => 'Monday']]]], ['duration_slots' => 6]),
-            ],
-            candidateCountBefore: 3,
-            candidateCountAfter: 1,
-            prunedByConstraint: ['section_conflict' => 2],
-        );
-
-        $restored = SolverDomainCompilation::fromArray($compilation->toArray());
-
-        $this->assertSame($compilation->toArray(), $restored->toArray());
-        $this->assertSame(2, $restored->prunedCandidateCount());
-        $this->assertSame(6, $restored->toLegacyVariables()[0]['duration_slots']);
-    }
-
     public function test_legacy_solver_adapter_preserves_ranked_solver_results(): void
     {
         $legacy = new class extends CspSolver
@@ -90,45 +68,31 @@ class SolverDomainContractsTest extends TestCase
         $this->assertSame('Monday', $candidates[0]->rows[0]->day);
     }
 
-    public function test_legacy_domain_compiler_and_parity_reporter_preserve_candidate_identity(): void
-    {
-        $legacy = [[
-            'course_id' => 9,
-            'duration_slots' => 4,
-            'domain' => [
-                ['mode' => 'online', 'blocks' => [['day' => 'Tuesday', 'start_time' => '08:00:00']]],
-                ['mode' => 'online', 'blocks' => [['day' => 'Wednesday', 'start_time' => '08:00:00']]],
-            ],
-        ]];
-        $compiled = (new LegacyCspDomainCompiler)->compile($legacy, str_repeat('b', 64));
-        $matching = (new SolverDomainParityReporter)->compare($legacy, $compiled);
-        $pruned = new SolverDomainCompilation(
-            snapshotFingerprint: $compiled->snapshotFingerprint,
-            variables: [$compiled->variables[0]->withCandidates([$compiled->variables[0]->candidates[1]])],
-            candidateCountBefore: 2,
-            candidateCountAfter: 1,
-        );
-        $mismatch = (new SolverDomainParityReporter)->compare($legacy, $pruned);
-
-        $this->assertTrue($matching['matches']);
-        $this->assertSame(2, $matching['canonical_candidate_count']);
-        $this->assertFalse($mismatch['matches']);
-        $this->assertCount(1, $mismatch['legacy_only']);
-        $this->assertSame([], $mismatch['canonical_only']);
-    }
-
     public function test_solver_port_resolves_to_the_legacy_compatibility_adapter(): void
     {
         $this->assertInstanceOf(CspSchedulingSolverAdapter::class, app(SchedulingSolver::class));
     }
 
-    public function test_snapshot_rollout_guard_rejects_direct_database_loader_execution(): void
+    /**
+     * The snapshot is the solver's only data source, so one captured for
+     * another department is refused rather than silently judged against, as
+     * the removed database fallback used to do.
+     */
+    public function test_solver_refuses_a_snapshot_for_another_department(): void
     {
-        config()->set('app.require_scheduling_snapshot', true);
+        $solver = new CspSolver;
+        $solver->setInputSnapshot(new SchedulingSnapshot(
+            fingerprint: 'other-department',
+            capturedAt: new DateTimeImmutable,
+            semesterId: 1,
+            departmentId: 1,
+            sectionsById: [1 => ['id' => 1, 'semester_id' => 1, 'department_id' => 2, 'year_level' => '1', 'semester' => '1st', 'status' => 'active']],
+            semester: ['id' => 1, 'semester' => '1st'],
+        ));
 
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('A SchedulingSnapshot is required');
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('different semester or department');
 
-        (new CspSolver)->solveRanked(sectionId: 1, courseIds: [1]);
+        $solver->solveRanked(sectionId: 1, courseIds: [1]);
     }
 }

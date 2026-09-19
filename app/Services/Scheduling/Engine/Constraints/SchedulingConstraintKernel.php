@@ -9,6 +9,7 @@ use App\Services\Scheduling\Domain\MeetingGroup;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Constraints\Families\DeliveryModeConstraints;
+use App\Services\Scheduling\Engine\Constraints\Families\InstructorAvailabilityConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\InstructorConflictConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\MeetingDayConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\MeetingGroupConstraints;
@@ -16,6 +17,7 @@ use App\Services\Scheduling\Engine\Constraints\Families\OperatingHoursConstraint
 use App\Services\Scheduling\Engine\Constraints\Families\RoomAvailabilityConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\RoomTypeConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\SectionConflictConstraints;
+use App\Services\Scheduling\Engine\Constraints\Families\SectionLoadConstraints;
 
 /**
  * Runs the constraint families against a snapshot and reports their violations
@@ -35,18 +37,24 @@ final class SchedulingConstraintKernel
         'hybrid_eligibility' => 110,
         'hybrid_component_type' => 120,
         'hybrid_component_shape' => 130,
+        'slot_grid' => 201,
+        'operating_hours' => 202,
+        'preferred_pattern' => 205,
         'field_day_constraint' => 210,
         'minor_day_constraint' => 220,
         'major_sunday_mode_constraint' => 230,
         'field_evening_window' => 240,
         'forced_course_day' => 250,
         'room_type_match' => 300,
+        'room_availability' => 310,
+        'room_department_alignment' => 320,
         'section_conflict' => 400,
         'subject_section_time_conflict' => 410,
         'faculty_conflict' => 420,
         'room_conflict' => 430,
-        'room_capacity_conflict' => 440,
-        'online_capacity_conflict' => 450,
+        'faculty_active' => 440,
+        'part_time_faculty_availability' => 450,
+        'class_duration' => 460,
         'hybrid_component_count' => 500,
         'hybrid_components' => 510,
         'minor_split_component_count' => 520,
@@ -72,6 +80,10 @@ final class SchedulingConstraintKernel
 
     private readonly MeetingGroupConstraints $meetingGroups;
 
+    private readonly InstructorAvailabilityConstraints $instructorAvailability;
+
+    private readonly SectionLoadConstraints $sectionLoad;
+
     public function __construct()
     {
         $this->deliveryModes = new DeliveryModeConstraints;
@@ -82,6 +94,8 @@ final class SchedulingConstraintKernel
         $this->instructorConflicts = new InstructorConflictConstraints;
         $this->roomAvailability = new RoomAvailabilityConstraints;
         $this->meetingGroups = new MeetingGroupConstraints;
+        $this->instructorAvailability = new InstructorAvailabilityConstraints;
+        $this->sectionLoad = new SectionLoadConstraints;
     }
 
     /**
@@ -114,6 +128,8 @@ final class SchedulingConstraintKernel
             ...$this->sectionConflicts->forRow($row, $others),
             ...$this->instructorConflicts->forRow($row, $others),
             ...$this->roomAvailability->forRow($row, $others, $snapshot),
+            ...$this->instructorAvailability->forRow($row, $snapshot),
+            ...$this->sectionLoad->forRow($row, $course, $others, $snapshot),
         ]);
     }
 

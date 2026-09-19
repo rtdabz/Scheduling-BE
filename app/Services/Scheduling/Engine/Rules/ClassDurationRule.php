@@ -24,12 +24,13 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
  * of `units × 2` slots, or a lecture/laboratory split of `lecture_hours × 2`
  * slots plus the department's laboratory length — so anything the Generator
  * can produce always fits. (`lecture_hours`/`lab_hours` hold units.)
+ *
+ * Every status counts. Rejected (VPAA sent it back) and revision (withdrawn
+ * to edit) meetings are live classes that get fixed and resubmitted, and they
+ * already hold their room and time in the conflict rules.
  */
 final class ClassDurationRule
 {
-    /** Rows that no longer occupy the timetable; counting them would double count. */
-    private const INACTIVE_STATUSES = ['rejected', 'revision'];
-
     public function __construct(private readonly RuleLookupCache $lookups) {}
 
     /**
@@ -49,7 +50,6 @@ final class ClassDurationRule
             ->where('semester_id', (int) $attempt['semester_id'])
             ->where('section_id', (int) $records->section->id)
             ->where('course_id', (int) $course->id)
-            ->whereNotIn('status', self::INACTIVE_STATUSES)
             ->get(['id', 'start_time', 'end_time']);
         $minutesOf = static fn (Schedule $row): int => max(0, RuleSupport::durationMinutes((string) $row->start_time, (string) $row->end_time));
 
@@ -81,15 +81,10 @@ final class ClassDurationRule
 
     private function allowedWeeklyMinutes(AttemptRecords $records): int
     {
-        $course = $records->course;
-        $singleBlock = (int) round((float) ($course->units ?? 0) * 60);
-
-        $lectureMinutes = max(0, (int) ($course->lecture_hours ?? 0)) * SchedulingPolicy::LECTURE_SLOTS_PER_UNIT * SchedulingPolicy::SLOT_MINUTES;
-        $laboratoryMinutes = (int) ($course->lab_hours ?? 0) > 0
-            ? SchedulingPolicy::laboratoryComponentMinutes($course, $this->labDurationSettings($records->departmentId()))
-            : 0;
-
-        return max($singleBlock, $lectureMinutes + $laboratoryMinutes);
+        return SchedulingPolicy::courseWeeklyCeilingMinutes(
+            $records->course,
+            $this->labDurationSettings($records->departmentId()),
+        );
     }
 
     /**

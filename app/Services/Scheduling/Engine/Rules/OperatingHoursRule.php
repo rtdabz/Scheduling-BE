@@ -2,7 +2,6 @@
 
 namespace App\Services\Scheduling\Engine\Rules;
 
-use App\Models\Departments;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 /**
@@ -10,14 +9,16 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
  *
  * Whether the meeting's times are real, aligned to the 30-minute grid, inside
  * the institution's opening hours, and — for field courses — finished by the
- * daytime boundary unless the department allows evening field classes.
+ * institution's field end time.
+ *
+ * slotGrid() and withinOperatingHours() are pure and static so the constraint
+ * kernel runs these same checks, passing the hours pinned in its snapshot;
+ * RuleEngine passes nothing and gets the live settings.
  */
 final class OperatingHoursRule
 {
-    public function __construct(private readonly RuleLookupCache $lookups) {}
-
     /** @return array<string, mixed>|null */
-    public function slotGrid(string $startTime, string $endTime): ?array
+    public static function slotGrid(string $startTime, string $endTime, ?string $openingTime = null): ?array
     {
         $startMinutes = RuleSupport::timeToMinutes($startTime);
         $endMinutes = RuleSupport::timeToMinutes($endTime);
@@ -36,7 +37,7 @@ final class OperatingHoursRule
             ];
         }
 
-        $opening = SchedulingPolicy::timeToMinutes(SchedulingPolicy::openingTime());
+        $opening = SchedulingPolicy::timeToMinutes($openingTime ?? SchedulingPolicy::openingTime());
         if (($startMinutes - $opening) % SchedulingPolicy::SLOT_MINUTES !== 0
             || ($endMinutes - $opening) % SchedulingPolicy::SLOT_MINUTES !== 0) {
             return [
@@ -49,24 +50,26 @@ final class OperatingHoursRule
     }
 
     /** @return array<string, mixed>|null */
-    public function withinOperatingHours(string $startTime, string $endTime): ?array
+    public static function withinOperatingHours(string $startTime, string $endTime, ?string $openingTime = null, ?string $closingTime = null): ?array
     {
         $start = SchedulingPolicy::normalizeTime($startTime);
         $end = SchedulingPolicy::normalizeTime($endTime);
+        $opening = SchedulingPolicy::normalizeTime($openingTime ?? SchedulingPolicy::openingTime());
+        $closing = SchedulingPolicy::normalizeTime($closingTime ?? SchedulingPolicy::closingTime());
 
-        if ($start < SchedulingPolicy::openingTime()) {
+        if ($start < $opening) {
             return [
                 'rule' => 'operating_hours',
                 'message' => "Schedule starts at {$startTime}, which is before operating hours begin ("
-                    .date('g:i A', strtotime(SchedulingPolicy::openingTime())).').',
+                    .date('g:i A', strtotime($opening)).').',
             ];
         }
 
-        if ($end > SchedulingPolicy::closingTime()) {
+        if ($end > $closing) {
             return [
                 'rule' => 'operating_hours',
                 'message' => "Schedule ends at {$endTime}, which exceeds operating hours ("
-                    .date('g:i A', strtotime(SchedulingPolicy::closingTime())).' cutoff).',
+                    .date('g:i A', strtotime($closing)).' cutoff).',
             ];
         }
 
@@ -74,11 +77,10 @@ final class OperatingHoursRule
     }
 
     /**
-     * Field courses stop at 17:00 unless the department opts into evening use.
-     *
-     * The setting was previously read only by CspSolver, so it steered generation
-     * but not manual placement — the Settings page promised a limit that a
-     * drag-and-drop could ignore (audit finding #41).
+     * Field courses end by the institution's field end time, which the VPAA sets
+     * beside the operating hours (SchedulingPolicy::fieldDayEndTime). It was a
+     * hardcoded 5:00 PM; setting it to the closing time allows evening field
+     * classes.
      *
      * @param  array<string, mixed>  $attempt
      * @return array<string, mixed>|null
@@ -91,21 +93,14 @@ final class OperatingHoursRule
             return null;
         }
 
-        $eveningEnabled = (bool) $this->lookups->remember(
-            'fieldEvening:'.$departmentId,
-            fn () => Departments::query()->whereKey($departmentId)->value('field_evening_schedule_enabled') ?? false,
-        );
-        if ($eveningEnabled) {
-            return null;
-        }
-
-        if (SchedulingPolicy::normalizeTime((string) ($attempt['end_time'] ?? '')) <= SchedulingPolicy::FIELD_DAY_END_TIME) {
+        $fieldEnd = SchedulingPolicy::fieldDayEndTime();
+        if (SchedulingPolicy::normalizeTime((string) ($attempt['end_time'] ?? '')) <= $fieldEnd) {
             return null;
         }
 
         return [
             'rule' => 'field_evening_window',
-            'message' => 'Field courses must end by 5:00 PM unless evening field scheduling is enabled for this department.',
+            'message' => 'Field courses must end by '.date('g:i A', strtotime($fieldEnd)).'.',
         ];
     }
 }

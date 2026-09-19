@@ -8,11 +8,14 @@ use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
+use App\Services\Scheduling\Engine\Rules\OperatingHoursRule;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 /**
- * field_evening_window. Kernel counterpart of Rules\OperatingHoursRule, which also
- * holds slot_grid and operating_hours; those two have no kernel version yet.
+ * slot_grid, operating_hours, field_evening_window. Kernel counterpart of
+ * Rules\OperatingHoursRule. slot_grid and operating_hours run that rule's own
+ * static checks against the hours pinned in the snapshot, so a preview is
+ * judged by the hours it was generated under and there is one implementation.
  */
 final class OperatingHoursConstraints
 {
@@ -22,15 +25,40 @@ final class OperatingHoursConstraints
      */
     public function forRow(ScheduleRow $row, array $course, SchedulingSnapshot $snapshot): array
     {
+        $violations = [];
+        $opening = $snapshot->operatingHours['opening_time'] ?? null;
+        $closing = $snapshot->operatingHours['closing_time'] ?? null;
+
+        // The kernel never reads live settings. Every captured snapshot pins
+        // the hours; one built without them cannot judge the window, as one
+        // built without faculties cannot judge instructor availability.
+        if (is_string($opening) && is_string($closing)) {
+            // A time that is unreadable, backwards or off the grid makes the
+            // window checks meaningless, so it is the only finding reported.
+            $grid = OperatingHoursRule::slotGrid($row->startTime, $row->endTime, $opening);
+            if ($grid !== null) {
+                return [ConstraintSupport::violation($grid['rule'], $grid['message'])];
+            }
+
+            $window = OperatingHoursRule::withinOperatingHours($row->startTime, $row->endTime, $opening, $closing);
+            if ($window !== null) {
+                $violations[] = ConstraintSupport::violation($window['rule'], $window['message']);
+            }
+        }
+
         $isFieldPlacement = $row->mode === 'field'
             || SchedulingConstraintPredicates::isFieldCourse($course, $snapshot->fieldCourseCodes);
 
-        if (! $isFieldPlacement
-            || (bool) ($snapshot->departmentSettings['field_evening_schedule_enabled'] ?? false)
-            || SchedulingPolicy::timeToMinutes($row->endTime) <= SchedulingPolicy::timeToMinutes(SchedulingPolicy::FIELD_DAY_END_TIME)) {
-            return [];
+        if (! $isFieldPlacement) {
+            return $violations;
         }
 
-        return [ConstraintSupport::violation('field_evening_window', 'Field courses must end by 5:00 PM unless evening field scheduling is enabled for this department.')];
+        // The snapshot pins the field end time it was captured with.
+        $fieldEnd = (string) ($snapshot->operatingHours['field_end_time'] ?? SchedulingPolicy::fieldDayEndTime());
+        if (SchedulingPolicy::timeToMinutes($row->endTime) > SchedulingPolicy::timeToMinutes($fieldEnd)) {
+            $violations[] = ConstraintSupport::violation('field_evening_window', 'Field courses must end by '.date('g:i A', strtotime($fieldEnd)).'.');
+        }
+
+        return $violations;
     }
 }

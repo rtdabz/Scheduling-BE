@@ -13,7 +13,7 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
  */
 final class InstructorAvailabilityRule
 {
-    private const DAY_INDEX = [
+    public const DAY_INDEX = [
         'Monday' => 0,
         'Tuesday' => 1,
         'Wednesday' => 2,
@@ -50,14 +50,16 @@ final class InstructorAvailabilityRule
             $start = SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00'));
             $end = SchedulingPolicy::normalizeTime((string) ($attempt['end_time'] ?? '00:00'));
 
-            // The meeting must fit completely inside at least one window that day.
-            $fits = $faculty->availabilities()
+            $windows = $faculty->availabilities()
                 ->where('day_index', $dayIndex)
                 ->get()
-                ->contains(static fn ($window): bool => $start >= SchedulingPolicy::normalizeTime($window->start_time)
-                    && $end <= SchedulingPolicy::normalizeTime($window->end_time));
+                ->map(static fn ($window): array => [
+                    SchedulingPolicy::normalizeTime((string) $window->start_time),
+                    SchedulingPolicy::normalizeTime((string) $window->end_time),
+                ])
+                ->all();
 
-            if (! $fits) {
+            if (! self::coveredContinuously($windows, $start, $end)) {
                 $violations[] = [
                     'rule' => 'part_time_faculty_availability',
                     'message' => 'The selected assignment falls outside the instructor\'s availability window for '.$day.'.',
@@ -66,5 +68,34 @@ final class InstructorAvailabilityRule
         }
 
         return $violations;
+    }
+
+    /**
+     * The meeting must be covered from start to end with no gap. Back-to-back
+     * windows (08:00-10:00, 10:00-12:00) count as one, so a 09:00-11:00 class
+     * inside them fits; requiring a single window refused it.
+     *
+     * @param  list<array{0: string, 1: string}>  $windows  normalized HH:MM:SS pairs
+     */
+    public static function coveredContinuously(array $windows, string $start, string $end): bool
+    {
+        usort($windows, static fn (array $left, array $right): int => $left[0] <=> $right[0]);
+
+        $coveredUntil = $start;
+        foreach ($windows as [$windowStart, $windowEnd]) {
+            if ($windowStart > $coveredUntil) {
+                break;
+            }
+
+            if ($windowEnd > $coveredUntil) {
+                $coveredUntil = $windowEnd;
+            }
+
+            if ($coveredUntil >= $end) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

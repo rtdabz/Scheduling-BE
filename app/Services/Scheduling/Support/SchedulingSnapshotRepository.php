@@ -12,7 +12,6 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
-use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
@@ -124,15 +123,23 @@ final class SchedulingSnapshotRepository
         $schedules = Schedule::query()
             ->with('split')
             ->where('semester_id', $semesterId)
-            // A generation snapshot represents the state outside the sections
-            // being regenerated. Draft/completed/revision rows for any target
-            // section must not consume room or online capacity while the batch
-            // is rebuilt; finalized workflow rows remain authoritative.
-            ->when($sectionIds !== [], function ($query) use ($sectionIds): void {
-                $query->where(function ($scope) use ($sectionIds): void {
+            // A generation snapshot represents the state outside what is being
+            // regenerated. Draft/completed/revision rows of the target sections'
+            // target courses are replaced on commit, so they must not consume
+            // room or online capacity while the batch is rebuilt. Only those
+            // courses: commit deletes nothing else, so the section's other
+            // courses still occupy their time and must stay visible, or a run
+            // can double-book the section against its own classes. (A
+            // year-level run passes the union of its sections' courses.)
+            // Finalized workflow rows remain authoritative.
+            ->when($sectionIds !== [], function ($query) use ($sectionIds, $courseIds): void {
+                $query->where(function ($scope) use ($sectionIds, $courseIds): void {
                     $scope
                         ->whereNotIn('section_id', $sectionIds)
                         ->orWhereNotIn('status', ['draft', 'completed', 'revision']);
+                    if ($courseIds !== []) {
+                        $scope->orWhereNotIn('course_id', $courseIds);
+                    }
                 });
             })
             ->orderBy('id')
@@ -185,13 +192,7 @@ final class SchedulingSnapshotRepository
             ->values()
             ->all();
 
-        $resourceLimits = [
-            // NULL, zero or negative means the resource is not capped; see
-            // DepartmentResourceSlotLimitService.
-            'online' => DepartmentResourceSlotLimitService::resolve($department->online_slot_limit),
-            'field' => DepartmentResourceSlotLimitService::resolve($department->field_slot_limit),
-        ];
-        $roomRecords = $this->withVirtualRooms($this->roomRecords($rooms, $grantWindows), $resourceLimits);
+        $roomRecords = $this->withVirtualRooms($this->roomRecords($rooms, $grantWindows));
 
         $payload = [
             'schema_version' => SchedulingSnapshot::SCHEMA_VERSION,
@@ -207,10 +208,10 @@ final class SchedulingSnapshotRepository
             'curriculum_periods_by_course_id' => $this->curriculumPeriodRecords($curriculumPeriods),
             'curriculum_periods_by_curriculum_course' => $this->scopedCurriculumPeriodRecords($scopedPeriods),
             'curriculum_id_by_section_id' => $curriculumIdBySectionId,
-            'resource_limits' => $resourceLimits,
             'operating_hours' => [
                 'opening_time' => SchedulingPolicy::openingTime(),
                 'closing_time' => SchedulingPolicy::closingTime(),
+                'field_end_time' => SchedulingPolicy::fieldDayEndTime(),
                 'slot_minutes' => SchedulingPolicy::SLOT_MINUTES,
             ],
             'department_settings' => $this->departmentSettings($department),
@@ -261,7 +262,6 @@ final class SchedulingSnapshotRepository
             curriculumPeriodsByCourseId: $payload['curriculum_periods_by_course_id'],
             curriculumPeriodsByCurriculumCourse: $payload['curriculum_periods_by_curriculum_course'],
             curriculumIdBySectionId: $payload['curriculum_id_by_section_id'],
-            resourceLimits: $payload['resource_limits'],
             operatingHours: $payload['operating_hours'],
             departmentSettings: $payload['department_settings'],
             semester: $payload['semester'],
@@ -341,7 +341,6 @@ final class SchedulingSnapshotRepository
             'room_type' => (string) $room->room_type,
             'allow_lecture_usage' => (bool) $room->allow_lecture_usage,
             'status' => (string) $room->status,
-            'max_concurrent_classes' => max(1, (int) $room->max_concurrent_classes),
             'department_id' => $room->department_id === null ? null : (int) $room->department_id,
         ]])->all();
     }
@@ -350,10 +349,9 @@ final class SchedulingSnapshotRepository
      * Match the effective ONLINE and FIELD resources synthesized by the legacy CSP.
      *
      * @param  array<int, array<string, mixed>>  $rooms
-     * @param  array{online: int, field: int}  $resourceLimits
      * @return array<int, array<string, mixed>>
      */
-    private function withVirtualRooms(array $rooms, array $resourceLimits): array
+    private function withVirtualRooms(array $rooms): array
     {
         $types = array_column($rooms, 'room_type');
         foreach (['online' => 99998, 'field' => 99999] as $type => $id) {
@@ -368,7 +366,6 @@ final class SchedulingSnapshotRepository
                 'room_type' => $type,
                 'allow_lecture_usage' => false,
                 'status' => 'available',
-                'max_concurrent_classes' => $resourceLimits[$type],
                 'department_id' => null,
                 'virtual' => true,
             ];
@@ -498,7 +495,6 @@ final class SchedulingSnapshotRepository
             'custom_lab_duration_other_enabled' => (bool) $department->custom_lab_duration_other_enabled,
             'gec_split_schedule_override_enabled' => (bool) $department->gec_split_schedule_override_enabled,
             'major_lecture_split_schedule_override_enabled' => (bool) $department->major_lecture_split_schedule_override_enabled,
-            'field_evening_schedule_enabled' => (bool) $department->field_evening_schedule_enabled,
             'sunday_online_only_enabled' => (bool) ($department->sunday_online_only_enabled ?? true),
         ];
     }

@@ -110,17 +110,6 @@ class SectionCurriculumResolver
         return $curriculumId;
     }
 
-    /** The curriculum id per section, for callers that batch by section. */
-    public function idsBySection(iterable $sections): array
-    {
-        $ids = [];
-        foreach ($sections as $section) {
-            $ids[(int) $section->id] = (int) $this->forSection($section)->id;
-        }
-
-        return $ids;
-    }
-
     /**
      * Course placements within one curriculum, keyed by course id.
      *

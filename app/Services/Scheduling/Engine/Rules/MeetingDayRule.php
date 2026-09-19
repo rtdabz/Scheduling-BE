@@ -24,7 +24,7 @@ final class MeetingDayRule
     public function __construct(private readonly RuleLookupCache $lookups) {}
 
     /** @return array<string, mixed>|null */
-    public function validDay(string $day): ?array
+    public static function validDay(string $day): ?array
     {
         if (in_array($day, SchedulingPolicy::PERSISTABLE_DAYS, true)) {
             return null;
@@ -37,7 +37,7 @@ final class MeetingDayRule
     }
 
     /** @return array<string, mixed>|null */
-    public function preferredPattern(string $day, ?string $preferredPattern): ?array
+    public static function preferredPattern(string $day, ?string $preferredPattern): ?array
     {
         if (empty($preferredPattern)) {
             return null;

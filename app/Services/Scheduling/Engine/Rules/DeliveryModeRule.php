@@ -4,22 +4,20 @@ namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Models\Course;
 use App\Models\Departments;
-use App\Models\Schedule;
 use App\Models\Sections;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 /**
  * delivery_mode, hybrid_mode, hybrid_eligibility, hybrid_component_type,
- * hybrid_component_shape, major_sunday_mode_constraint, section_online_limit.
+ * hybrid_component_shape, major_sunday_mode_constraint.
  *
  * Whether the chosen delivery (on-site, online, field, hybrid) is allowed for
  * this meeting. Which room that delivery needs is RoomTypeRule's question.
+ * There is no cap on how many online or field courses a section takes; the
+ * solver balances online delivery through its department room-fairness targets.
  */
 final class DeliveryModeRule
 {
-    /** The most distinct online courses one section may take. */
-    private const SECTION_ONLINE_COURSE_LIMIT = 5;
-
     public function __construct(private readonly RuleLookupCache $lookups) {}
 
     /**
@@ -74,22 +72,27 @@ final class DeliveryModeRule
             return null;
         }
 
-        if (! $section->department?->lecture_lab_schedule_override_enabled
-            || ! SchedulingPolicy::isMajorCourse($course)
+        $hasLaboratoryComponent = (int) ($course->lab_hours ?? 0) > 0;
+        $isHybridSplit = ! $hasLaboratoryComponent && SchedulingPolicy::hybridSplitEligible($course);
+        if (! $isHybridSplit && (! SchedulingPolicy::isMajorCourse($course)
             || (int) ($course->lecture_hours ?? 0) <= 0
-            || (int) ($course->lab_hours ?? 0) <= 0) {
+            || ! $hasLaboratoryComponent)) {
             return [
                 'rule' => 'hybrid_eligibility',
-                'message' => 'Hybrid scheduling is available only for major courses with both lecture and laboratory hours when the department setting is enabled.',
+                'message' => 'Hybrid scheduling is available only for eligible course configurations.',
             ];
         }
 
         $meetingType = $attempt['meeting_type'] ?? null;
-        $expected = match ($meetingType) {
-            'lecture' => ['mode' => 'online', 'minutes' => (int) $course->lecture_hours * 60],
-            'laboratory' => ['mode' => 'on-site', 'minutes' => SchedulingPolicy::laboratoryComponentMinutes($course, $section->department)],
-            default => null,
-        };
+        $expected = $hasLaboratoryComponent
+            ? match ($meetingType) {
+                'lecture' => ['mode' => 'online', 'minutes' => SchedulingPolicy::lectureComponentSlots($course) * SchedulingPolicy::SLOT_MINUTES],
+                'laboratory' => ['mode' => 'on-site', 'minutes' => SchedulingPolicy::laboratoryComponentMinutes($course, $section->department)],
+                default => null,
+            }
+            : ($meetingType === 'lecture'
+                ? ['mode' => in_array(($attempt['mode'] ?? 'on-site'), ['online', 'on-site'], true) ? $attempt['mode'] : 'on-site', 'minutes' => SchedulingPolicy::HYBRID_SPLIT_MEETING_MINUTES]
+                : null);
         if ($expected === null) {
             return [
                 'rule' => 'hybrid_component_type',
@@ -98,12 +101,21 @@ final class DeliveryModeRule
         }
 
         $durationMinutes = RuleSupport::durationMinutes((string) ($attempt['start_time'] ?? ''), (string) ($attempt['end_time'] ?? ''));
-        if (($attempt['mode'] ?? 'on-site') !== $expected['mode'] || $durationMinutes !== $expected['minutes']) {
+        // Integrated Hybrid's lecture and laboratory lengths are the user's
+        // to set in Setup Courses, so only their delivery is fixed here; the
+        // week's total stays capped by `class_duration`. Hybrid Split is a
+        // fixed shape and keeps its exact length.
+        $wrongLength = $hasLaboratoryComponent
+            ? $durationMinutes <= 0
+            : $durationMinutes !== $expected['minutes'];
+        if (($attempt['mode'] ?? 'on-site') !== $expected['mode'] || $wrongLength) {
             return [
                 'rule' => 'hybrid_component_shape',
-                'message' => $meetingType === 'lecture'
-                    ? 'The Hybrid lecture must be online and use the Generator lecture duration.'
-                    : 'The Hybrid laboratory must be on-site and use the Generator laboratory duration.',
+                'message' => match (true) {
+                    ! $hasLaboratoryComponent => 'Each Hybrid Split meeting must last the fixed Hybrid Split length.',
+                    $meetingType === 'lecture' => 'The Integrated Hybrid lecture must be online.',
+                    default => 'The Integrated Hybrid laboratory must be on-site.',
+                },
             ];
         }
 
@@ -139,41 +151,5 @@ final class DeliveryModeRule
             'rule' => 'major_sunday_mode_constraint',
             'message' => 'Major courses scheduled on Sunday must use online delivery mode.',
         ] : null;
-    }
-
-    /**
-     * section_online_limit: a section may take at most five distinct online
-     * courses. Moving a meeting that is already online adds nothing.
-     *
-     * @param  array<string, mixed>  $attempt
-     * @return array<string, mixed>|null
-     */
-    public function sectionOnlineLimit(array $attempt): ?array
-    {
-        if ((string) ($attempt['mode'] ?? 'on-site') !== 'online') {
-            return null;
-        }
-
-        $ignoreIds = RuleSupport::ignoreIds($attempt['ignore_schedule_id'] ?? null);
-
-        if ($ignoreIds !== [] && Schedule::whereIn('id', $ignoreIds)->where('mode', 'online')->exists()) {
-            return null;
-        }
-
-        $onlineCourses = Schedule::where('section_id', (int) $attempt['section_id'])
-            ->where('semester_id', (int) $attempt['semester_id'])
-            ->where('mode', 'online')
-            ->when($ignoreIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreIds))
-            ->distinct('course_id')
-            ->count('course_id');
-
-        if ($onlineCourses < self::SECTION_ONLINE_COURSE_LIMIT) {
-            return null;
-        }
-
-        return [
-            'rule' => 'section_online_limit',
-            'message' => 'A section cannot have more than 5 online classes.',
-        ];
     }
 }

@@ -28,7 +28,6 @@ class RuleEngineSplitValidationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
-            'online_slot_limit' => 3,
         ]);
         $firstSection = Sections::create([
             'section_name' => 'BSIT 2B',
@@ -325,7 +324,8 @@ class RuleEngineSplitValidationTest extends TestCase
         $this->assertContains('room_type_match', $rules);
     }
 
-    public function test_online_capacity_uses_department_configured_limit(): void
+    /** Online classes are not capped: an online class occupies no room. */
+    public function test_online_classes_are_not_capped_per_department(): void
     {
         $semester = Semester::create([
             'academic_year' => '2026-2027',
@@ -337,7 +337,6 @@ class RuleEngineSplitValidationTest extends TestCase
         $dept = Departments::create([
             'department_name' => 'Department 1',
             'department_code' => 'DEPT1',
-            'online_slot_limit' => 2,
         ]);
         $otherDept = Departments::create([
             'department_name' => 'Department 2',
@@ -417,7 +416,7 @@ class RuleEngineSplitValidationTest extends TestCase
         ];
 
         $secondRules = collect(app(RuleEngine::class)->validate($secondAttempt))->pluck('rule')->all();
-        $this->assertNotContains('online_capacity_conflict', $secondRules);
+        $this->assertNotContains('room_conflict', $secondRules);
 
         Schedule::create(array_merge($secondAttempt, [
             'status' => 'draft',
@@ -427,10 +426,11 @@ class RuleEngineSplitValidationTest extends TestCase
             'section_id' => $sections[2]->id,
         ])))->pluck('rule')->all();
 
-        $this->assertContains('online_capacity_conflict', $thirdRules);
+        $this->assertNotContains('room_conflict', $thirdRules);
     }
 
-    public function test_field_capacity_uses_department_configured_limit(): void
+    /** The field is open ground: any number of sections can share it. */
+    public function test_field_classes_are_not_capped_per_department(): void
     {
         $semester = Semester::create([
             'academic_year' => '2026-2027',
@@ -442,7 +442,6 @@ class RuleEngineSplitValidationTest extends TestCase
         $dept = Departments::create([
             'department_name' => 'Department 1',
             'department_code' => 'DEPT1',
-            'field_slot_limit' => 2,
         ]);
         $otherDept = Departments::create([
             'department_name' => 'Department 2',
@@ -469,7 +468,6 @@ class RuleEngineSplitValidationTest extends TestCase
             'room_type' => 'field',
             'status' => 'available',
             'department_id' => null,
-            'max_concurrent_classes' => 3,
         ]);
 
         $sections = collect(['IT 1A', 'IT 1B', 'IT 1C', 'IT 1D'])
@@ -531,7 +529,7 @@ class RuleEngineSplitValidationTest extends TestCase
         ];
 
         $secondRules = collect(app(RuleEngine::class)->validate($secondAttempt))->pluck('rule')->all();
-        $this->assertNotContains('room_capacity_conflict', $secondRules);
+        $this->assertNotContains('room_conflict', $secondRules);
 
         Schedule::create(array_merge($secondAttempt, [
             'status' => 'draft',
@@ -541,7 +539,7 @@ class RuleEngineSplitValidationTest extends TestCase
             'section_id' => $sections[2]->id,
         ])))->pluck('rule')->all();
 
-        $this->assertContains('room_capacity_conflict', $thirdRules);
+        $this->assertNotContains('room_conflict', $thirdRules);
     }
 
     public function test_only_gec_service_subjects_require_cas_faculty(): void
@@ -601,7 +599,6 @@ class RuleEngineSplitValidationTest extends TestCase
             'room_type' => 'field',
             'status' => 'available',
             'department_id' => null,
-            'max_concurrent_classes' => 3,
         ]);
 
         $gec = Course::create([

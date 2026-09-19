@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\Scheduling\Engine\CspSolver;
+use App\Services\Scheduling\Engine\Solver\SolverInput;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 
@@ -66,14 +67,11 @@ class CspPreferredPeriodTest extends TestCase
 
     public function test_unknown_periods_are_ignored_rather_than_restricting(): void
     {
-        $solver = new CspSolver;
-        $normalize = new ReflectionMethod($solver, 'normalizePreferredPeriod');
-
-        $this->assertSame('morning', $normalize->invoke($solver, 'Morning'));
-        $this->assertSame('evening', $normalize->invoke($solver, ' evening '));
-        $this->assertNull($normalize->invoke($solver, 'midday'));
-        $this->assertNull($normalize->invoke($solver, ''));
-        $this->assertNull($normalize->invoke($solver, null));
+        $this->assertSame('morning', SolverInput::normalizePreferredPeriod('Morning'));
+        $this->assertSame('evening', SolverInput::normalizePreferredPeriod(' evening '));
+        $this->assertNull(SolverInput::normalizePreferredPeriod('midday'));
+        $this->assertNull(SolverInput::normalizePreferredPeriod(''));
+        $this->assertNull(SolverInput::normalizePreferredPeriod(null));
     }
 
     public function test_the_window_is_named_in_full_for_failure_messages(): void
