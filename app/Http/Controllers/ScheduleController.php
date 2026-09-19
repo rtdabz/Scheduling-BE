@@ -1469,16 +1469,6 @@ class ScheduleController extends Controller
         return response()->json(['message' => 'Schedule archived successfully']);
     }
 
-    private function departmentScope(Request $request): ?int
-    {
-        $user = $request->user();
-        if ($user->isVpaa() || $user->department_id === null) {
-            return null;
-        }
-
-        return (int) $user->department_id;
-    }
-
     /**
      * The `exists` checks for a batch payload, one query per referenced table.
      * Same semantics as the rule it replaces: a plain lookup on the key column,
@@ -1610,7 +1600,7 @@ class ScheduleController extends Controller
 
     private function payloadBelongsToDepartment(Request $request, int $targetDeptId): bool
     {
-        $scope = $this->departmentScope($request);
+        $scope = $this->authorization->departmentScope($request);
 
         return $scope === null || $scope === $targetDeptId;
     }
@@ -1622,7 +1612,7 @@ class ScheduleController extends Controller
 
     private function scheduleIdsBelongToDepartment(Request $request, array $scheduleIds): bool
     {
-        $scope = $this->departmentScope($request);
+        $scope = $this->authorization->departmentScope($request);
         if ($scope === null || $scheduleIds === []) {
             return true;
         }
@@ -1650,7 +1640,7 @@ class ScheduleController extends Controller
      */
     private function scheduleIdsAssignableByDepartment(Request $request, array $scheduleIds): bool
     {
-        $scope = $this->departmentScope($request);
+        $scope = $this->authorization->departmentScope($request);
         if ($scope === null || $scheduleIds === []) {
             return true;
         }
@@ -1700,7 +1690,7 @@ class ScheduleController extends Controller
 
     private function sectionIdsBelongToDepartment(Request $request, array $sectionIds): bool
     {
-        $scope = $this->departmentScope($request);
+        $scope = $this->authorization->departmentScope($request);
         if ($scope === null || $sectionIds === []) {
             return true;
         }

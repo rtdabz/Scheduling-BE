@@ -18,6 +18,7 @@ use App\Models\Semester;
 use App\Services\Scheduling\Domain\PreparedGenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulePlan;
 use App\Services\Scheduling\Domain\ScheduleRecommendationPayload;
+use App\Services\Scheduling\Generation\GenerationCourseSelection;
 use App\Services\Scheduling\Generation\CourseSetupOverrides;
 use App\Services\Scheduling\Generation\GenerateSectionSchedulePlans;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
@@ -65,6 +66,7 @@ class ScheduleRecommendationController extends Controller
         private readonly ScheduleAuthorizationService $authorization,
         private readonly SectionCurriculumResolver $curriculumResolver,
         private readonly PreviewedPlanStore $previewedPlans,
+        private readonly GenerationCourseSelection $courseSelection,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -77,13 +79,13 @@ class ScheduleRecommendationController extends Controller
         if (isset($validated['section_id'])) {
             /** @var Sections $section */
             $section = Sections::query()->findOrFail($validated['section_id']);
-            if (! $this->canManageDepartment($request, (int) $section->department_id)) {
+            if (! $this->authorization->payloadBelongsToDepartment($request, (int) $section->department_id)) {
                 return $this->departmentForbiddenResponse();
             }
         }
 
         $recommendations = ScheduleRecommendation::with(['section', 'academicSemester', 'department', 'requester'])
-            ->when(($scope = $this->departmentScope($request)) !== null, fn ($query) => $query->where('department_id', $scope))
+            ->when(($scope = $this->authorization->departmentScope($request)) !== null, fn ($query) => $query->where('department_id', $scope))
             ->when(isset($validated['section_id']), fn ($query) => $query->where('section_id', $validated['section_id']))
             ->when(isset($validated['status']), fn ($query) => $query->where('status', $validated['status']))
             ->latest()
@@ -206,7 +208,7 @@ class ScheduleRecommendationController extends Controller
         }
 
         try {
-            $validated['course_ids'] = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
+            $validated['course_ids'] = $this->courseSelection->resolveCourseIds($section, $validated['course_ids'] ?? null);
             $generated = $this->sectionGeneration->generate($section, $validated);
             $profile = $generated->profile;
             $preparedConfiguration = $generated->preparedConfiguration;
@@ -384,34 +386,7 @@ class ScheduleRecommendationController extends Controller
         }
 
         try {
-            $validated['course_ids'] = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
-            $validated['selected_split_session_course_ids'] = $this->resolveLectureLabSplitCourseIds(
-                $section,
-                $validated['selected_split_session_course_ids'] ?? [],
-                $validated['course_ids'],
-            );
-            $validated['is_hybrid'] = $this->resolvedHybridMode(
-                $validated['selected_split_session_course_ids'],
-                $validated['is_hybrid'] ?? false,
-            );
-            $selectedGecSplitCourseIds = $this->resolveMinorSplitCourseIds(
-                $section,
-                $validated['selected_gec_course_ids'] ?? [],
-                $validated['course_ids'],
-            );
-            $validated['preferred_patterns'] = $this->mergeSelectedSplitPatterns(
-                $validated['preferred_patterns'] ?? [],
-                $selectedGecSplitCourseIds,
-                $validated['course_ids'],
-            );
-            $validated['hybrid_split_course_ids'] = $this->resolveHybridSplitCourseIds(
-                $validated['hybrid_split_course_ids'] ?? [],
-                $validated['course_ids'],
-            );
-            $validated['balanced_split_course_ids'] = array_values(array_unique([
-                ...$selectedGecSplitCourseIds,
-                ...$validated['hybrid_split_course_ids'],
-            ]));
+            $validated = [...$validated, ...$this->courseSelection->resolve($section, $validated)];
             $generated = $this->sectionGeneration->generate($section, $validated);
             $profile = $generated->profile;
             $preparedConfiguration = $generated->preparedConfiguration;
@@ -504,30 +479,7 @@ class ScheduleRecommendationController extends Controller
     {
         $section = Sections::query()->findOrFail($sectionId);
         $this->assertActiveSectionSemester($section);
-        $input['course_ids'] = $this->resolveCourseIds($section, $input['course_ids'] ?? null);
-        $input['selected_split_session_course_ids'] = $this->resolveLectureLabSplitCourseIds(
-            $section,
-            $input['selected_split_session_course_ids'] ?? [],
-            $input['course_ids'],
-        );
-        $input['is_hybrid'] = $this->resolvedHybridMode(
-            $input['selected_split_session_course_ids'],
-            $input['is_hybrid'] ?? false,
-        );
-        $gecIds = $this->resolveMinorSplitCourseIds(
-            $section,
-            $input['selected_gec_course_ids'] ?? [],
-            $input['course_ids'],
-        );
-        $input['preferred_patterns'] = $this->mergeSelectedSplitPatterns($input['preferred_patterns'] ?? [], $gecIds, $input['course_ids']);
-        $input['hybrid_split_course_ids'] = $this->resolveHybridSplitCourseIds(
-            $input['hybrid_split_course_ids'] ?? [],
-            $input['course_ids'],
-        );
-        $input['balanced_split_course_ids'] = array_values(array_unique([
-            ...$gecIds,
-            ...$input['hybrid_split_course_ids'],
-        ]));
+        $input = [...$input, ...$this->courseSelection->resolve($section, $input)];
         $generated = $this->sectionGeneration->generate($section, $input);
         $profile = $generated->profile;
         $preparedConfiguration = $generated->preparedConfiguration;
@@ -635,16 +587,16 @@ class ScheduleRecommendationController extends Controller
         try {
             foreach ($sections as $section) {
                 $config = $configs->get((int) $section->id);
-                $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
-                $splitIds = $this->resolveLectureLabSplitCourseIds($section, $config['selected_split_session_course_ids'] ?? [], $courseIds);
-                $gecIds = $this->resolveMinorSplitCourseIds($section, $config['selected_gec_course_ids'] ?? [], $courseIds);
-                $hybridSplitIds = $this->resolveHybridSplitCourseIds($config['hybrid_split_course_ids'] ?? [], $courseIds);
-                $gecIds = array_values(array_unique([...$gecIds, ...$hybridSplitIds]));
-                $preferredPatterns = $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $gecIds, $courseIds);
+                $selection = $this->courseSelection->resolve($section, $config);
+                $courseIds = $selection['course_ids'];
+                $splitIds = $selection['selected_split_session_course_ids'];
+                $gecIds = $selection['balanced_split_course_ids'];
+                $hybridSplitIds = $selection['hybrid_split_course_ids'];
+                $preferredPatterns = $selection['preferred_patterns'];
                 $sectionConfig = [
                     'course_ids' => $courseIds,
                     'mode' => (string) ($config['mode'] ?? 'on-site'),
-                    'is_hybrid' => $this->resolvedHybridMode($splitIds, $config['is_hybrid'] ?? false),
+                    'is_hybrid' => $selection['is_hybrid'],
                     'selected_split_session_course_ids' => $splitIds,
                     'balanced_split_course_ids' => $gecIds,
                     'hybrid_split_course_ids' => $hybridSplitIds,
@@ -816,16 +768,16 @@ class ScheduleRecommendationController extends Controller
             if ($config === null) {
                 return response()->json(['message' => 'Provide one configuration for every active section.'], 422);
             }
-            $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
-            $splitIds = $this->resolveLectureLabSplitCourseIds($section, $config['selected_split_session_course_ids'] ?? [], $courseIds);
-            $gecIds = $this->resolveMinorSplitCourseIds($section, $config['selected_gec_course_ids'] ?? [], $courseIds);
-            $hybridSplitIds = $this->resolveHybridSplitCourseIds($config['hybrid_split_course_ids'] ?? [], $courseIds);
-            $gecIds = array_values(array_unique([...$gecIds, ...$hybridSplitIds]));
-            $preferredPatterns = $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $gecIds, $courseIds);
+            $selection = $this->courseSelection->resolve($section, $config);
+            $courseIds = $selection['course_ids'];
+            $splitIds = $selection['selected_split_session_course_ids'];
+            $gecIds = $selection['balanced_split_course_ids'];
+            $hybridSplitIds = $selection['hybrid_split_course_ids'];
+            $preferredPatterns = $selection['preferred_patterns'];
             $sectionConfig = [
                 'course_ids' => $courseIds,
                 'mode' => (string) ($config['mode'] ?? 'on-site'),
-                'is_hybrid' => $this->resolvedHybridMode($splitIds, $config['is_hybrid'] ?? false),
+                'is_hybrid' => $selection['is_hybrid'],
                 'selected_split_session_course_ids' => $splitIds, 'balanced_split_course_ids' => $gecIds,
                 'hybrid_split_course_ids' => $hybridSplitIds,
                 'preferred_patterns' => $preferredPatterns, 'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
@@ -944,7 +896,7 @@ class ScheduleRecommendationController extends Controller
             'semester_id' => 'required|integer|exists:semesters,id',
         ]);
 
-        if (! $this->canManageDepartment($request, (int) $validated['department_id'])) {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -1091,34 +1043,7 @@ class ScheduleRecommendationController extends Controller
         unset($solverInput['selected_rank'], $solverInput['plan_id']);
 
         try {
-            $solverInput['course_ids'] = $this->resolveCourseIds($section, $solverInput['course_ids'] ?? null);
-            $solverInput['selected_split_session_course_ids'] = $this->resolveLectureLabSplitCourseIds(
-                $section,
-                $solverInput['selected_split_session_course_ids'] ?? [],
-                $solverInput['course_ids'],
-            );
-            $solverInput['is_hybrid'] = $this->resolvedHybridMode(
-                $solverInput['selected_split_session_course_ids'],
-                $solverInput['is_hybrid'] ?? false,
-            );
-            $selectedGecSplitCourseIds = $this->resolveMinorSplitCourseIds(
-                $section,
-                $solverInput['selected_gec_course_ids'] ?? [],
-                $solverInput['course_ids'],
-            );
-            $solverInput['preferred_patterns'] = $this->mergeSelectedSplitPatterns(
-                $solverInput['preferred_patterns'] ?? [],
-                $selectedGecSplitCourseIds,
-                $solverInput['course_ids'],
-            );
-            $solverInput['hybrid_split_course_ids'] = $this->resolveHybridSplitCourseIds(
-                $solverInput['hybrid_split_course_ids'] ?? [],
-                $solverInput['course_ids'],
-            );
-            $solverInput['balanced_split_course_ids'] = array_values(array_unique([
-                ...$selectedGecSplitCourseIds,
-                ...$solverInput['hybrid_split_course_ids'],
-            ]));
+            $solverInput = [...$solverInput, ...$this->courseSelection->resolve($section, $solverInput)];
             $generated = $this->sectionGeneration->generate($section, $solverInput);
             $profile = $generated->profile;
             $preparedConfiguration = $generated->preparedConfiguration;
@@ -1218,7 +1143,7 @@ class ScheduleRecommendationController extends Controller
 
     public function show(ScheduleRecommendation $scheduleRecommendation): JsonResponse
     {
-        if (! $this->canManageDepartment(request(), (int) $scheduleRecommendation->department_id)) {
+        if (! $this->authorization->payloadBelongsToDepartment(request(), (int) $scheduleRecommendation->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -1247,7 +1172,7 @@ class ScheduleRecommendationController extends Controller
 
     public function review(Request $request, ScheduleRecommendation $scheduleRecommendation): JsonResponse
     {
-        if (! $this->canManageDepartment($request, (int) $scheduleRecommendation->department_id)) {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $scheduleRecommendation->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -1357,7 +1282,7 @@ class ScheduleRecommendationController extends Controller
 
     public function reject(Request $request, ScheduleRecommendation $scheduleRecommendation): JsonResponse
     {
-        if (! $this->canManageDepartment($request, (int) $scheduleRecommendation->department_id)) {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $scheduleRecommendation->department_id)) {
             return $this->departmentForbiddenResponse();
         }
 
@@ -1460,149 +1385,6 @@ class ScheduleRecommendationController extends Controller
         return null;
     }
 
-    private function resolveCourseIds(Sections $section, ?array $providedCourseIds): array
-    {
-        // The curriculum is a property of the cohort, not of the department: a
-        // department mid-transition runs the old and the new one at once.
-        $curriculum = $this->curriculumResolver->forSection($section);
-
-        $period = $this->mapSemesterToInt($section->semester);
-        $courseQuery = $curriculum->courses()
-            ->wherePivot('year_level', (int) $section->year_level)
-            ->wherePivot('semester', $period)
-            ->where('courses.status', 'active');
-
-        if (! empty($providedCourseIds)) {
-            $courseQuery->whereIn('courses.id', array_map('intval', $providedCourseIds));
-        }
-
-        $courseIds = $courseQuery->pluck('courses.id')->toArray();
-
-        if (! empty($courseIds)) {
-            return $courseIds;
-        }
-
-        if (! empty($providedCourseIds)) {
-            throw new InvalidArgumentException(sprintf(
-                'The selected courses are not active entries in "%s" for year %s, %s semester.',
-                (string) $curriculum->name,
-                (string) $section->year_level,
-                (string) $section->semester,
-            ));
-        }
-
-        throw new InvalidArgumentException(sprintf(
-            'Curriculum "%s" has no courses for year %s, %s semester. Add courses to that year level, or point the section at a different curriculum.',
-            (string) $curriculum->name,
-            (string) $section->year_level,
-            (string) $section->semester,
-        ));
-    }
-
-    private function mapSemesterToInt(string $period): int
-    {
-        return match ($period) {
-            '1st' => 1,
-            '2nd' => 2,
-            'summer' => 3,
-            default => throw new InvalidArgumentException("Unrecognized semester '{$period}'."),
-        };
-    }
-
-    private function resolveMinorSplitCourseIds(Sections $section, array $requestedCourseIds, array $validCourseIds): array
-    {
-        $splitSettings = SchedulingPolicy::balancedSplitSettings($section->department);
-
-        $candidateIds = array_values(array_intersect(
-            array_map('intval', $requestedCourseIds),
-            array_map('intval', $validCourseIds),
-        ));
-
-        if ($candidateIds === []) {
-            return [];
-        }
-
-        return Course::query()
-            ->whereIn('id', $candidateIds)
-            ->get()
-            ->filter(static fn (Course $course): bool => SchedulingPolicy::balancedSplitEligible($course, $splitSettings))
-            ->pluck('id')
-            ->map(static fn ($courseId): int => (int) $courseId)
-            ->values()
-            ->all();
-    }
-
-    /** @param list<int|string> $requestedCourseIds @param list<int|string> $validCourseIds */
-    private function resolveHybridSplitCourseIds(array $requestedCourseIds, array $validCourseIds): array
-    {
-        $candidateIds = array_values(array_intersect(
-            array_map('intval', $requestedCourseIds),
-            array_map('intval', $validCourseIds),
-        ));
-
-        if ($candidateIds === []) {
-            return [];
-        }
-
-        return Course::query()
-            ->whereIn('id', $candidateIds)
-            ->get()
-            ->filter(static fn (Course $course): bool => SchedulingPolicy::hybridSplitEligible($course))
-            ->pluck('id')
-            ->map(static fn ($courseId): int => (int) $courseId)
-            ->values()
-            ->all();
-    }
-
-    private function resolveLectureLabSplitCourseIds(Sections $section, array $requestedCourseIds, array $validCourseIds): array
-    {
-        $candidateIds = array_values(array_intersect(
-            array_map('intval', $requestedCourseIds),
-            array_map('intval', $validCourseIds),
-        ));
-
-        if ($candidateIds === []) {
-            return [];
-        }
-
-        return Course::query()
-            ->whereIn('id', $candidateIds)
-            ->get()
-            ->filter(static fn (Course $course): bool => SchedulingPolicy::isMajorCourse($course)
-                && ! SchedulingPolicy::isFieldCourse($course, (int) $section->department_id)
-                && (int) $course->lecture_hours > 0
-                && (int) $course->lab_hours > 0)
-            ->pluck('id')
-            ->map(static fn ($courseId): int => (int) $courseId)
-            ->values()
-            ->all();
-    }
-
-    private function mergeSelectedSplitPatterns(array $preferredPatterns, array $selectedCourseIds, array $validCourseIds): array
-    {
-        $validCourseIds = array_flip(array_map('intval', $validCourseIds));
-        $selectedCourseIds = array_flip(array_map('intval', $selectedCourseIds));
-        $merged = [];
-
-        foreach ($preferredPatterns as $courseId => $preferredPattern) {
-            $courseId = (int) $courseId;
-            if ($courseId <= 0 || ! isset($validCourseIds[$courseId]) || ! isset($selectedCourseIds[$courseId])) {
-                continue;
-            }
-
-            $merged[$courseId] = $preferredPattern;
-        }
-
-        return $merged;
-    }
-
-    /** @param array<int, int|string> $selectedLectureLabCourseIds */
-    private function resolvedHybridMode(array $selectedLectureLabCourseIds, mixed $requested): bool
-    {
-        return (bool) filter_var($requested, FILTER_VALIDATE_BOOLEAN)
-            || array_values(array_filter(array_map('intval', $selectedLectureLabCourseIds), static fn (int $id): bool => $id > 0)) !== [];
-    }
-
     private function yearLevelConfigSeed(
         int $semesterId,
         int $departmentId,
@@ -1657,7 +1439,7 @@ class ScheduleRecommendationController extends Controller
         }
 
         try {
-            $resolvedCourseIds = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
+            $resolvedCourseIds = $this->courseSelection->resolveCourseIds($section, $validated['course_ids'] ?? null);
             $validated['course_ids'] = $resolvedCourseIds;
             $validated['max_solutions'] = 5;
             $generated = $this->sectionGeneration->generate($section, $validated);
@@ -1784,24 +1566,6 @@ class ScheduleRecommendationController extends Controller
         }
     }
 
-    private function departmentScope(Request $request): ?int
-    {
-        $user = $request->user();
-
-        if (! $user || $user->isVpaa() || $user->department_id === null) {
-            return null;
-        }
-
-        return (int) $user->department_id;
-    }
-
-    private function canManageDepartment(Request $request, int $departmentId): bool
-    {
-        $scope = $this->departmentScope($request);
-
-        return $scope === null || $scope === $departmentId;
-    }
-
     /**
      * Ownership plus the program precondition, for the paths that build or
      * commit schedules.
@@ -1819,7 +1583,7 @@ class ScheduleRecommendationController extends Controller
      */
     private function departmentGuard(Request $request, int $departmentId): ?JsonResponse
     {
-        if (! $this->canManageDepartment($request, $departmentId)) {
+        if (! $this->authorization->payloadBelongsToDepartment($request, $departmentId)) {
             return $this->departmentForbiddenResponse();
         }
 
