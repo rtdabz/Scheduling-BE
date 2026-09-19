@@ -10,6 +10,8 @@ class UpdateTimeslotSettingsRequest extends TimeslotRequest
         return [
             'opening_time' => ['required', 'string', self::TIME_FORMAT_RULE],
             'closing_time' => ['required', 'string', self::TIME_FORMAT_RULE],
+            // Latest end for field classes; optional so older clients keep working.
+            'field_end_time' => ['sometimes', 'required', 'string', self::TIME_FORMAT_RULE],
             'slot_interval' => ['required', 'integer', 'min:1', 'max:720'],
         ];
     }

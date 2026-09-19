@@ -233,7 +233,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
         $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
 
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('BA 1A / BA 101 is forced to meet on Sunday, but this course cannot be scheduled on that day.');
+        $this->expectExceptionMessage('BA 1A / BA 101 has a Required Day of Sunday, but this course cannot be scheduled on that day.');
 
         app(CspSolver::class)->solveRanked(
             sectionId: (int) $section->id,

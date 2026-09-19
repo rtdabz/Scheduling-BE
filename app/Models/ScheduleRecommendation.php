@@ -33,6 +33,18 @@ class ScheduleRecommendation extends Model
         'rejected_at' => 'datetime',
     ];
 
+    protected $appends = ['resolved'];
+
+    /**
+     * Accepted and rejected recommendations are terminal workflow records and
+     * no longer represent an active scheduling concern. Keep the persisted
+     * status contract unchanged while exposing a stable badge flag to clients.
+     */
+    public function getResolvedAttribute(): bool
+    {
+        return $this->status !== 'pending';
+    }
+
     public function academicSemester()
     {
         return $this->belongsTo(Semester::class, 'semester_id');

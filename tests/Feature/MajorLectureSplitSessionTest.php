@@ -87,7 +87,7 @@ class MajorLectureSplitSessionTest extends TestCase
         return [$department, $section, $course, $user];
     }
 
-    private function preview(User $user, Departments $department, Sections $section, Course $course): \Illuminate\Testing\TestResponse
+    private function preview(User $user, Departments $department, Sections $section, Course $course, bool $hybridSplit = false): \Illuminate\Testing\TestResponse
     {
         return $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
             'semester_id' => (int) $section->semester_id,
@@ -96,9 +96,26 @@ class MajorLectureSplitSessionTest extends TestCase
             'section_configs' => [[
                 'section_id' => (int) $section->id,
                 'course_ids' => [(int) $course->id],
-                'selected_gec_course_ids' => [(int) $course->id],
+                'selected_gec_course_ids' => $hybridSplit ? [] : [(int) $course->id],
+                'hybrid_split_course_ids' => $hybridSplit ? [(int) $course->id] : [],
             ]],
         ]);
+    }
+
+    public function test_hybrid_split_is_two_one_and_a_half_hour_lecture_meetings_with_mixed_delivery(): void
+    {
+        [$department, $section, $course, $user] = $this->scenario(majorLectureSplitEnabled: false);
+
+        $response = $this->preview($user, $department, $section, $course, hybridSplit: true);
+
+        $this->assertSame(200, $response->status(), json_encode($response->json(), JSON_PRETTY_PRINT));
+        $rows = collect($response->json('schedules'))->where('course_id', (int) $course->id)->values();
+        $this->assertCount(2, $rows);
+        $this->assertSame(['on-site', 'online'], $rows->pluck('mode')->sort()->values()->all());
+        $this->assertTrue($rows->every(static fn (array $row): bool => ($row['meeting_type'] ?? null) === 'lecture'));
+        $this->assertTrue($rows->every(function (array $row): bool {
+            return (strtotime((string) $row['end_time']) - strtotime((string) $row['start_time'])) / 60 === 90;
+        }));
     }
 
     public function test_a_lecture_only_major_splits_into_two_balanced_meetings(): void
@@ -115,7 +132,7 @@ class MajorLectureSplitSessionTest extends TestCase
         $this->assertSame(180, $totalMinutes, 'The split must still add up to the course contact hours.');
     }
 
-    public function test_a_lecture_only_major_is_not_split_while_the_setting_is_off(): void
+    public function test_a_lecture_only_major_split_is_available_while_the_setting_is_off(): void
     {
         [$department, $section, $course, $user] = $this->scenario(majorLectureSplitEnabled: false);
 
@@ -123,7 +140,7 @@ class MajorLectureSplitSessionTest extends TestCase
 
         $this->assertSame(200, $response->status(), json_encode($response->json(), JSON_PRETTY_PRINT));
         $rows = collect($response->json('schedules'))->where('course_id', (int) $course->id)->values();
-        $this->assertCount(1, $rows, 'The split request must be dropped when the department setting is off.');
+        $this->assertCount(2, $rows, 'Split Session is selected per course and is independent of the retired department switch.');
     }
 
     public function test_a_major_carrying_laboratory_units_is_never_split_by_the_lecture_setting(): void
@@ -178,6 +195,6 @@ class MajorLectureSplitSessionTest extends TestCase
 
         $department->forceFill(['major_lecture_split_schedule_override_enabled' => false])->save();
         $violations = app(RuleEngine::class)->validateConfiguredMeetingGroups($operations);
-        $this->assertContains('minor_split_eligibility', collect($violations)->pluck('rule')->all());
+        $this->assertSame([], collect($violations)->pluck('rule')->all());
     }
 }

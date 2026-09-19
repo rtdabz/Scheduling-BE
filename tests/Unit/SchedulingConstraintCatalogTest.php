@@ -72,8 +72,6 @@ class SchedulingConstraintCatalogTest extends TestCase
             'subject section time' => [BatchConflict::RULE_SUBJECT_SECTION_TIME],
             'room' => [BatchConflict::RULE_ROOM],
             'faculty' => [BatchConflict::RULE_FACULTY],
-            'room capacity' => [BatchConflict::RULE_ROOM_CAPACITY],
-            'online capacity' => [BatchConflict::RULE_ONLINE_CAPACITY],
         ];
     }
 }

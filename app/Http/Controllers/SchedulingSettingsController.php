@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
+use App\Models\Rooms;
 use App\Models\Sections;
+use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
@@ -36,15 +38,10 @@ class SchedulingSettingsController extends Controller
             'custom_lab_duration_other_enabled' => 'sometimes|required|boolean',
             'gec_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'major_lecture_split_schedule_override_enabled' => 'sometimes|required|boolean',
-            'field_evening_schedule_enabled' => 'sometimes|required|boolean',
             'sunday_online_only_enabled' => 'sometimes|required|boolean',
-            // Null clears the ceiling: neither resource is a room, so an
-            // absent limit means unlimited rather than a default of three.
-            'online_slot_limit' => 'sometimes|nullable|integer|min:1|max:100',
-            'field_slot_limit' => 'sometimes|nullable|integer|min:1|max:100',
             'forced_day_rules' => 'sometimes|array',
             'forced_day_rules.*.course_id' => 'required|integer|exists:courses,id',
-            'forced_day_rules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
+            'forced_day_rules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
             'field_course_codes' => 'sometimes|array',
             'field_course_codes.*' => 'required|string|max:255',
         ]);
@@ -152,21 +149,8 @@ class SchedulingSettingsController extends Controller
             }
             $department->major_lecture_split_schedule_override_enabled = (bool) $validated['major_lecture_split_schedule_override_enabled'];
         }
-        if (array_key_exists('field_evening_schedule_enabled', $validated)) {
-            $department->field_evening_schedule_enabled = (bool) $validated['field_evening_schedule_enabled'];
-        }
         if (array_key_exists('sunday_online_only_enabled', $validated)) {
             $department->sunday_online_only_enabled = (bool) $validated['sunday_online_only_enabled'];
-        }
-        if (array_key_exists('online_slot_limit', $validated)) {
-            $department->online_slot_limit = $validated['online_slot_limit'] === null
-                ? null
-                : (int) $validated['online_slot_limit'];
-        }
-        if (array_key_exists('field_slot_limit', $validated)) {
-            $department->field_slot_limit = $validated['field_slot_limit'] === null
-                ? null
-                : (int) $validated['field_slot_limit'];
         }
         $department->save();
 
@@ -202,12 +186,7 @@ class SchedulingSettingsController extends Controller
             'custom_lab_duration_other_enabled' => (bool) $department->custom_lab_duration_other_enabled,
             'gec_split_schedule_override_enabled' => (bool) $department->gec_split_schedule_override_enabled,
             'major_lecture_split_schedule_override_enabled' => (bool) $department->major_lecture_split_schedule_override_enabled,
-            'field_evening_schedule_enabled' => (bool) $department->field_evening_schedule_enabled,
             'sunday_online_only_enabled' => (bool) ($department->sunday_online_only_enabled ?? true),
-            // NULL is surfaced as-is so the UI can show "no limit" rather than
-            // inventing a ceiling the scheduler does not apply.
-            'online_slot_limit' => $department->online_slot_limit === null ? null : max(1, (int) $department->online_slot_limit),
-            'field_slot_limit' => $department->field_slot_limit === null ? null : max(1, (int) $department->field_slot_limit),
             'lecture_lab_available' => $lectureLabAvailable,
             'major_lecture_split_available' => $this->hasMajorLectureOnlyCourses($department),
             'generation_period' => $section ? [
@@ -221,7 +200,40 @@ class SchedulingSettingsController extends Controller
             'field_course_assignment_enabled' => $this->fieldCourseAssignmentEnabled($department),
             'field_course_options' => $fieldCourseOptions,
             'field_course_codes' => $this->fieldCourseCodes($department, $section ? $fieldCourseOptions : null),
+            'preferred_room_options' => $this->preferredRoomOptions($department, $section),
         ];
+    }
+
+    /**
+     * The physical rooms a Setup Courses "Preferred Room" may name: the ones
+     * this department can reach in the section's semester, per
+     * RoomAccessPolicy. A borrowed room is still only usable inside its grant
+     * windows; the generator applies those, the preference only ranks.
+     *
+     * @return list<array{id: int, room_code: string, room_type: string, building: ?string, allow_lecture_usage: bool}>
+     */
+    private function preferredRoomOptions(Departments $department, ?Sections $section): array
+    {
+        return Rooms::query()
+            ->select(['id', 'room_code', 'room_type', 'building', 'allow_lecture_usage'])
+            ->where('status', 'available')
+            ->whereIn('room_type', ['lecture', 'laboratory', 'field'])
+            ->tap(fn ($query) => app(RoomAccessPolicy::class)->scopeReachableRooms(
+                $query,
+                (int) $department->id,
+                $section ? (int) $section->semester_id : null,
+            ))
+            ->orderBy('room_code')
+            ->get()
+            ->map(static fn (Rooms $room): array => [
+                'id' => (int) $room->id,
+                'room_code' => (string) $room->room_code,
+                'room_type' => (string) $room->room_type,
+                'building' => $room->building === null ? null : (string) $room->building,
+                'allow_lecture_usage' => (bool) $room->allow_lecture_usage,
+            ])
+            ->values()
+            ->all();
     }
 
     private function resolveDepartment(Request $request): Departments

@@ -82,6 +82,12 @@ final class FacultyConflictOverride
     {
         $ids = [];
         foreach ($violations as $violation) {
+            // Section and room conflicts also name their clashes; they are never
+            // overridden, so their meetings must not be flagged.
+            if (! self::isOverridable($violation)) {
+                continue;
+            }
+
             foreach ((array) ($violation['conflicting_schedule_ids'] ?? []) as $id) {
                 $ids[] = (int) $id;
             }
@@ -178,6 +184,10 @@ final class FacultyConflictOverride
     /**
      * Drops the instructor conflicts a standing override already covers.
      *
+     * A double-booking is covered only when every meeting it clashes with was
+     * overridden too. Otherwise a clash with a meeting placed later, which
+     * nobody approved, would be hidden on the next save of this one.
+     *
      * @param  array<string, mixed>  $attempt
      * @param  list<array<string, mixed>>  $violations
      * @return list<array<string, mixed>>
@@ -188,6 +198,35 @@ final class FacultyConflictOverride
             return $violations;
         }
 
-        return array_values(array_filter($violations, static fn (array $violation): bool => ! self::isOverridable($violation)));
+        $partnerIds = self::partnerIds(array_values(array_filter(
+            $violations,
+            static fn (array $violation): bool => ($violation['rule'] ?? null) === 'faculty_conflict',
+        )));
+        $flaggedPartners = $partnerIds === []
+            ? []
+            : array_flip(Schedule::query()
+                ->whereIn('id', $partnerIds)
+                ->where('faculty_conflict_override', true)
+                ->pluck('id')
+                ->map(static fn ($id): int => (int) $id)
+                ->all());
+
+        return array_values(array_filter($violations, static function (array $violation) use ($flaggedPartners): bool {
+            if (! self::isOverridable($violation)) {
+                return true;
+            }
+
+            if (($violation['rule'] ?? null) !== 'faculty_conflict') {
+                return false;
+            }
+
+            foreach (self::partnerIds([$violation]) as $partnerId) {
+                if (! isset($flaggedPartners[$partnerId])) {
+                    return true;
+                }
+            }
+
+            return false;
+        }));
     }
 }

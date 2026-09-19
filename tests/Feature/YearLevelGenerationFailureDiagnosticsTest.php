@@ -380,9 +380,7 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
                 private readonly int $gatedCourseId,
                 private readonly Sections $gatedSection,
                 private readonly int $gatedDepartmentId,
-            ) {
-                parent::__construct();
-            }
+            ) {}
 
             public function solveRankedFromSchema(array $input): array
             {

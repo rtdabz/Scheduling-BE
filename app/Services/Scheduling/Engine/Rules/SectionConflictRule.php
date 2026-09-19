@@ -34,24 +34,29 @@ final class SectionConflictRule
         $day = (string) $attempt['day'];
         $ignoreIds = RuleSupport::ignoreIds($attempt['ignore_schedule_id'] ?? null);
 
-        $conflict = Schedule::where('section_id', $attempt['section_id'])
+        $conflicts = Schedule::where('section_id', $attempt['section_id'])
             ->where('semester_id', $attempt['semester_id'])
             ->where('day', $day)
             ->when($ignoreIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreIds))
             ->where('start_time', '<', $attempt['end_time'])
             ->where('end_time', '>', $attempt['start_time'])
             ->with('course')
-            ->first();
+            ->orderBy('start_time')
+            ->get();
 
-        if (! $conflict) {
+        if ($conflicts->isEmpty()) {
             return null;
         }
+
+        $conflict = $conflicts->first();
+        $more = $conflicts->count() > 1 ? ' and '.($conflicts->count() - 1).' more' : '';
 
         return [
             'rule' => 'section_conflict',
             'message' => "Section already has a class on {$day} from {$conflict->start_time} to {$conflict->end_time} "
-                ."({$conflict->course?->course_code}).",
+                ."({$conflict->course?->course_code}){$more}.",
             'conflicting_schedule_id' => $conflict->id,
+            'conflicting_schedule_ids' => $conflicts->pluck('id')->map(static fn ($id): int => (int) $id)->all(),
         ];
     }
 

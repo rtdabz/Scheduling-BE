@@ -156,7 +156,6 @@ class SchedulingDomainContractsTest extends TestCase
             sectionsById: [2 => ['id' => 2]],
             coursesById: [3 => ['id' => 3]],
             forcedDaysByCourseId: [3 => 'Monday'],
-            resourceLimits: ['online' => 5, 'field' => 2],
         );
 
         $restored = SchedulingSnapshot::fromArray($snapshot->toArray());

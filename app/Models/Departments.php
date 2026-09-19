@@ -24,10 +24,7 @@ class Departments extends Model
         'custom_lab_duration_other_enabled',
         'gec_split_schedule_override_enabled',
         'major_lecture_split_schedule_override_enabled',
-        'field_evening_schedule_enabled',
         'sunday_online_only_enabled',
-        'online_slot_limit',
-        'field_slot_limit',
     ];
 
     protected $casts = [
@@ -39,10 +36,7 @@ class Departments extends Model
         'custom_lab_duration_other_enabled' => 'boolean',
         'gec_split_schedule_override_enabled' => 'boolean',
         'major_lecture_split_schedule_override_enabled' => 'boolean',
-        'field_evening_schedule_enabled' => 'boolean',
         'sunday_online_only_enabled' => 'boolean',
-        'online_slot_limit' => 'integer',
-        'field_slot_limit' => 'integer',
         'scheduling_profile' => 'string',
     ];
 

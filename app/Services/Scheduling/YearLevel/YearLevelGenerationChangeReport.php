@@ -100,6 +100,7 @@ class YearLevelGenerationChangeReport
                 'Room to be assigned',
                 'These in-person meetings have a time but no room yet. Assign a room before publishing.',
                 $this->classItems($tba, $sectionNames, $courseCodes, 'Room TBA'),
+                resolved: false,
             );
         }
 
@@ -110,11 +111,20 @@ class YearLevelGenerationChangeReport
      * @param  list<array<string, mixed>>  $items
      * @return array<string, mixed>
      */
-    private function change(string $kind, string $severity, string $title, string $description, array $items): array
+    private function change(
+        string $kind,
+        string $severity,
+        string $title,
+        string $description,
+        array $items,
+        bool $resolved = true,
+    ): array
     {
         return [
             'kind' => $kind,
             'severity' => $severity,
+            'status' => $resolved ? 'resolved' : 'active',
+            'resolved' => $resolved,
             'title' => $title,
             'description' => $description,
             'items' => $items,

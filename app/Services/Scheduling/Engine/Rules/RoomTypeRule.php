@@ -123,13 +123,6 @@ final class RoomTypeRule
 
     private function canUseLaboratoryForLecture(Course $course, Rooms $room): bool
     {
-        $courseCategory = $course->course_category ?? $course->subject_category ?? 'major';
-
-        return $courseCategory === 'major'
-            && (int) ($course->lecture_hours ?? 0) > 0
-            && (int) ($course->lab_hours ?? 0) === 0
-            && (string) ($course->room_type_required ?? 'lecture') === 'lecture'
-            && $room->room_type === 'laboratory'
-            && (bool) $room->allow_lecture_usage;
+        return SchedulingPolicy::laboratoryServesLecture($course, $room);
     }
 }

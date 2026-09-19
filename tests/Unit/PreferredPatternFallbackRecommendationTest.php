@@ -161,7 +161,7 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
         $this->assertEquals(180, $totalMinutes, 'Required 3 hours duration must be preserved');
     }
 
-    public function test_recommends_single_session_when_split_patterns_are_occupied(): void
+    public function test_does_not_fall_back_to_a_single_session_when_split_patterns_are_occupied(): void
     {
         $otherSection = Sections::create([
             'section_name' => 'BSIT 2B',
@@ -203,16 +203,16 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
 
         $this->assertNotEmpty($solutions);
         $schedules = $solutions[0]['schedules'];
-        $this->assertCount(1, $schedules, 'Should recommend a single 3-hour session on the available day');
-        $this->assertEquals('Friday', $schedules[0]['day']);
-        $this->assertEquals('on-site', $schedules[0]['mode']);
+        $this->assertCount(2, $schedules, 'A configured Split must remain two meetings; Regular Meeting is a separate recommendation.');
+        $this->assertFalse((bool) ($schedules[0]['split_session_fallback'] ?? false));
 
-        $start = strtotime($schedules[0]['start_time']);
-        $end = strtotime($schedules[0]['end_time']);
-        $this->assertEquals(180, ($end - $start) / 60, 'Single session must have full 3 hours duration');
+        $totalMinutes = array_reduce($schedules, static function (int $total, array $schedule): int {
+            return $total + (int) ((strtotime($schedule['end_time']) - strtotime($schedule['start_time'])) / 60);
+        }, 0);
+        $this->assertEquals(180, $totalMinutes, 'Split meetings must preserve the full 3 hours duration');
     }
 
-    public function test_automatic_split_session_falls_back_to_one_day_when_both_patterns_are_occupied(): void
+    public function test_automatic_split_session_does_not_fall_back_to_one_day_when_both_patterns_are_occupied(): void
     {
         $otherSection = Sections::create([
             'section_name' => 'BSIT 2B',
@@ -255,9 +255,10 @@ class PreferredPatternFallbackRecommendationTest extends TestCase
 
         $this->assertNotEmpty($solutions);
         $schedules = $solutions[0]['schedules'];
-        $this->assertCount(1, $schedules, 'Automatic Split Session should use a single meeting when both split patterns are unavailable.');
-        $this->assertTrue((bool) ($schedules[0]['split_session_fallback'] ?? false));
-        $this->assertNull($schedules[0]['split_group_id'] ?? null);
+        $this->assertCount(2, $schedules, 'Automatic Split Session must remain two meetings when a split candidate is available.');
+        foreach ($schedules as $schedule) {
+            $this->assertFalse((bool) ($schedule['split_session_fallback'] ?? false));
+        }
     }
 
     public function test_falls_back_to_online_when_all_physical_rooms_are_occupied(): void

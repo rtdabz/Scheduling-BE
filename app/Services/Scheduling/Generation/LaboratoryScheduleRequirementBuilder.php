@@ -15,36 +15,46 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
         $defaultMode = (string) ($options['mode'] ?? 'on-site');
         $deliveryModes = $options['delivery_modes_by_course_id'] ?? [];
         $splitIds = array_map('intval', $options['selected_split_session_course_ids'] ?? []);
-        $overrideEnabled = (bool) ($section->department?->lecture_lab_schedule_override_enabled ?? false);
 
         foreach ($courses as $course) {
             $courseId = (int) $course->id;
             $mode = (string) ($deliveryModes[$courseId] ?? $deliveryModes[(string) $courseId] ?? $defaultMode);
             $isLaboratory = SchedulingPolicy::isLaboratoryCourse($course);
             $isMajor = SchedulingPolicy::isMajorCourse($course);
-            $hasLectureAndLaboratory = $overrideEnabled
-                && $isMajor
+            $hasLectureAndLaboratory = $isMajor
                 && in_array($courseId, $splitIds, true)
                 && (int) ($course->lecture_hours ?? 0) > 0
                 && (int) ($course->lab_hours ?? 0) > 0;
 
+            $preferredRoomId = CourseSetupOverrides::preferredRoomId($options, $courseId);
+
             if ($hasLectureAndLaboratory) {
+                // Integrated: two separate sessions, each either the length
+                // chosen in Setup Courses or the course's own. On-site keeps
+                // the lecture face-to-face; Hybrid moves it online.
+                $lectureOnSite = SchedulingPolicy::isIntegratedOnSite($deliveryModes, $courseId);
+                $lectureSlots = CourseSetupOverrides::componentSlots($options, $courseId, 'lecture');
+                $laboratorySlots = CourseSetupOverrides::componentSlots($options, $courseId, 'laboratory');
                 $requirements[$courseId] = [
                     (new ScheduleRequirement(
                         courseId: $courseId,
                         componentType: 'lecture',
-                        durationSlots: (int) $course->lecture_hours * SchedulingPolicy::LECTURE_SLOTS_PER_UNIT,
-                        eligibleRoomTypes: ['online'],
-                        allowedDeliveryModes: ['online'],
+                        durationSlots: $lectureSlots ?? SchedulingPolicy::lectureComponentSlots($course),
+                        eligibleRoomTypes: $lectureOnSite ? ['lecture'] : ['online'],
+                        allowedDeliveryModes: $lectureOnSite ? ['on-site'] : ['online'],
                         isSplitComponent: true,
+                        customDuration: $lectureSlots !== null,
                     ))->toArray(),
                     (new ScheduleRequirement(
                         courseId: $courseId,
                         componentType: 'laboratory',
-                        durationSlots: SchedulingPolicy::laboratoryComponentSlots($course, $section->department),
+                        durationSlots: $laboratorySlots ?? SchedulingPolicy::laboratoryComponentSlots($course, $section->department),
                         eligibleRoomTypes: ['laboratory'],
                         allowedDeliveryModes: ['on-site'],
                         isSplitComponent: true,
+                        customDuration: $laboratorySlots !== null,
+                        // Preferred Room names the laboratory, the scarcer room.
+                        preferredRoomId: $preferredRoomId,
                     ))->toArray(),
                 ];
 
@@ -78,14 +88,18 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                     : ['lecture', 'laboratory'],
             };
 
+            $customSlots = CourseSetupOverrides::durationSlots($options, $courseId);
+
             $requirements[$courseId] = [
                 (new ScheduleRequirement(
                     courseId: $courseId,
                     componentType: $componentType,
-                    durationSlots: max(1, (int) round((float) ($course->units ?? 0) * 2)),
+                    durationSlots: $customSlots ?? max(1, (int) round((float) ($course->units ?? 0) * 2)),
                     eligibleRoomTypes: $roomTypes,
                     allowedDeliveryModes: $allowedModes,
                     allowLectureLaboratoryFallback: $componentType === 'lecture' && $isMajor,
+                    customDuration: $customSlots !== null,
+                    preferredRoomId: $componentType === 'online' ? null : $preferredRoomId,
                 ))->toArray(),
             ];
         }

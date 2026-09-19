@@ -34,7 +34,7 @@ class ScheduleRequirementBuilderTest extends TestCase
         $this->assertFalse($requirements[10][0]['allow_lecture_laboratory_fallback']);
     }
 
-    public function test_standard_builder_keeps_nstp_on_field_delivery_even_when_global_mode_is_on_site(): void
+    public function test_standard_builder_schedules_nstp_as_a_normal_minor_unless_the_department_made_it_field(): void
     {
         $course = new Course([
             'id' => 11,
@@ -53,8 +53,10 @@ class ScheduleRequirementBuilderTest extends TestCase
             ['mode' => 'on-site'],
         );
 
-        $this->assertSame('field', $requirements[11][0]['component_type']);
-        $this->assertSame(['field'], $requirements[11][0]['allowed_delivery_modes']);
+        // NSTP/ROTC/CWTS are no longer field by name: the department makes a
+        // course field by giving it a field room.
+        $this->assertSame('lecture', $requirements[11][0]['component_type']);
+        $this->assertNotContains('field', $requirements[11][0]['allowed_delivery_modes']);
     }
 
     public function test_laboratory_builder_emits_separate_lecture_and_laboratory_components(): void

@@ -11,6 +11,7 @@ class ScheduleSetting extends Model
     protected $fillable = [
         'opening_time',
         'closing_time',
+        'field_end_time',
         'slot_interval'
     ];
 }

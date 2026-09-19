@@ -151,6 +151,41 @@ class FacultyConflictOverrideTest extends TestCase
         $this->assertTrue($clashing->refresh()->faculty_conflict_override);
     }
 
+    public function test_a_standing_override_does_not_hide_a_clash_nobody_approved(): void
+    {
+        [$fixture, $taught, $clashing] = $this->clash();
+        Schedule::query()->whereKey($clashing->id)->update(['faculty_id' => $fixture['faculty']->id]);
+        Schedule::query()->whereIn('id', [$taught->id, $clashing->id])->update(['faculty_conflict_override' => true]);
+
+        // A third meeting for the same instructor at the same time, never approved.
+        $thirdSection = Sections::create([
+            'section_name' => 'OVR-1C',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $fixture['department']->id,
+            'program_id' => $fixture['section']->program_id,
+            'semester_id' => $fixture['semester']->id,
+            'status' => 'active',
+        ]);
+        $thirdRoom = Rooms::create(['room_code' => 'OVR103', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $fixture['department']->id]);
+        $unapproved = $this->schedule($fixture, [
+            'section_id' => $thirdSection->id,
+            'room_id' => $thirdRoom->id,
+            'faculty_id' => $fixture['faculty']->id,
+        ]);
+
+        $this->actingAs($fixture['user'])
+            ->putJson("/api/schedules/{$clashing->id}", ['faculty_id' => $fixture['faculty']->id])
+            ->assertStatus(422)
+            ->assertJsonPath('violations.0.rule', 'faculty_conflict');
+
+        $unapproved->delete();
+
+        $this->actingAs($fixture['user'])
+            ->putJson("/api/schedules/{$clashing->id}", ['faculty_id' => $fixture['faculty']->id])
+            ->assertOk();
+    }
+
     public function test_moving_or_reassigning_a_meeting_clears_its_override(): void
     {
         [$fixture, , $clashing] = $this->clash();

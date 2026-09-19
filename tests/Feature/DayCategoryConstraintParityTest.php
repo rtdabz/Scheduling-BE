@@ -8,6 +8,8 @@ use App\Models\Rooms;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\Scheduling\Engine\RuleEngine;
+use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Services\TimeslotService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -80,7 +82,7 @@ class DayCategoryConstraintParityTest extends TestCase
         $this->assertNotContains('major_sunday_mode_constraint', $rules);
     }
 
-    public function test_field_courses_must_end_by_five_pm_unless_the_department_opts_in(): void
+    public function test_field_courses_must_end_by_the_institution_field_end_time(): void
     {
         [$semester, $department, $section] = $this->fixture();
         $field = $this->fieldRoom();
@@ -94,8 +96,14 @@ class DayCategoryConstraintParityTest extends TestCase
         // limit the Settings page promises (audit finding #41).
         $this->assertContains('field_evening_window', $this->rules($evening));
 
-        $department->update(['field_evening_schedule_enabled' => true]);
+        // The cut-off is the VPAA setting, not a hardcoded 5:00 PM.
+        app(TimeslotService::class)->settings()->update(['field_end_time' => '18:00:00']);
+        SchedulingPolicy::clearTimeCache();
         $this->assertNotContains('field_evening_window', $this->rules($evening));
+
+        $evening['start_time'] = '17:30';
+        $evening['end_time'] = '18:30';
+        $this->assertContains('field_evening_window', $this->rules($evening));
     }
 
     public function test_daytime_field_placements_are_unaffected(): void

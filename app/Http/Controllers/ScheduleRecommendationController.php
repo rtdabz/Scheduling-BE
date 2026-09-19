@@ -18,10 +18,12 @@ use App\Models\Semester;
 use App\Services\Scheduling\Domain\PreparedGenerationConfiguration;
 use App\Services\Scheduling\Domain\SchedulePlan;
 use App\Services\Scheduling\Domain\ScheduleRecommendationPayload;
+use App\Services\Scheduling\Generation\CourseSetupOverrides;
 use App\Services\Scheduling\Generation\GenerateSectionSchedulePlans;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\Schedule\CommitSchedulePlan;
+use App\Services\Scheduling\Schedule\PreviewedPlanStore;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
 use App\Services\Scheduling\Schedule\SplitScheduleService;
@@ -62,6 +64,7 @@ class ScheduleRecommendationController extends Controller
         private readonly CommitSchedulePlan $planCommitter,
         private readonly ScheduleAuthorizationService $authorization,
         private readonly SectionCurriculumResolver $curriculumResolver,
+        private readonly PreviewedPlanStore $previewedPlans,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -174,7 +177,7 @@ class ScheduleRecommendationController extends Controller
             'course_ids.*' => 'integer|exists:courses,id',
             'anchored_schedules' => 'sometimes|array',
             'anchored_schedules.*.course_id' => 'required|integer|exists:courses,id',
-            'anchored_schedules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
+            'anchored_schedules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
             'anchored_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
             'anchored_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:anchored_schedules.*.start_time'],
             'anchored_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
@@ -329,7 +332,7 @@ class ScheduleRecommendationController extends Controller
             'course_ids.*' => 'integer|exists:courses,id',
             'anchored_schedules' => 'sometimes|array',
             'anchored_schedules.*.course_id' => 'required|integer|exists:courses,id',
-            'anchored_schedules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
+            'anchored_schedules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
             'anchored_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
             'anchored_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:anchored_schedules.*.start_time'],
             'anchored_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
@@ -341,7 +344,7 @@ class ScheduleRecommendationController extends Controller
             'tentative_schedules.*.faculty_id' => 'nullable|integer|exists:faculties,id',
             'tentative_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
             'tentative_schedules.*.department_id' => 'required|integer|exists:departments,id',
-            'tentative_schedules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
+            'tentative_schedules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
             'tentative_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
             'tentative_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:tentative_schedules.*.start_time'],
             'tentative_schedules.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('required'),
@@ -358,6 +361,8 @@ class ScheduleRecommendationController extends Controller
             'split_gec_enabled' => 'sometimes|boolean',
             'selected_gec_course_ids' => 'sometimes|array',
             'selected_gec_course_ids.*' => 'integer|exists:courses,id',
+            'hybrid_split_course_ids' => 'sometimes|array',
+            'hybrid_split_course_ids.*' => 'integer|exists:courses,id',
             'max_solutions' => 'sometimes|integer|min:1|max:5',
             'max_iterations' => 'sometimes|integer|min:1',
             'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
@@ -380,26 +385,33 @@ class ScheduleRecommendationController extends Controller
 
         try {
             $validated['course_ids'] = $this->resolveCourseIds($section, $validated['course_ids'] ?? null);
-            $validated['selected_split_session_course_ids'] = ($validated['split_session_enabled'] ?? false)
-                ? $this->resolveLectureLabSplitCourseIds($section, $validated['selected_split_session_course_ids'] ?? [], $validated['course_ids'])
-                : [];
+            $validated['selected_split_session_course_ids'] = $this->resolveLectureLabSplitCourseIds(
+                $section,
+                $validated['selected_split_session_course_ids'] ?? [],
+                $validated['course_ids'],
+            );
             $validated['is_hybrid'] = $this->resolvedHybridMode(
                 $validated['selected_split_session_course_ids'],
                 $validated['is_hybrid'] ?? false,
             );
-            $selectedGecSplitCourseIds = ($validated['split_gec_enabled'] ?? false)
-                ? $this->resolveMinorSplitCourseIds(
-                    $section,
-                    $validated['selected_gec_course_ids'] ?? [],
-                    $validated['course_ids'],
-                )
-                : [];
+            $selectedGecSplitCourseIds = $this->resolveMinorSplitCourseIds(
+                $section,
+                $validated['selected_gec_course_ids'] ?? [],
+                $validated['course_ids'],
+            );
             $validated['preferred_patterns'] = $this->mergeSelectedSplitPatterns(
                 $validated['preferred_patterns'] ?? [],
                 $selectedGecSplitCourseIds,
                 $validated['course_ids'],
             );
-            $validated['balanced_split_course_ids'] = $selectedGecSplitCourseIds;
+            $validated['hybrid_split_course_ids'] = $this->resolveHybridSplitCourseIds(
+                $validated['hybrid_split_course_ids'] ?? [],
+                $validated['course_ids'],
+            );
+            $validated['balanced_split_course_ids'] = array_values(array_unique([
+                ...$selectedGecSplitCourseIds,
+                ...$validated['hybrid_split_course_ids'],
+            ]));
             $generated = $this->sectionGeneration->generate($section, $validated);
             $profile = $generated->profile;
             $preparedConfiguration = $generated->preparedConfiguration;
@@ -413,6 +425,16 @@ class ScheduleRecommendationController extends Controller
             return response()->json([
                 'message' => $exception->getMessage(),
             ], 422);
+        }
+
+        if ($request->user() !== null) {
+            $this->previewedPlans->remember(
+                (int) $request->user()->id,
+                (int) $section->id,
+                $validated,
+                $generated,
+                $this->configurationContract($preparedConfiguration),
+            );
         }
 
         return response()->json([
@@ -444,6 +466,8 @@ class ScheduleRecommendationController extends Controller
             'split_gec_enabled' => 'sometimes|boolean',
             'selected_gec_course_ids' => 'sometimes|array',
             'selected_gec_course_ids.*' => 'integer|exists:courses,id',
+            'hybrid_split_course_ids' => 'sometimes|array',
+            'hybrid_split_course_ids.*' => 'integer|exists:courses,id',
             'delivery_modes_by_course_id' => 'sometimes|array',
             'max_solutions' => 'sometimes|integer|min:1|max:5',
             'max_iterations' => 'sometimes|integer|min:1',
@@ -481,17 +505,29 @@ class ScheduleRecommendationController extends Controller
         $section = Sections::query()->findOrFail($sectionId);
         $this->assertActiveSectionSemester($section);
         $input['course_ids'] = $this->resolveCourseIds($section, $input['course_ids'] ?? null);
-        $input['selected_split_session_course_ids'] = ($input['split_session_enabled'] ?? false)
-            ? $this->resolveLectureLabSplitCourseIds($section, $input['selected_split_session_course_ids'] ?? [], $input['course_ids']) : [];
+        $input['selected_split_session_course_ids'] = $this->resolveLectureLabSplitCourseIds(
+            $section,
+            $input['selected_split_session_course_ids'] ?? [],
+            $input['course_ids'],
+        );
         $input['is_hybrid'] = $this->resolvedHybridMode(
             $input['selected_split_session_course_ids'],
             $input['is_hybrid'] ?? false,
         );
-        $gecIds = ($input['split_gec_enabled'] ?? false)
-            ? $this->resolveMinorSplitCourseIds($section, $input['selected_gec_course_ids'] ?? [], $input['course_ids'])
-            : [];
+        $gecIds = $this->resolveMinorSplitCourseIds(
+            $section,
+            $input['selected_gec_course_ids'] ?? [],
+            $input['course_ids'],
+        );
         $input['preferred_patterns'] = $this->mergeSelectedSplitPatterns($input['preferred_patterns'] ?? [], $gecIds, $input['course_ids']);
-        $input['balanced_split_course_ids'] = $gecIds;
+        $input['hybrid_split_course_ids'] = $this->resolveHybridSplitCourseIds(
+            $input['hybrid_split_course_ids'] ?? [],
+            $input['course_ids'],
+        );
+        $input['balanced_split_course_ids'] = array_values(array_unique([
+            ...$gecIds,
+            ...$input['hybrid_split_course_ids'],
+        ]));
         $generated = $this->sectionGeneration->generate($section, $input);
         $profile = $generated->profile;
         $preparedConfiguration = $generated->preparedConfiguration;
@@ -532,12 +568,28 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.selected_split_session_course_ids.*' => 'integer|exists:courses,id',
             'section_configs.*.selected_gec_course_ids' => 'sometimes|array',
             'section_configs.*.selected_gec_course_ids.*' => 'integer|exists:courses,id',
+            'section_configs.*.hybrid_split_course_ids' => 'sometimes|array',
+            'section_configs.*.hybrid_split_course_ids.*' => 'integer|exists:courses,id',
             'section_configs.*.preferred_patterns' => 'sometimes|array',
             'section_configs.*.preferred_patterns.*' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
             'section_configs.*.delivery_modes_by_course_id' => 'sometimes|array',
             'section_configs.*.time_preferences_by_course_id' => 'sometimes|array',
             'section_configs.*.time_preferences_by_course_id.*' => 'nullable|in:morning,afternoon,evening',
             'section_configs.*.preferred_period' => 'sometimes|nullable|in:morning,afternoon,evening',
+            'section_configs.*.preferred_periods_by_course_id' => 'sometimes|array',
+            'section_configs.*.preferred_periods_by_course_id.*' => 'array',
+            'section_configs.*.preferred_periods_by_course_id.*.*' => 'in:morning,afternoon,evening',
+            'section_configs.*.allowed_days' => 'sometimes|nullable|array',
+            'section_configs.*.allow_friday_saturday_split' => 'sometimes|boolean',
+            'section_configs.*.allowed_days.*' => SchedulingPolicy::allowedDaysRule(),
+            'section_configs.*.duration_minutes_by_course_id' => 'sometimes|array',
+            'section_configs.*.duration_minutes_by_course_id.*' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
+            'section_configs.*.component_minutes_by_course_id' => 'sometimes|array',
+            'section_configs.*.component_minutes_by_course_id.*' => 'array',
+            'section_configs.*.component_minutes_by_course_id.*.lecture' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
+            'section_configs.*.component_minutes_by_course_id.*.laboratory' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
+            'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
+            'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
             'section_configs.*.delivery_modes_by_course_id.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
         ]);
 
@@ -586,6 +638,8 @@ class ScheduleRecommendationController extends Controller
                 $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
                 $splitIds = $this->resolveLectureLabSplitCourseIds($section, $config['selected_split_session_course_ids'] ?? [], $courseIds);
                 $gecIds = $this->resolveMinorSplitCourseIds($section, $config['selected_gec_course_ids'] ?? [], $courseIds);
+                $hybridSplitIds = $this->resolveHybridSplitCourseIds($config['hybrid_split_course_ids'] ?? [], $courseIds);
+                $gecIds = array_values(array_unique([...$gecIds, ...$hybridSplitIds]));
                 $preferredPatterns = $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $gecIds, $courseIds);
                 $sectionConfig = [
                     'course_ids' => $courseIds,
@@ -593,10 +647,14 @@ class ScheduleRecommendationController extends Controller
                     'is_hybrid' => $this->resolvedHybridMode($splitIds, $config['is_hybrid'] ?? false),
                     'selected_split_session_course_ids' => $splitIds,
                     'balanced_split_course_ids' => $gecIds,
+                    'hybrid_split_course_ids' => $hybridSplitIds,
                     'preferred_patterns' => $preferredPatterns,
                     'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
                     'time_preferences_by_course_id' => $config['time_preferences_by_course_id'] ?? [],
                     'preferred_period' => $config['preferred_period'] ?? null,
+                    'preferred_periods_by_course_id' => $config['preferred_periods_by_course_id'] ?? [],
+                    'allowed_days' => SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null),
+                    'allow_friday_saturday_split' => (bool) ($config['allow_friday_saturday_split'] ?? false),
                     'seed' => $this->yearLevelConfigSeed(
                         semesterId: (int) $validated['semester_id'],
                         departmentId: (int) $validated['department_id'],
@@ -608,6 +666,30 @@ class ScheduleRecommendationController extends Controller
                         preferredPatterns: $preferredPatterns,
                     ),
                 ];
+                // Step 1's Preferred Days must leave room for every Required Day.
+                CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
+                // Setup Courses "Configure" choices, normalised to the shape
+                // each course is generated in; refused here when the validator
+                // would refuse the result at save time.
+                $sectionConfig[CourseSetupOverrides::DURATIONS_KEY] = CourseSetupOverrides::normalizeDurations(
+                    $section,
+                    $config['duration_minutes_by_course_id'] ?? [],
+                    $courseIds,
+                    $sectionConfig,
+                );
+                // Integrated Hybrid: lecture and laboratory lengths, set separately.
+                $sectionConfig[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
+                    $section,
+                    $config['component_minutes_by_course_id'] ?? [],
+                    $courseIds,
+                    $sectionConfig,
+                );
+                $sectionConfig[CourseSetupOverrides::PREFERRED_ROOMS_KEY] = CourseSetupOverrides::normalizePreferredRooms(
+                    $section,
+                    $config['preferred_rooms_by_course_id'] ?? [],
+                    $courseIds,
+                    $sectionConfig,
+                );
                 $profile = $this->preflight->validate($section, $courseIds, $sectionConfig);
                 $sectionConfig['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $sectionConfig);
                 $sectionConfig['department_profile'] = $profile->value;
@@ -638,6 +720,7 @@ class ScheduleRecommendationController extends Controller
             'applied_adjustments' => $result['applied_adjustments'] ?? [],
             'generation_attempts' => $result['generation_attempts'] ?? [],
             'generation_changes' => $result['generation_changes'] ?? [],
+            'recommendations' => $result['recommendations'] ?? [],
             'generation_metrics' => $result['generation_metrics'] ?? null,
             'sections' => $sections->map(fn (Sections $section): array => [
                 'id' => (int) $section->id,
@@ -683,11 +766,27 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.selected_split_session_course_ids.*' => 'integer|exists:courses,id',
             'section_configs.*.selected_gec_course_ids' => 'sometimes|array',
             'section_configs.*.selected_gec_course_ids.*' => 'integer|exists:courses,id',
+            'section_configs.*.hybrid_split_course_ids' => 'sometimes|array',
+            'section_configs.*.hybrid_split_course_ids.*' => 'integer|exists:courses,id',
             'section_configs.*.preferred_patterns' => 'sometimes|array',
             'section_configs.*.delivery_modes_by_course_id' => 'sometimes|array',
             'section_configs.*.time_preferences_by_course_id' => 'sometimes|array',
             'section_configs.*.time_preferences_by_course_id.*' => 'nullable|in:morning,afternoon,evening',
             'section_configs.*.preferred_period' => 'sometimes|nullable|in:morning,afternoon,evening',
+            'section_configs.*.preferred_periods_by_course_id' => 'sometimes|array',
+            'section_configs.*.preferred_periods_by_course_id.*' => 'array',
+            'section_configs.*.preferred_periods_by_course_id.*.*' => 'in:morning,afternoon,evening',
+            'section_configs.*.allowed_days' => 'sometimes|nullable|array',
+            'section_configs.*.allow_friday_saturday_split' => 'sometimes|boolean',
+            'section_configs.*.allowed_days.*' => SchedulingPolicy::allowedDaysRule(),
+            'section_configs.*.duration_minutes_by_course_id' => 'sometimes|array',
+            'section_configs.*.duration_minutes_by_course_id.*' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
+            'section_configs.*.component_minutes_by_course_id' => 'sometimes|array',
+            'section_configs.*.component_minutes_by_course_id.*' => 'array',
+            'section_configs.*.component_minutes_by_course_id.*.lecture' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
+            'section_configs.*.component_minutes_by_course_id.*.laboratory' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
+            'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
+            'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
         ]);
         if (($guard = $this->departmentGuard($request, (int) $validated['department_id'])) !== null) {
             return $guard;
@@ -720,17 +819,47 @@ class ScheduleRecommendationController extends Controller
             $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
             $splitIds = $this->resolveLectureLabSplitCourseIds($section, $config['selected_split_session_course_ids'] ?? [], $courseIds);
             $gecIds = $this->resolveMinorSplitCourseIds($section, $config['selected_gec_course_ids'] ?? [], $courseIds);
+            $hybridSplitIds = $this->resolveHybridSplitCourseIds($config['hybrid_split_course_ids'] ?? [], $courseIds);
+            $gecIds = array_values(array_unique([...$gecIds, ...$hybridSplitIds]));
             $preferredPatterns = $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $gecIds, $courseIds);
             $sectionConfig = [
                 'course_ids' => $courseIds,
                 'mode' => (string) ($config['mode'] ?? 'on-site'),
                 'is_hybrid' => $this->resolvedHybridMode($splitIds, $config['is_hybrid'] ?? false),
                 'selected_split_session_course_ids' => $splitIds, 'balanced_split_course_ids' => $gecIds,
+                'hybrid_split_course_ids' => $hybridSplitIds,
                 'preferred_patterns' => $preferredPatterns, 'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
                 'time_preferences_by_course_id' => $config['time_preferences_by_course_id'] ?? [],
                 'preferred_period' => $config['preferred_period'] ?? null,
+                'preferred_periods_by_course_id' => $config['preferred_periods_by_course_id'] ?? [],
+                'allowed_days' => SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null),
+                'allow_friday_saturday_split' => (bool) ($config['allow_friday_saturday_split'] ?? false),
                 'seed' => $this->yearLevelConfigSeed((int) $validated['semester_id'], (int) $validated['department_id'], (int) $validated['year_level'], (int) $section->id, $courseIds, $splitIds, $gecIds, $preferredPatterns),
             ];
+            // Step 1's Preferred Days must leave room for every Required Day.
+            CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
+            // Setup Courses "Configure" choices, normalised to the shape
+            // each course is generated in; refused here when the validator
+            // would refuse the result at save time.
+            $sectionConfig[CourseSetupOverrides::DURATIONS_KEY] = CourseSetupOverrides::normalizeDurations(
+                $section,
+                $config['duration_minutes_by_course_id'] ?? [],
+                $courseIds,
+                $sectionConfig,
+            );
+            // Integrated Hybrid: lecture and laboratory lengths, set separately.
+            $sectionConfig[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
+                $section,
+                $config['component_minutes_by_course_id'] ?? [],
+                $courseIds,
+                $sectionConfig,
+            );
+            $sectionConfig[CourseSetupOverrides::PREFERRED_ROOMS_KEY] = CourseSetupOverrides::normalizePreferredRooms(
+                $section,
+                $config['preferred_rooms_by_course_id'] ?? [],
+                $courseIds,
+                $sectionConfig,
+            );
             $profile = $this->preflight->validate($section, $courseIds, $sectionConfig);
             $sectionConfig['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $sectionConfig);
             $sectionConfig['department_profile'] = $profile->value;
@@ -909,7 +1038,7 @@ class ScheduleRecommendationController extends Controller
             'tentative_schedules.*.faculty_id' => 'nullable|integer|exists:faculties,id',
             'tentative_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
             'tentative_schedules.*.department_id' => 'required|integer|exists:departments,id',
-            'tentative_schedules.*.day' => 'required|in:Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday',
+            'tentative_schedules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
             'tentative_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
             'tentative_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:tentative_schedules.*.start_time'],
             'tentative_schedules.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('required'),
@@ -917,6 +1046,7 @@ class ScheduleRecommendationController extends Controller
             'max_iterations' => 'sometimes|integer|min:1',
             'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
             'selected_rank' => 'required|integer|min:1|max:5',
+            'plan_id' => 'sometimes|nullable|string|max:64',
             'seed' => 'sometimes|integer',
             ...$this->configurationConfirmationRules(),
         ]);
@@ -934,32 +1064,61 @@ class ScheduleRecommendationController extends Controller
             return $guard;
         }
 
+        $selectedRank = (int) $validated['selected_rank'];
+
+        // Save exactly the plan the user previewed and compared. Re-running the
+        // solver could return different rows for the same rank, because the
+        // search stops on a wall-clock limit.
+        $previewed = isset($validated['plan_id']) && $request->user() !== null
+            ? $this->previewedPlans->find((string) $validated['plan_id'], (int) $request->user()->id, (int) $section->id)
+            : null;
+        if ($previewed !== null && (int) ($previewed['solution']['rank'] ?? 0) === $selectedRank) {
+            return $this->storeSelectedRecommendation(
+                $request,
+                $section,
+                $previewed['solution'],
+                $previewed['input_payload'],
+                $previewed['schedule_plan'],
+                $previewed['department_profile'],
+                $previewed['generation_metrics'],
+                $previewed['configuration_contract'],
+            );
+        }
+
+        // No remembered preview (expired, another server, or an older client):
+        // generate again with the same input and seed.
         $solverInput = $validated;
-        $selectedRank = (int) $solverInput['selected_rank'];
-        unset($solverInput['selected_rank']);
+        unset($solverInput['selected_rank'], $solverInput['plan_id']);
 
         try {
             $solverInput['course_ids'] = $this->resolveCourseIds($section, $solverInput['course_ids'] ?? null);
-            $solverInput['selected_split_session_course_ids'] = ($solverInput['split_session_enabled'] ?? false)
-                ? $this->resolveLectureLabSplitCourseIds($section, $solverInput['selected_split_session_course_ids'] ?? [], $solverInput['course_ids'])
-                : [];
+            $solverInput['selected_split_session_course_ids'] = $this->resolveLectureLabSplitCourseIds(
+                $section,
+                $solverInput['selected_split_session_course_ids'] ?? [],
+                $solverInput['course_ids'],
+            );
             $solverInput['is_hybrid'] = $this->resolvedHybridMode(
                 $solverInput['selected_split_session_course_ids'],
                 $solverInput['is_hybrid'] ?? false,
             );
-            $selectedGecSplitCourseIds = ($solverInput['split_gec_enabled'] ?? false)
-                ? $this->resolveMinorSplitCourseIds(
-                    $section,
-                    $solverInput['selected_gec_course_ids'] ?? [],
-                    $solverInput['course_ids'],
-                )
-                : [];
+            $selectedGecSplitCourseIds = $this->resolveMinorSplitCourseIds(
+                $section,
+                $solverInput['selected_gec_course_ids'] ?? [],
+                $solverInput['course_ids'],
+            );
             $solverInput['preferred_patterns'] = $this->mergeSelectedSplitPatterns(
                 $solverInput['preferred_patterns'] ?? [],
                 $selectedGecSplitCourseIds,
                 $solverInput['course_ids'],
             );
-            $solverInput['balanced_split_course_ids'] = $selectedGecSplitCourseIds;
+            $solverInput['hybrid_split_course_ids'] = $this->resolveHybridSplitCourseIds(
+                $solverInput['hybrid_split_course_ids'] ?? [],
+                $solverInput['course_ids'],
+            );
+            $solverInput['balanced_split_course_ids'] = array_values(array_unique([
+                ...$selectedGecSplitCourseIds,
+                ...$solverInput['hybrid_split_course_ids'],
+            ]));
             $generated = $this->sectionGeneration->generate($section, $solverInput);
             $profile = $generated->profile;
             $preparedConfiguration = $generated->preparedConfiguration;
@@ -987,9 +1146,40 @@ class ScheduleRecommendationController extends Controller
             ], 422);
         }
 
+        return $this->storeSelectedRecommendation(
+            $request,
+            $section,
+            $selectedSolution,
+            ScheduleRecommendationPayload::fromPrepared($solverInput, $preparedConfiguration, $selectedPlan)->toArray(),
+            $selectedPlan?->toArray(),
+            $profile->value,
+            $generated->generationMetrics,
+            $this->configurationContract($preparedConfiguration),
+        );
+    }
+
+    /**
+     * Records the chosen solution as a pending recommendation.
+     *
+     * @param  array<string, mixed>  $selectedSolution
+     * @param  array<string, mixed>  $inputPayload
+     * @param  array<string, mixed>|null  $schedulePlan
+     * @param  array<string, mixed>  $generationMetrics
+     * @param  array<string, mixed>  $configurationContract
+     */
+    private function storeSelectedRecommendation(
+        Request $request,
+        Sections $section,
+        array $selectedSolution,
+        array $inputPayload,
+        ?array $schedulePlan,
+        string $departmentProfile,
+        array $generationMetrics,
+        array $configurationContract,
+    ): JsonResponse {
         $user = $request->user();
 
-        $recommendation = DB::transaction(function () use ($selectedSolution, $selectedPlan, $section, $solverInput, $user, $preparedConfiguration) {
+        $recommendation = DB::transaction(function () use ($selectedSolution, $inputPayload, $section, $user) {
             $recommendation = ScheduleRecommendation::create([
                 'semester_id' => (int) $section->semester_id,
                 'section_id' => (int) $section->id,
@@ -998,11 +1188,7 @@ class ScheduleRecommendationController extends Controller
                 'rank' => (int) $selectedSolution['rank'],
                 'score' => (int) $selectedSolution['score'],
                 'status' => 'pending',
-                'input_payload' => ScheduleRecommendationPayload::fromPrepared(
-                    $solverInput,
-                    $preparedConfiguration,
-                    $selectedPlan,
-                )->toArray(),
+                'input_payload' => $inputPayload,
                 'recommended_schedules' => $selectedSolution['schedules'],
             ]);
 
@@ -1022,10 +1208,10 @@ class ScheduleRecommendationController extends Controller
 
         return response()->json([
             'message' => 'Schedule recommendation selected successfully.',
-            'department_profile' => $profile->value,
-            'generation_metrics' => $generated->generationMetrics,
-            'configuration_contract' => $this->configurationContract($preparedConfiguration),
-            'schedule_plan' => $selectedPlan?->toArray(),
+            'department_profile' => $departmentProfile,
+            'generation_metrics' => $generationMetrics,
+            'configuration_contract' => $configurationContract,
+            'schedule_plan' => $schedulePlan,
             'recommendation' => $recommendation,
         ], 201);
     }
@@ -1327,10 +1513,6 @@ class ScheduleRecommendationController extends Controller
     {
         $splitSettings = SchedulingPolicy::balancedSplitSettings($section->department);
 
-        if (! in_array(true, array_map('boolval', $splitSettings), true)) {
-            return [];
-        }
-
         $candidateIds = array_values(array_intersect(
             array_map('intval', $requestedCourseIds),
             array_map('intval', $validCourseIds),
@@ -1350,12 +1532,30 @@ class ScheduleRecommendationController extends Controller
             ->all();
     }
 
-    private function resolveLectureLabSplitCourseIds(Sections $section, array $requestedCourseIds, array $validCourseIds): array
+    /** @param list<int|string> $requestedCourseIds @param list<int|string> $validCourseIds */
+    private function resolveHybridSplitCourseIds(array $requestedCourseIds, array $validCourseIds): array
     {
-        if (! (bool) ($section->department?->lecture_lab_schedule_override_enabled ?? false)) {
+        $candidateIds = array_values(array_intersect(
+            array_map('intval', $requestedCourseIds),
+            array_map('intval', $validCourseIds),
+        ));
+
+        if ($candidateIds === []) {
             return [];
         }
 
+        return Course::query()
+            ->whereIn('id', $candidateIds)
+            ->get()
+            ->filter(static fn (Course $course): bool => SchedulingPolicy::hybridSplitEligible($course))
+            ->pluck('id')
+            ->map(static fn ($courseId): int => (int) $courseId)
+            ->values()
+            ->all();
+    }
+
+    private function resolveLectureLabSplitCourseIds(Sections $section, array $requestedCourseIds, array $validCourseIds): array
+    {
         $candidateIds = array_values(array_intersect(
             array_map('intval', $requestedCourseIds),
             array_map('intval', $validCourseIds),

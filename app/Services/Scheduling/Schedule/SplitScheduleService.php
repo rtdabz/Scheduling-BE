@@ -108,17 +108,39 @@ final class SplitScheduleService
             return ['status' => 'no_solution', 'recommendations' => []];
         }
 
-        // Filter only conflict-free candidates using the Rule Engine.
-        $ignoreIds      = array_values(array_unique(array_map('intval', $deleteIds)));
-        $startedAt      = microtime(true);
+        $ignoreIds = array_values(array_unique(array_map('intval', $deleteIds)));
+
+        // Rank before validating. Scoring is cheap and does not depend on the
+        // Rule Engine, while validation costs a dozen queries per candidate; the
+        // loop used to validate in grid order and stop at the timeout, so late
+        // days and the preferred start time were often never reached and the
+        // "top" results were only the first valid ones found.
+        //
+        // Order: physical room before Room TBA, then the preferred start time,
+        // then score. With that order the first $maxResults valid candidates,
+        // narrowed by the same two filters below, are exactly what ranking the
+        // whole valid set would return.
+        foreach ($candidates as $index => $candidate) {
+            $candidates[$index]['score'] = $this->scoreCandidate($candidate, $roomId, $mode, $preferredDay, $targetRoomType, $preferredStartTime);
+            $candidates[$index]['order'] = $index;
+        }
+        $isPreferredTime = static fn (array $candidate): bool => $preferredStartTime !== null
+            && substr((string) $candidate['start_time'], 0, 5) === substr($preferredStartTime, 0, 5);
+        usort($candidates, static fn (array $a, array $b): int => (($b['room_id'] !== null) <=> ($a['room_id'] !== null))
+            ?: ($isPreferredTime($b) <=> $isPreferredTime($a))
+            ?: ($b['score'] <=> $a['score'])
+            ?: ($a['order'] <=> $b['order']));
+
+        $occupied = $this->occupiedIntervals($semesterId, $sectionId, $rooms->pluck('id')->map('intval')->all(), $ignoreIds);
+        $startedAt = microtime(true);
         $validCandidates = [];
 
         foreach ($candidates as $candidate) {
-            if ((microtime(true) - $startedAt) >= $timeoutSeconds) {
+            if (count($validCandidates) >= $maxResults || (microtime(true) - $startedAt) >= $timeoutSeconds) {
                 break;
             }
 
-            if ($this->candidateHasPersistedConflict($candidate, $semesterId, $sectionId, $ignoreIds)) {
+            if ($this->candidateHasPersistedConflict($candidate, $occupied)) {
                 continue;
             }
 
@@ -141,8 +163,7 @@ final class SplitScheduleService
             $violations = $this->ruleEngine->validate($data);
 
             if (empty($violations)) {
-                $candidate['score'] = $this->scoreCandidate($candidate, $roomId, $mode, $preferredDay, $targetRoomType, $preferredStartTime);
-                $validCandidates[]  = $candidate;
+                $validCandidates[] = $candidate;
             }
         }
 
@@ -196,27 +217,60 @@ final class SplitScheduleService
         return ['status' => 'ok', 'recommendations' => $ranked];
     }
 
-    private function candidateHasPersistedConflict(array $candidate, int $semesterId, int $sectionId, array $ignoreIds): bool
+    /**
+     * The section's and the candidate rooms' meetings, fetched once, as
+     * `section:{day}` / `room:{id}:{day}` => list of [start, end] minutes. Only a
+     * cheap prefilter: the Rule Engine still judges every surviving candidate.
+     *
+     * @param  list<int>  $roomIds
+     * @param  list<int>  $ignoreIds
+     * @return array<string, list<array{0: int, 1: int}>>
+     */
+    private function occupiedIntervals(int $semesterId, int $sectionId, array $roomIds, array $ignoreIds): array
     {
         $schedules = Schedule::query()
             ->where('semester_id', $semesterId)
-            ->where('day', $candidate['day'])
-            ->where(function ($query) use ($candidate, $sectionId): void {
-                $query
-                    ->where('room_id', (int) $candidate['room_id'])
-                    ->orWhere('section_id', $sectionId);
+            ->where(function ($query) use ($roomIds, $sectionId): void {
+                $query->where('section_id', $sectionId);
+                if ($roomIds !== []) {
+                    $query->orWhereIn('room_id', $roomIds);
+                }
             })
             ->when($ignoreIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreIds))
-            ->get(['start_time', 'end_time']);
+            ->get(['section_id', 'room_id', 'day', 'start_time', 'end_time']);
 
+        $occupied = [];
+        foreach ($schedules as $schedule) {
+            $interval = [
+                $this->timeToMinutes((string) $schedule->start_time),
+                $this->timeToMinutes((string) $schedule->end_time),
+            ];
+            if ((int) $schedule->section_id === $sectionId) {
+                $occupied["section:{$schedule->day}"][] = $interval;
+            }
+            if ($schedule->room_id !== null) {
+                $occupied["room:{$schedule->room_id}:{$schedule->day}"][] = $interval;
+            }
+        }
+
+        return $occupied;
+    }
+
+    /** @param array<string, list<array{0: int, 1: int}>> $occupied */
+    private function candidateHasPersistedConflict(array $candidate, array $occupied): bool
+    {
         $candidateStart = $this->timeToMinutes((string) $candidate['start_time']);
         $candidateEnd = $this->timeToMinutes((string) $candidate['end_time']);
 
-        foreach ($schedules as $schedule) {
-            if (
-                $candidateStart < $this->timeToMinutes((string) $schedule->end_time)
-                && $this->timeToMinutes((string) $schedule->start_time) < $candidateEnd
-            ) {
+        $intervals = $occupied["section:{$candidate['day']}"] ?? [];
+        // A field room is shared up to the department's limit; the Rule Engine
+        // judges that, so any overlap there is not a reason to skip it here.
+        if ($candidate['room_id'] !== null && ($candidate['room_type'] ?? null) !== 'field') {
+            $intervals = [...$intervals, ...($occupied["room:{$candidate['room_id']}:{$candidate['day']}"] ?? [])];
+        }
+
+        foreach ($intervals as [$start, $end]) {
+            if ($candidateStart < $end && $start < $candidateEnd) {
                 return true;
             }
         }

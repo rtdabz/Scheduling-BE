@@ -8,6 +8,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
 use App\Models\Semester;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\YearLevel\YearLevelFeasibilityService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -35,41 +36,18 @@ class ForcedDayCapacityCheckTest extends TestCase
 
     public function test_a_pinned_course_that_fits_is_not_blocked(): void
     {
-        // Three legal starts at a field concurrency of 3 leaves room for nine.
         $context = $this->scaffold(sectionCount: 9, forcedDay: 'Saturday');
 
         $this->assertSame([], $this->check($context));
     }
 
-    public function test_an_oversubscribed_pinned_course_is_blocked_with_exact_numbers(): void
+    public function test_a_pinned_field_course_is_never_blocked_because_the_field_has_no_limit(): void
     {
-        $context = $this->scaffold(sectionCount: 21, forcedDay: 'Saturday');
+        // Forty sections on three legal Saturday starts: the field is open
+        // ground any number of sections can share, so no pin can exhaust it.
+        $context = $this->scaffold(sectionCount: 40, forcedDay: 'Saturday');
 
-        $blocking = $this->check($context);
-
-        $this->assertCount(1, $blocking);
-        $this->assertSame('forced_day_capacity_exceeded', $blocking[0]['code']);
-
-        $context = $blocking[0]['context'];
-        $this->assertSame('NSTP 1', $context['course_code']);
-        $this->assertSame('Saturday', $context['forced_day']);
-        $this->assertSame(21, $context['required_placements']);
-        // A three-hour field course must end by 17:00, so 16:00 is not a legal
-        // start: three starts, not the four the raw grid would suggest.
-        $this->assertSame(3, $context['start_times']);
-        $this->assertSame(9, $context['available_placements']);
-        $this->assertSame(7, $context['required_concurrency']);
-    }
-
-    public function test_raising_the_field_limit_clears_the_block(): void
-    {
-        $context = $this->scaffold(sectionCount: 21, forcedDay: 'Saturday', fieldSlotLimit: 7);
-
-        $this->assertSame(
-            [],
-            $this->check($context),
-            'Three starts at a concurrency of seven covers 21 sections.',
-        );
+        $this->assertSame([], $this->check($context));
     }
 
     public function test_a_laboratory_block_longer_than_the_day_is_reported_against_its_own_course(): void
@@ -116,7 +94,7 @@ class ForcedDayCapacityCheckTest extends TestCase
      * @param  array{0: int, 1: int}|null  $splitCourse  lecture and laboratory units
      * @return array{sections: list<Sections>, configs: array<int, array<string, mixed>>}
      */
-    private function scaffold(int $sectionCount, ?string $forcedDay, int $fieldSlotLimit = 3, ?array $splitCourse = null): array
+    private function scaffold(int $sectionCount, ?string $forcedDay, ?array $splitCourse = null): array
     {
         $semester = Semester::create([
             'academic_year' => '2026-2027', 'semester' => '1st',
@@ -126,19 +104,17 @@ class ForcedDayCapacityCheckTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
-            'field_slot_limit' => $fieldSlotLimit,
-            'field_evening_schedule_enabled' => false,
             'lecture_lab_schedule_override_enabled' => $splitCourse !== null,
         ]);
 
         Rooms::create([
             'room_code' => 'FIELD', 'building' => 'Campus', 'room_type' => 'field',
-            'status' => 'available', 'department_id' => null, 'max_concurrent_classes' => 3,
+            'status' => 'available', 'department_id' => null,
         ]);
         foreach (range(1, 20) as $i) {
             Rooms::create([
                 'room_code' => "LEC-{$i}", 'building' => 'Main', 'room_type' => 'lecture',
-                'status' => 'available', 'department_id' => $department->id, 'max_concurrent_classes' => 1,
+                'status' => 'available', 'department_id' => $department->id,
             ]);
         }
 
@@ -147,7 +123,8 @@ class ForcedDayCapacityCheckTest extends TestCase
             'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active',
         ]);
 
-        // A three-hour NSTP course: field by category, shared across departments.
+        // A three-hour NSTP course, shared across departments. The department
+        // made it a field course; its name alone no longer does.
         $course = Course::create([
             'course_code' => 'NSTP 1', 'course_name' => 'National Service Training Program',
             'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3,
@@ -156,6 +133,13 @@ class ForcedDayCapacityCheckTest extends TestCase
             'department_id' => null, 'status' => 'active',
         ]);
         $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
+        DB::table('field_course_settings')->insert([
+            'department_id' => $department->id,
+            'enabled' => true,
+            'course_code' => 'NSTP 1',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        SchedulingPolicy::clearFieldCourseCache();
 
         if ($forcedDay !== null) {
             DB::table('department_forced_course_days')->insert([

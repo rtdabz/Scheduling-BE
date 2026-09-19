@@ -16,14 +16,23 @@ class Rooms extends Model
         'room_type',
         'allow_lecture_usage',
         'status',
-        'max_concurrent_classes',
         'department_id',
     ];
 
     protected $casts = [
         'allow_lecture_usage' => 'boolean',
-        'max_concurrent_classes' => 'integer',
     ];
+
+    /**
+     * Room types any number of classes may share at once. Every other room -- a
+     * lecture or laboratory room -- holds one class at a time.
+     */
+    public const SHARED_ROOM_TYPES = ['field', 'online'];
+
+    public static function isSharedType(?string $roomType): bool
+    {
+        return in_array($roomType, self::SHARED_ROOM_TYPES, true);
+    }
 
     public function department()
     {

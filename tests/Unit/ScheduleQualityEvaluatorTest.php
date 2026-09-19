@@ -587,6 +587,134 @@ class ScheduleQualityEvaluatorTest extends TestCase
         );
     }
 
+    public function test_balanced_candidate_scores_better_than_section_dominated_candidate(): void
+    {
+        $sections = [$this->section(1, '1'), $this->section(2, '1')];
+        $fairness = $this->sharedRoomFairness();
+
+        $balanced = $this->evaluator->evaluate([
+            $this->row(1, 101, 11, 'on-site', 'lecture', '07:00', '09:00'),
+            $this->row(1, 103, 12, 'on-site', 'laboratory', '07:00', '09:00'),
+            $this->row(1, null, 13, 'online', 'lecture', '07:00', '09:00'),
+            $this->row(2, 102, 21, 'on-site', 'lecture', '07:00', '09:00'),
+            $this->row(2, 104, 22, 'on-site', 'laboratory', '07:00', '09:00'),
+            $this->row(2, null, 23, 'online', 'lecture', '07:00', '09:00'),
+        ], $sections, fairness: $fairness);
+
+        $dominated = $this->evaluator->evaluate([
+            $this->row(1, 101, 11, 'on-site', 'lecture', '07:00', '09:00'),
+            $this->row(1, 101, 12, 'on-site', 'lecture', '09:00', '11:00'),
+            $this->row(1, 103, 13, 'on-site', 'laboratory', '07:00', '09:00'),
+            $this->row(2, null, 21, 'online', 'lecture', '07:00', '09:00'),
+            $this->row(2, null, 22, 'online', 'lecture', '09:00', '11:00'),
+            $this->row(2, null, 23, 'online', 'laboratory', '07:00', '09:00'),
+        ], $sections, fairness: $fairness);
+
+        $this->assertGreaterThan($dominated['quality_score'], $balanced['quality_score']);
+        $this->assertSame(0, $balanced['score_breakdown']['physical_distribution']);
+        $this->assertGreaterThan(0, $dominated['score_breakdown']['physical_distribution']);
+        $this->assertGreaterThan(0, $dominated['score_breakdown']['laboratory_distribution']);
+        $this->assertGreaterThan(0, $dominated['score_breakdown']['dominant_physical_share']);
+    }
+
+    public function test_room_concentration_is_penalized_when_other_rooms_are_available(): void
+    {
+        $sections = [$this->section(1, '1'), $this->section(2, '1')];
+        $fairness = $this->sharedRoomFairness();
+
+        $distributed = $this->evaluator->evaluate([
+            $this->row(1, 101, 11, 'on-site', 'lecture', '07:00', '09:00'),
+            $this->row(1, 103, 12, 'on-site', 'laboratory', '07:00', '09:00'),
+            $this->row(2, 102, 21, 'on-site', 'lecture', '07:00', '09:00'),
+            $this->row(2, 104, 22, 'on-site', 'laboratory', '07:00', '09:00'),
+        ], $sections, fairness: $fairness);
+
+        $concentrated = $this->evaluator->evaluate([
+            $this->row(1, 101, 11, 'on-site', 'lecture', '07:00', '09:00'),
+            $this->row(1, 101, 12, 'on-site', 'laboratory', '09:00', '11:00'),
+            $this->row(2, 101, 21, 'on-site', 'lecture', '11:00', '13:00'),
+            $this->row(2, 101, 22, 'on-site', 'laboratory', '13:00', '15:00'),
+        ], $sections, fairness: $fairness);
+
+        $this->assertSame(0, $distributed['score_breakdown']['room_concentration']);
+        $this->assertGreaterThan(0, $concentrated['score_breakdown']['room_concentration']);
+    }
+
+    public function test_weekday_physical_capacity_is_preferred_over_weekend_and_online_migration(): void
+    {
+        $sections = [$this->section(1, '1'), $this->section(2, '1')];
+        $fairness = $this->sharedRoomFairness();
+
+        $weekdayPhysical = $this->evaluator->evaluate([
+            $this->row(1, 101, 11, 'on-site', 'lecture', '07:00', '09:00'),
+            $this->row(1, 103, 12, 'on-site', 'laboratory', '07:00', '09:00'),
+            $this->row(2, 102, 21, 'on-site', 'lecture', '07:00', '09:00'),
+            $this->row(2, 104, 22, 'on-site', 'laboratory', '07:00', '09:00'),
+        ], $sections, fairness: $fairness);
+
+        $migrated = $this->evaluator->evaluate([
+            $this->row(1, 101, 11, 'on-site', 'lecture', '07:00', '09:00', 'Saturday'),
+            $this->row(1, null, 12, 'online', 'laboratory', '07:00', '09:00'),
+            $this->row(2, 102, 21, 'on-site', 'lecture', '07:00', '09:00'),
+            $this->row(2, 104, 22, 'on-site', 'laboratory', '07:00', '09:00'),
+        ], $sections, fairness: $fairness);
+
+        $this->assertSame(0, $weekdayPhysical['score_breakdown']['weekday_capacity_migration']);
+        $this->assertGreaterThan(0, $migrated['score_breakdown']['weekday_capacity_migration']);
+        $this->assertGreaterThan($migrated['quality_score'], $weekdayPhysical['quality_score']);
+    }
+
+    public function test_section_compactness_is_scored_separately_from_resource_fairness(): void
+    {
+        $sections = [$this->section(1, '1')];
+        $fairness = $this->sharedRoomFairness();
+
+        $compact = $this->evaluator->evaluate([
+            $this->row(1, 101, 11, 'on-site', 'lecture', '08:00', '11:00'),
+            $this->row(1, 102, 12, 'on-site', 'lecture', '11:00', '13:00'),
+            $this->row(1, 103, 13, 'on-site', 'laboratory', '13:00', '16:00'),
+        ], $sections, fairness: $fairness);
+
+        $scattered = $this->evaluator->evaluate([
+            $this->row(1, 101, 11, 'on-site', 'lecture', '08:00', '11:00'),
+            $this->row(1, 102, 12, 'on-site', 'lecture', '13:00', '16:00'),
+            $this->row(1, 103, 13, 'on-site', 'laboratory', '17:00', '19:00'),
+        ], $sections, fairness: $fairness);
+
+        $this->assertSame(250000, $compact['schedule_compactness_score']);
+        $this->assertSame(0, $compact['score_breakdown']['section_idle_gaps']);
+        $this->assertLessThan($compact['schedule_compactness_score'], $scattered['schedule_compactness_score']);
+        $this->assertSame($compact['resource_fairness_score'], $scattered['resource_fairness_score']);
+        $this->assertSame(
+            array_sum($scattered['quality_breakdown']),
+            $scattered['quality_score'],
+        );
+        $this->assertGreaterThan($scattered['quality_score'], $compact['quality_score']);
+    }
+
+    public function test_instructor_data_does_not_affect_quality_score(): void
+    {
+        $sections = [$this->section(1, '1')];
+        $fairness = $this->sharedRoomFairness();
+        $rows = [
+            $this->row(1, 101, 11, 'on-site', 'lecture', '08:00', '11:00'),
+            $this->row(1, 102, 12, 'on-site', 'lecture', '11:00', '13:00'),
+        ];
+        $withInstructors = array_map(
+            static fn (array $row): array => array_merge($row, ['faculty_id' => 999]),
+            $rows,
+        );
+
+        $withoutInstructorScore = $this->evaluator->evaluate($rows, $sections, fairness: $fairness);
+        $withInstructorScore = $this->evaluator->evaluate($withInstructors, $sections, fairness: $fairness);
+
+        $this->assertSame($withoutInstructorScore['quality_score'], $withInstructorScore['quality_score']);
+        $this->assertSame(
+            $withoutInstructorScore['schedule_compactness_score'],
+            $withInstructorScore['schedule_compactness_score'],
+        );
+    }
+
     private function section(int $id, string $yearLevel): Sections
     {
         $section = new Sections;
@@ -629,6 +757,19 @@ class ScheduleQualityEvaluatorTest extends TestCase
             'section_regular_physical_targets' => $regularTargets,
             'section_lab_physical_targets' => $labTargets,
             'section_online_targets' => $onlineTargets,
+        ];
+    }
+
+    private function sharedRoomFairness(): array
+    {
+        return [
+            'active_sections' => 2,
+            'physical_rooms' => 4,
+            'target_physical_ratio' => 2 / 3,
+            'scarcity_multiplier' => 1 / 3,
+            'section_regular_physical_targets' => [1 => 1, 2 => 1],
+            'section_lab_physical_targets' => [1 => 1, 2 => 1],
+            'section_online_targets' => [1 => 1, 2 => 1],
         ];
     }
 

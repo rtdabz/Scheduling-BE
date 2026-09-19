@@ -35,10 +35,18 @@ final class MeetingGroupConstraints
                     'meeting_group',
                     $groupContext,
                 );
-            } elseif ($this->meetingTypes($group->rows) !== ['laboratory', 'lecture']) {
+            } elseif (
+                ((int) ($course['lab_hours'] ?? 0) > 0
+                    && $this->meetingTypes($group->rows) !== ['laboratory', 'lecture'])
+                || ((int) ($course['lab_hours'] ?? 0) <= 0
+                    && (! $this->allMeetingType($group->rows, 'lecture')
+                        || $this->deliveryModes($group->rows) !== ['on-site', 'online']))
+            ) {
                 $violations[] = ConstraintSupport::violation(
                     'hybrid_components',
-                    'Hybrid scheduling requires one lecture component and one laboratory component.',
+                    (int) ($course['lab_hours'] ?? 0) > 0
+                        ? 'Hybrid Laboratory requires one lecture component and one laboratory component.'
+                        : 'Hybrid Split requires one online and one on-site lecture component.',
                     'meeting_group',
                     $groupContext,
                 );
@@ -57,7 +65,7 @@ final class MeetingGroupConstraints
                 if (! SchedulingPolicy::balancedSplitEligible($course, $snapshot->departmentSettings)) {
                     $violations[] = ConstraintSupport::violation(
                         'minor_split_eligibility',
-                        'Split Session is available only for minor courses, or lecture-only majors once Major Lecture Split Sessions is enabled.',
+                        'Split Session is available only for eligible minor courses or lecture-only majors.',
                         'meeting_group',
                         $groupContext,
                     );
@@ -77,6 +85,25 @@ final class MeetingGroupConstraints
         }
 
         return $violations;
+    }
+
+    /** @param list<ScheduleRow> $rows */
+    private function allMeetingType(array $rows, string $type): bool
+    {
+        return $rows !== [] && array_reduce(
+            $rows,
+            static fn (bool $valid, ScheduleRow $row): bool => $valid && $row->meetingType === $type,
+            true,
+        );
+    }
+
+    /** @param list<ScheduleRow> $rows @return list<string> */
+    private function deliveryModes(array $rows): array
+    {
+        $modes = array_map(static fn (ScheduleRow $row): string => $row->mode, $rows);
+        sort($modes);
+
+        return $modes;
     }
 
     /**
@@ -100,11 +127,13 @@ final class MeetingGroupConstraints
             static fn (ScheduleRow $row): int => SchedulingPolicy::timeToMinutes($row->endTime) - SchedulingPolicy::timeToMinutes($row->startTime),
             $group->rows,
         ));
-        $expectedMinutes = max(1, (int) round((float) ($course['units'] ?? 0) * 60));
-        if ($totalMinutes !== $expectedMinutes) {
+        // Mirrors MeetingGroupRule: a custom duration may shorten a Split
+        // Session but never stretch it past the course's contact hours.
+        $maximumMinutes = max(1, SchedulingPolicy::unitMinutes($course['units'] ?? 0));
+        if ($totalMinutes <= 0 || $totalMinutes > $maximumMinutes) {
             $violations[] = ConstraintSupport::violation(
                 'minor_split_duration',
-                'Split Session meeting durations must add up to the course contact hours used by the Schedule Generator.',
+                'Split Session meeting durations must not add up to more than the course contact hours.',
                 'meeting_group',
                 ['split_group_id' => $group->groupId],
             );

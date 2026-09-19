@@ -29,7 +29,6 @@ final readonly class SchedulingSnapshot implements SchedulingContract
      * @param  array<int, array<string, mixed>>  $curriculumPeriodsByCourseId
      * @param  array<string, array<string, mixed>>  $curriculumPeriodsByCurriculumCourse  keyed "curriculumId:courseId"
      * @param  array<int, int>  $curriculumIdBySectionId
-     * @param  array<string, int>  $resourceLimits
      * @param  array<string, int|string>  $operatingHours
      * @param  array<string, mixed>  $departmentSettings
      * @param  array<string, mixed>  $semester
@@ -50,7 +49,6 @@ final readonly class SchedulingSnapshot implements SchedulingContract
         public array $curriculumPeriodsByCourseId = [],
         public array $curriculumPeriodsByCurriculumCourse = [],
         public array $curriculumIdBySectionId = [],
-        public array $resourceLimits = [],
         public array $operatingHours = [],
         public array $departmentSettings = [],
         public array $semester = [],
@@ -82,7 +80,6 @@ final readonly class SchedulingSnapshot implements SchedulingContract
                 ? $payload['curriculum_periods_by_curriculum_course']
                 : [],
             curriculumIdBySectionId: array_map('intval', self::intKeyedRecords($payload['curriculum_id_by_section_id'] ?? [])),
-            resourceLimits: is_array($payload['resource_limits'] ?? null) ? $payload['resource_limits'] : [],
             operatingHours: is_array($payload['operating_hours'] ?? null) ? $payload['operating_hours'] : [],
             departmentSettings: is_array($payload['department_settings'] ?? null) ? $payload['department_settings'] : [],
             semester: is_array($payload['semester'] ?? null) ? $payload['semester'] : [],
@@ -109,7 +106,6 @@ final readonly class SchedulingSnapshot implements SchedulingContract
             'curriculum_periods_by_course_id' => $this->curriculumPeriodsByCourseId,
             'curriculum_periods_by_curriculum_course' => $this->curriculumPeriodsByCurriculumCourse,
             'curriculum_id_by_section_id' => $this->curriculumIdBySectionId,
-            'resource_limits' => $this->resourceLimits,
             'operating_hours' => $this->operatingHours,
             'department_settings' => $this->departmentSettings,
             'semester' => $this->semester,

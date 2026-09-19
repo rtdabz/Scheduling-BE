@@ -170,7 +170,6 @@ class ScheduleGenerationPreflightService
         }
 
         $labSettings = [
-            'lecture_lab_schedule_override_enabled',
             'custom_lab_duration_override_enabled',
             'custom_lab_duration_6_hours_enabled',
             'custom_lab_duration_5_hours_enabled',
@@ -226,13 +225,15 @@ class ScheduleGenerationPreflightService
     {
         $defaultMode = (string) ($options['mode'] ?? 'on-site');
         $deliveryModes = array_map('strval', $options['delivery_modes_by_course_id'] ?? []);
+        $hybridSplitIds = array_map('intval', $options['hybrid_split_course_ids'] ?? []);
 
-        return $courses->contains(function (Course $course) use ($defaultMode, $deliveryModes, $departmentId): bool {
+        return $courses->contains(function (Course $course) use ($defaultMode, $deliveryModes, $departmentId, $hybridSplitIds): bool {
             $mode = $deliveryModes[(string) $course->id] ?? $deliveryModes[(int) $course->id] ?? $defaultMode;
 
             return $mode === 'on-site'
                 && ! SchedulingPolicy::isFieldCourse($course, $departmentId)
-                && ! SchedulingPolicy::isLaboratoryCourse($course);
+                && ! SchedulingPolicy::isLaboratoryCourse($course)
+                && ! in_array((int) $course->id, $hybridSplitIds, true);
         });
     }
 

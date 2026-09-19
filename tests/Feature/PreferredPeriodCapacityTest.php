@@ -65,9 +65,9 @@ class PreferredPeriodCapacityTest extends TestCase
     }
 
     /**
-     * The suggested fix has to actually work: halving the meetings puts three
-     * starts inside the window instead of one, which is what makes the same
-     * pinned section schedulable.
+     * A Split remains a two-meeting shape. When the selected period cannot
+     * accommodate all of those meetings, generation returns explicit
+     * recommendations instead of silently converting courses to one meeting.
      */
     public function test_splitting_the_courses_lets_the_same_pinned_section_generate(): void
     {
@@ -80,13 +80,14 @@ class PreferredPeriodCapacityTest extends TestCase
 
         $response = $this->preview($user, $payload);
 
-        $this->assertSame(200, $response->status(), json_encode($response->json(), JSON_PRETTY_PRINT));
-        $rows = collect($response->json('schedules'));
-        $this->assertGreaterThan(0, $rows->count());
-        foreach ($rows as $row) {
-            $this->assertLessThanOrEqual('11:30:00', (string) $row['end_time']);
-            $this->assertGreaterThanOrEqual('07:00:00', (string) $row['start_time']);
-        }
+        $response->assertStatus(422)
+            ->assertJsonPath('error_code', 'year_level_generation_failed')
+            ->assertJsonPath('stage', 'search');
+
+        $titles = collect($response->json('recommendations'))->pluck('title')->all();
+        $this->assertContains('Recommend Regular Meeting', $titles);
+        $this->assertContains('Recommend Hybrid Split', $titles);
+        $this->assertSame(0, Schedule::query()->count());
     }
 
     /** Without a period the whole 13.5-hour day is available, so nothing binds. */

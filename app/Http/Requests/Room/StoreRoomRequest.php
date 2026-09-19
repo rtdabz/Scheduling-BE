@@ -25,7 +25,6 @@ class StoreRoomRequest extends FormRequest
             'allow_lecture_usage' => 'sometimes|boolean',
             'status' => SchedulingPolicy::allowedRoomStatusesRule('nullable|string'),
             'department_id' => 'nullable|exists:departments,id',
-            'max_concurrent_classes' => 'sometimes|integer|min:1|max:20',
         ];
     }
 }

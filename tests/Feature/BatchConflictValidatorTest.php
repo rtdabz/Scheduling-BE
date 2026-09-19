@@ -5,7 +5,6 @@ namespace Tests\Feature;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Rooms;
-use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\Scheduling\Schedule\BatchConflict;
@@ -125,7 +124,7 @@ class BatchConflictValidatorTest extends TestCase
         ]);
         $field = Rooms::create([
             'room_code' => 'FIELD', 'room_type' => 'field', 'status' => 'available',
-            'department_id' => null, 'max_concurrent_classes' => 1,
+            'department_id' => null,
         ]);
         $courseA = $this->course('PATHFIT1', $deptA, 'field');
         $courseB = $this->course('PATHFIT2', $deptB, 'field');
@@ -138,108 +137,31 @@ class BatchConflictValidatorTest extends TestCase
         $this->assertNotContains(BatchConflict::RULE_ROOM, $rules);
     }
 
-    public function test_reports_room_capacity_conflict_once_the_department_limit_is_exceeded(): void
+    /**
+     * Field and online classes are shared without a limit, so any number of one
+     * department's classes may run there at once.
+     */
+    public function test_concurrent_field_and_online_classes_are_never_capped(): void
     {
-        [$semester, $dept, $sectionA] = $this->fixture();
-        $dept->update(['field_slot_limit' => 2]);
+        [$semester, $dept] = $this->fixture();
         $field = Rooms::create([
-            'room_code' => 'FIELD', 'room_type' => 'field', 'status' => 'available',
-            'department_id' => null, 'max_concurrent_classes' => 5,
+            'room_code' => 'FIELD', 'room_type' => 'field', 'status' => 'available', 'department_id' => null,
         ]);
 
         $rows = [];
-        foreach (['A', 'B', 'C'] as $offset => $suffix) {
+        foreach (['A', 'B', 'C', 'D'] as $offset => $suffix) {
             $section = $this->section("BCV-1{$suffix}", $dept, $semester);
-            $course = $this->course("BCVF{$offset}", $dept, 'field');
             $rows[] = array_merge(
-                $this->row($semester, $dept, $section, $course, $field, 'Monday', '08:00', '10:00'),
+                $this->row($semester, $dept, $section, $this->course("BCVF{$offset}", $dept, 'field'), $field, 'Monday', '08:00', '10:00'),
                 ['mode' => 'field'],
             );
-        }
-
-        $this->assertContains(BatchConflict::RULE_ROOM_CAPACITY, $this->rules($rows));
-
-        // Two concurrent classes sit exactly on the limit.
-        $this->assertNotContains(BatchConflict::RULE_ROOM_CAPACITY, $this->rules(array_slice($rows, 0, 2)));
-    }
-
-    /**
-     * The sweep reports the *candidate* row that pushes concurrency past the
-     * limit, so the persisted rows it collides with must start earlier. A
-     * candidate that starts at the same minute as everything else is processed
-     * first and sees an empty window — behaviour preserved from the original
-     * duplicated implementations, see the sprint notes in the audit report.
-     *
-     * Rooms whose limit is 1 never enter this sweep at all: exclusive-room
-     * collisions with persisted rows are RuleEngine::checkRoomConflict's job.
-     */
-    public function test_counts_persisted_rows_against_shared_room_capacity(): void
-    {
-        [$semester, $dept, $sectionA] = $this->fixture();
-        $dept->update(['field_slot_limit' => 2]);
-        $field = Rooms::create([
-            'room_code' => 'FIELD', 'room_type' => 'field', 'status' => 'available',
-            'department_id' => null, 'max_concurrent_classes' => 5,
-        ]);
-        $courseA = $this->course('PATHFIT1', $dept, 'field');
-
-        $persistedIds = [];
-        foreach (['B', 'C'] as $offset => $suffix) {
-            $attributes = array_merge(
-                $this->row(
-                    $semester,
-                    $dept,
-                    $this->section("BCV-1{$suffix}", $dept, $semester),
-                    $this->course("PATHFITP{$offset}", $dept, 'field'),
-                    $field,
-                    'Monday',
-                    '08:00',
-                    '10:00',
-                ),
-                ['mode' => 'field', 'status' => 'draft'],
+            $rows[] = array_merge(
+                $this->row($semester, $dept, $section, $this->course("BCVO{$offset}", $dept), null, 'Tuesday', '08:00', '10:00'),
+                ['mode' => 'online'],
             );
-            $persistedIds[] = (int) Schedule::create($attributes)->id;
         }
 
-        $candidate = [array_merge(
-            $this->row($semester, $dept, $sectionA, $courseA, $field, 'Monday', '09:00', '10:00'),
-            ['mode' => 'field'],
-        )];
-
-        $this->assertContains(BatchConflict::RULE_ROOM_CAPACITY, $this->rules($candidate));
-
-        // Ignoring the persisted rows — the batch is replacing them — clears the
-        // conflict. The recommendation-accept path used to omit these ids and so
-        // counted rows it was about to delete.
-        $this->assertNotContains(
-            BatchConflict::RULE_ROOM_CAPACITY,
-            $this->rules($candidate, $persistedIds),
-        );
-    }
-
-    public function test_ignored_schedule_ids_are_excluded_from_online_capacity_counting(): void
-    {
-        [$semester, $dept, $sectionA] = $this->fixture();
-        $dept->update(['online_slot_limit' => 1]);
-        $courseA = $this->course('BCV101', $dept);
-        $courseB = $this->course('BCV102', $dept);
-        $sectionB = $this->section('BCV-1B', $dept, $semester);
-
-        $persisted = Schedule::create(array_merge(
-            $this->row($semester, $dept, $sectionB, $courseB, null, 'Monday', '08:00', '10:00'),
-            ['mode' => 'online', 'status' => 'draft'],
-        ));
-
-        $candidate = [array_merge(
-            $this->row($semester, $dept, $sectionA, $courseA, null, 'Monday', '09:00', '10:00'),
-            ['mode' => 'online'],
-        )];
-
-        $this->assertContains(BatchConflict::RULE_ONLINE_CAPACITY, $this->rules($candidate));
-        $this->assertNotContains(
-            BatchConflict::RULE_ONLINE_CAPACITY,
-            $this->rules($candidate, [(int) $persisted->id]),
-        );
+        $this->assertSame([], $this->rules($rows));
     }
 
     public function test_accepts_subject_id_as_an_alias_for_course_id(): void
@@ -275,7 +197,7 @@ class BatchConflictValidatorTest extends TestCase
         $section = $this->section('BCV-1A', $dept, $semester);
         $room = Rooms::create([
             'room_code' => 'BCV201', 'room_type' => 'lecture', 'status' => 'available',
-            'department_id' => $dept->id, 'max_concurrent_classes' => 1,
+            'department_id' => $dept->id,
         ]);
 
         return [$semester, $dept, $section, $room];

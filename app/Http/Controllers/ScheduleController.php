@@ -428,7 +428,7 @@ class ScheduleController extends Controller
                 DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds): void {
                     $sectionsById = [];
                     $allViolations = array_merge(
-                        $this->checkIntraBatchConflicts($validated['operations'], $mergedIgnoreIds),
+                        $this->checkIntraBatchConflicts($validated['operations']),
                         $this->ruleEngine->validateConfiguredMeetingGroups($validated['operations']),
                     );
 
@@ -1043,18 +1043,16 @@ class ScheduleController extends Controller
     }
 
     /**
-     * Intra-batch and against-persisted conflict checks for a batch payload.
+     * Conflicts between the rows of one batch payload.
      *
-     * Delegates the rules to BatchConflictValidator so the batch save and the
-     * recommendation-accept path cannot drift apart again; this method only
-     * renders the result into the `operation_index` violation shape that the
-     * batch endpoint's clients already parse.
+     * Delegates the rules to BatchConflictValidator; this method only renders
+     * the result into the `operation_index` violation shape that the batch
+     * endpoint's clients already parse.
      *
      * @param  list<array<string, mixed>>  $operations
-     * @param  list<int>  $ignoreScheduleIds
      * @return list<array<string, mixed>>
      */
-    private function checkIntraBatchConflicts(array $operations, array $ignoreScheduleIds = []): array
+    private function checkIntraBatchConflicts(array $operations): array
     {
         return array_map(
             static fn (BatchConflict $conflict): array => [
@@ -1094,22 +1092,10 @@ class ScheduleController extends Controller
                         $conflict->overlapEnd,
                         $conflict->day,
                     ),
-                    BatchConflict::RULE_ROOM_CAPACITY => sprintf(
-                        'Intra-batch Room Capacity Conflict: FIELD allows only %d concurrent classes per department on %s from %s to %s.',
-                        $conflict->capacity,
-                        $conflict->day,
-                        $conflict->overlapStart,
-                        $conflict->overlapEnd,
-                    ),
-                    BatchConflict::RULE_ONLINE_CAPACITY => sprintf(
-                        'Intra-batch Online Capacity Conflict: configured limit is %d concurrent classes per department on %s.',
-                        $conflict->capacity,
-                        $conflict->day,
-                    ),
                     default => 'Intra-batch schedule conflict.',
                 },
             ],
-            $this->batchConflicts->validate($operations, $ignoreScheduleIds),
+            $this->batchConflicts->validate($operations),
         );
     }
 

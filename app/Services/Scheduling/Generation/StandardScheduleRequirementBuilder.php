@@ -42,13 +42,19 @@ class StandardScheduleRequirementBuilder implements ScheduleRequirementBuilder
                     : ['lecture'],
             };
 
+            $customSlots = CourseSetupOverrides::durationSlots($options, (int) $course->id);
+
             $requirements[(int) $course->id] = [
                 (new ScheduleRequirement(
                     courseId: (int) $course->id,
                     componentType: $componentType,
-                    durationSlots: max(1, (int) round((float) ($course->units ?? 0) * 2)),
+                    durationSlots: $customSlots ?? max(1, (int) round((float) ($course->units ?? 0) * 2)),
                     eligibleRoomTypes: $roomTypes,
                     allowedDeliveryModes: $allowedModes,
+                    customDuration: $customSlots !== null,
+                    preferredRoomId: $componentType === 'online'
+                        ? null
+                        : CourseSetupOverrides::preferredRoomId($options, (int) $course->id),
                 ))->toArray(),
             ];
         }

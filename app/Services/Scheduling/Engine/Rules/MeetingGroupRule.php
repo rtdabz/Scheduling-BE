@@ -63,10 +63,17 @@ final class MeetingGroupRule
             }
 
             if ($isHybrid) {
-                if ($rows->pluck('meeting_type')->sort()->values()->all() !== ['laboratory', 'lecture']) {
+                $hasLaboratoryComponent = (int) ($course->lab_hours ?? 0) > 0;
+                $validHybridShape = $hasLaboratoryComponent
+                    ? $rows->pluck('meeting_type')->sort()->values()->all() === ['laboratory', 'lecture']
+                    : $rows->every(static fn (array $row): bool => ($row['meeting_type'] ?? null) === 'lecture')
+                        && $rows->pluck('mode')->sort()->values()->all() === ['on-site', 'online'];
+                if (! $validHybridShape) {
                     $violations[] = [
                         'rule' => 'hybrid_components',
-                        'message' => 'Hybrid scheduling requires one lecture component and one laboratory component.',
+                        'message' => $hasLaboratoryComponent
+                            ? 'Hybrid Laboratory requires one online lecture and one on-site laboratory meeting.'
+                            : 'Hybrid Split requires one online and one on-site lecture meeting.',
                         'split_group_id' => $groupId,
                     ];
                 }
@@ -81,7 +88,7 @@ final class MeetingGroupRule
             if (! SchedulingPolicy::balancedSplitEligible($course, SchedulingPolicy::balancedSplitSettings($section?->department))) {
                 $violations[] = [
                     'rule' => 'minor_split_eligibility',
-                    'message' => 'Split Session is available only for minor courses, or lecture-only majors once Major Lecture Split Sessions is enabled.',
+                    'message' => 'Split Session is available only for minor courses or lecture-only majors.',
                     'split_group_id' => $groupId,
                 ];
 
@@ -102,11 +109,14 @@ final class MeetingGroupRule
                 (string) ($row['start_time'] ?? ''),
                 (string) ($row['end_time'] ?? ''),
             )));
-            $expectedMinutes = max(1, (int) round((float) ($course->units ?? 0) * 60));
-            if ($totalMinutes !== $expectedMinutes) {
+            // A ceiling, not an exact total: Setup Courses may shorten a Split
+            // Session (Custom Time Duration), but never stretch it past the
+            // course's contact hours.
+            $maximumMinutes = max(1, SchedulingPolicy::unitMinutes($course->units ?? 0));
+            if ($totalMinutes <= 0 || $totalMinutes > $maximumMinutes) {
                 $violations[] = [
                     'rule' => 'minor_split_duration',
-                    'message' => 'Split Session meeting durations must add up to the course contact hours used by the Schedule Generator.',
+                    'message' => 'Split Session meeting durations must not add up to more than the course contact hours.',
                     'split_group_id' => $groupId,
                 ];
             }

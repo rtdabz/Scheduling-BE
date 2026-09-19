@@ -241,7 +241,7 @@ class RoomRequestTest extends TestCase
 
     private function violatesRoomOwnership(array $attempt): bool
     {
-        return collect(app(RuleEngine::class)->checkRelationalIntegrity($attempt))
+        return collect(app(RuleEngine::class)->validate($attempt))
             ->contains(fn (array $violation): bool => $violation['rule'] === 'room_department_alignment');
     }
 

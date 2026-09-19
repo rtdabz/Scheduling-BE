@@ -50,22 +50,11 @@ class SchedulingSettingsControllerTest extends TestCase
         $response = $this->actingAs($user)->getJson('/api/scheduling-settings?section_id='.$section->id);
 
         $response->assertOk();
-        // Neither shared resource is capped unless a department sets a limit,
-        // so an unconfigured department reports null rather than a ceiling the
-        // scheduler does not apply.
-        $response->assertJsonPath('online_slot_limit', null)
-            ->assertJsonPath('field_slot_limit', null);
+        // Online and field classes are not capped, so there is no limit to report.
+        $response->assertJsonMissingPath('online_slot_limit')
+            ->assertJsonMissingPath('field_slot_limit');
         $this->assertSame(['IT 101'], collect($response->json('forced_day_courses'))->pluck('code')->all());
         $this->assertSame(['IT 101'], collect($response->json('field_course_options'))->pluck('code')->all());
-
-        $update = $this->actingAs($user)->patchJson('/api/scheduling-settings', [
-            'online_slot_limit' => 8,
-            'field_slot_limit' => 5,
-        ]);
-
-        $update->assertOk()
-            ->assertJsonPath('online_slot_limit', 8)
-            ->assertJsonPath('field_slot_limit', 5);
     }
 
     public function test_the_three_lab_duration_presets_behave_as_one_choice(): void

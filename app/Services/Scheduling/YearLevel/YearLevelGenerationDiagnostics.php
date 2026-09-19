@@ -21,6 +21,8 @@ class YearLevelGenerationDiagnostics
 
     public const TYPE_LECTURE_LAB_SPLIT = 'lecture_lab_split';
 
+    public const TYPE_BALANCED_SPLIT = 'balanced_split';
+
     public const TYPE_LABORATORY_ROOM = 'laboratory_room';
 
     public const TYPE_FORCED_ON_SITE = 'forced_on_site';
@@ -61,7 +63,7 @@ class YearLevelGenerationDiagnostics
                     'Let the generator choose days for %s courses',
                     (string) ($context['pattern'] ?? 'fixed-pattern'),
                 ),
-                'insufficient_online_slots' => 'Raise the online slot limit or reduce forced Online courses',
+                'preferred_days_too_few_for_hybrid' => 'Recommend adding another Preferred Day',
                 default => 'Adjust the generation scope',
             };
 
@@ -89,6 +91,8 @@ class YearLevelGenerationDiagnostics
                 'course_code' => null,
                 'impact' => $adjustments === [] ? 'high' : 'medium',
                 'adjustments' => $adjustments,
+                'status' => 'active',
+                'resolved' => false,
             ];
         }
 
@@ -111,6 +115,7 @@ class YearLevelGenerationDiagnostics
 
         $patternCourses = array_values((array) ($failure['pattern_courses'] ?? []));
         $splitCourses = array_values((array) ($failure['split_courses'] ?? []));
+        $balancedSplitCourses = array_values((array) ($failure['balanced_split_courses'] ?? []));
         $laboratoryCourses = array_values((array) ($failure['laboratory_courses'] ?? []));
         $forcedOnSiteCourses = array_values((array) ($failure['forced_on_site_courses'] ?? []));
         $courseCount = (int) ($failure['course_count'] ?? 0);
@@ -119,6 +124,7 @@ class YearLevelGenerationDiagnostics
         [$type, $focus] = match (true) {
             $patternCourses !== [] => [self::TYPE_FIXED_PATTERN, $patternCourses[0]],
             $splitCourses !== [] => [self::TYPE_LECTURE_LAB_SPLIT, $splitCourses[0]],
+            $balancedSplitCourses !== [] => [self::TYPE_BALANCED_SPLIT, $balancedSplitCourses[0]],
             $laboratoryCourses !== [] => [self::TYPE_LABORATORY_ROOM, $laboratoryCourses[0]],
             $courseCount > 0 && count($forcedOnSiteCourses) >= $courseCount => [self::TYPE_FORCED_ON_SITE, $forcedOnSiteCourses[0]],
             $forcedOnSiteCourses !== [] => [self::TYPE_LIMITED_ROOMS, $forcedOnSiteCourses[0]],
@@ -143,6 +149,8 @@ class YearLevelGenerationDiagnostics
             'course_count' => $courseCount,
             'pattern_course_count' => count($patternCourses),
             'split_course_count' => count($splitCourses),
+            'balanced_split_course_count' => count($balancedSplitCourses),
+            'hybrid_split_slot_available' => (bool) ($failure['hybrid_split_slot_available'] ?? false),
             'laboratory_course_count' => count($laboratoryCourses),
             'forced_on_site_count' => count($forcedOnSiteCourses),
         ];
@@ -181,7 +189,12 @@ class YearLevelGenerationDiagnostics
      * @param  list<array<string, mixed>>  $strategies  retry strategies that were planned
      * @return list<array<string, mixed>>
      */
-    public function searchRecommendations(?array $bottleneck, array $strategies): array
+    public function searchRecommendations(
+        ?array $bottleneck,
+        array $strategies,
+        ?Collection $courses = null,
+        array $configsBySectionId = [],
+    ): array
     {
         if ($bottleneck === null) {
             return [[
@@ -195,6 +208,8 @@ class YearLevelGenerationDiagnostics
                 'course_code' => null,
                 'impact' => 'medium',
                 'adjustments' => [],
+                'status' => 'active',
+                'resolved' => false,
             ]];
         }
 
@@ -225,6 +240,56 @@ class YearLevelGenerationDiagnostics
                     : null,
                 'impact' => (string) ($strategy['impact'] ?? 'medium'),
                 'adjustments' => $adjustments,
+                'status' => 'active',
+                'resolved' => false,
+            ];
+        }
+
+        if (($bottleneck['type'] ?? null) === self::TYPE_BALANCED_SPLIT) {
+            $courseId = (int) ($bottleneck['course_id'] ?? 0);
+            $course = $courses?->get($courseId);
+            $sectionId = (int) ($bottleneck['section_id'] ?? 0);
+            $sectionName = (string) ($bottleneck['section_name'] ?? 'the section');
+            $courseCode = (string) ($bottleneck['course_code'] ?? ($course?->course_code ?? 'the course'));
+            $splitIds = array_map('intval', $configsBySectionId[$sectionId]['balanced_split_course_ids'] ?? []);
+            $hybridIds = array_map('intval', $configsBySectionId[$sectionId]['hybrid_split_course_ids'] ?? []);
+
+            // Hybrid Split is offered as an advisory only. The solver is not
+            // allowed to silently change delivery mode or meeting shape.
+            if ($course !== null
+                && (int) ($course->lab_hours ?? 0) === 0
+                && in_array($courseId, $splitIds, true)
+                && (bool) ($bottleneck['hybrid_split_slot_available'] ?? false)
+                && ! in_array($courseId, $hybridIds, true)) {
+                $recommendations[] = [
+                    'id' => 'recommend-hybrid-split-'.$sectionId.'-'.$courseId,
+                    'title' => 'Recommend Hybrid Split',
+                    'detected_cause' => sprintf('%s cannot find two vacant physical Split meetings.', $courseCode),
+                    'suggested_adjustment' => sprintf('Use two 1.5-hour meetings for %s in %s, with one meeting online and one on-site, if those vacant slots fit your teaching plan.', $courseCode, $sectionName),
+                    'section_id' => $sectionId,
+                    'section_name' => $sectionName,
+                    'course_id' => $courseId,
+                    'course_code' => $courseCode,
+                    'impact' => 'medium',
+                    'adjustments' => [],
+                    'status' => 'active',
+                    'resolved' => false,
+                ];
+            }
+
+            $recommendations[] = [
+                'id' => 'recommend-regular-meeting-'.$sectionId.'-'.$courseId,
+                'title' => 'Recommend Regular Meeting',
+                'detected_cause' => sprintf('%s cannot be accommodated as a two-meeting Split schedule.', $courseCode),
+                'suggested_adjustment' => sprintf('Let %s use one full-duration meeting and choose On-site or Online delivery in the course configuration. This remains a suggestion and requires your action.', $courseCode),
+                'section_id' => $sectionId,
+                'section_name' => $sectionName,
+                'course_id' => $courseId,
+                'course_code' => $courseCode,
+                'impact' => 'high',
+                'adjustments' => [],
+                'status' => 'active',
+                'resolved' => false,
             ];
         }
 
@@ -241,6 +306,8 @@ class YearLevelGenerationDiagnostics
             'course_code' => $bottleneck['course_code'] ?? null,
             'impact' => 'high',
             'adjustments' => [],
+            'status' => 'active',
+            'resolved' => false,
         ];
 
         return $recommendations;
@@ -271,7 +338,8 @@ class YearLevelGenerationDiagnostics
         return ((bool) ($failure['preflight_pattern_conflict'] ?? false) ? 8 : 0)
             + ((bool) ($failure['search_limit_reached'] ?? false) ? 4 : 0)
             + ((array) ($failure['pattern_courses'] ?? []) !== [] ? 2 : 0)
-            + ((array) ($failure['split_courses'] ?? []) !== [] ? 1 : 0);
+            + ((array) ($failure['split_courses'] ?? []) !== [] ? 1 : 0)
+            + ((array) ($failure['balanced_split_courses'] ?? []) !== [] ? 1 : 0);
     }
 
     /**
@@ -298,6 +366,10 @@ class YearLevelGenerationDiagnostics
                 ),
             self::TYPE_LECTURE_LAB_SPLIT => sprintf(
                 'The lecture/laboratory split on %s needs a matching lecture block and laboratory block, and no free pair remains.',
+                $courseCode !== '' ? $courseCode : 'a course',
+            ),
+            self::TYPE_BALANCED_SPLIT => sprintf(
+                'The Split schedule on %s needs two vacant equal-length meetings, and no complete pair remains.',
                 $courseCode !== '' ? $courseCode : 'a course',
             ),
             self::TYPE_LABORATORY_ROOM => sprintf(

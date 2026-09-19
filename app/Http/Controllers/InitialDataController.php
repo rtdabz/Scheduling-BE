@@ -12,7 +12,6 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\FacultyLoadService;
-use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
@@ -49,7 +48,6 @@ class InitialDataController extends Controller
 
     public function __construct(
         private readonly FacultyLoadService $facultyLoad,
-        private readonly DepartmentResourceSlotLimitService $resourceLimits,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -442,6 +440,7 @@ class InitialDataController extends Controller
             'time_grid' => [
                 'opening_time' => substr(SchedulingPolicy::openingTime(), 0, 5),
                 'closing_time' => substr(SchedulingPolicy::closingTime(), 0, 5),
+                'field_end_time' => substr(SchedulingPolicy::fieldDayEndTime(), 0, 5),
                 'slot_minutes' => SchedulingPolicy::SLOT_MINUTES,
                 'slot_count' => SchedulingPolicy::totalSlots(),
             ],
@@ -467,9 +466,6 @@ class InitialDataController extends Controller
                 ->exists(),
             'field_course_assignment_enabled' => SchedulingPolicy::fieldCourseSettingEnabled($departmentId),
             'field_course_codes' => array_keys(SchedulingPolicy::fieldCourseCodeMap($departmentId)),
-            'resource_slot_limits' => $departmentId !== null
-                ? $this->resourceLimits->forDepartment($departmentId)
-                : null,
             // Only the signatory lookup in the teaching-load export reads this, and
             // it needs four columns. Returning full models shipped every column of
             // every user on every scheduler load.

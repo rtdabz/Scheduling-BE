@@ -79,16 +79,6 @@ class SchedulingConstraintKernelTest extends TestCase
         $this->assertSame(['minor_day_constraint', 'room_conflict'], $this->rules($violations));
     }
 
-    public function test_online_capacity_uses_the_snapshot_limit(): void
-    {
-        $online = ['mode' => 'online'] + $this->persisted(id: 5, sectionId: 2, roomId: null);
-        $snapshot = $this->snapshot(persisted: [$online], resourceLimits: ['online' => 1]);
-
-        $violations = (new SchedulingConstraintKernel)->evaluateRow($this->row(self::MINOR, 'Monday', mode: 'online', roomId: null), $snapshot);
-
-        $this->assertSame(['online_capacity_conflict'], $this->rules($violations));
-    }
-
     /** @param list<ConstraintViolation> $violations */
     private function rules(array $violations): array
     {
@@ -128,7 +118,7 @@ class SchedulingConstraintKernelTest extends TestCase
         ];
     }
 
-    private function snapshot(array $persisted = [], array $resourceLimits = []): SchedulingSnapshot
+    private function snapshot(array $persisted = []): SchedulingSnapshot
     {
         return new SchedulingSnapshot(
             fingerprint: 'kernel-test',
@@ -140,10 +130,9 @@ class SchedulingConstraintKernelTest extends TestCase
                 self::NSTP => ['id' => self::NSTP, 'course_code' => 'NSTP 1', 'course_name' => 'CWTS', 'course_category' => 'minor', 'room_type_required' => 'lecture', 'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3],
             ],
             roomsById: [
-                self::LECTURE_ROOM => ['id' => self::LECTURE_ROOM, 'room_type' => 'lecture', 'max_concurrent_classes' => 1],
+                self::LECTURE_ROOM => ['id' => self::LECTURE_ROOM, 'room_type' => 'lecture'],
             ],
             persistedSchedules: $persisted,
-            resourceLimits: $resourceLimits,
         );
     }
 }

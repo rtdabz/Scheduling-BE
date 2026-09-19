@@ -90,31 +90,33 @@ class CustomLabDurationTest extends TestCase
     }
 
     /**
-     * The other half of the same agreement: once a department configures six
-     * hours, the old unit-derived three-hour block is no longer a valid
-     * laboratory meeting for it.
+     * The department's Custom Lab Duration is the default, not a lock: an
+     * Integrated Hybrid laboratory may be set to another length per course in
+     * Setup Courses, and the validator accepts it (the week's total stays
+     * `class_duration`'s). What stays fixed is its delivery -- the
+     * laboratory meets face-to-face.
      */
-    public function test_the_rule_engine_rejects_the_unit_derived_length_once_a_custom_one_is_set(): void
+    public function test_a_chosen_laboratory_length_is_accepted_but_it_must_stay_on_site(): void
     {
         [$section, $course] = $this->scenario([
             'custom_lab_duration_override_enabled' => true,
             'custom_lab_duration_6_hours_enabled' => true,
         ]);
-
-        $rules = array_column(app(RuleEngine::class)->validate([
+        $laboratory = fn (string $mode): array => array_column(app(RuleEngine::class)->validate([
             'semester_id' => (int) $section->semester_id,
             'section_id' => (int) $section->id,
             'course_id' => (int) $course->id,
-            'room_id' => (int) Rooms::query()->value('id'),
+            'room_id' => $mode === 'on-site' ? (int) Rooms::query()->value('id') : null,
             'day' => 'Monday',
             'start_time' => '08:00:00',
             'end_time' => '11:00:00',
-            'mode' => 'on-site',
+            'mode' => $mode,
             'meeting_type' => 'laboratory',
             'is_hybrid' => true,
         ]), 'rule');
 
-        $this->assertContains('hybrid_component_shape', $rules);
+        $this->assertNotContains('hybrid_component_shape', $laboratory('on-site'), 'a 3-hour laboratory is a valid chosen length');
+        $this->assertContains('hybrid_component_shape', $laboratory('online'), 'the laboratory may not go online');
     }
 
     /** @return array<int, mixed> */

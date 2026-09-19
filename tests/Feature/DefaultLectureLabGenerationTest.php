@@ -265,7 +265,6 @@ class DefaultLectureLabGenerationTest extends TestCase
             sectionId: $section->id,
             courseIds: [$course->id],
             maxSolutions: 1,
-            selectedLectureLabCourseIds: [$course->id],
             seed: 1234,
         );
 

@@ -28,9 +28,6 @@ class RoomsController extends Controller
     {
         $validated = $request->validated();
 
-        $validated['max_concurrent_classes'] = (int) ($validated['max_concurrent_classes'] ?? (
-            in_array(($validated['room_type'] ?? null), ['field', 'online'], true) ? 3 : 1
-        ));
         $validated['allow_lecture_usage'] = ($validated['room_type'] ?? null) === 'laboratory'
             && (bool) ($validated['allow_lecture_usage'] ?? false);
 
@@ -65,9 +62,6 @@ class RoomsController extends Controller
         $room = Rooms::findOrFail($id);
         $validated = $request->validated();
 
-        if (! in_array(($validated['room_type'] ?? $room->room_type), ['field', 'online'], true) && array_key_exists('max_concurrent_classes', $validated)) {
-            $validated['max_concurrent_classes'] = 1;
-        }
         if (($validated['room_type'] ?? $room->room_type) !== 'laboratory') {
             $validated['allow_lecture_usage'] = false;
         }

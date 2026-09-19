@@ -45,10 +45,9 @@ class PreferredPeriodWindowFeasibilityTest extends TestCase
             'Morning (7:00 AM - 11:30 AM)',
             (string) $response->json('blocking_constraints.0.message'),
         );
-        // The fix that keeps the period is offered first, including the setting
-        // it depends on.
+        // The fix that keeps the period is offered first from Step 2.
         $this->assertStringContainsString(
-            'Major Lecture Split Sessions',
+            'Select Split Session',
             (string) $response->json('blocking_constraints.0.suggested_action'),
         );
         $this->assertSame(0, Schedule::query()->count());

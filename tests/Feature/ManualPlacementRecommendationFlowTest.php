@@ -100,6 +100,83 @@ class ManualPlacementRecommendationFlowTest extends TestCase
         }
     }
 
+    public function test_select_with_a_plan_id_saves_the_previewed_plan_and_accept_refuses_it_once_stale(): void
+    {
+        [$semester, $department, $section, $otherSection, $course] = $this->createScenario();
+        $user = $this->secretaryFor($department);
+        $payload = [
+            'section_id' => $section->id,
+            'course_ids' => [$course->id],
+            'mode' => 'on-site',
+            'is_hybrid' => false,
+            'selected_split_session_course_ids' => [],
+            'selected_gec_course_ids' => [],
+            'preferred_patterns' => [],
+            'tentative_schedules' => [],
+            'max_solutions' => 3,
+            'timeout_seconds' => 5,
+            'seed' => 4242,
+        ];
+
+        $preview = $this->actingAs($user)->postJson('/api/schedule-recommendations/preview', $payload);
+        $preview->assertOk();
+        $previewed = $preview->json('recommendations.0');
+        $this->assertNotEmpty($previewed['plan_id'] ?? null);
+
+        // The constraint kernel has no part-time availability or inactive-faculty
+        // rule; that is only safe while generation leaves instructors unassigned.
+        // If this starts failing, add those families to the kernel first.
+        foreach ($preview->json('recommendations') as $recommendation) {
+            foreach ($recommendation['schedules'] as $row) {
+                $this->assertNull($row['faculty_id'] ?? null, 'Generated rows must not carry an instructor.');
+            }
+        }
+
+        // Someone takes rank 1's first slot after the preview. Solving again
+        // would route around it; saving the previewed plan must not.
+        $taken = $previewed['schedules'][0];
+        $intruder = Sections::create([
+            'section_name' => 'IT 1Z',
+            'year_level' => $otherSection->year_level,
+            'semester' => $otherSection->semester,
+            'department_id' => $department->id,
+            'program_id' => $otherSection->program_id,
+            'curriculum_id' => $otherSection->curriculum_id,
+            'semester_id' => $semester->id,
+            'status' => 'active',
+        ]);
+        Schedule::create([
+            'semester_id' => $semester->id,
+            'section_id' => $intruder->id,
+            'course_id' => $course->id,
+            'room_id' => $taken['room_id'],
+            'department_id' => $department->id,
+            'day' => $taken['day'],
+            'start_time' => $taken['start_time'],
+            'end_time' => $taken['end_time'],
+            'mode' => $taken['mode'],
+            'status' => 'faculty_assignment',
+        ]);
+
+        $selected = $this->actingAs($user)->postJson('/api/schedule-recommendations/select', [
+            ...$payload,
+            'selected_rank' => (int) $previewed['rank'],
+            'plan_id' => $previewed['plan_id'],
+        ]);
+        $selected->assertSuccessful();
+        $this->assertSame(
+            $this->comparableRows($previewed['schedules']),
+            $this->comparableRows($selected->json('recommendation.recommended_schedules')),
+            'Select must save the plan the dialog showed, not a fresh solve.',
+        );
+
+        // The commit-time snapshot check is what keeps a stale plan out.
+        $this->actingAs($user)
+            ->postJson('/api/schedule-recommendations/'.$selected->json('recommendation.id').'/accept')
+            ->assertStatus(422);
+        $this->assertDatabaseMissing('schedules', ['section_id' => $section->id, 'course_id' => $course->id]);
+    }
+
     public function test_preview_avoids_unsaved_placements_sent_as_tentative_schedules(): void
     {
         [$semester, $department, $section, $otherSection, $course, $room, $secondCourse] = $this->createScenario();

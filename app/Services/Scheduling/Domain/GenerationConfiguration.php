@@ -16,6 +16,7 @@ final readonly class GenerationConfiguration implements SchedulingContract
      * @param  array<int, string|null>  $preferredPatternsByCourseId
      * @param  list<int>  $selectedSplitSessionCourseIds
      * @param  list<int>  $balancedSplitCourseIds
+     * @param  list<int>  $hybridSplitCourseIds
      * @param  array<int, string>  $deliveryModesByCourseId
      * @param  array<int, array<string, mixed>>  $requirementsByCourseId
      * @param  array<int, list<array<string, mixed>>>  $anchoredSchedulesByCourseId
@@ -29,6 +30,7 @@ final readonly class GenerationConfiguration implements SchedulingContract
         public array $preferredPatternsByCourseId = [],
         public array $selectedSplitSessionCourseIds = [],
         public array $balancedSplitCourseIds = [],
+        public array $hybridSplitCourseIds = [],
         public array $deliveryModesByCourseId = [],
         public array $requirementsByCourseId = [],
         public array $anchoredSchedulesByCourseId = [],
@@ -80,6 +82,7 @@ final readonly class GenerationConfiguration implements SchedulingContract
             preferredPatternsByCourseId: self::intKeyedMap($payload['preferred_patterns'] ?? $payload['preferredPatternsByCourseId'] ?? []),
             selectedSplitSessionCourseIds: self::positiveIntList($payload['selected_split_session_course_ids'] ?? $payload['selectedSplitSessionCourseIds'] ?? []),
             balancedSplitCourseIds: self::positiveIntList($payload['balanced_split_course_ids'] ?? $payload['balancedSplitCourseIds'] ?? []),
+            hybridSplitCourseIds: self::positiveIntList($payload['hybrid_split_course_ids'] ?? $payload['hybridSplitCourseIds'] ?? []),
             deliveryModesByCourseId: self::intKeyedMap($payload['delivery_modes_by_course_id'] ?? $payload['deliveryModesByCourseId'] ?? []),
             requirementsByCourseId: self::intKeyedMap($payload['requirements_by_course_id'] ?? $payload['requirementsByCourseId'] ?? []),
             anchoredSchedulesByCourseId: self::intKeyedMap($payload['anchored_schedules'] ?? $payload['anchoredSchedules'] ?? []),
@@ -106,6 +109,7 @@ final readonly class GenerationConfiguration implements SchedulingContract
             'preferred_patterns' => $this->preferredPatternsByCourseId,
             'selected_split_session_course_ids' => $this->selectedSplitSessionCourseIds,
             'balanced_split_course_ids' => $this->balancedSplitCourseIds,
+            'hybrid_split_course_ids' => $this->hybridSplitCourseIds,
             'delivery_modes_by_course_id' => $this->deliveryModesByCourseId,
             'requirements_by_course_id' => $this->requirementsByCourseId,
             'anchored_schedules' => $this->anchoredSchedulesByCourseId,

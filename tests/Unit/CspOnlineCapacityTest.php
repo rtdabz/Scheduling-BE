@@ -3,7 +3,6 @@
 namespace Tests\Unit;
 
 use App\Services\Scheduling\Engine\CspSolver;
-use App\Services\Scheduling\Department\DepartmentResourceSlotLimitService;
 use App\Models\Rooms;
 use Illuminate\Database\Eloquent\Collection;
 use PHPUnit\Framework\TestCase;
@@ -11,52 +10,6 @@ use ReflectionMethod;
 
 final class CspOnlineCapacityTest extends TestCase
 {
-    public function test_recursive_assignments_cannot_exceed_department_online_capacity(): void
-    {
-        $limits = new class extends DepartmentResourceSlotLimitService {
-            public function online(int $departmentId): int
-            {
-                return 2;
-            }
-        };
-        $solver = new CspSolver($limits);
-        $conflicts = new ReflectionMethod($solver, 'conflictsWithTentativeAssignments');
-
-        $candidate = $this->onlineCandidate(2, 4);
-        $assignments = [
-            $this->onlineAssignment(1, 0, 4),
-            $this->onlineAssignment(2, 1, 3),
-        ];
-
-        self::assertTrue($conflicts->invoke(
-            $solver,
-            $candidate,
-            $assignments,
-            10,
-            7,
-        ));
-    }
-
-    public function test_recursive_assignments_allow_online_slot_when_capacity_remains(): void
-    {
-        $limits = new class extends DepartmentResourceSlotLimitService {
-            public function online(int $departmentId): int
-            {
-                return 2;
-            }
-        };
-        $solver = new CspSolver($limits);
-        $conflicts = new ReflectionMethod($solver, 'conflictsWithTentativeAssignments');
-
-        self::assertFalse($conflicts->invoke(
-            $solver,
-            $this->onlineCandidate(4, 6),
-            [$this->onlineAssignment(1, 0, 4)],
-            10,
-            7,
-        ));
-    }
-
     public function test_non_hybrid_lecture_lab_options_exhaust_lecture_rooms_before_online(): void
     {
         $solver = new CspSolver;
@@ -324,39 +277,5 @@ final class CspOnlineCapacityTest extends TestCase
         ];
 
         self::assertFalse($conflicts->invoke($solver, $candidate, $assignments, null, null));
-    }
-
-    private function onlineCandidate(int $startSlot, int $endSlot): array
-    {
-        return [
-            'course_id' => 3,
-            'department_id' => 7,
-            'mode' => 'online',
-            'room_type' => 'online',
-            'blocks' => [[
-                'day' => 'Monday',
-                'start_slot' => $startSlot,
-                'end_slot' => $endSlot,
-                'mode' => 'online',
-                'room_type' => 'online',
-            ]],
-        ];
-    }
-
-    private function onlineAssignment(int $courseId, int $startSlot, int $endSlot): array
-    {
-        return [
-            'course_id' => $courseId,
-            'department_id' => 7,
-            'mode' => 'online',
-            'room_type' => 'online',
-            'blocks' => [[
-                'day' => 'Monday',
-                'start_slot' => $startSlot,
-                'end_slot' => $endSlot,
-                'mode' => 'online',
-                'room_type' => 'online',
-            ]],
-        ];
     }
 }

@@ -149,7 +149,10 @@ class YearLevelScheduleGenerationService
                 $this->diagnostics()->feasibilityMessage($blocking),
                 YearLevelGenerationException::STAGE_FEASIBILITY,
                 blockingConstraints: $blocking,
-                recommendations: $this->diagnostics()->feasibilityRecommendations($blocking),
+                recommendations: [
+                    ...$this->periodBlockerSessionRecommendations($blocking, $configsBySectionId),
+                    ...$this->diagnostics()->feasibilityRecommendations($blocking),
+                ],
                 generationMetrics: $this->reportedMetrics([]),
             );
         }
@@ -283,7 +286,12 @@ class YearLevelScheduleGenerationService
         }
 
         $bottleneck = $this->diagnostics()->detectBottleneck($failures, $courses) ?? $bottleneck;
-        $recommendations = $this->diagnostics()->searchRecommendations($bottleneck, $strategies);
+        $recommendations = $this->diagnostics()->searchRecommendations(
+            $bottleneck,
+            $strategies,
+            $courses,
+            $configsBySectionId,
+        );
 
         if ($periodBlocker !== null) {
             array_unshift($recommendations, [
@@ -301,7 +309,19 @@ class YearLevelScheduleGenerationService
                 'course_code' => null,
                 'impact' => 'high',
                 'adjustments' => [],
+                'status' => 'active',
+                'resolved' => false,
             ]);
+
+            // Sessions that still have room for this section, ahead of the
+            // manual advice, so the first choice is one the user can apply.
+            $blockedConfig = $configsBySectionId[$periodBlocker['section_id']] ?? [];
+            array_unshift($recommendations, ...$this->sectionSessionRecommendations(
+                $periodBlocker['section_id'],
+                $periodBlocker['section_name'],
+                $blockedConfig,
+                (string) ($blockedConfig['preferred_period'] ?? ''),
+            ));
         }
 
         throw new YearLevelGenerationException(
@@ -391,9 +411,9 @@ class YearLevelScheduleGenerationService
         $candidate['generation_attempts'] = $attempts;
         $candidate['applied_strategy'] = $strategy === null && $splitFallbacks === [] ? null : [
             'key' => (string) ($strategy['key'] ?? ''),
-            'label' => (string) ($strategy['label'] ?? 'Split Session adjusted for feasibility'),
+            'label' => (string) ($strategy['label'] ?? 'Scheduling preference adjusted for feasibility'),
             'description' => (string) ($strategy['description']
-                ?? 'Some selected GEC courses could not be split without exhausting valid meeting slots. The generator assigned only those courses as single meetings while preserving all hard constraints.'),
+                ?? 'The selected configuration found no complete timetable, so the generator applied a reported preference adjustment while preserving all hard constraints.'),
             'impact' => (string) ($strategy['impact'] ?? 'medium'),
         ];
         $candidate['applied_adjustments'] = [...$existingAdjustments, ...$splitFallbacks];
@@ -403,6 +423,11 @@ class YearLevelScheduleGenerationService
             $candidate['schedules'] ?? [],
             collect($sections)->mapWithKeys(static fn (Sections $section): array => [(int) $section->id => (string) $section->section_name])->all(),
             $this->loadedCourses->mapWithKeys(static fn ($course): array => [(int) $course->id => (string) $course->course_code])->all(),
+        );
+        $candidate['recommendations'] = $this->generationRecommendations(
+            $candidate['schedules'] ?? [],
+            $configsBySectionId,
+            $sections,
         );
         $candidate['generation_metrics'] = $this->reportedMetrics($attempts);
 
@@ -454,6 +479,299 @@ class YearLevelScheduleGenerationService
         }
 
         return $adjustments;
+    }
+
+    /**
+     * Advisory observations for a valid timetable. These are deliberately
+     * separate from applied adjustments: a successful preview must never
+     * mutate the selected Preferred Days or Preferred Meetings automatically.
+     *
+     * @param list<array<string, mixed>> $schedules
+     * @param array<int, array<string, mixed>> $configsBySectionId
+     * @param list<Sections> $sections
+     * @return list<array<string, mixed>>
+     */
+    private function generationRecommendations(
+        array $schedules,
+        array $configsBySectionId,
+        array $sections,
+    ): array {
+        $recommendations = [];
+        $sectionNames = collect($sections)->mapWithKeys(
+            static fn (Sections $section): array => [(int) $section->id => (string) $section->section_name],
+        )->all();
+        $physicalRoomCount = count(array_filter(
+            $this->generationSnapshot?->roomsById ?? [],
+            static fn (array $room): bool => ! in_array((string) ($room['room_type'] ?? ''), ['online', 'field'], true),
+        ));
+
+        foreach ($configsBySectionId as $sectionId => $config) {
+            $sectionName = $sectionNames[(int) $sectionId] ?? 'the section';
+            $allowedDays = SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null);
+            if ($allowedDays !== null && count($allowedDays) < count(SchedulingPolicy::DAYS) && $physicalRoomCount > 0) {
+                $recommendations[] = [
+                    'id' => 'preferred-days-add-day-'.$sectionId,
+                    'title' => 'Recommend adding another day',
+                    'detected_cause' => sprintf('%s is restricted to %s, leaving other room-time capacity unused.', $sectionName, implode(', ', $allowedDays)),
+                    'suggested_adjustment' => 'Add another Preferred Day so available rooms and scheduling capacity can be used more evenly.',
+                    'section_id' => (int) $sectionId,
+                    'section_name' => $sectionName,
+                    'course_id' => null,
+                    'course_code' => null,
+                    'impact' => 'low',
+                    'adjustments' => [],
+                    'status' => 'active',
+                    'resolved' => false,
+                ];
+            }
+
+            $recommendations = [
+                ...$recommendations,
+                ...$this->courseSessionRecommendations((int) $sectionId, $sectionName, $config, $schedules),
+            ];
+        }
+
+        return $recommendations;
+    }
+
+    /**
+     * "Put this course in the Morning/Afternoon Session" for courses whose
+     * session preference the timetable could not honour.
+     *
+     * A course's session is a soft preference, so a full session does not fail
+     * the run: the course lands elsewhere and the preference is silently lost.
+     * An evening field course is flagged even when it fit, because the field
+     * end time leaves the evening almost no room. Each recommendation names a
+     * session that still has free start times for every meeting of the course,
+     * counted against this timetable, and carries the adjustment that sets it.
+     *
+     * @param  array<string, mixed>  $config
+     * @param  list<array<string, mixed>>  $schedules  the generated timetable
+     * @return list<array<string, mixed>>
+     */
+    private function courseSessionRecommendations(int $sectionId, string $sectionName, array $config, array $schedules): array
+    {
+        $timePreferences = (array) ($config['time_preferences_by_course_id'] ?? []);
+        if ($timePreferences === []) {
+            return [];
+        }
+
+        $recommender = null;
+        $recommendations = [];
+        foreach (array_map('intval', $config['course_ids'] ?? []) as $courseId) {
+            $preference = SchedulingPolicy::normalizePreferredPeriod(
+                $timePreferences[$courseId] ?? $timePreferences[(string) $courseId] ?? null,
+            );
+            $course = $this->loadedCourses->get($courseId);
+            if ($preference === null || $course === null) {
+                continue;
+            }
+
+            $rows = array_values(array_filter(
+                $schedules,
+                static fn (array $row): bool => (int) ($row['section_id'] ?? 0) === $sectionId
+                    && (int) ($row['course_id'] ?? 0) === $courseId,
+            ));
+            $meetings = $this->sessionMeetings($config, $courseId);
+            $isField = $meetings !== [] && $meetings[0]['field'];
+            $fieldEvening = $isField && $preference === 'evening';
+            if (! $fieldEvening && $this->rowsInsidePeriod($rows, $preference)) {
+                continue;
+            }
+
+            $recommender ??= $this->sessionRecommender($config, $schedules);
+            $options = $recommender->courseOptions($sectionId, $meetings, $isField, $preference, $rows);
+            $courseCode = (string) ($course->course_code ?? 'Course '.$courseId);
+            $cause = $fieldEvening
+                ? sprintf('%s is a field course set to the Evening session, but field classes must end by %s.', $courseCode, date('g:i A', strtotime(SchedulingPolicy::fieldDayEndTime())))
+                : sprintf('%s asked for the %s session, but no free time was left there, so it was placed outside it.', $courseCode, ucfirst($preference));
+
+            foreach (array_slice($options, 0, 2) as $option) {
+                $recommendations[] = $this->sessionRecommendation(
+                    id: sprintf('session-course-%d-%d-%s', $sectionId, $courseId, $option['period']),
+                    target: $courseCode,
+                    option: $option,
+                    cause: $cause,
+                    adjustment: [
+                        'type' => 'set_time_preference',
+                        'section_id' => $sectionId,
+                        'course_id' => $courseId,
+                        'value' => $option['period'],
+                        'section_name' => $sectionName,
+                        'course_code' => $courseCode,
+                    ],
+                    impact: 'low',
+                );
+            }
+        }
+
+        return $recommendations;
+    }
+
+    /**
+     * "Put this section in the Morning/Afternoon Session" for each section the
+     * pre-check found could not fit its session window.
+     *
+     * @param  list<array<string, mixed>>  $blocking
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @return list<array<string, mixed>>
+     */
+    private function periodBlockerSessionRecommendations(array $blocking, array $configsBySectionId): array
+    {
+        $recommendations = [];
+        $seen = [];
+        foreach ($blocking as $constraint) {
+            if (! in_array($constraint['code'] ?? null, ['component_duration_exceeds_period', 'period_capacity_exceeded'], true)) {
+                continue;
+            }
+
+            $sectionId = (int) ($constraint['context']['section_id'] ?? 0);
+            if ($sectionId <= 0 || isset($seen[$sectionId]) || ! isset($configsBySectionId[$sectionId])) {
+                continue;
+            }
+            $seen[$sectionId] = true;
+
+            $recommendations = [
+                ...$recommendations,
+                ...$this->sectionSessionRecommendations(
+                    $sectionId,
+                    (string) ($constraint['context']['section_name'] ?? 'Section '.$sectionId),
+                    $configsBySectionId[$sectionId],
+                    (string) ($constraint['context']['preferred_period'] ?? ''),
+                ),
+            ];
+        }
+
+        return $recommendations;
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     * @return list<array<string, mixed>>
+     */
+    private function sectionSessionRecommendations(int $sectionId, string $sectionName, array $config, string $currentPeriod): array
+    {
+        $meetings = [];
+        foreach (array_map('intval', $config['course_ids'] ?? []) as $courseId) {
+            $meetings = [...$meetings, ...$this->sessionMeetings($config, $courseId)];
+        }
+
+        $options = $this->sessionRecommender($config, [])->sectionOptions($sectionId, $meetings, $currentPeriod !== '' ? $currentPeriod : null);
+        $cause = $currentPeriod !== ''
+            ? sprintf('%s is restricted to the %s session, and its courses do not fit there.', $sectionName, ucfirst($currentPeriod))
+            : sprintf('%s does not fit its current session.', $sectionName);
+
+        return array_map(fn (array $option): array => $this->sessionRecommendation(
+            id: sprintf('session-section-%d-%s', $sectionId, $option['period']),
+            target: $sectionName,
+            option: $option,
+            cause: $cause,
+            adjustment: [
+                'type' => 'set_preferred_period',
+                'section_id' => $sectionId,
+                'course_id' => 0,
+                'value' => $option['period'],
+                'section_name' => $sectionName,
+                'course_code' => '',
+            ],
+            impact: 'medium',
+        ), array_slice($options, 0, 2));
+    }
+
+    /**
+     * @param  array{period: string, label: string, free_starts: int}  $option
+     * @param  array<string, mixed>  $adjustment
+     * @return array<string, mixed>
+     */
+    private function sessionRecommendation(string $id, string $target, array $option, string $cause, array $adjustment, string $impact): array
+    {
+        return [
+            'id' => $id,
+            'title' => sprintf('Put %s in the %s Session', $target, ucfirst($option['period'])),
+            'detected_cause' => $cause,
+            'suggested_adjustment' => sprintf(
+                '%s still has %d free start time%s for %s.',
+                $option['label'],
+                $option['free_starts'],
+                $option['free_starts'] === 1 ? '' : 's',
+                $target,
+            ),
+            'section_id' => (int) $adjustment['section_id'],
+            'section_name' => (string) $adjustment['section_name'],
+            'course_id' => (int) $adjustment['course_id'] > 0 ? (int) $adjustment['course_id'] : null,
+            'course_code' => (string) $adjustment['course_code'] !== '' ? (string) $adjustment['course_code'] : null,
+            'impact' => $impact,
+            'adjustments' => [$adjustment],
+            'status' => 'active',
+            'resolved' => false,
+        ];
+    }
+
+    /**
+     * The meetings the generator places for one course, from its requirements:
+     * one per component, or two halves for a Split Session.
+     *
+     * @param  array<string, mixed>  $config
+     * @return list<array{duration_slots: int, room_types: list<string>, field: bool}>
+     */
+    private function sessionMeetings(array $config, int $courseId): array
+    {
+        $requirements = (array) ($config['requirements_by_course_id'][$courseId]
+            ?? $config['requirements_by_course_id'][(string) $courseId]
+            ?? []);
+        $balancedSplit = in_array($courseId, array_map('intval', $config['balanced_split_course_ids'] ?? []), true);
+
+        $meetings = [];
+        foreach ($requirements as $requirement) {
+            $requirement = (array) $requirement;
+            $roomTypes = array_values(array_map('strval', (array) ($requirement['eligible_room_types'] ?? [])));
+            $field = ($requirement['component_type'] ?? null) === 'field' || in_array('field', $roomTypes, true);
+            $slots = (int) ($requirement['duration_slots'] ?? 0);
+            if ($slots <= 0) {
+                continue;
+            }
+
+            $lengths = $balancedSplit && count($requirements) === 1 && $slots > 1
+                ? [(int) ceil($slots / 2), (int) floor($slots / 2)]
+                : [$slots];
+            foreach ($lengths as $length) {
+                $meetings[] = ['duration_slots' => $length, 'room_types' => $roomTypes, 'field' => $field];
+            }
+        }
+
+        return $meetings;
+    }
+
+    /**
+     * @param  array<string, mixed>  $config  supplies Step 1's Preferred Days, the same for every section
+     * @param  list<array<string, mixed>>  $extraRows  rows held on top of the saved timetable
+     */
+    private function sessionRecommender(array $config, array $extraRows): SessionRecommender
+    {
+        return new SessionRecommender(
+            $this->generationSnapshot?->roomsById ?? [],
+            [...($this->generationSnapshot?->persistedSchedules ?? []), ...$extraRows],
+            SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null),
+        );
+    }
+
+    /** Every row starts inside the session window. */
+    private function rowsInsidePeriod(array $rows, string $period): bool
+    {
+        if ($rows === []) {
+            return false;
+        }
+
+        [$from, $to] = SchedulingPolicy::preferredPeriodSlotRange($period);
+        $opening = SchedulingPolicy::timeToMinutes(SchedulingPolicy::openingTime());
+        foreach ($rows as $row) {
+            $start = intdiv(SchedulingPolicy::timeToMinutes((string) ($row['start_time'] ?? '00:00')) - $opening, SchedulingPolicy::SLOT_MINUTES);
+            if ($start < $from || $start >= $to) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -997,6 +1315,8 @@ class YearLevelScheduleGenerationService
     {
         $courseIds = array_map('intval', $config['course_ids'] ?? []);
         $splitIds = array_map('intval', $config['selected_split_session_course_ids'] ?? []);
+        $balancedSplitIds = array_map('intval', $config['balanced_split_course_ids'] ?? []);
+        $hybridSplitIds = array_map('intval', $config['hybrid_split_course_ids'] ?? []);
 
         $patternCourses = [];
         foreach (($config['preferred_patterns'] ?? []) as $courseId => $pattern) {
@@ -1022,6 +1342,26 @@ class YearLevelScheduleGenerationService
                 : null,
             $splitIds,
         )));
+
+        $balancedSplitCourses = array_values(array_filter(array_map(
+            fn (int $courseId): ?array => ($course = $courses->get($courseId)) !== null
+                && ! in_array($courseId, $hybridSplitIds, true)
+                && ! SchedulingPolicy::isFieldCourse($course, (int) $section->department_id)
+                ? [
+                    'course_id' => $courseId,
+                    'course_code' => $this->courseCode($courses, $courseId),
+                ]
+                : null,
+            $balancedSplitIds,
+        )));
+        $hybridSplitSlotAvailable = false;
+        foreach ($balancedSplitCourses as $balancedSplitCourse) {
+            $balancedCourse = $courses->get((int) $balancedSplitCourse['course_id']);
+            if ($balancedCourse !== null && $this->hasVacantHybridSplitSlot($balancedCourse, $section, $config)) {
+                $hybridSplitSlotAvailable = true;
+                break;
+            }
+        }
 
         $laboratoryCourses = [];
         foreach ($courseIds as $courseId) {
@@ -1050,11 +1390,66 @@ class YearLevelScheduleGenerationService
             'course_count' => count($courseIds),
             'pattern_courses' => $patternCourses,
             'split_courses' => array_values($splitCourses),
+            'balanced_split_courses' => $balancedSplitCourses,
+            'hybrid_split_slot_available' => $hybridSplitSlotAvailable,
             'laboratory_courses' => $laboratoryCourses,
             'forced_on_site_courses' => $forcedOnSiteCourses,
             'iterations' => $this->solver->iterationsUsed(),
             'search_limit_reached' => $this->solver->searchLimitReached(),
         ];
+    }
+
+    /**
+     * Check the captured room/schedule snapshot for at least one vacant 1.5-hour
+     * physical slot. This gates the Hybrid Split suggestion; it is not a solver
+     * placement and therefore does not change generation outcomes.
+     */
+    private function hasVacantHybridSplitSlot(Course $course, Sections $section, array $config): bool
+    {
+        if ((int) ($course->lab_hours ?? 0) > 0 || $this->generationSnapshot === null) {
+            return false;
+        }
+
+        $rooms = array_filter(
+            $this->generationSnapshot->roomsById,
+            static fn (array $room): bool => in_array((string) ($room['room_type'] ?? ''), ['lecture', 'laboratory'], true)
+                && (string) ($room['status'] ?? 'available') === 'available',
+        );
+        if ($rooms === []) {
+            return false;
+        }
+
+        $days = SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null) ?? SchedulingPolicy::DAYS;
+        $durationSlots = SchedulingPolicy::hybridSplitMeetingSlots();
+        $opening = SchedulingPolicy::timeToMinutes(SchedulingPolicy::openingTime());
+        $persisted = $this->generationSnapshot->persistedSchedules;
+
+        foreach ($rooms as $roomId => $room) {
+            foreach ($days as $day) {
+                foreach (SchedulingPolicy::generatedStartSlotsForDuration($durationSlots) as $startSlot) {
+                    $endSlot = $startSlot + $durationSlots;
+                    $occupied = false;
+                    foreach ($persisted as $row) {
+                        if ((int) ($row['room_id'] ?? 0) !== (int) $roomId || (string) ($row['day'] ?? '') !== $day) {
+                            continue;
+                        }
+
+                        $rowStart = intdiv(max(0, SchedulingPolicy::timeToMinutes((string) ($row['start_time'] ?? '00:00')) - $opening), SchedulingPolicy::SLOT_MINUTES);
+                        $rowEnd = intdiv(max(0, SchedulingPolicy::timeToMinutes((string) ($row['end_time'] ?? '00:00')) - $opening), SchedulingPolicy::SLOT_MINUTES);
+                        if ($startSlot < $rowEnd && $rowStart < $endSlot) {
+                            $occupied = true;
+                            break;
+                        }
+                    }
+
+                    if (! $occupied) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /** @param  Collection<int, Course>  $courses */
@@ -1338,17 +1733,6 @@ class YearLevelScheduleGenerationService
         ));
 
         return max(0, $courseCount + $splitLabCount + $gecSplitCount + $forcedOnSiteCount - $forcedOnlineCount);
-    }
-
-    /** Kept as a thin compatibility seam for focused legacy score tests. */
-    private function scoreCandidate(array $schedules, array $sections): array
-    {
-        return $this->evaluator->evaluate(
-            $schedules,
-            $sections,
-            fairness: $this->solver->departmentRoomFairness(),
-            sundayIsRegularTeachingDay: $this->sundayIsRegularTeachingDay(),
-        );
     }
 
     /**

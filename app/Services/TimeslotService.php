@@ -48,6 +48,7 @@ class TimeslotService
         return ScheduleSetting::query()->firstOrCreate([], [
             'opening_time' => '07:00:00',
             'closing_time' => '20:30:00',
+            'field_end_time' => '17:00:00',
             'slot_interval' => 30,
         ]);
     }

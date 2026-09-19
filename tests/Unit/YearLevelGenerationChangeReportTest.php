@@ -78,6 +78,8 @@ class YearLevelGenerationChangeReportTest extends TestCase
         $this->assertCount(1, $changes[0]['items']);
         $this->assertSame('Scheduled online: no lecture room was available (Monday, Wednesday)', $changes[0]['items'][0]['detail']);
         $this->assertSame('critical', $changes[1]['severity']);
+        $this->assertSame('active', $changes[1]['status']);
+        $this->assertFalse($changes[1]['resolved']);
         $this->assertSame('BSIT 1-B', $changes[1]['items'][0]['section_name']);
         $this->assertSame('IT 101', $changes[1]['items'][0]['course_code']);
     }
