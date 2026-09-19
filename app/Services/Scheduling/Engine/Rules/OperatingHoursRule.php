@@ -93,14 +93,25 @@ final class OperatingHoursRule
             return null;
         }
 
-        $fieldEnd = SchedulingPolicy::fieldDayEndTime();
-        if (SchedulingPolicy::normalizeTime((string) ($attempt['end_time'] ?? '')) <= $fieldEnd) {
+        return self::fieldEveningMismatch((string) ($attempt['end_time'] ?? ''), SchedulingPolicy::fieldDayEndTime());
+    }
+
+    /**
+     * field_evening_window for a meeting already known to be a field placement.
+     * Shared with the constraint kernel, which passes its snapshot's field end
+     * time instead of the live setting.
+     *
+     * @return array{rule: string, message: string}|null
+     */
+    public static function fieldEveningMismatch(string $endTime, string $fieldEndTime): ?array
+    {
+        if (SchedulingPolicy::timeToMinutes($endTime) <= SchedulingPolicy::timeToMinutes($fieldEndTime)) {
             return null;
         }
 
         return [
             'rule' => 'field_evening_window',
-            'message' => 'Field courses must end by '.date('g:i A', strtotime($fieldEnd)).'.',
+            'message' => 'Field courses must end by '.date('g:i A', strtotime($fieldEndTime)).'.',
         ];
     }
 }

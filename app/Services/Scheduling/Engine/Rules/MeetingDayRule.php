@@ -2,6 +2,7 @@
 
 namespace App\Services\Scheduling\Engine\Rules;
 
+use App\Models\Course;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -66,22 +67,40 @@ final class MeetingDayRule
     /** @return array<string, mixed>|null */
     public function courseCategoryDay(string $day, AttemptRecords $records): ?array
     {
-        $course = $records->course;
+        return self::categoryDay(
+            $records->course,
+            $day,
+            SchedulingPolicy::isFieldCourse($records->course, $records->departmentId()),
+        );
+    }
 
+    /**
+     * field_day_constraint, minor_day_constraint: the days a course's category
+     * allows. The one implementation; the constraint kernel calls it too, each
+     * side resolving field-ness from its own data.
+     *
+     * Anything that is not a major takes the minor limit, as a course with no
+     * category is not a major elsewhere (SchedulingPolicy::isMajorCourse).
+     *
+     * @param  Course|array<string, mixed>  $course
+     * @return array{rule: string, message: string}|null
+     */
+    public static function categoryDay(Course|array $course, string $day, bool $isFieldCourse): ?array
+    {
         // NSTP may use any day, and valid_day already rejects anything else, so
         // it only needs to be exempted from the field and minor limits below.
         if (SchedulingPolicy::isNstpCourse($course)) {
             return null;
         }
 
-        if (SchedulingPolicy::isFieldCourse($course, $records->departmentId())) {
+        if ($isFieldCourse) {
             return in_array($day, SchedulingPolicy::WEEKDAYS, true) ? null : [
                 'rule' => 'field_day_constraint',
                 'message' => 'PATHFIT and other field courses must be scheduled Monday through Friday.',
             ];
         }
 
-        if (strtolower((string) ($course->course_category ?? 'major')) === 'minor') {
+        if (! SchedulingPolicy::isMajorCourse($course)) {
             return in_array($day, SchedulingPolicy::WEEKDAYS_AND_SATURDAY, true) ? null : [
                 'rule' => 'minor_day_constraint',
                 'message' => 'Minor courses (GEC, GEE, and similar) must be scheduled Monday through Saturday.',
@@ -105,6 +124,18 @@ final class MeetingDayRule
                 ->value('day'),
         );
 
+        return self::forcedDayMismatch(is_string($forcedDay) ? $forcedDay : null, $day);
+    }
+
+    /**
+     * forced_course_day: a course the department pinned to one day meets only
+     * then. Shared with the constraint kernel, which reads the pin from its
+     * snapshot.
+     *
+     * @return array{rule: string, message: string, required_day: string}|null
+     */
+    public static function forcedDayMismatch(?string $forcedDay, string $day): ?array
+    {
         if ($forcedDay === null || $forcedDay === $day) {
             return null;
         }

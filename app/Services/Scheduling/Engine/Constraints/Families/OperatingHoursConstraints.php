@@ -55,8 +55,9 @@ final class OperatingHoursConstraints
 
         // The snapshot pins the field end time it was captured with.
         $fieldEnd = (string) ($snapshot->operatingHours['field_end_time'] ?? SchedulingPolicy::fieldDayEndTime());
-        if (SchedulingPolicy::timeToMinutes($row->endTime) > SchedulingPolicy::timeToMinutes($fieldEnd)) {
-            $violations[] = ConstraintSupport::violation('field_evening_window', 'Field courses must end by '.date('g:i A', strtotime($fieldEnd)).'.');
+        $evening = OperatingHoursRule::fieldEveningMismatch($row->endTime, $fieldEnd);
+        if ($evening !== null) {
+            $violations[] = ConstraintSupport::violation($evening['rule'], $evening['message']);
         }
 
         return $violations;

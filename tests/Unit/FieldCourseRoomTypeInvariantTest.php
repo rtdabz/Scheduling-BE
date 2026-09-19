@@ -3,7 +3,6 @@
 namespace Tests\Unit;
 
 use App\Models\Course;
-use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\YearLevel\YearLevelFeasibilityService;
@@ -26,11 +25,12 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
 
         $this->assertSame('field', SchedulingPolicy::effectiveRoomType($course, null, 'lecture'));
         $this->assertSame('field', SchedulingPolicy::effectiveRoomType($course, null, 'laboratory'));
-        $this->assertSame('field', SchedulingConstraintPredicates::effectiveRoomType([
+        // The snapshot's array form, with its (empty) field-course codes.
+        $this->assertSame('field', SchedulingPolicy::effectiveRoomType([
             'course_code' => 'PATHFIT 1',
             'course_category' => 'minor',
             'room_type_required' => 'field',
-        ], [], 'lecture'));
+        ], null, 'lecture', []));
     }
 
     public function test_department_scoped_field_configuration_classifies_shared_course_as_field_for_generation(): void

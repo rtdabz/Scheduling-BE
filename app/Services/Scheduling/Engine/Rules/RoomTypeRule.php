@@ -40,89 +40,77 @@ final class RoomTypeRule
         }
 
         $room = $roomId !== null ? $this->lookups->remember('room:'.$roomId, fn () => Rooms::find($roomId)) : null;
-        $requiredRoomType = SchedulingPolicy::effectiveRoomType($course, $departmentId, $meetingType);
+
+        return self::mismatch($course, $room, $deliveryMode, $meetingType, $departmentId);
+    }
+
+    /**
+     * The room-type decision itself, for a course and room in either form: the
+     * models RuleEngine loads, or the constraint kernel's snapshot arrays. The
+     * kernel passes its snapshot's field-course codes so no database lookup
+     * happens; RuleEngine passes none and the department's list is read.
+     *
+     * @param  Course|array<string, mixed>  $course
+     * @param  Rooms|array<string, mixed>|null  $room
+     * @param  list<string>|null  $fieldCourseCodes
+     * @return array{rule: string, message: string}|null
+     */
+    public static function mismatch(
+        Course|array $course,
+        Rooms|array|null $room,
+        string $deliveryMode,
+        ?string $meetingType,
+        ?int $departmentId,
+        ?array $fieldCourseCodes = null,
+    ): ?array {
+        $courseCode = (string) (is_array($course) ? ($course['course_code'] ?? '') : $course->course_code);
+        $roomType = $room === null ? null : (string) (is_array($room) ? ($room['room_type'] ?? '') : $room->room_type);
+        $roomCode = $room === null ? null : (string) (is_array($room) ? ($room['room_code'] ?? '') : $room->room_code);
+        $requiredRoomType = SchedulingPolicy::effectiveRoomType($course, $departmentId, $meetingType, $fieldCourseCodes);
+        $violation = static fn (string $message): array => ['rule' => 'room_type_match', 'message' => $message];
 
         if ($deliveryMode === 'online') {
-            return SchedulingPolicy::allowsOnlineRoomFallback($course, $departmentId, $meetingType)
+            return SchedulingPolicy::allowsOnlineRoomFallback($course, $departmentId, $meetingType, $fieldCourseCodes)
                 ? null
-                : [
-                    'rule' => 'room_type_match',
-                    'message' => "Course {$course->course_code} cannot use online delivery for its {$requiredRoomType} requirement.",
-                ];
+                : $violation("Course {$courseCode} cannot use online delivery for its {$requiredRoomType} requirement.");
         }
 
-        if (! $room) {
-            if ($deliveryMode === 'on-site' && SchedulingPolicy::allowsRoomTbaFallback($course, $departmentId, $meetingType)) {
+        if ($room === null) {
+            if ($deliveryMode === 'on-site' && SchedulingPolicy::allowsRoomTbaFallback($course, $departmentId, $meetingType, $fieldCourseCodes)) {
                 return null;
             }
 
-            return [
-                'rule' => 'room_type_match',
-                'message' => 'A physical room is required for this schedule.',
-            ];
+            return $violation('A physical room is required for this schedule.');
         }
 
         if ($deliveryMode === 'field') {
-            return $room->room_type === 'field'
-                ? null
-                : [
-                    'rule' => 'room_type_match',
-                    'message' => 'Field schedules must use a field room assignment.',
-                ];
+            return $roomType === 'field' ? null : $violation('Field schedules must use a field room assignment.');
         }
 
         // On-site: reject virtual (online/field) rooms for physical delivery.
-        if (in_array($room->room_type, ['online', 'field'], true)) {
-            return [
-                'rule' => 'room_type_match',
-                'message' => "Course {$course->course_code} requires a physical room, "
-                    ."but '{$room->room_code}' is a '{$room->room_type}' room.",
-            ];
+        if (in_array($roomType, ['online', 'field'], true)) {
+            return $violation("Course {$courseCode} requires a physical room, but '{$roomCode}' is a '{$roomType}' room.");
         }
 
-        if ($requiredRoomType === 'laboratory' && $room->room_type !== 'laboratory') {
-            return [
-                'rule' => 'room_type_match',
-                'message' => "Course {$course->course_code} requires a laboratory room, "
-                    ."but '{$room->room_code}' is a '{$room->room_type}' room.",
-            ];
+        if ($requiredRoomType === 'laboratory' && $roomType !== 'laboratory') {
+            return $violation("Course {$courseCode} requires a laboratory room, but '{$roomCode}' is a '{$roomType}' room.");
         }
 
-        if (
-            $requiredRoomType === 'lecture'
-            && $room->room_type === 'laboratory'
-            && ! $this->canUseLaboratoryForLecture($course, $room)
-        ) {
-            return [
-                'rule' => 'room_type_match',
-                'message' => "Course {$course->course_code} can only use lecture-capable laboratory rooms as a fallback.",
-            ];
+        if ($requiredRoomType === 'lecture' && $roomType === 'laboratory'
+            && ! SchedulingPolicy::laboratoryServesLecture($course, $room)) {
+            return $violation("Course {$courseCode} can only use lecture-capable laboratory rooms as a fallback.");
         }
 
-        if (
-            $requiredRoomType === 'lecture'
-            && in_array($room->room_type, ['lecture', 'laboratory'], true)
-        ) {
+        if ($requiredRoomType === 'lecture' && in_array($roomType, ['lecture', 'laboratory'], true)) {
             return null;
         }
 
-        if ($requiredRoomType === 'laboratory' && $room->room_type === 'laboratory') {
+        if ($requiredRoomType === 'laboratory' && $roomType === 'laboratory') {
             return null;
         }
 
-        if ($requiredRoomType !== $room->room_type) {
-            return [
-                'rule' => 'room_type_match',
-                'message' => "Course {$course->course_code} requires a '{$requiredRoomType}' room, "
-                    ."but '{$room->room_code}' is a '{$room->room_type}' room.",
-            ];
-        }
-
-        return null;
-    }
-
-    private function canUseLaboratoryForLecture(Course $course, Rooms $room): bool
-    {
-        return SchedulingPolicy::laboratoryServesLecture($course, $room);
+        return $requiredRoomType === $roomType
+            ? null
+            : $violation("Course {$courseCode} requires a '{$requiredRoomType}' room, but '{$roomCode}' is a '{$roomType}' room.");
     }
 }

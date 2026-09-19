@@ -11,10 +11,12 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
+use App\Services\Scheduling\Domain\MeetingGroup;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintKernel;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Generation\GenerateSchedulePlan;
+use App\Services\Scheduling\Generation\ScheduleRequirement;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use App\Services\TimeslotService;
@@ -216,6 +218,70 @@ class EngineParityMatrixTest extends TestCase
             $this->assertParity(['section_conflict'], $this->attempt(), $status);
             Schedule::query()->delete();
         }
+    }
+
+    public function test_meeting_group_rules_agree(): void
+    {
+        // 3 units = two 90-minute Hybrid Split meetings, one online and one on-site.
+        $course = $this->course();
+        $meeting = static fn (string $day, string $mode): array => [
+            'day' => $day, 'start_time' => '08:00', 'end_time' => '09:30', 'mode' => $mode, 'meeting_type' => 'lecture',
+        ];
+
+        $this->assertGroupParity([], $course, 'hybrid', [$meeting('Monday', 'online'), $meeting('Wednesday', 'on-site')]);
+        $this->assertGroupParity(['split_group_day_separation'], $course, 'hybrid', [$meeting('Monday', 'online'), $meeting('Monday', 'on-site')]);
+        $this->assertGroupParity(['hybrid_components'], $course, 'hybrid', [$meeting('Monday', 'online'), $meeting('Wednesday', 'online')]);
+    }
+
+    /**
+     * RuleEngine judges linked meetings through validateConfiguredMeetingGroups
+     * (batch save); the kernel through evaluateMeetingGroup (generation).
+     *
+     * @param  list<string>  $expected
+     * @param  list<array<string, mixed>>  $meetings
+     */
+    private function assertGroupParity(array $expected, Course $course, string $type, array $meetings): void
+    {
+        $operations = array_map(fn (array $meeting): array => [
+            ...$this->attempt(['course_id' => $course->id, 'room_id' => null]),
+            ...$meeting,
+            'split_group_id' => 'group-1',
+            'is_hybrid' => $type === 'hybrid',
+        ], $meetings);
+
+        $engine = array_values(array_unique(array_column(app(RuleEngine::class)->validateConfiguredMeetingGroups($operations), 'rule')));
+        sort($engine);
+
+        $snapshot = app(SchedulingSnapshotRepository::class)->capture(
+            semesterId: $this->semester->id,
+            departmentId: $this->department->id,
+            sectionIds: [$this->section->id],
+            courseIds: [$course->id],
+        );
+        $group = new MeetingGroup(
+            groupId: 'group-1',
+            sectionId: $this->section->id,
+            courseId: $course->id,
+            type: $type,
+            requirements: [new ScheduleRequirement(
+                courseId: $course->id,
+                componentType: 'lecture',
+                durationSlots: 3,
+                eligibleRoomTypes: ['lecture'],
+                allowedDeliveryModes: ['online', 'on-site'],
+                isSplitComponent: true,
+            )],
+            rows: array_map(static fn (array $operation): ScheduleRow => ScheduleRow::fromArray($operation), $operations),
+        );
+        $kernel = array_values(array_unique(array_map(
+            static fn ($violation): string => $violation->ruleId,
+            (new SchedulingConstraintKernel)->evaluateMeetingGroup($group, $snapshot),
+        )));
+        sort($kernel);
+
+        sort($expected);
+        $this->assertSame($expected, $engine, 'RuleEngine');
+        $this->assertSame($engine, $kernel, 'Kernel disagrees with RuleEngine');
     }
 
     // Part B: whatever the generator proposes, under any setting, both

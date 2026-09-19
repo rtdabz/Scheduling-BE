@@ -3,16 +3,18 @@
 namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Models\Course;
+use App\Models\Departments;
 use App\Models\Sections;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 /**
  * hybrid_component_count, hybrid_components, minor_split_component_count,
- * minor_split_eligibility, minor_split_pattern, minor_split_duration.
+ * minor_split_eligibility, minor_split_pattern, minor_split_duration,
+ * split_group_day_separation.
  *
  * Linked meetings (one split_group_id) that cannot be judged one row at a time.
- * Legacy custom `days:x-y` groups are intentionally left alone; only the
- * explicit Generator configurations — Hybrid and Split Session — are covered.
+ * The shape rules cover the explicit Generator configurations -- Hybrid and
+ * Split Session; day separation applies to every linked group.
  */
 final class MeetingGroupRule
 {
@@ -30,98 +32,117 @@ final class MeetingGroupRule
             ->groupBy(static fn (array $operation): string => (string) $operation['split_group_id']);
 
         foreach ($groups as $groupId => $group) {
-            $rows = $group->values();
-            $first = $rows->first();
+            $rows = $group->values()->all();
+            $first = $rows[0] ?? null;
             if (! is_array($first)) {
                 continue;
             }
 
-            $isHybrid = $rows->contains(static fn (array $row): bool => (bool) ($row['is_hybrid'] ?? false));
+            $isHybrid = collect($rows)->contains(static fn (array $row): bool => (bool) ($row['is_hybrid'] ?? false));
             $pattern = SchedulingPolicy::normalizePreferredPattern($first['preferred_pattern'] ?? null);
-            $isMinorSplit = ! $isHybrid && in_array($pattern, ['MW', 'TTh'], true);
+            $kind = match (true) {
+                $isHybrid => 'hybrid',
+                in_array($pattern, ['MW', 'TTh'], true) => 'minor_split',
+                default => 'linked',
+            };
 
-            if (! $isHybrid && ! $isMinorSplit) {
-                continue;
-            }
-
-            if ($rows->count() !== 2) {
-                $violations[] = [
-                    'rule' => $isHybrid ? 'hybrid_component_count' : 'minor_split_component_count',
-                    'message' => $isHybrid
-                        ? 'Hybrid scheduling requires exactly one online lecture and one on-site laboratory meeting.'
-                        : 'Split Session scheduling requires exactly two linked meetings.',
-                    'split_group_id' => $groupId,
-                ];
-
-                continue;
-            }
-
-            $courseId = RuleSupport::courseId($first);
-            $course = $courseId > 0 ? $this->lookups->remember('course:'.$courseId, fn () => Course::find($courseId)) : null;
-            if ($course === null) {
-                continue;
-            }
-
-            if ($isHybrid) {
-                $hasLaboratoryComponent = (int) ($course->lab_hours ?? 0) > 0;
-                $validHybridShape = $hasLaboratoryComponent
-                    ? $rows->pluck('meeting_type')->sort()->values()->all() === ['laboratory', 'lecture']
-                    : $rows->every(static fn (array $row): bool => ($row['meeting_type'] ?? null) === 'lecture')
-                        && $rows->pluck('mode')->sort()->values()->all() === ['on-site', 'online'];
-                if (! $validHybridShape) {
-                    $violations[] = [
-                        'rule' => 'hybrid_components',
-                        'message' => $hasLaboratoryComponent
-                            ? 'Hybrid Laboratory requires one online lecture and one on-site laboratory meeting.'
-                            : 'Hybrid Split requires one online and one on-site lecture meeting.',
-                        'split_group_id' => $groupId,
-                    ];
+            $course = null;
+            $splitSettings = null;
+            if ($kind !== 'linked') {
+                $courseId = RuleSupport::courseId($first);
+                $course = $courseId > 0 ? $this->lookups->remember('course:'.$courseId, fn () => Course::find($courseId)) : null;
+                if ($course === null) {
+                    continue;
                 }
-
-                continue;
+                if ($kind === 'minor_split') {
+                    $sectionId = (int) ($first['section_id'] ?? 0);
+                    $section = $sectionId > 0
+                        ? $this->lookups->remember('section:'.$sectionId, fn () => Sections::with('department')->find($sectionId))
+                        : null;
+                    $splitSettings = SchedulingPolicy::balancedSplitSettings($section?->department);
+                }
             }
 
-            $sectionId = (int) ($first['section_id'] ?? 0);
-            $section = $sectionId > 0
-                ? $this->lookups->remember('section:'.$sectionId, fn () => Sections::with('department')->find($sectionId))
-                : null;
-            if (! SchedulingPolicy::balancedSplitEligible($course, SchedulingPolicy::balancedSplitSettings($section?->department))) {
-                $violations[] = [
-                    'rule' => 'minor_split_eligibility',
-                    'message' => 'Split Session is available only for minor courses or lecture-only majors.',
-                    'split_group_id' => $groupId,
-                ];
-
-                continue;
-            }
-
-            $expectedDays = $pattern === 'MW' ? ['Monday', 'Wednesday'] : ['Tuesday', 'Thursday'];
-            sort($expectedDays);
-            if ($rows->pluck('day')->sort()->values()->all() !== $expectedDays) {
-                $violations[] = [
-                    'rule' => 'minor_split_pattern',
-                    'message' => "Split Session {$pattern} meetings must use the configured day pair.",
-                    'split_group_id' => $groupId,
-                ];
-            }
-
-            $totalMinutes = $rows->sum(static fn (array $row): int => max(0, RuleSupport::durationMinutes(
-                (string) ($row['start_time'] ?? ''),
-                (string) ($row['end_time'] ?? ''),
-            )));
-            // A ceiling, not an exact total: Setup Courses may shorten a Split
-            // Session (Custom Time Duration), but never stretch it past the
-            // course's contact hours.
-            $maximumMinutes = max(1, SchedulingPolicy::unitMinutes($course->units ?? 0));
-            if ($totalMinutes <= 0 || $totalMinutes > $maximumMinutes) {
-                $violations[] = [
-                    'rule' => 'minor_split_duration',
-                    'message' => 'Split Session meeting durations must not add up to more than the course contact hours.',
-                    'split_group_id' => $groupId,
-                ];
+            foreach (self::groupMismatches($kind, $course, $rows, $pattern, $splitSettings) as $mismatch) {
+                $violations[] = [...$mismatch, 'split_group_id' => $groupId];
             }
         }
 
         return $violations;
+    }
+
+    /**
+     * The meeting-group decision for one linked group. The one implementation;
+     * the constraint kernel calls it too with snapshot rows and settings.
+     *
+     * $kind is 'hybrid', 'minor_split' or 'linked' (any other linked group,
+     * which is only held to day separation). $rows need day, start_time,
+     * end_time, mode and meeting_type. A course is required unless 'linked'.
+     *
+     * @param  Course|array<string, mixed>|null  $course
+     * @param  list<array<string, mixed>>  $rows
+     * @param  array<string, mixed>|Departments|null  $splitSettings  Split Session settings (minor_split only)
+     * @return list<array{rule: string, message: string}>
+     */
+    public static function groupMismatches(string $kind, Course|array|null $course, array $rows, ?string $pattern, array|Departments|null $splitSettings = null): array
+    {
+        $mismatches = [];
+        $count = count($rows);
+        $column = static fn (string $key): array => array_map(static fn (array $row): mixed => $row[$key] ?? null, $rows);
+        $sorted = static function (array $values): array {
+            sort($values);
+
+            return $values;
+        };
+
+        if ($kind === 'hybrid' && $course !== null) {
+            $hasLaboratoryComponent = (int) (is_array($course) ? ($course['lab_hours'] ?? 0) : ($course->lab_hours ?? 0)) > 0;
+            if ($count !== 2) {
+                $mismatches[] = ['rule' => 'hybrid_component_count', 'message' => 'Hybrid scheduling requires exactly one online lecture and one on-site laboratory meeting.'];
+            } else {
+                $validShape = $hasLaboratoryComponent
+                    ? $sorted($column('meeting_type')) === ['laboratory', 'lecture']
+                    : $column('meeting_type') === ['lecture', 'lecture'] && $sorted($column('mode')) === ['on-site', 'online'];
+                if (! $validShape) {
+                    $mismatches[] = ['rule' => 'hybrid_components', 'message' => $hasLaboratoryComponent
+                        ? 'Hybrid Laboratory requires one online lecture and one on-site laboratory meeting.'
+                        : 'Hybrid Split requires one online and one on-site lecture meeting.'];
+                }
+            }
+        }
+
+        if ($kind === 'minor_split' && $course !== null) {
+            if ($count !== 2) {
+                $mismatches[] = ['rule' => 'minor_split_component_count', 'message' => 'Split Session scheduling requires exactly two linked meetings.'];
+            } elseif (! SchedulingPolicy::balancedSplitEligible($course, $splitSettings)) {
+                // An ineligible course has no Split Session shape to judge.
+                $mismatches[] = ['rule' => 'minor_split_eligibility', 'message' => 'Split Session is available only for minor courses or lecture-only majors.'];
+            } else {
+                if (in_array($pattern, ['MW', 'TTh'], true)) {
+                    $expectedDays = $sorted($pattern === 'MW' ? ['Monday', 'Wednesday'] : ['Tuesday', 'Thursday']);
+                    if ($sorted($column('day')) !== $expectedDays) {
+                        $mismatches[] = ['rule' => 'minor_split_pattern', 'message' => "Split Session {$pattern} meetings must use the configured day pair."];
+                    }
+                }
+
+                $totalMinutes = array_sum(array_map(
+                    static fn (array $row): int => max(0, SchedulingPolicy::timeToMinutes((string) ($row['end_time'] ?? '00:00')) - SchedulingPolicy::timeToMinutes((string) ($row['start_time'] ?? '00:00'))),
+                    $rows,
+                ));
+                // A ceiling, not an exact total: Setup Courses may shorten a
+                // Split Session (Custom Time Duration), but never stretch it
+                // past the course's contact hours.
+                $units = is_array($course) ? ($course['units'] ?? 0) : ($course->units ?? 0);
+                if ($totalMinutes <= 0 || $totalMinutes > max(1, SchedulingPolicy::unitMinutes($units))) {
+                    $mismatches[] = ['rule' => 'minor_split_duration', 'message' => 'Split Session meeting durations must not add up to more than the course contact hours.'];
+                }
+            }
+        }
+
+        if ($count > 1 && count(array_unique($column('day'))) !== $count) {
+            $mismatches[] = ['rule' => 'split_group_day_separation', 'message' => 'Split meetings for the same course must be scheduled on different days.'];
+        }
+
+        return $mismatches;
     }
 }

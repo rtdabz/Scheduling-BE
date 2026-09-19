@@ -62,36 +62,9 @@ final class SchedulingConstraintPredicates
      * @param  array<string, mixed>  $course
      * @param  list<string>  $fieldCourseCodes
      */
-    public static function effectiveRoomType(array $course, array $fieldCourseCodes, ?string $meetingType = null): string
-    {
-        return SchedulingPolicy::effectiveRoomType($course, null, $meetingType, $fieldCourseCodes);
-    }
-
-    /**
-     * @param  array<string, mixed>  $course
-     * @param  list<string>  $fieldCourseCodes
-     */
-    public static function allowsRoomTba(array $course, array $fieldCourseCodes, ?string $meetingType = null): bool
-    {
-        return SchedulingPolicy::allowsRoomTbaFallback($course, null, $meetingType, $fieldCourseCodes);
-    }
-
-    /**
-     * @param  array<string, mixed>  $course
-     * @param  list<string>  $fieldCourseCodes
-     */
     public static function allowsOnline(array $course, array $fieldCourseCodes, ?string $meetingType = null): bool
     {
         return SchedulingPolicy::allowsOnlineRoomFallback($course, null, $meetingType, $fieldCourseCodes);
-    }
-
-    /**
-     * @param  array<string, mixed>  $course
-     * @param  array<string, mixed>  $room
-     */
-    public static function canUseLaboratoryForLecture(array $course, array $room): bool
-    {
-        return SchedulingPolicy::laboratoryServesLecture($course, $room);
     }
 
     /** @param array<string, mixed>|ScheduleRow $row */

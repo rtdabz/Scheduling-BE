@@ -72,43 +72,57 @@ final class DeliveryModeRule
             return null;
         }
 
-        $hasLaboratoryComponent = (int) ($course->lab_hours ?? 0) > 0;
+        return self::hybridShapeMismatch(
+            $course,
+            (string) ($attempt['mode'] ?? 'on-site'),
+            $attempt['meeting_type'] ?? null,
+            RuleSupport::durationMinutes((string) ($attempt['start_time'] ?? ''), (string) ($attempt['end_time'] ?? '')),
+        );
+    }
+
+    /**
+     * The hybrid decision for one meeting already marked hybrid, for a course
+     * in either form (model or the kernel's snapshot array). The one
+     * implementation; the constraint kernel calls it too.
+     *
+     * Integrated Hybrid's lecture and laboratory lengths are the user's to set
+     * in Setup Courses, so only their delivery is fixed here; the week's total
+     * stays capped by `class_duration`. Hybrid Split is a fixed shape and keeps
+     * its exact length.
+     *
+     * @param  Course|array<string, mixed>  $course
+     * @return array{rule: string, message: string}|null
+     */
+    public static function hybridShapeMismatch(Course|array $course, string $mode, ?string $meetingType, int $durationMinutes): ?array
+    {
+        $value = static fn (string $key): int => (int) (is_array($course) ? ($course[$key] ?? 0) : ($course->{$key} ?? 0));
+        $hasLaboratoryComponent = $value('lab_hours') > 0;
         $isHybridSplit = ! $hasLaboratoryComponent && SchedulingPolicy::hybridSplitEligible($course);
-        if (! $isHybridSplit && (! SchedulingPolicy::isMajorCourse($course)
-            || (int) ($course->lecture_hours ?? 0) <= 0
-            || ! $hasLaboratoryComponent)) {
+        if (! $isHybridSplit && (! SchedulingPolicy::isMajorCourse($course) || $value('lecture_hours') <= 0 || ! $hasLaboratoryComponent)) {
             return [
                 'rule' => 'hybrid_eligibility',
                 'message' => 'Hybrid scheduling is available only for eligible course configurations.',
             ];
         }
 
-        $meetingType = $attempt['meeting_type'] ?? null;
-        $expected = $hasLaboratoryComponent
+        $expectedMode = $hasLaboratoryComponent
             ? match ($meetingType) {
-                'lecture' => ['mode' => 'online', 'minutes' => SchedulingPolicy::lectureComponentSlots($course) * SchedulingPolicy::SLOT_MINUTES],
-                'laboratory' => ['mode' => 'on-site', 'minutes' => SchedulingPolicy::laboratoryComponentMinutes($course, $section->department)],
+                'lecture' => 'online',
+                'laboratory' => 'on-site',
                 default => null,
             }
-            : ($meetingType === 'lecture'
-                ? ['mode' => in_array(($attempt['mode'] ?? 'on-site'), ['online', 'on-site'], true) ? $attempt['mode'] : 'on-site', 'minutes' => SchedulingPolicy::HYBRID_SPLIT_MEETING_MINUTES]
-                : null);
-        if ($expected === null) {
+            : ($meetingType === 'lecture' ? (in_array($mode, ['online', 'on-site'], true) ? $mode : 'on-site') : null);
+        if ($expectedMode === null) {
             return [
                 'rule' => 'hybrid_component_type',
                 'message' => 'Hybrid schedules must identify each meeting as lecture or laboratory.',
             ];
         }
 
-        $durationMinutes = RuleSupport::durationMinutes((string) ($attempt['start_time'] ?? ''), (string) ($attempt['end_time'] ?? ''));
-        // Integrated Hybrid's lecture and laboratory lengths are the user's
-        // to set in Setup Courses, so only their delivery is fixed here; the
-        // week's total stays capped by `class_duration`. Hybrid Split is a
-        // fixed shape and keeps its exact length.
         $wrongLength = $hasLaboratoryComponent
             ? $durationMinutes <= 0
-            : $durationMinutes !== $expected['minutes'];
-        if (($attempt['mode'] ?? 'on-site') !== $expected['mode'] || $wrongLength) {
+            : $durationMinutes !== SchedulingPolicy::HYBRID_SPLIT_MEETING_MINUTES;
+        if ($mode !== $expectedMode || $wrongLength) {
             return [
                 'rule' => 'hybrid_component_shape',
                 'message' => match (true) {
@@ -131,25 +145,48 @@ final class DeliveryModeRule
      */
     public function sundayMajor(string $day, AttemptRecords $records): ?array
     {
-        $course = $records->course;
         $departmentId = $records->departmentId();
 
-        if ($day !== 'Sunday'
-            || $records->mode === 'online'
-            || SchedulingPolicy::isNstpCourse($course)
-            || SchedulingPolicy::isFieldCourse($course, $departmentId)
-            || strtolower((string) ($course->course_category ?? 'major')) === 'minor') {
+        // Cheap exits first: the setting is only read for a Sunday meeting.
+        if ($day !== 'Sunday' || $records->mode === 'online') {
             return null;
         }
 
-        $sundayOnlineOnlyEnabled = (bool) $this->lookups->remember(
-            'sundayOnlineOnly:'.$departmentId,
-            fn () => Departments::query()->whereKey($departmentId)->value('sunday_online_only_enabled') ?? true,
+        return self::sundayMajorMismatch(
+            $records->course,
+            $day,
+            (string) $records->mode,
+            SchedulingPolicy::isFieldCourse($records->course, $departmentId),
+            (bool) $this->lookups->remember(
+                'sundayOnlineOnly:'.$departmentId,
+                fn () => Departments::query()->whereKey($departmentId)->value('sunday_online_only_enabled') ?? true,
+            ),
         );
+    }
 
-        return $sundayOnlineOnlyEnabled ? [
+    /**
+     * major_sunday_mode_constraint, for a course in either form. The one
+     * implementation; the constraint kernel calls it with its snapshot's
+     * field-ness and Sunday setting. A course that is not a major (including
+     * one with no category, as in SchedulingPolicy::isMajorCourse) is exempt.
+     *
+     * @param  Course|array<string, mixed>  $course
+     * @return array{rule: string, message: string}|null
+     */
+    public static function sundayMajorMismatch(Course|array $course, string $day, string $mode, bool $isFieldCourse, bool $sundayOnlineOnlyEnabled): ?array
+    {
+        if ($day !== 'Sunday'
+            || $mode === 'online'
+            || ! $sundayOnlineOnlyEnabled
+            || $isFieldCourse
+            || SchedulingPolicy::isNstpCourse($course)
+            || ! SchedulingPolicy::isMajorCourse($course)) {
+            return null;
+        }
+
+        return [
             'rule' => 'major_sunday_mode_constraint',
             'message' => 'Major courses scheduled on Sunday must use online delivery mode.',
-        ] : null;
+        ];
     }
 }

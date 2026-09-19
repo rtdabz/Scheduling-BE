@@ -32,24 +32,22 @@ final class MeetingDayConstraints
             $violations[] = ConstraintSupport::violation($pattern['rule'], $pattern['message']);
         }
 
-        // NSTP may use any day, so it is exempt from the category limits below.
-        if (! SchedulingConstraintPredicates::isNstpCourse($course)) {
-            if (SchedulingConstraintPredicates::isFieldCourse($course, $snapshot->fieldCourseCodes)) {
-                if (! in_array($row->day, SchedulingPolicy::WEEKDAYS, true)) {
-                    $violations[] = ConstraintSupport::violation('field_day_constraint', 'PATHFIT and other field courses must be scheduled Monday through Friday.');
-                }
-            } elseif (! SchedulingConstraintPredicates::isMajorCourse($course)
-                && ! in_array($row->day, SchedulingPolicy::WEEKDAYS_AND_SATURDAY, true)) {
-                $violations[] = ConstraintSupport::violation('minor_day_constraint', 'Minor courses (GEC, GEE, and similar) must be scheduled Monday through Saturday.');
-            }
+        $categoryDay = MeetingDayRule::categoryDay(
+            $course,
+            $row->day,
+            SchedulingConstraintPredicates::isFieldCourse($course, $snapshot->fieldCourseCodes),
+        );
+        if ($categoryDay !== null) {
+            $violations[] = ConstraintSupport::violation($categoryDay['rule'], $categoryDay['message']);
         }
 
         $forcedDay = $snapshot->forcedDaysByCourseId[$row->courseId] ?? null;
-        if (is_string($forcedDay) && $forcedDay !== $row->day) {
+        $forced = MeetingDayRule::forcedDayMismatch(is_string($forcedDay) ? $forcedDay : null, $row->day);
+        if ($forced !== null) {
             $violations[] = ConstraintSupport::violation(
-                'forced_course_day',
-                "This course is configured to meet on {$forcedDay}.",
-                context: ['required_day' => $forcedDay],
+                $forced['rule'],
+                $forced['message'],
+                context: ['required_day' => $forced['required_day']],
             );
         }
 
