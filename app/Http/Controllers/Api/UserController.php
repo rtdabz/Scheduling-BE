@@ -200,7 +200,7 @@ class UserController extends Controller
 
     private function ensureRoleDepartmentHierarchy(string $role, int $departmentId): void
     {
-        if (in_array($role, ['dean', 'secretary', 'director'], true) || Program::query()->where('department_id', $departmentId)->exists()) {
+        if (in_array($role, ['dean', 'secretary'], true) || Program::query()->where('department_id', $departmentId)->exists()) {
             return;
         }
 

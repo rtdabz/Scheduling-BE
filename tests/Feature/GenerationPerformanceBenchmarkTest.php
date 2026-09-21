@@ -29,7 +29,6 @@ class GenerationPerformanceBenchmarkTest extends TestCase
     {
         $coursesPerSection = (int) (getenv('BENCH_COURSES') ?: 8);
         $sectionCount = (int) (getenv('BENCH_SECTIONS') ?: 6);
-        $preferredPeriod = getenv('BENCH_PERIOD') ?: 'none';
         $splitCourses = (int) (getenv('BENCH_SPLITS') ?: 2);
         $lectureRooms = (int) (getenv('BENCH_LECTURE_ROOMS') ?: 8);
         $laboratoryRooms = (int) (getenv('BENCH_LAB_ROOMS') ?: 5);
@@ -58,7 +57,6 @@ class GenerationPerformanceBenchmarkTest extends TestCase
         fwrite(STDERR, sprintf(
             "\n=== YEAR-LEVEL PREVIEW BENCHMARK ===\n".
             "scenario           %d sections x %d courses, %d rooms\n".
-            "preferred period   %8s\n".
             "split courses      %8d\n".
             "TOTAL WALL TIME    %8.2f s\n".
             "solver attempts    %8d\n".
@@ -72,7 +70,6 @@ class GenerationPerformanceBenchmarkTest extends TestCase
             count($sections),
             $coursesPerSection,
             $roomCount,
-            $preferredPeriod,
             $splitCourses,
             $elapsed,
             (int) ($metrics['solver_attempts'] ?? 0),
@@ -180,10 +177,6 @@ class GenerationPerformanceBenchmarkTest extends TestCase
                 'balanced_split_course_ids' => [],
                 'preferred_patterns' => [],
                 'delivery_modes_by_course_id' => [],
-                // BENCH_PERIOD restricts every section to one teaching window,
-                // which is the expensive shape: the domain shrinks to about a
-                // third of the day, so the search backtracks far more.
-                'preferred_period' => getenv('BENCH_PERIOD') ?: null,
                 'seed' => 1234 + $s,
             ];
             $config['requirements_by_course_id'] = app(ScheduleRequirementBuilderResolver::class)

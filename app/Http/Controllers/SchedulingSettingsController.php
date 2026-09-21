@@ -38,7 +38,6 @@ class SchedulingSettingsController extends Controller
             'custom_lab_duration_other_enabled' => 'sometimes|required|boolean',
             'gec_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'major_lecture_split_schedule_override_enabled' => 'sometimes|required|boolean',
-            'sunday_online_only_enabled' => 'sometimes|required|boolean',
             'forced_day_rules' => 'sometimes|array',
             'forced_day_rules.*.course_id' => 'required|integer|exists:courses,id',
             'forced_day_rules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
@@ -149,9 +148,6 @@ class SchedulingSettingsController extends Controller
             }
             $department->major_lecture_split_schedule_override_enabled = (bool) $validated['major_lecture_split_schedule_override_enabled'];
         }
-        if (array_key_exists('sunday_online_only_enabled', $validated)) {
-            $department->sunday_online_only_enabled = (bool) $validated['sunday_online_only_enabled'];
-        }
         $department->save();
 
         if (array_key_exists('forced_day_rules', $validated)) {
@@ -186,7 +182,6 @@ class SchedulingSettingsController extends Controller
             'custom_lab_duration_other_enabled' => (bool) $department->custom_lab_duration_other_enabled,
             'gec_split_schedule_override_enabled' => (bool) $department->gec_split_schedule_override_enabled,
             'major_lecture_split_schedule_override_enabled' => (bool) $department->major_lecture_split_schedule_override_enabled,
-            'sunday_online_only_enabled' => (bool) ($department->sunday_online_only_enabled ?? true),
             'lecture_lab_available' => $lectureLabAvailable,
             'major_lecture_split_available' => $this->hasMajorLectureOnlyCourses($department),
             'generation_period' => $section ? [

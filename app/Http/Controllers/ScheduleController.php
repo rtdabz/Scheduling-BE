@@ -20,6 +20,7 @@ use App\Services\Scheduling\Schedule\FacultyConflictOverride;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Engine\RuleEngine;
+use App\Services\Scheduling\Schedule\SameTimePartnerMover;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -53,6 +54,7 @@ class ScheduleController extends Controller
         private readonly ManualHybridFacultyAssignmentResolver $manualHybridAssignments,
         private readonly ScheduleHistoryRecorder $historyRecorder,
         private readonly SchedulingScopeLock $scheduleWriteLock,
+        private readonly SameTimePartnerMover $sameTimePartners,
     ) {
         $this->ruleEngine = $ruleEngine;
     }
@@ -76,6 +78,9 @@ class ScheduleController extends Controller
         }
         if (($scope = $this->authorization->requestedDepartment($request, $request->query('department_id'))) !== null) {
             $query->where('department_id', $scope);
+        }
+        if (($statuses = $this->authorization->visibleScheduleStatuses($request)) !== null) {
+            $query->whereIn('status', $statuses);
         }
 
         $schedules = $query->latest()->limit($perPage)->get();
@@ -1166,8 +1171,13 @@ class ScheduleController extends Controller
         return array_merge($persisted, $operation);
     }
 
-    public function show(Schedule $schedule)
+    public function show(Request $request, Schedule $schedule)
     {
+        $statuses = $this->authorization->visibleScheduleStatuses($request);
+        if ($statuses !== null && ! in_array($schedule->status, $statuses, true)) {
+            return response()->json(['message' => 'This schedule has not been approved yet.'], 403);
+        }
+
         return response()->json($schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'program']));
     }
 
@@ -1202,6 +1212,7 @@ class ScheduleController extends Controller
     private function scopedScheduleListQuery(Request $request): Builder
     {
         $scope = $this->authorization->departmentScope($request);
+        $statuses = $this->authorization->visibleScheduleStatuses($request);
 
         return Schedule::query()
             ->with(Schedule::RESPONSE_RELATIONS)
@@ -1209,7 +1220,8 @@ class ScheduleController extends Controller
                 fn (Builder $owned) => $owned
                     ->where('department_id', $scope)
                     ->orWhereHas('course', fn (Builder $course) => $course->where('teaching_department_id', $scope)),
-            ));
+            ))
+            ->when($statuses !== null, fn (Builder $query) => $query->whereIn('status', $statuses));
     }
 
     public function update(Request $request, Schedule $schedule)
@@ -1350,10 +1362,23 @@ class ScheduleController extends Controller
         $overrideConflicts = ($validated['faculty_id'] ?? null) !== null
             && $request->boolean(FacultyConflictOverride::REQUEST_FLAG);
 
+        // A relocation is judged with the rest of its linked meetings too.
+        $groupPartners = $this->sameTimePartners->partnersFor($schedule, $validated);
+
+        // A change of instructor on a class that is not moving answers only to
+        // the instructor's rules; a placement setting changed since the class
+        // was placed must not block staffing it.
+        $instructorOnly = ! $changesPlotting && array_key_exists('faculty_id', $validated);
+
+        /** @var list<int> $movedPartnerIds */
+        $movedPartnerIds = [];
+
         try {
-            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts): void {
-                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts): void {
-                    $violations = $this->ruleEngine->validate($attemptData);
+            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, &$movedPartnerIds): void {
+                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, &$movedPartnerIds): void {
+                    $violations = $instructorOnly
+                        ? $this->ruleEngine->validateInstructorAssignment($attemptData)
+                        : $this->ruleEngine->validate($attemptData);
                     $overriddenIds = [];
 
                     if (! empty($violations)) {
@@ -1361,6 +1386,10 @@ class ScheduleController extends Controller
                             throw new ScheduleConflictException($violations, 'Schedule update conflicts with existing entries.');
                         }
                         array_push($overriddenIds, (int) $schedule->id, ...FacultyConflictOverride::partnerIds($violations));
+                    }
+
+                    if ($groupPartners->isNotEmpty()) {
+                        $movedPartnerIds = $this->moveSameTimePartners($attemptData, $groupPartners);
                     }
 
                     $schedule->update($validated);
@@ -1377,7 +1406,8 @@ class ScheduleController extends Controller
                                     'ignore_schedule_id' => $manualFacultyScheduleIds,
                                 ],
                             );
-                            $relatedViolations = $this->ruleEngine->validate($relatedAttempt);
+                            // Only the instructor changes on the related meeting.
+                            $relatedViolations = $this->ruleEngine->validateInstructorAssignment($relatedAttempt);
                             if (! empty($relatedViolations)) {
                                 if (! $overrideConflicts || ! FacultyConflictOverride::onlyOverridable($relatedViolations)) {
                                     throw new ScheduleConflictException(
@@ -1416,7 +1446,29 @@ class ScheduleController extends Controller
             ]);
         }
 
+        if ($movedPartnerIds !== []) {
+            // The client merges these so the paired meeting shows its new time
+            // at once instead of after the next background refresh.
+            return response()->json([
+                ...$schedule->toArray(),
+                'moved_partners' => Schedule::query()
+                    ->whereIn('id', $movedPartnerIds)
+                    ->with(Schedule::RESPONSE_RELATIONS)
+                    ->get(),
+            ]);
+        }
+
         return response()->json($schedule);
+    }
+
+    /**
+     * @param  array<string, mixed>  $attemptData
+     * @param  \Illuminate\Support\Collection<int, Schedule>  $partners
+     * @return list<int> the partners moved to the new time
+     */
+    private function moveSameTimePartners(array $attemptData, \Illuminate\Support\Collection $partners): array
+    {
+        return $this->sameTimePartners->move($attemptData, $partners);
     }
 
     public function destroy(Request $request, Schedule $schedule)
@@ -1917,7 +1969,7 @@ class ScheduleController extends Controller
                                 );
                             }
 
-                            $violations = $this->ruleEngine->validate(array_merge(
+                            $violations = $this->ruleEngine->validateInstructorAssignment(array_merge(
                                 $schedule->toArray(),
                                 [
                                     'faculty_id' => $facultyId,

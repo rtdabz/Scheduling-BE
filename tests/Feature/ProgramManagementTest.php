@@ -23,20 +23,21 @@ class ProgramManagementTest extends TestCase
 
         $created = $this->actingAs($vpaa, 'sanctum')->postJson('/api/programs', [
             'department_id' => $department->id,
-            'cluster' => 'BSEd',
-            'code' => 'BSED-ENG',
-            'name' => 'Major in English',
+            'major' => 'English',
+            'code' => 'BSED',
+            'name' => 'Bachelor of Secondary Education',
         ])->assertCreated()->json('data');
 
         $this->actingAs($vpaa, 'sanctum')->getJson('/api/departments')
             ->assertOk()
-            ->assertJsonPath('0.programs.0.code', 'BSED-ENG');
+            ->assertJsonPath('0.programs.0.code', 'BSED')
+            ->assertJsonPath('0.programs.0.major', 'English');
 
         $this->actingAs($vpaa, 'sanctum')->patchJson("/api/programs/{$created['id']}", [
-            'cluster' => 'BSEd',
-            'code' => 'BSED-FIL',
-            'name' => 'Major in Filipino',
-        ])->assertOk()->assertJsonPath('data.name', 'Major in Filipino');
+            'major' => 'Filipino',
+            'code' => 'BSED',
+            'name' => 'Bachelor of Secondary Education',
+        ])->assertOk()->assertJsonPath('data.major', 'Filipino');
 
         $this->actingAs($vpaa, 'sanctum')->deleteJson("/api/programs/{$created['id']}")
             ->assertOk();
@@ -54,7 +55,6 @@ class ProgramManagementTest extends TestCase
 
         Program::create([
             'department_id' => $department->id,
-            'cluster' => 'BA',
             'code' => 'BA-ENG',
             'name' => 'English',
         ]);
@@ -64,6 +64,79 @@ class ProgramManagementTest extends TestCase
             'code' => 'BA-ENG',
             'name' => 'Another English Program',
         ])->assertUnprocessable();
+    }
+
+    public function test_one_code_may_be_offered_once_per_major(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $department = Departments::create([
+            'department_name' => 'College of Education',
+            'department_code' => 'CED2',
+        ]);
+
+        $english = $this->actingAs($vpaa, 'sanctum')->postJson('/api/programs', [
+            'department_id' => $department->id,
+            'code' => 'BSED',
+            'name' => 'Bachelor of Secondary Education',
+            'major' => 'English',
+        ])->assertCreated()->json('data');
+
+        // The same code with a different major is a different program.
+        $this->actingAs($vpaa, 'sanctum')->postJson('/api/programs', [
+            'department_id' => $department->id,
+            'code' => 'BSED',
+            'name' => 'Bachelor of Secondary Education',
+            'major' => 'Mathematics',
+        ])->assertCreated();
+
+        // Repeating the same code and major is not.
+        $this->actingAs($vpaa, 'sanctum')->postJson('/api/programs', [
+            'department_id' => $department->id,
+            'code' => 'BSED',
+            'name' => 'Bachelor of Secondary Education',
+            'major' => 'English',
+        ])->assertUnprocessable()->assertJsonValidationErrors(['code']);
+
+        // Neither is moving an existing program onto a taken major.
+        $mathematics = Program::where('major', 'Mathematics')->firstOrFail();
+        $this->actingAs($vpaa, 'sanctum')->patchJson("/api/programs/{$mathematics->id}", [
+            'major' => 'English',
+        ])->assertUnprocessable()->assertJsonValidationErrors(['major']);
+
+        $this->assertSame('English', Program::findOrFail($english['id'])->major);
+        $this->assertSame(2, Program::count());
+    }
+
+    public function test_program_code_normalization_cannot_create_or_update_a_duplicate(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $department = Departments::create([
+            'department_name' => 'College of Information Technology',
+            'department_code' => 'CIT',
+        ]);
+
+        Program::create([
+            'department_id' => $department->id,
+            'code' => 'BSIT-APPDEV',
+            'name' => 'Application Development',
+        ]);
+        $other = Program::create([
+            'department_id' => $department->id,
+            'code' => 'BSIT-NET',
+            'name' => 'Networking',
+        ]);
+
+        $this->actingAs($vpaa, 'sanctum')->postJson('/api/programs', [
+            'department_id' => $department->id,
+            'code' => ' bsit-appdev ',
+            'name' => 'Duplicate Application Development',
+        ])->assertUnprocessable()->assertJsonValidationErrors(['code']);
+
+        $this->actingAs($vpaa, 'sanctum')->patchJson("/api/programs/{$other->id}", [
+            'code' => ' bsit-appdev ',
+        ])->assertUnprocessable()->assertJsonValidationErrors(['code']);
+
+        $this->assertSame(2, Program::count());
     }
 
     public function test_program_name_is_optional(): void
@@ -76,7 +149,6 @@ class ProgramManagementTest extends TestCase
 
         $created = $this->actingAs($vpaa, 'sanctum')->postJson('/api/programs', [
             'department_id' => $department->id,
-            'cluster' => 'Bachelor of Secondary Education',
             'code' => 'BSED',
         ])->assertCreated()->json('data');
 
@@ -91,7 +163,6 @@ class ProgramManagementTest extends TestCase
         $arts = Departments::create(['department_name' => 'Arts', 'department_code' => 'ART']);
         $program = Program::create([
             'department_id' => $arts->id,
-            'cluster' => 'BA',
             'code' => 'BA-ART',
             'name' => 'Arts',
         ]);

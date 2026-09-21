@@ -217,7 +217,6 @@ class ReportsController extends Controller
 
         return Schedule::query()
             ->join('sections', 'schedules.section_id', '=', 'sections.id')
-            ->whereNull('sections.deleted_at')
             ->where('schedules.semester_id', $semesterId)
             ->whereIn('sections.department_id', $departmentIds)
             ->groupBy('schedules.section_id')

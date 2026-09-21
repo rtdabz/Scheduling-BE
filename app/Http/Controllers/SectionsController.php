@@ -317,10 +317,11 @@ class SectionsController extends Controller
             'sections.by_semester',
             'sections.by_department',
             'departments.index',
+            'schedules.index',
             'initial.data',
         ]);
 
-        return response()->json(['message' => 'Section archived successfully']);
+        return response()->json(['message' => 'Section deleted successfully']);
     }
 
     // Get sections by semester

@@ -178,6 +178,5 @@ return [
             'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
             'room.request',
         ],
-        'director' => [],
     ],
 ];

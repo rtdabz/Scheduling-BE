@@ -35,16 +35,6 @@ class CspSolver
 
     private const CLASSROOM_GAP_SCHEDULABLE_SLOT_SOFT_PENALTY = 1800;
 
-    /**
-     * Cost of placing a meeting outside the time band its course asked for.
-     *
-     * Deliberately sized between the day-balance weight (700 per meeting
-     * already on that day) and the rotating day tie-breaker (8): a preference
-     * decides between otherwise equivalent slots, but never outranks spreading
-     * a section across the week or keeping its day compact.
-     */
-    private const TIME_PREFERENCE_SOFT_PENALTY = 250;
-
     private const CLASSROOM_GAP_LEFTOVER_SLOT_SOFT_PENALTY = 7000;
 
     private const CLASSROOM_FIVE_SLOT_GAP_SOFT_PENALTY = 20000;
@@ -156,14 +146,6 @@ class CspSolver
     /** @var array<string, int> */
     private array $existingRoomDayUseSlots = [];
 
-    /**
-     * The department this solve is scheduling for. Field-course codes are
-     * configured per department and a shared minor has no department of its
-     * own, so field-ness must be resolved against the scheduling department
-     * rather than the course's owner.
-     */
-    private int $solveDepartmentId = 0;
-
     /** @var array<int, array{physical: int, online: int, regular_physical?: int, protected_physical?: int}> */
     private array $existingSectionDeliveryCounts = [];
 
@@ -176,9 +158,6 @@ class CspSolver
     /** @var array<int, list<array<string, mixed>>> */
     private array $requirementsByCourseId = [];
 
-    /** @var array<int, string> Course id => 'morning'|'afternoon'|'evening'. */
-    private array $timePreferencesByCourseId = [];
-
     /**
      * Course id => the room Setup Courses asked for. A ranking preference
      * inside an allocation tier; it never removes a candidate.
@@ -187,20 +166,9 @@ class CspSolver
      */
     private array $preferredRoomIdsByCourseId = [];
 
-    /** The section's hard teaching window, or null when it may use any time. */
-    private ?string $preferredPeriod = null;
-
-    /**
-     * Course id => the periods that replace the section's for that course
-     * only (Configure's Preferred Meeting, one or more periods).
-     *
-     * @var array<int, list<string>>
-     */
-    private array $preferredPeriodsByCourseId = [];
-
     /**
      * Step 1's Preferred Days: the only days this run may place a meeting on,
-     * or null when every day is open. A hard window like the period above,
+     * or null when every day is open. A hard window,
      * applied to every shape (single, Split Session, both Hybrids) after its
      * candidates are built.
      *
@@ -215,18 +183,18 @@ class CspSolver
     private bool $allowFridaySaturdaySplit = false;
 
     /**
-     * True when the department turned Sunday Online Only off, which opens Sunday
-     * to physical classes.
+     * Whether candidateSearchDayTier's late-week preference gates the search.
      *
-     * Sunday is otherwise a last-resort day: its candidates sit in a search tier
-     * the solver only opens when Monday-Saturday cannot complete a timetable, and
-     * the day-balance ranking charges a flat penalty for using it at all. A
-     * department that teaches on Sunday does not want either, so once the setting
-     * is off Sunday is ranked like any other teaching day. It stays a legal-day
-     * question for the rule engine either way -- this flag only changes
-     * preference, never what is allowed.
+     * That preference keeps Monday-Thursday lecture rooms open for the MW and
+     * TTh split patterns of *other* courses, so it only means anything while a
+     * whole timetable is being built. A single-course solve -- the placement
+     * dialog's "Find better options", which is handed the rest of the week as
+     * tentative schedules -- has no other course to protect, and the gate made
+     * every alternative a Friday while Monday to Thursday stood empty: the
+     * search only opens the Monday-Thursday tier when Friday and Saturday
+     * cannot complete, and for one course they always can.
      */
-    private bool $sundayIsRegularTeachingDay = false;
+    private bool $lateWeekCapacityPreference = true;
 
     /** @var array<int, Course> */
     private array $loadedCoursesById = [];
@@ -350,11 +318,8 @@ class CspSolver
             anchoredSchedulesByCourseId: $schema['anchored_schedules'],
             deliveryModesByCourseId: $schema['delivery_modes_by_course_id'],
             requirementsByCourseId: $schema['requirements_by_course_id'],
-            timePreferencesByCourseId: $schema['time_preferences_by_course_id'],
-            preferredPeriod: $schema['preferred_period'],
             allowedDays: $schema['allowed_days'],
             allowFridaySaturdaySplit: $schema['allow_friday_saturday_split'],
-            preferredPeriodsByCourseId: $schema['preferred_periods_by_course_id'],
             seed: $schema['seed'] ?? null,
             tentativeSchedules: $schema['tentative_schedules'],
             throwOnEmptyDomain: $schema['throw_on_empty_domain'],
@@ -382,8 +347,6 @@ class CspSolver
         array $anchoredSchedulesByCourseId = [],
         array $deliveryModesByCourseId = [],
         array $requirementsByCourseId = [],
-        array $timePreferencesByCourseId = [],
-        ?string $preferredPeriod = null,
         ?array $allowedDays = null,
         ?int $seed = null,
         array $tentativeSchedules = [],
@@ -406,8 +369,6 @@ class CspSolver
             anchoredSchedulesByCourseId: $anchoredSchedulesByCourseId,
             deliveryModesByCourseId: $deliveryModesByCourseId,
             requirementsByCourseId: $requirementsByCourseId,
-            timePreferencesByCourseId: $timePreferencesByCourseId,
-            preferredPeriod: $preferredPeriod,
             allowedDays: $allowedDays,
             seed: $seed,
             throwOnEmptyDomain: $throwOnEmptyDomain,
@@ -440,8 +401,6 @@ class CspSolver
         array $anchoredSchedulesByCourseId = [],
         array $deliveryModesByCourseId = [],
         array $requirementsByCourseId = [],
-        array $timePreferencesByCourseId = [],
-        ?string $preferredPeriod = null,
         ?array $allowedDays = null,
         ?int $seed = null,
         array $tentativeSchedules = [],
@@ -449,7 +408,6 @@ class CspSolver
         bool $allowRoomTbaFallback = true,
         bool $allowOnlineFallback = true,
         bool $allowFridaySaturdaySplit = false,
-        array $preferredPeriodsByCourseId = [],
     ): array {
         SolverInput::validateArguments(
             courseIds: $courseIds,
@@ -473,17 +431,9 @@ class CspSolver
         $this->tentativeSchedules = $tentativeSchedules;
         $this->generationForcedDaysByCourseId = [];
         $this->requirementsByCourseId = SolverInput::normalizeRequirements($requirementsByCourseId, $courseIds);
-        $this->timePreferencesByCourseId = SolverInput::normalizeTimePreferences($timePreferencesByCourseId, $courseIds);
-        $this->preferredPeriod = SolverInput::normalizePreferredPeriod($preferredPeriod);
-        $this->preferredPeriodsByCourseId = [];
-        foreach ($preferredPeriodsByCourseId as $courseId => $periods) {
-            $periods = SchedulingPolicy::normalizePreferredPeriods($periods);
-            if ($periods !== null && (int) $courseId > 0) {
-                $this->preferredPeriodsByCourseId[(int) $courseId] = $periods;
-            }
-        }
         $this->allowedDays = SchedulingPolicy::normalizeAllowedDays($allowedDays);
         $this->allowFridaySaturdaySplit = $allowFridaySaturdaySplit;
+        $this->lateWeekCapacityPreference = count($courseIds) > 1;
 
         $courseIds = SolverInput::normalizeCourseIds($courseIds);
 
@@ -640,8 +590,6 @@ class CspSolver
         $settings = $snapshot->departmentSettings;
         $lectureLabScheduleOverrideEnabled = (bool) ($settings['lecture_lab_schedule_override_enabled'] ?? false);
         $this->departmentLabSettings = $settings;
-        $sundayOnlineOnlyEnabled = (bool) ($settings['sunday_online_only_enabled'] ?? true);
-        $this->sundayIsRegularTeachingDay = ! $sundayOnlineOnlyEnabled;
         $forcedDaysByCourseId = $this->forcedDaysByCourseId((int) $section->department_id, $courseIds);
         $this->generationForcedDaysByCourseId = $forcedDaysByCourseId;
 
@@ -654,7 +602,6 @@ class CspSolver
             sectionId: (int) $section->id,
             seed: $solverSeed,
             lectureLabScheduleOverrideEnabled: $lectureLabScheduleOverrideEnabled,
-            sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
             selectedLectureLabCourseIds: $selectedLectureLabCourseIds,
             balancedSplitCourseIds: $balancedSplitCourseIds,
             hybridSplitCourseIds: $hybridSplitCourseIds,
@@ -790,28 +737,24 @@ class CspSolver
             max($maxSolutions * 3, 8),
             18,
         );
-        $onlineCapableAssignments = $this->onlineCapableVariableCount($variables);
-        // The department's configured online target is the only legitimate
-        // demand for online delivery. Previously this also took the number of
-        // split lecture/laboratory variables, which made the quota equal the
-        // number of split courses whenever the lecture/lab override was
-        // enabled -- the second pass was then told to find solutions putting
-        // that many lectures online even while physical lecture rooms were
-        // still free. Genuinely necessary online placements are still produced
-        // by the search itself, because the online tiers open automatically
-        // once the physical tiers cannot be satisfied.
-        $balancedOnlineAssignments = min(
-            $onlineCapableAssignments,
-            $this->roomFairness()->minimumOnlineTarget((int) $section->id, $this->existingSectionDeliveryCounts),
-        );
+
+        // A single-course solve is an alternatives list, not a timetable: it has
+        // one variable, so a wider pool costs one more candidate check each and
+        // gives selectDiverse enough material to answer with different days
+        // rather than the same day at three start times.
+        if (! $this->lateWeekCapacityPreference) {
+            $candidatePoolLimit = min(max($maxSolutions * 8, 24), 40);
+        }
 
         $rawSolutions = [];
         $solutionSignatures = [];
 
-        // First collect unrestricted valid candidates. A second pass adds
-        // delivery-mode variety for the post-CSP evaluator; online balance is
-        // not a hard requirement and cannot invalidate an otherwise valid CSP
-        // solution.
+        // Online is reached only through the search's own tiers: a lecture's
+        // online candidates open once every physical room and time for it has
+        // failed to complete a timetable. A second pass used to demand a quota
+        // of online lectures, sized from a department-wide room-scarcity
+        // forecast, and so produced solutions that moved lectures online while
+        // their rooms were still free.
         $unrestrictedPoolLimit = max($maxSolutions, intdiv($candidatePoolLimit, 2));
         $this->backtrack(
             variableIndex: 0,
@@ -821,29 +764,7 @@ class CspSolver
             solutions: $rawSolutions,
             solutionSignatures: $solutionSignatures,
             solutionLimit: $unrestrictedPoolLimit,
-            minimumOnlineAssignments: 0,
         );
-
-        if (
-            $balancedOnlineAssignments > 0
-            && ! $this->hasEnoughOnlineBalancedSolutions(
-                solutions: $rawSolutions,
-                minimumOnlineAssignments: $balancedOnlineAssignments,
-                requiredSolutions: $maxSolutions,
-            )
-            && ! $this->hasExceededSearchLimits()
-        ) {
-            $this->backtrack(
-                variableIndex: 0,
-                variables: $variables,
-                section: $section,
-                assignments: [],
-                solutions: $rawSolutions,
-                solutionSignatures: $solutionSignatures,
-                solutionLimit: $candidatePoolLimit,
-                minimumOnlineAssignments: $balancedOnlineAssignments,
-            );
-        }
 
         $resolvedLaboratorySolutions = array_values(array_filter(
             $rawSolutions,
@@ -918,28 +839,6 @@ class CspSolver
         return false;
     }
 
-    private function hasEnoughOnlineBalancedSolutions(
-        array $solutions,
-        int $minimumOnlineAssignments,
-        int $requiredSolutions,
-    ): bool {
-        if ($minimumOnlineAssignments <= 0 || $requiredSolutions <= 0) {
-            return true;
-        }
-
-        $balancedCount = 0;
-        foreach ($solutions as $solution) {
-            if ($this->onlineLectureAssignmentCount($solution) >= $minimumOnlineAssignments) {
-                $balancedCount++;
-                if ($balancedCount >= $requiredSolutions) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
     public function searchLimitReached(): bool
     {
         return $this->searchLimitReached;
@@ -983,7 +882,6 @@ class CspSolver
         array &$solutions,
         array &$solutionSignatures,
         int $solutionLimit,
-        int $minimumOnlineAssignments = 0,
     ): void {
         if (count($solutions) >= $solutionLimit) {
             return;
@@ -996,10 +894,6 @@ class CspSolver
         }
 
         if ($variableIndex >= count($variables)) {
-            if ($this->onlineLectureAssignmentCount($assignments) < $minimumOnlineAssignments) {
-                return;
-            }
-
             $signature = $this->solutionDiversity()->signature($assignments);
 
             if (! isset($solutionSignatures[$signature])) {
@@ -1011,14 +905,6 @@ class CspSolver
         }
 
         $variable = $variables[$variableIndex];
-
-        $currentOnlineAssignments = $this->onlineLectureAssignmentCount($assignments);
-        $remainingOnlineCapableAssignments = $this->onlineCapableVariableCount(
-            array_slice($variables, $variableIndex),
-        );
-        if ($currentOnlineAssignments + $remainingOnlineCapableAssignments < $minimumOnlineAssignments) {
-            return;
-        }
 
         $domain = $this->rankDomainForTentativeCompactness(
             $variable['domain'],
@@ -1073,7 +959,6 @@ class CspSolver
                     solutions: $solutions,
                     solutionSignatures: $solutionSignatures,
                     solutionLimit: $solutionLimit,
-                    minimumOnlineAssignments: $minimumOnlineAssignments,
                 );
 
                 if (count($solutions) >= $solutionLimit) {
@@ -1101,9 +986,8 @@ class CspSolver
      *   0 - the preferred days for this candidate
      *   1 - Monday-Thursday for a single meeting holding a lecture room, which
      *       department policy keeps free for MW/TTh split sessions
-     *   2 - Sunday, a last resort -- unless the department turned Sunday Online
-     *       Only off, which moves Sunday into the tiers above with every other
-     *       teaching day
+     *   2 - unused; Sunday sat here as a last resort before it became an
+     *       ordinary teaching day
      * Tier 1 and 2 are only opened when the earlier tiers cannot complete a
      * timetable, so the preference never removes a legal placement.
      *
@@ -1162,12 +1046,55 @@ class CspSolver
             }
             foreach ($dayPriority as $dayTier) {
                 if ($dayBuckets[$dayTier] !== []) {
-                    $groups[] = $dayBuckets[$dayTier];
+                    $groups[] = $this->lateWeekCapacityPreference
+                        ? $dayBuckets[$dayTier]
+                        : self::interleaveByDay($dayBuckets[$dayTier]);
                 }
             }
         }
 
         return $groups === [] ? [$domain] : $groups;
+    }
+
+    /**
+     * Deals the candidates out one day at a time, keeping each day's own order.
+     *
+     * A domain is built day by day, so the first candidates the search reaches
+     * are every start time and room of Monday. That is the right shape while a
+     * timetable is being filled, but an alternatives list built from it offers
+     * one day at three start times. Dealing by day makes the first few
+     * solutions land on different days, which is the material
+     * SolutionDiversity needs to answer with a genuine choice.
+     *
+     * @param  list<array<string, mixed>>  $candidates
+     * @return list<array<string, mixed>>
+     */
+    private static function interleaveByDay(array $candidates): array
+    {
+        $byDay = [];
+        foreach ($candidates as $candidate) {
+            $day = (string) ($candidate['blocks'][0]['day'] ?? '');
+            $byDay[$day][] = $candidate;
+        }
+
+        if (count($byDay) < 2) {
+            return $candidates;
+        }
+
+        $interleaved = [];
+        while ($byDay !== []) {
+            foreach ($byDay as $day => $dayCandidates) {
+                $interleaved[] = array_shift($dayCandidates);
+                if ($dayCandidates === []) {
+                    unset($byDay[$day]);
+
+                    continue;
+                }
+                $byDay[$day] = $dayCandidates;
+            }
+        }
+
+        return $interleaved;
     }
 
     private function candidateSearchDayTier(array $candidate): int
@@ -1179,27 +1106,20 @@ class CspSolver
         // for these candidates, which the group gate only opens when Friday and
         // Saturday cannot complete the timetable -- so this reorders the search
         // without ever removing a placement.
-        $prefersLateWeek = $this->prefersLateWeekPlacement($candidate);
-        // A department that teaches on Sunday has Sunday as the true end of its
-        // week, so it serves the same purpose Friday and Saturday do here.
-        $lateWeekDays = $this->sundayIsRegularTeachingDay
-            ? [...SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS, 'Sunday']
-            : SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS;
+        $prefersLateWeek = $this->lateWeekCapacityPreference && $this->prefersLateWeekPlacement($candidate);
+        // Sunday is the true end of the week, so it serves the same purpose
+        // here that Friday and Saturday do.
+        $lateWeekDays = [...SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS, 'Sunday'];
 
         foreach ($candidate['blocks'] ?? [] as $block) {
             $day = (string) ($block['day'] ?? '');
-            // Tier 2 is the fallback tier the search only opens after
-            // Monday-Saturday fails. A department that teaches physically on
-            // Sunday gets it ranked with the rest of the week instead.
-            if ($day === 'Sunday' && ! $this->sundayIsRegularTeachingDay) {
-                return 2;
-            }
 
             if ($prefersLateWeek && ! in_array($day, $lateWeekDays, true)) {
                 $tier = 1;
             }
-            // Saturday is otherwise part of the normal physical search range.
-            // Only Sunday and virtual/TBA resources are fallback tiers.
+            // Every day is part of the normal physical search range; Sunday
+            // used to sit in a fallback tier of its own. Only virtual and TBA
+            // resources are fallback tiers now.
         }
 
         return $tier;
@@ -1255,16 +1175,22 @@ class CspSolver
             return $domain;
         }
 
-        // Keep a section's meetings spread across the six teaching days while
+        // Keep a section's meetings spread across the teaching week while
         // still preserving the compactness preference below. The rotating
         // anchor prevents every course from starting on Monday; once a day is
         // occupied, the load penalty naturally moves the next candidate to the
         // next available day and eventually wraps back to Monday.
+        //
+        // Sunday counts like every other day. While it was excluded, it stayed
+        // at load zero for the whole solve, so it was permanently the cheapest
+        // day for any candidate the weekend allocation tier does not gate --
+        // which is exactly how every field course (PATHFIT, NSTP) ended up on
+        // Sunday.
         $dayLoads = [];
         foreach ($assignments as $assignment) {
             foreach ($assignment['blocks'] ?? [] as $block) {
                 $day = (string) ($block['day'] ?? '');
-                if ($day !== '' && $this->dayIndex($day) < 6) {
+                if ($day !== '') {
                     $dayLoads[$day] = ($dayLoads[$day] ?? 0) + 1;
                 }
             }
@@ -1276,9 +1202,9 @@ class CspSolver
                 'candidate' => $candidate,
                 'allocation' => $this->candidateAllocationPriority($candidate, $sectionId),
                 'preferred_room' => $this->candidatePreferredRoomRank($candidate),
+                'day_pair' => $this->candidateDayPairLoadRank($candidate, $dayLoads, $sectionId),
                 'penalty' => $this->candidateTentativeGapPenalty($candidate, $assignments)
-                    + $this->candidateDayBalancePenalty($candidate, $dayLoads, $sectionId)
-                    + $this->candidateTimePreferencePenalty($candidate),
+                    + $this->candidateDayBalancePenalty($candidate, $dayLoads, $sectionId),
                 'index' => $index,
             ];
         }
@@ -1287,6 +1213,7 @@ class CspSolver
             $ranked,
             static fn (array $left, array $right): int => $left['allocation'] <=> $right['allocation']
                 ?: $left['preferred_room'] <=> $right['preferred_room']
+                ?: $left['day_pair'] <=> $right['day_pair']
                 ?: $left['penalty'] <=> $right['penalty']
                 ?: $left['index'] <=> $right['index'],
         );
@@ -1296,8 +1223,7 @@ class CspSolver
 
     /**
      * Prefer the least-loaded teaching day, with a rotating tie-breaker. The
-     * teaching week is Monday-Saturday, or Monday-Sunday for a department that
-     * turned Sunday Online Only off. The tie-breaker is deterministic per
+     * teaching week is Monday-Sunday. The tie-breaker is deterministic per
      * section/course so retries remain reproducible while different sections do
      * not all claim Monday first.
      *
@@ -1322,22 +1248,16 @@ class CspSolver
         }
 
         $courseId = (int) ($candidate['course_id'] ?? 0);
-        // A department that teaches on Sunday balances across a seven-day week,
-        // so the rotating tie-breaker rotates over seven days too.
-        $cycle = $this->sundayIsRegularTeachingDay ? 7 : 6;
+        // The week is seven days, so the rotating tie-breaker rotates over
+        // seven. Sunday used to carry a flat surcharge here that kept it behind
+        // Monday-Saturday whatever the day loads said.
+        $cycle = 7;
         $anchor = abs(($sectionId * 17) + ($courseId * 31)) % $cycle;
         $penalty = 0;
 
         foreach ($blocks as $block) {
             $day = (string) ($block['day'] ?? '');
             $dayIndex = $this->dayIndex($day);
-            if ($dayIndex >= 6 && ! $this->sundayIsRegularTeachingDay) {
-                // Sunday is only a fallback for the modes allowed by the
-                // existing policy; it should never outrank Mon-Sat.
-                $penalty += 5000;
-
-                continue;
-            }
 
             $penalty += (($dayLoads[$day] ?? 0) * 700);
             $distance = ($dayIndex - $anchor + $cycle) % $cycle;
@@ -1534,45 +1454,6 @@ class CspSolver
         return null;
     }
 
-    private function candidateTimePreferencePenalty(array $candidate): int
-    {
-        if ($this->timePreferencesByCourseId === []) {
-            return 0;
-        }
-
-        $preference = $this->timePreferencesByCourseId[(int) ($candidate['course_id'] ?? 0)] ?? null;
-        if ($preference === null) {
-            return 0;
-        }
-
-        $penalty = 0;
-        foreach ($candidate['blocks'] ?? [] as $block) {
-            if (! $this->matchesTimePreference($preference, (int) ($block['start_slot'] ?? 0))) {
-                $penalty += self::TIME_PREFERENCE_SOFT_PENALTY;
-            }
-        }
-
-        return $penalty;
-    }
-
-    /**
-     * The generator offers three bands while scoring uses four. Midday counts
-     * as morning here: a class starting at 10:00 is what a user asking for a
-     * morning schedule means, and leaving it unmatched would push those
-     * courses into the afternoon.
-     */
-    private function matchesTimePreference(string $preference, int $startSlot): bool
-    {
-        $band = SolutionDiversity::timeBand($startSlot);
-
-        return match ($preference) {
-            'morning' => $band === 'morning' || $band === 'midday',
-            'afternoon' => $band === 'afternoon',
-            'evening' => $band === 'evening',
-            default => true,
-        };
-    }
-
     private function classroomAwkwardGapPenalty(int $gapSlots): int
     {
         if ($gapSlots <= 0) {
@@ -1597,7 +1478,6 @@ class CspSolver
         int $sectionId = 0,
         int $seed = 0,
         bool $lectureLabScheduleOverrideEnabled = false,
-        bool $sundayOnlineOnlyEnabled = true,
         array $selectedLectureLabCourseIds = [],
         array $balancedSplitCourseIds = [],
         array $hybridSplitCourseIds = [],
@@ -1671,8 +1551,6 @@ class CspSolver
             // for every attempt. Ranking stays outside the cache because it
             // reads live room-usage counters that do change per attempt.
             $forcedDay = $forcedDaysByCourseId[(int) $course->id] ?? null;
-            $coursePeriods = $this->preferredPeriodsByCourseId[(int) $course->id]
-                ?? ($this->preferredPeriod !== null ? [$this->preferredPeriod] : null);
 
             $domainCacheKey = $this->domainCacheKey(
                 courseId: (int) $course->id,
@@ -1686,11 +1564,9 @@ class CspSolver
                     $requiresHybridSplit ? 1 : 0,
                     $durationSlots,
                     $forcedDay ?? '',
-                    $coursePeriods === null ? '' : implode(',', $coursePeriods),
                     $this->allowedDays ?? [],
                     $this->allowFridaySaturdaySplit ? 1 : 0,
                     SchedulingPolicy::fieldDayEndTime(),
-                    $sundayOnlineOnlyEnabled ? 1 : 0,
                     array_key_exists((int) $course->id, $deliveryModesByCourseId) ? 1 : 0,
                     $requirementsByCourseId[(int) $course->id] ?? null,
                     $anchoredSchedulesByCourseId[(int) $course->id] ?? null,
@@ -1701,7 +1577,6 @@ class CspSolver
             if ($cached !== null) {
                 $domain = $cached['domain'];
                 $emptyAfterRequirements = $cached['empty_after_requirements'];
-                $emptyAfterPeriod = $cached['empty_after_period'] ?? false;
                 $emptyAfterForcedDay = $cached['empty_after_forced_day'] ?? false;
                 $emptyAfterDays = $cached['empty_after_days'] ?? false;
             } else {
@@ -1716,7 +1591,6 @@ class CspSolver
                     deliveryMode: $courseDeliveryMode,
                     isHybrid: $courseIsHybrid,
                     anchoredSchedule: $anchoredSchedulesByCourseId[(int) $course->id] ?? null,
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                     lectureSlots: $lectureComponentSlots,
                     laboratorySlots: $laboratoryComponentSlots,
                 ),
@@ -1724,14 +1598,12 @@ class CspSolver
                     course: $course,
                     matchingRooms: $rooms,
                     durationSlots: $durationSlots,
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
                 $requiresHybridSplit => $this->buildHybridSplitPatternDomain(
                     course: $course,
                     matchingRooms: $rooms,
                     durationSlots: $durationSlots,
                     preferredPattern: $preferredPattern,
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
                 $courseDeliveryMode === 'online' && $preferredPattern === null => $this->buildSingleDayDomain(
                     course: $course,
@@ -1739,7 +1611,6 @@ class CspSolver
                     durationSlots: $durationSlots,
                     deliveryMode: $courseDeliveryMode,
                     isHybrid: false,
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
                 $requiresBalancedSplit && $preferredPattern === null => $this->buildFlexibleBalancedSplitDomain(
                     course: $course,
@@ -1747,7 +1618,6 @@ class CspSolver
                     durationSlots: $durationSlots,
                     deliveryMode: $courseDeliveryMode,
                     isHybrid: false,
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
                 $preferredPattern === null => $this->buildSingleDayDomain(
                     course: $course,
@@ -1755,7 +1625,6 @@ class CspSolver
                     durationSlots: $durationSlots,
                     deliveryMode: $courseDeliveryMode,
                     isHybrid: false,
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
                 default => $this->buildPatternDomainWithFallbacks(
                     course: $course,
@@ -1765,7 +1634,6 @@ class CspSolver
                     deliveryMode: $courseDeliveryMode,
                     isHybrid: $courseIsHybrid,
                     requireBalancedDurations: $requiresBalancedSplit,
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
             };
 
@@ -1798,15 +1666,6 @@ class CspSolver
                 $emptyAfterForcedDay = $domain === [];
             }
 
-            $emptyAfterPeriod = false;
-            if ($coursePeriods !== null && $domain !== []) {
-                $domain = $this->filterDomainByWindows(
-                    $domain,
-                    SchedulingPolicy::preferredPeriodsSlotRanges($coursePeriods),
-                );
-                $emptyAfterPeriod = $domain === [];
-            }
-
             $emptyAfterDays = false;
             if ($this->allowedDays !== null && $domain !== []) {
                 $domain = $this->filterDomainByDays($domain, $this->allowedDays);
@@ -1826,7 +1685,6 @@ class CspSolver
             $this->domainCache[$domainCacheKey] = [
                 'domain' => $domain,
                 'empty_after_requirements' => $emptyAfterRequirements,
-                'empty_after_period' => $emptyAfterPeriod,
                 'empty_after_forced_day' => $emptyAfterForcedDay,
                 'empty_after_days' => $emptyAfterDays,
             ];
@@ -1836,17 +1694,6 @@ class CspSolver
             // It is a linear pass and costs far less than rebuilding.
             $shuffleSeed = abs($sectionId * 2053 + (int) $course->id * 97 + $seed);
             $domain = $this->seededShuffle($domain, $shuffleSeed);
-
-            // Named separately from the requirements failure: the fix is to
-            // widen or clear the section's period, not to change the course.
-            if ($throwOnEmptyDomain && $emptyAfterPeriod && $coursePeriods !== null) {
-                throw new RuntimeException(sprintf(
-                    '%s / %s cannot be scheduled inside the %s period. Choose a wider period for this section, or clear its preferred meeting time.',
-                    $this->sectionLabel($sectionId),
-                    (string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id)),
-                    SchedulingPolicy::preferredPeriodsLabel($coursePeriods),
-                ));
-            }
 
             // Step 1's Preferred Days removed every candidate. Named apart from
             // the period so the fix points at the right control.
@@ -1898,6 +1745,7 @@ class CspSolver
                 $ranked[] = [
                     'allocation' => $this->candidateAllocationPriority($rankCandidate, $sectionId),
                     'preferred_room' => $this->candidatePreferredRoomRank($rankCandidate),
+                    'day_pair' => $this->candidateDayPairRotationRank($rankCandidate, $sectionId),
                     'availability' => $this->candidateRoomAvailabilityPenalty($rankCandidate),
                     'concentration' => $this->candidateRoomConcentrationPenalty($rankCandidate),
                     'hybrid_order' => $this->candidateHybridSplitOrderRank($rankCandidate, $sectionId),
@@ -1911,6 +1759,7 @@ class CspSolver
                 $ranked,
                 static fn (array $left, array $right): int => $left['allocation'] <=> $right['allocation']
                     ?: $left['preferred_room'] <=> $right['preferred_room']
+                    ?: $left['day_pair'] <=> $right['day_pair']
                     ?: $left['availability'] <=> $right['availability']
                     ?: $left['concentration'] <=> $right['concentration']
                     ?: $left['hybrid_order'] <=> $right['hybrid_order']
@@ -2059,56 +1908,30 @@ class CspSolver
      * Returns the list of (day, mode) pairs that are valid for a given course
      * based on its category, delivery type, and institutional scheduling rules:
      *
-     *  - NSTP (ROTC/CWTS/LTS)        : Monday-Sunday, field mode.
-     *  - PATHFIT / other field (non-NSTP): Monday–Friday, field mode.
-     *  - Minor non-field (GEC, GEE, ...): Monday-Saturday, on-site or online.
-     *  - Major                        : Monday–Saturday on-site or online;
-     *                                   Sunday online-only.
+     *  - Any field course (PATHFIT, NSTP, ...): every day, field mode.
+     *  - Everything else                     : every day, on-site or online.
+     *
+     * The day limits are gone: field courses were Monday-Friday, minors
+     * Monday-Saturday, and a major's Sunday was online-only. Every course may
+     * now use every day, which is what MeetingDayRule enforces, so the
+     * generator and the rule engine still answer alike.
      *
      * @return list<array{0: string, 1: string}> Each entry is [day, mode].
      */
-    private function allowedDayModePairsForCourse(Course $course, bool $sundayOnlineOnlyEnabled = true): array
+    private function allowedDayModePairsForCourse(Course $course): array
     {
-        // NSTP is field only when the department made it one; then it may
-        // use any day. Otherwise it is scheduled like any other minor.
-        if ($this->isNstpCourse($course) && $this->isFieldCourse($course)) {
+        if ($this->isFieldCourse($course)) {
             return array_map(
-                static fn (string $d): array => [$d, 'field'],
+                static fn (string $day): array => [$day, 'field'],
                 SchedulingPolicy::DAYS,
             );
         }
 
-        if ($this->isFieldCourse($course)) {
-            // PATHFIT and other non-NSTP field courses: Mon–Fri, field.
-            return array_map(
-                static fn (string $d): array => [$d, 'field'],
-                SchedulingPolicy::WEEKDAYS,
-            );
-        }
-
-        $category = strtolower((string) ($course->course_category ?? 'major'));
-
-        if ($category === 'minor') {
-            // Minor subjects share the Mon-Sat domain used by regular classes.
-            $pairs = [];
-            foreach (SchedulingPolicy::WEEKDAYS_AND_SATURDAY as $day) {
-                $pairs[] = [$day, 'on-site'];
-                $pairs[] = [$day, 'online'];
-            }
-
-            return $pairs;
-        }
-
-        // Major courses: Mon–Sat on-site or online; Sunday online-only.
         $pairs = [];
-        foreach (SchedulingPolicy::WEEKDAYS_AND_SATURDAY as $day) {
+        foreach (SchedulingPolicy::DAYS as $day) {
             $pairs[] = [$day, 'on-site'];
             $pairs[] = [$day, 'online'];
         }
-        if (! $sundayOnlineOnlyEnabled) {
-            $pairs[] = ['Sunday', 'on-site'];
-        }
-        $pairs[] = ['Sunday', 'online'];
 
         return $pairs;
     }
@@ -2119,7 +1942,6 @@ class CspSolver
         int $durationSlots,
         string $deliveryMode,
         bool $isHybrid,
-        bool $sundayOnlineOnlyEnabled = true,
     ): array {
         $startSlots = SchedulingPolicy::generatedStartSlotsForDuration($durationSlots);
 
@@ -2133,14 +1955,14 @@ class CspSolver
         $allowLectureInVacantLab = $this->isMajorFullLectureCourse($course);
         $singleBlockMeetingType = $this->singleBlockMeetingTypeForCourse($course);
         $isField = $deliveryMode === 'field' || $this->isFieldCourse($course);
-        $dayModePairs = $isField
+        // A course set to meet in the field for this run is held to the field
+        // days even when it is not a field course by record or department list.
+        $dayModePairs = $isField && ! $this->isFieldCourse($course)
             ? array_map(
                 static fn (string $day): array => [$day, 'field'],
-                $this->isNstpCourse($course)
-                    ? SchedulingPolicy::DAYS
-                    : SchedulingPolicy::WEEKDAYS,
+                SchedulingPolicy::WEEKDAYS,
             )
-            : $this->allowedDayModePairsForCourse($course, $sundayOnlineOnlyEnabled);
+            : $this->allowedDayModePairsForCourse($course);
 
         foreach ($dayModePairs as [$day, $mode]) {
             if ($isLabCourse && $mode === 'online') {
@@ -2189,6 +2011,11 @@ class CspSolver
                         'mode' => $mode,
                         'is_hybrid' => $isHybrid,
                         '_lab_fallback' => false,
+                        // Online is a fallback unless the course was set to
+                        // meet online. Without the marker the physical-first
+                        // pass kept these candidates, so a later lecture could
+                        // go online while a room was free at another time.
+                        '_lecture_online_fallback' => $deliveryMode !== 'online',
                         'blocks' => [
                             array_merge($this->makeBlock(
                                 day: $day,
@@ -2268,14 +2095,6 @@ class CspSolver
         return false;
     }
 
-    private function onlineLectureAssignmentCount(array $assignments): int
-    {
-        return count(array_filter(
-            $assignments,
-            fn (array $assignment): bool => $this->hasOnlineLectureBlock($assignment),
-        ));
-    }
-
     /**
      * Keeps only candidates whose every meeting falls on an allowed day, so a
      * Split Session or Hybrid survives only when both its days are allowed.
@@ -2316,51 +2135,6 @@ class CspSolver
         ));
     }
 
-    /**
-     * Keeps only candidates whose every meeting fits inside one of the
-     * teaching windows (a course's Preferred Meeting can allow several). A
-     * meeting that starts inside a window but runs past its end is rejected
-     * too: the point of the restriction is that a cohort is never on campus
-     * outside its period.
-     *
-     * @param  list<array{0: int, 1: int}>  $windows
-     */
-    private function filterDomainByWindows(array $domain, array $windows): array
-    {
-        return array_values(array_filter(
-            $domain,
-            static function (array $candidate) use ($windows): bool {
-                foreach ($candidate['blocks'] ?? [] as $block) {
-                    $start = (int) ($block['start_slot'] ?? 0);
-                    $end = (int) ($block['end_slot'] ?? 0);
-                    $fits = false;
-                    foreach ($windows as [$from, $to]) {
-                        if ($start >= $from && $end <= $to) {
-                            $fits = true;
-                            break;
-                        }
-                    }
-                    if (! $fits) {
-                        return false;
-                    }
-                }
-
-                return true;
-            },
-        ));
-    }
-
-    private function filterDomainByWindow(array $domain, int $from, int $to): array
-    {
-        return $this->filterDomainByWindows($domain, [[$from, $to]]);
-    }
-
-    /** Human wording for the window, used when it leaves nothing to place. */
-    private function preferredPeriodLabel(string $period): string
-    {
-        return SchedulingPolicy::preferredPeriodLabel($period);
-    }
-
     private function forcedDaysByCourseId(int $departmentId, array $courseIds): array
     {
         if ($courseIds === []) {
@@ -2380,7 +2154,6 @@ class CspSolver
         string $deliveryMode,
         bool $isHybrid,
         ?array $anchoredSchedule = null,
-        bool $sundayOnlineOnlyEnabled = true,
         ?int $lectureSlots = null,
         ?int $laboratorySlots = null,
     ): array {
@@ -2424,7 +2197,6 @@ class CspSolver
 
         $dayPairs = $this->splitLectureLabDayPairs(
             course: $course,
-            sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
             isHybrid: $isHybrid,
         );
 
@@ -2555,14 +2327,13 @@ class CspSolver
 
     private function splitLectureLabDayPairs(
         Course $course,
-        bool $sundayOnlineOnlyEnabled,
         bool $isHybrid = false,
     ): array
     {
         $onSiteDays = array_values(array_unique(array_map(
             static fn (array $pair): string => $pair[0],
             array_filter(
-                $this->allowedDayModePairsForCourse($course, $sundayOnlineOnlyEnabled),
+                $this->allowedDayModePairsForCourse($course),
                 static fn (array $pair): bool => $pair[1] === 'on-site',
             ),
         )));
@@ -2741,11 +2512,10 @@ class CspSolver
         int $durationSlots,
         string $deliveryMode,
         bool $isHybrid,
-        bool $sundayOnlineOnlyEnabled = true,
     ): array {
         $domain = [];
 
-        foreach ($this->balancedSplitDayPairs($course, $sundayOnlineOnlyEnabled) as [$day1, $day2]) {
+        foreach ($this->balancedSplitDayPairs($course) as [$day1, $day2]) {
             $domain = array_merge(
                 $domain,
                 $this->buildPatternDomain(
@@ -2756,7 +2526,6 @@ class CspSolver
                     deliveryMode: $deliveryMode,
                     isHybrid: $isHybrid,
                     requireBalancedDurations: true,
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
             );
         }
@@ -2773,10 +2542,9 @@ class CspSolver
         Course $course,
         Collection $matchingRooms,
         int $durationSlots,
-        bool $sundayOnlineOnlyEnabled = true,
     ): array {
         $domain = [];
-        foreach ($this->balancedSplitDayPairs($course, $sundayOnlineOnlyEnabled) as [$day1, $day2]) {
+        foreach ($this->balancedSplitDayPairs($course) as [$day1, $day2]) {
             $domain = array_merge(
                 $domain,
                 $this->buildHybridSplitPatternDomain(
@@ -2784,7 +2552,6 @@ class CspSolver
                     matchingRooms: $matchingRooms,
                     durationSlots: $durationSlots,
                     preferredPattern: sprintf('days:%d-%d', $this->dayIndex($day1), $this->dayIndex($day2)),
-                    sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
                 ),
             );
         }
@@ -2797,7 +2564,6 @@ class CspSolver
         Collection $matchingRooms,
         int $durationSlots,
         string $preferredPattern,
-        bool $sundayOnlineOnlyEnabled = true,
     ): array {
         if ($durationSlots < 2 || $durationSlots % 2 !== 0 || ! SchedulingPolicy::hybridSplitEligible($course)) {
             return [];
@@ -2805,7 +2571,7 @@ class CspSolver
 
         [$day1, $day2] = $this->patternDays($preferredPattern);
         $allowedDays = array_unique(array_column(
-            $this->allowedDayModePairsForCourse($course, $sundayOnlineOnlyEnabled),
+            $this->allowedDayModePairsForCourse($course),
             0,
         ));
         if (! in_array($day1, $allowedDays, true) || ! in_array($day2, $allowedDays, true) || $day1 === $day2) {
@@ -2844,8 +2610,9 @@ class CspSolver
             'mode' => 'online',
         ];
         $domain = [];
+        // Both meetings share one time slot (split_group_same_time).
         foreach ($starts as $start1) {
-            foreach ($starts as $start2) {
+            foreach ([$start1] as $start2) {
                 foreach ([false, true] as $onlineFirst) {
                     $first = $onlineFirst ? $onlineOption : null;
                     $second = $onlineFirst ? null : $onlineOption;
@@ -2902,11 +2669,11 @@ class CspSolver
      *
      * @return list<array{0: string, 1: string}>
      */
-    private function balancedSplitDayPairs(Course $course, bool $sundayOnlineOnlyEnabled): array
+    private function balancedSplitDayPairs(Course $course): array
     {
         $courseDays = array_values(array_unique(array_map(
             static fn (array $pair): string => $pair[0],
-            $this->allowedDayModePairsForCourse($course, $sundayOnlineOnlyEnabled),
+            $this->allowedDayModePairsForCourse($course),
         )));
         $days = array_values(array_filter(
             SchedulingPolicy::DAYS,
@@ -2918,8 +2685,9 @@ class CspSolver
             SchedulingPolicy::FIXED_MEETING_PATTERNS,
             static fn (array $pair): bool => in_array($pair[0], $days, true) && in_array($pair[1], $days, true),
         ));
-        // Friday + Saturday is an extra pair the run may allow, tried after
-        // MW and TTh so it only takes the classes those cannot hold.
+        // Friday + Saturday is a third regular pair when the run allows it: it
+        // ranks with MW and TTh, not as a Saturday fallback, and
+        // candidateDayPairRotationRank spreads classes across the three.
         if ($this->allowFridaySaturdaySplit
             && in_array('Friday', $days, true)
             && in_array('Saturday', $days, true)) {
@@ -2952,7 +2720,6 @@ class CspSolver
         string $deliveryMode,
         bool $isHybrid,
         bool $requireBalancedDurations = false,
-        bool $sundayOnlineOnlyEnabled = true,
     ): array {
         $primaryDomain = $this->buildPatternDomain(
             course: $course,
@@ -2962,7 +2729,6 @@ class CspSolver
             deliveryMode: $deliveryMode,
             isHybrid: $isHybrid,
             requireBalancedDurations: $requireBalancedDurations,
-            sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
         );
 
         // Alternative recommendations when preferred pattern is occupied:
@@ -2975,7 +2741,6 @@ class CspSolver
                 durationSlots: $durationSlots,
                 deliveryMode: $deliveryMode,
                 isHybrid: $isHybrid,
-                sundayOnlineOnlyEnabled: $sundayOnlineOnlyEnabled,
             );
 
             foreach ($flexibleSplitDomain as $candidate) {
@@ -2999,7 +2764,6 @@ class CspSolver
         string $deliveryMode,
         bool $isHybrid,
         bool $requireBalancedDurations = false,
-        bool $sundayOnlineOnlyEnabled = true,
     ): array {
         if ($durationSlots < 2) {
             return [];
@@ -3008,7 +2772,7 @@ class CspSolver
         [$day1, $day2] = $this->patternDays($preferredPattern);
 
         $allowedDays = array_unique(
-            array_column($this->allowedDayModePairsForCourse($course, $sundayOnlineOnlyEnabled), 0),
+            array_column($this->allowedDayModePairsForCourse($course), 0),
         );
 
         if (! in_array($day1, $allowedDays, true) || ! in_array($day2, $allowedDays, true)) {
@@ -3194,6 +2958,8 @@ class CspSolver
                                 'mode' => $mode,
                                 'is_hybrid' => $isHybrid,
                                 '_lab_fallback' => false,
+                                // See buildSingleDayDomain().
+                                '_lecture_online_fallback' => $deliveryMode !== 'online',
                                 'blocks' => [
                                     $this->makeBlock(
                                         day: $day1,
@@ -3557,24 +3323,23 @@ class CspSolver
 
                 $blockDurations[] = $block['end_slot'] - $block['start_slot'];
 
-                // Saturday is normally discouraged, but a single meeting in a
+                // A weekend day is mildly discouraged, but a single meeting in a
                 // lecture room is exactly what department policy wants late in
                 // the week, so scoring must not pull it back onto Mon-Thu after
-                // the search deliberately placed it there. Sunday stays
-                // discouraged for every candidate.
-                $prefersLateWeek = $this->prefersLateWeekPlacement($assignment);
+                // the search deliberately placed it there. An allowed Friday +
+                // Saturday pair is a regular pair, so it is not discouraged
+                // either. Sunday used to take five times Saturday's penalty and
+                // no exemption; it now weighs the same as Saturday.
+                $prefersLateWeek = $this->prefersLateWeekPlacement($assignment)
+                    || $this->isRegularFridaySaturdayPair($assignment);
+                $isWeekend = in_array($block['day'], ['Saturday', 'Sunday'], true);
 
-                if ($block['day'] === 'Saturday' && ! $prefersLateWeek) {
+                if ($isWeekend && ! $prefersLateWeek) {
                     $score += 200;
                 }
 
-                if ($block['day'] === 'Sunday') {
-                    $score += 1000;
-                }
-
                 if ($assignment['_weekday_physical_available'] ?? false) {
-                    $migratedToWeekend = $block['day'] === 'Sunday'
-                        || ($block['day'] === 'Saturday' && ! $prefersLateWeek);
+                    $migratedToWeekend = $isWeekend && ! $prefersLateWeek;
 
                     if ($migratedToWeekend) {
                         $score += SchedulingPolicy::SOFT_WEEKDAY_PHYSICAL_MIGRATION_PENALTY;
@@ -4180,14 +3945,17 @@ class CspSolver
         return (string) $course->room_type_required;
     }
 
+    /**
+     * Field is the course record or the department's field list, read from the
+     * snapshot: it holds the list as it was when this run was validated, scoped
+     * to the scheduling department, so the solver and the kernel agree. The
+     * static database lookup could be stale in a long-lived worker, and was
+     * first read here before the solving department was even known. Outside a
+     * solve there is no department in scope, so only the course record counts.
+     */
     private function isFieldCourse(Course $course): bool
     {
-        return SchedulingPolicy::isFieldCourse($course, $this->solveDepartmentId ?: null);
-    }
-
-    private function isNstpCourse(Course $course): bool
-    {
-        return SchedulingPolicy::isNstpCourse($course);
+        return SchedulingPolicy::isFieldCourse($course, fieldCourseCodes: $this->inputSnapshot?->fieldCourseCodes ?? []);
     }
 
     /**
@@ -4198,7 +3966,7 @@ class CspSolver
      */
     private function isMajorLabCourse(Course $course): bool
     {
-        if ($this->isFieldCourse($course) || $this->isNstpCourse($course)) {
+        if ($this->isFieldCourse($course)) {
             return false;
         }
 
@@ -4225,7 +3993,7 @@ class CspSolver
 
     private function isMajorFullLectureCourse(Course $course): bool
     {
-        if ($this->isFieldCourse($course) || $this->isNstpCourse($course)) {
+        if ($this->isFieldCourse($course)) {
             return false;
         }
 
@@ -4270,6 +4038,85 @@ class CspSolver
         return (bool) $candidate['_hybrid_online_first'] === $preferOnlineFirst ? 0 : 1;
     }
 
+    /**
+     * The regular day pair (0 MW, 1 TTh, 2 Friday + Saturday) a two-meeting
+     * candidate uses, or null for any other shape.
+     */
+    private function candidateRegularDayPairIndex(array $candidate): ?int
+    {
+        $blocks = $candidate['blocks'] ?? [];
+        if (count($blocks) !== 2) {
+            return null;
+        }
+
+        $days = [(string) ($blocks[0]['day'] ?? ''), (string) ($blocks[1]['day'] ?? '')];
+        sort($days);
+
+        return match ($days) {
+            ['Monday', 'Wednesday'] => 0,
+            ['Thursday', 'Tuesday'] => 1,
+            ['Friday', 'Saturday'] => 2,
+            default => null,
+        };
+    }
+
+    /**
+     * Friday + Saturday counts as a regular pair only when the run allows it.
+     */
+    private function isRegularFridaySaturdayPair(array $candidate): bool
+    {
+        return $this->allowFridaySaturdaySplit
+            && ! empty($candidate['preferred_pattern'])
+            && $this->candidateRegularDayPairIndex($candidate) === 2;
+    }
+
+    /**
+     * The pair a two-meeting class prefers rotates by section and course
+     * across MW and TTh -- and Friday + Saturday when the run allows it -- so
+     * the pairs share the load instead of one filling first. It is only a
+     * tie-break inside an allocation tier: a pair that cannot place still
+     * falls through to the next one.
+     */
+    private function candidateDayPairRotationRank(array $candidate, int $sectionId): int
+    {
+        if (empty($candidate['preferred_pattern'])) {
+            return 0;
+        }
+
+        $pairIndex = $this->candidateRegularDayPairIndex($candidate);
+        $pairCount = $this->allowFridaySaturdaySplit ? 3 : 2;
+        if ($pairIndex === null || $pairIndex >= $pairCount) {
+            return 0;
+        }
+
+        $anchor = abs(($sectionId * 17) + ((int) ($candidate['course_id'] ?? 0) * 31)) % $pairCount;
+
+        return ($pairIndex - $anchor + $pairCount) % $pairCount;
+    }
+
+    /**
+     * During search, a two-meeting class prefers the regular pair whose days
+     * the section has used least so far, with the rotation breaking ties.
+     * Split candidates skip the per-day balance penalty, so without this the
+     * gap penalty packed every split onto the same pair (all MW, TTh empty).
+     *
+     * @param  array<string, int>  $dayLoads
+     */
+    private function candidateDayPairLoadRank(array $candidate, array $dayLoads, int $sectionId): int
+    {
+        $rotation = $this->candidateDayPairRotationRank($candidate, $sectionId);
+        if (empty($candidate['preferred_pattern']) || $this->candidateRegularDayPairIndex($candidate) === null) {
+            return $rotation;
+        }
+
+        $pairLoad = 0;
+        foreach ($candidate['blocks'] as $block) {
+            $pairLoad += $dayLoads[(string) ($block['day'] ?? '')] ?? 0;
+        }
+
+        return ($pairLoad * 3) + $rotation;
+    }
+
     private function candidateAllocationPriority(array $candidate, int $sectionId): int
     {
         $isPatternFallback = (bool) ($candidate['_pattern_fallback'] ?? false);
@@ -4277,8 +4124,17 @@ class CspSolver
 
         $mode = (string) ($candidate['mode'] ?? 'on-site');
 
+        // An allowed Friday + Saturday pair ranks as a regular weekday pair,
+        // not in the Saturday tier.
+        $containsWeekend = $this->candidateContainsWeekendBlock($candidate)
+            && ! $this->isRegularFridaySaturdayPair($candidate);
+
+        // A field course consumes no classroom, so it stays in the preferred
+        // tier -- but a weekend field meeting is still a weekend meeting, and
+        // without this the search reached Saturday/Sunday field candidates
+        // before it had tried a single weekday one.
         if ($mode === 'field' || $this->candidateContainsFieldBlock($candidate)) {
-            return 0;
+            return $containsWeekend ? 3 : 0;
         }
 
         if ($candidate['_room_tba'] ?? false) {
@@ -4293,17 +4149,17 @@ class CspSolver
                 return (bool) ($candidate['is_hybrid'] ?? false) ? 0 : 8;
             }
 
-            return $this->candidateContainsWeekendBlock($candidate) ? 3 : 1;
+            return $containsWeekend ? 3 : 1;
         }
 
         if ($candidate['_lecture_lab_room_fallback'] ?? false) {
-            return $this->candidateContainsWeekendBlock($candidate) ? 5 : 3;
+            return $containsWeekend ? 5 : 3;
         }
 
         if ($this->candidateContainsLaboratoryBlock($candidate)) {
             return $mode === 'online'
                 ? 8
-                : ($this->candidateContainsWeekendBlock($candidate) ? 3 : 0);
+                : ($containsWeekend ? 3 : 0);
         }
 
         if ($mode === 'online') {
@@ -4314,13 +4170,9 @@ class CspSolver
                 $onlineTier = 14;
             }
 
-            // The extra step is the Sunday surcharge. A department that teaches
-            // on Sunday ranks it with Saturday instead.
-            return $this->candidateContainsWeekendBlock($candidate)
-                && ! $this->candidateContainsSaturdayBlock($candidate)
-                && ! $this->sundayIsRegularTeachingDay
-                ? $onlineTier + 1
-                : $onlineTier;
+            // Sunday used to take an extra step here; it now ranks with the
+            // rest of the week.
+            return $onlineTier;
         }
 
         if ($candidate['_lab_fallback'] ?? false) {
@@ -4334,7 +4186,7 @@ class CspSolver
             $physicalTier = 2;
         }
 
-        return $this->candidateContainsWeekendBlock($candidate) ? $physicalTier + 3 : $physicalTier;
+        return $containsWeekend ? $physicalTier + 3 : $physicalTier;
     }
 
     /**
@@ -4510,22 +4362,6 @@ class CspSolver
             || in_array($roomType, ['online', 'field'], true);
     }
 
-    private function onlineCapableVariableCount(array $variables): int
-    {
-        $count = 0;
-
-        foreach ($variables as $variable) {
-            foreach ($variable['domain'] ?? [] as $candidate) {
-                if ($this->hasOnlineLectureBlock($candidate)) {
-                    $count++;
-                    break;
-                }
-            }
-        }
-
-        return $count;
-    }
-
     /**
      * Pre-fetches all persisted schedules for the given semester into memory and
      * builds lookup indexes including:
@@ -4548,7 +4384,6 @@ class CspSolver
         $this->existingRoomUseCounts = [];
         $this->existingRoomDayUseSlots = [];
         $this->existingSectionDeliveryCounts = [];
-        $this->solveDepartmentId = $departmentId;
 
         $replaceCourseIds = array_values(array_unique(array_filter(
             array_map(static fn (mixed $courseId): int => (int) $courseId, $replaceCourseIds),

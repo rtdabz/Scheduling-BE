@@ -3,13 +3,12 @@
 namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Models\Course;
-use App\Models\Departments;
 use App\Models\Sections;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 /**
  * delivery_mode, hybrid_mode, hybrid_eligibility, hybrid_component_type,
- * hybrid_component_shape, major_sunday_mode_constraint.
+ * hybrid_component_shape.
  *
  * Whether the chosen delivery (on-site, online, field, hybrid) is allowed for
  * this meeting. Which room that delivery needs is RoomTypeRule's question.
@@ -136,57 +135,4 @@ final class DeliveryModeRule
         return null;
     }
 
-    /**
-     * major_sunday_mode_constraint: a major meeting on Sunday must be online
-     * while the department's Sunday-online setting is on. NSTP, field and minor
-     * courses have their own day limits in MeetingDayRule.
-     *
-     * @return array<string, mixed>|null
-     */
-    public function sundayMajor(string $day, AttemptRecords $records): ?array
-    {
-        $departmentId = $records->departmentId();
-
-        // Cheap exits first: the setting is only read for a Sunday meeting.
-        if ($day !== 'Sunday' || $records->mode === 'online') {
-            return null;
-        }
-
-        return self::sundayMajorMismatch(
-            $records->course,
-            $day,
-            (string) $records->mode,
-            SchedulingPolicy::isFieldCourse($records->course, $departmentId),
-            (bool) $this->lookups->remember(
-                'sundayOnlineOnly:'.$departmentId,
-                fn () => Departments::query()->whereKey($departmentId)->value('sunday_online_only_enabled') ?? true,
-            ),
-        );
-    }
-
-    /**
-     * major_sunday_mode_constraint, for a course in either form. The one
-     * implementation; the constraint kernel calls it with its snapshot's
-     * field-ness and Sunday setting. A course that is not a major (including
-     * one with no category, as in SchedulingPolicy::isMajorCourse) is exempt.
-     *
-     * @param  Course|array<string, mixed>  $course
-     * @return array{rule: string, message: string}|null
-     */
-    public static function sundayMajorMismatch(Course|array $course, string $day, string $mode, bool $isFieldCourse, bool $sundayOnlineOnlyEnabled): ?array
-    {
-        if ($day !== 'Sunday'
-            || $mode === 'online'
-            || ! $sundayOnlineOnlyEnabled
-            || $isFieldCourse
-            || SchedulingPolicy::isNstpCourse($course)
-            || ! SchedulingPolicy::isMajorCourse($course)) {
-            return null;
-        }
-
-        return [
-            'rule' => 'major_sunday_mode_constraint',
-            'message' => 'Major courses scheduled on Sunday must use online delivery mode.',
-        ];
-    }
 }

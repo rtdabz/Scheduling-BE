@@ -221,6 +221,73 @@ class ManualPlacementRecommendationFlowTest extends TestCase
         }
     }
 
+    public function test_preview_uses_the_integrated_lengths_the_dialog_chose(): void
+    {
+        [$semester, $department, $section] = $this->createScenario();
+
+        // A laboratory course needs the profile that admits one.
+        $department->update(['scheduling_profile' => 'laboratory_enabled']);
+
+        // 2 lecture units + 1 laboratory unit: the Generator's own shape is a
+        // 2 h lecture and a 3 h laboratory.
+        $course = Course::create([
+            'course_code' => 'BA 210',
+            'course_name' => 'Business Analytics',
+            'lecture_hours' => 2,
+            'lab_hours' => 1,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'laboratory',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+        Curriculum::query()->where('department_id', $department->id)->firstOrFail()
+            ->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
+        Rooms::create([
+            'room_code' => 'BA LAB 1',
+            'building' => 'Building 1',
+            'room_type' => 'laboratory',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        $response = $this->actingAs($this->secretaryFor($department))
+            ->postJson('/api/schedule-recommendations/preview', [
+                'section_id' => $section->id,
+                'course_ids' => [$course->id],
+                'mode' => 'on-site',
+                'is_hybrid' => true,
+                'split_session_enabled' => true,
+                'selected_split_session_course_ids' => [$course->id],
+                // What the placement dialog's two Duration selects sent: an
+                // hour and a half of lecture, three and a half of laboratory.
+                'component_minutes_by_course_id' => [$course->id => ['lecture' => 90, 'laboratory' => 210]],
+                'preferred_patterns' => [],
+                'tentative_schedules' => [],
+                'max_solutions' => 1,
+                'timeout_seconds' => 5,
+                'seed' => 7,
+            ]);
+
+        $response->assertOk();
+        $rows = $response->json('recommendations.0.schedules');
+        $this->assertNotEmpty($rows, 'A free laboratory exists all week, so an Integrated pair must be offered.');
+        $minutes = array_map(
+            static fn (array $row): int => (int) round((strtotime((string) $row['end_time']) - strtotime((string) $row['start_time'])) / 60),
+            $rows,
+        );
+        sort($minutes);
+        $this->assertSame([90, 210], $minutes, 'The alternatives must use the lengths chosen, not the course\'s own 120 + 180.');
+
+        // Semester scoping is the section's; asserted so the rows belong to
+        // this run and not to a stale one.
+        foreach ($rows as $row) {
+            $this->assertSame((int) $semester->id, (int) $row['semester_id']);
+        }
+    }
+
     /** @return list<array{day: string, start: string, end: string, room: int|null, mode: string}> */
     private function comparableRows(array $rows): array
     {

@@ -49,6 +49,25 @@ class DesignationManagementTest extends TestCase
             ->assertStatus(422);
     }
 
+    public function test_whitespace_cannot_create_or_update_a_duplicate_designation(): void
+    {
+        $f = $this->fixture();
+        Designation::create(['name' => 'Dean', 'deload_units' => 6]);
+        $provost = Designation::create(['name' => 'Provost', 'deload_units' => 3]);
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/designations', ['name' => ' Dean ', 'deload_units' => 3])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['name']);
+
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/designations/{$provost->id}", ['name' => ' Dean '])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['name']);
+
+        $this->assertSame(2, Designation::count());
+    }
+
     /**
      * The whole point of the feature: a 21-unit instructor given a designation
      * worth 6 units of deload has a 15-unit Basic Load.

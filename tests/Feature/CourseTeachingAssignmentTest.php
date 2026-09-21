@@ -106,8 +106,8 @@ class CourseTeachingAssignmentTest extends TestCase
     }
 
     /**
-     * A dean holds only schedule.view and schedule.approve_dean, and a director
-     * holds nothing, so neither reaches the endpoint.
+     * A dean holds only schedule.view and schedule.approve_dean, so it does not
+     * reach the endpoint.
      *
      * The VPAA is deliberately not in this list. config/capabilities.php gives
      * the role the full permission set as the break-glass account, so it does
@@ -117,7 +117,7 @@ class CourseTeachingAssignmentTest extends TestCase
     {
         $fixture = $this->fixture();
 
-        foreach (['dean', 'director'] as $role) {
+        foreach (['dean'] as $role) {
             $user = User::factory()->create(['role' => $role, 'department_id' => $fixture['it']->id]);
 
             $this->actingAs($user)->getJson('/api/course-teaching-assignments')->assertStatus(403);

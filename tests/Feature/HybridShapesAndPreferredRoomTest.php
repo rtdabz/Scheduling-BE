@@ -111,11 +111,85 @@ class HybridShapesAndPreferredRoomTest extends TestCase
         );
 
         $flag->setValue($solver, true);
-        // Tried after MW and TTh, so it only takes what those cannot hold.
+        // A third regular pair beside MW and TTh, not a Saturday fallback.
         $this->assertSame(
             [['Monday', 'Wednesday'], ['Tuesday', 'Thursday'], ['Friday', 'Saturday']],
             $pairs->invoke($solver, $course, true),
         );
+    }
+
+    public function test_friday_and_saturday_shares_split_sessions_with_mw_and_tth(): void
+    {
+        // Allowed, Friday + Saturday ranks with MW and TTh instead of waiting
+        // for them to fill, so three split courses with room to spare take
+        // one pair each rather than all landing on MW and TTh.
+        $this->room('LEC 1', 'lecture');
+        $ids = [];
+        foreach (['GEC 1', 'GEC 2', 'GEC 3'] as $code) {
+            $ids[] = (int) $this->course($code, lecture: 3, laboratory: 0, units: 3, category: 'minor')->id;
+        }
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: (int) $this->section->id,
+            courseIds: $ids,
+            balancedSplitCourseIds: $ids,
+            requirementsByCourseId: app(ScheduleRequirementBuilderResolver::class)->build($this->section, $ids, []),
+            allowFridaySaturdaySplit: true,
+            maxSolutions: 1,
+            seed: 4321,
+        );
+        $this->assertNotEmpty($solutions);
+
+        $pairs = collect($solutions[0]['schedules'])
+            ->groupBy('course_id')
+            ->map(fn ($rows): string => $rows->pluck('day')->sort()->implode('+'))
+            ->values()
+            ->all();
+        $this->assertEqualsCanonicalizing(
+            ['Monday+Wednesday', 'Thursday+Tuesday', 'Friday+Saturday'],
+            $pairs,
+        );
+    }
+
+    public function test_a_sections_hybrid_splits_spread_across_the_day_pairs(): void
+    {
+        // The gap penalty used to pack every split onto one pair -- eight
+        // classes on MW and Tuesday/Thursday empty. Each class now takes the
+        // pair the section has used least.
+        $this->room('LEC 1', 'lecture');
+        $this->room('LEC 2', 'lecture');
+        $ids = [];
+        foreach (range(1, 6) as $n) {
+            $ids[] = (int) $this->course("GEC {$n}", lecture: 3, laboratory: 0, units: 3, category: 'minor')->id;
+        }
+
+        foreach ([false => [3, 3, 0], true => [2, 2, 2]] as $allowFridaySaturday => $expected) {
+            $solutions = app(CspSolver::class)->solveRanked(
+                sectionId: (int) $this->section->id,
+                courseIds: $ids,
+                balancedSplitCourseIds: $ids,
+                hybridSplitCourseIds: $ids,
+                requirementsByCourseId: app(ScheduleRequirementBuilderResolver::class)->build($this->section, $ids, []),
+                allowFridaySaturdaySplit: (bool) $allowFridaySaturday,
+                maxSolutions: 1,
+                seed: 4321,
+            );
+            $this->assertNotEmpty($solutions);
+
+            $pairs = collect($solutions[0]['schedules'])
+                ->groupBy('course_id')
+                ->map(fn ($rows): string => $rows->pluck('day')->sort()->implode('+'))
+                ->countBy();
+            $this->assertSame(
+                $expected,
+                [
+                    $pairs['Monday+Wednesday'] ?? 0,
+                    $pairs['Thursday+Tuesday'] ?? 0,
+                    $pairs['Friday+Saturday'] ?? 0,
+                ],
+                $allowFridaySaturday ? 'with Friday + Saturday' : 'MW and TTh only',
+            );
+        }
     }
 
     public function test_friday_and_saturday_split_session_generates_and_saves(): void

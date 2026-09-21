@@ -18,9 +18,8 @@ class ScheduleQualityEvaluator
 
     private const FULLY_ONLINE_SECTION_WEIGHT = 100000;
 
-    private const SUNDAY_BLOCK_WEIGHT = 20000;
-
-    private const SATURDAY_BLOCK_WEIGHT = 3000;
+    /** Saturday and Sunday alike: a weekend class is a mild preference cost. */
+    private const WEEKEND_BLOCK_WEIGHT = 3000;
 
     private const LATE_WEEKDAY_START_AFTER_MINUTES = 13 * 60;
 
@@ -139,7 +138,6 @@ class ScheduleQualityEvaluator
         array $fairness = [],
         array $roomTypesById = [],
         bool $includeCompleteTimetableRefinements = true,
-        bool $sundayIsRegularTeachingDay = false,
     ): array {
         $summary = $this->buildSectionSummary($schedules, $sections);
 
@@ -159,7 +157,6 @@ class ScheduleQualityEvaluator
                 $schedules,
                 $configsBySectionId,
                 $roomTypesById,
-                $sundayIsRegularTeachingDay,
             ),
             'weekday_capacity_migration' => $this->weekdayCapacityMigrationPenalty(
                 $summary,
@@ -282,7 +279,6 @@ class ScheduleQualityEvaluator
         array $fairness = [],
         array $roomTypesById = [],
         bool $includeCompleteTimetableRefinements = true,
-        bool $sundayIsRegularTeachingDay = false,
     ): array {
         $evaluated = array_map(function (array $candidate) use (
             $sections,
@@ -290,7 +286,6 @@ class ScheduleQualityEvaluator
             $fairness,
             $roomTypesById,
             $includeCompleteTimetableRefinements,
-            $sundayIsRegularTeachingDay,
         ): array {
             $evaluation = $this->evaluate(
                 $candidate['schedules'] ?? [],
@@ -299,7 +294,6 @@ class ScheduleQualityEvaluator
                 $fairness,
                 $roomTypesById,
                 $includeCompleteTimetableRefinements,
-                $sundayIsRegularTeachingDay,
             );
 
             $evaluation['csp_score'] = (int) ($candidate['score'] ?? 0);
@@ -393,14 +387,17 @@ class ScheduleQualityEvaluator
         )) * self::FULLY_ONLINE_SECTION_WEIGHT;
     }
 
+    /**
+     * Saturday and Sunday are both ordinary teaching days and weigh the same.
+     * Sunday used to carry SUNDAY_BLOCK_WEIGHT, several times Saturday's, and
+     * was exempt from the late-week allowance that spares Saturday.
+     */
     private function weekendPenalty(
         array $schedules,
         array $configsBySectionId,
         array $roomTypesById = [],
-        bool $sundayIsRegularTeachingDay = false,
     ): int {
-        $saturday = 0;
-        $sunday = 0;
+        $weekend = 0;
         $meetingCounts = $this->meetingCountsByCourse($schedules);
 
         foreach ($schedules as $row) {
@@ -411,22 +408,16 @@ class ScheduleQualityEvaluator
             if ($this->isRequiredDayPlacement($row, $configsBySectionId)) {
                 continue;
             }
-            // Sunday is a fallback day only while the department keeps Sunday
-            // Online Only on. Once it is off, Sunday is a teaching day like
-            // Saturday, so it earns Saturday's weight and Saturday's late-week
-            // exemption instead of the fallback penalty.
-            $isFallbackSunday = $day === 'Sunday' && ! $sundayIsRegularTeachingDay;
             // A single meeting in a lecture room belongs late in the week under
-            // department policy, so a regular weekend day is not a penalty for
-            // it. A fallback Sunday still is, for every row.
-            if (! $isFallbackSunday && $this->isLateWeekPreferredRow($row, $meetingCounts, $roomTypesById)) {
+            // department policy, so a weekend day is not a penalty for it.
+            if ($this->isLateWeekPreferredRow($row, $meetingCounts, $roomTypesById)) {
                 continue;
             }
 
-            $isFallbackSunday ? $sunday++ : $saturday++;
+            $weekend++;
         }
 
-        return ($sunday * self::SUNDAY_BLOCK_WEIGHT) + ($saturday * self::SATURDAY_BLOCK_WEIGHT);
+        return $weekend * self::WEEKEND_BLOCK_WEIGHT;
     }
 
     /**

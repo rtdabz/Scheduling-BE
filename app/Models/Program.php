@@ -13,7 +13,7 @@ class Program extends Model
 
     protected $fillable = [
         'department_id',
-        'cluster',
+        'major',
         'code',
         'name',
     ];

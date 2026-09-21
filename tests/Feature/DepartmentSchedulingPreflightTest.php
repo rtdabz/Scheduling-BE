@@ -219,9 +219,10 @@ class DepartmentSchedulingPreflightTest extends TestCase
     public function test_a_forced_day_the_course_cannot_use_is_named_as_the_cause(): void
     {
         [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
-        // Field courses are limited to weekdays, so forcing one onto Sunday
-        // leaves nothing to choose from.
-        $course->update(['room_type_required' => 'field']);
+        // Minor courses are limited to Monday-Saturday, so forcing one onto
+        // Sunday leaves nothing to choose from. A *field* course pinned to a
+        // weekend is legal: the pin opens that day (MeetingDayRule::categoryDay).
+        $course->update(['course_category' => 'minor']);
         $this->attachCourse($department, $course, $section);
         DB::table('department_forced_course_days')->insert([
             'department_id' => $department->id,

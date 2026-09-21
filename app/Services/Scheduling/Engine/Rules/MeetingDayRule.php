@@ -2,23 +2,22 @@
 
 namespace App\Services\Scheduling\Engine\Rules;
 
-use App\Models\Course;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
 /**
- * valid_day, preferred_pattern, field_day_constraint, minor_day_constraint,
- * forced_course_day.
+ * valid_day, preferred_pattern, forced_course_day.
  *
- * Which days a meeting may fall on:
- *  - NSTP (ROTC/CWTS/LTS): any day.
- *  - PATHFIT and other field courses: Monday to Friday.
- *  - Minor, non-field courses (GEC, GEE): Monday to Saturday.
- *  - A declared meeting pattern, or a department's forced day, narrows that.
+ * Every course may use every day. A meeting is narrowed only by what the user
+ * asked for -- a declared meeting pattern, or the day the department pinned the
+ * course to -- never by the kind of course it is.
  *
- * Majors may use any day; whether a Sunday major must be online is a delivery
- * question, answered by DeliveryModeRule.
+ * The category day limits are gone: field courses were Monday to Friday, minors
+ * Monday to Saturday, and a Sunday major had to be online. Sunday is now an
+ * ordinary teaching day, so `field_day_constraint`, `minor_day_constraint` and
+ * `major_sunday_mode_constraint` were removed along with the
+ * `sunday_online_only_enabled` department switch that gated the last of them.
  */
 final class MeetingDayRule
 {
@@ -58,52 +57,6 @@ final class MeetingDayRule
                 'rule' => 'preferred_pattern',
                 'message' => "Preferred pattern conflict: '{$preferredPattern}' courses can only be scheduled on "
                     .implode(' or ', $allowedDays).", not {$day}.",
-            ];
-        }
-
-        return null;
-    }
-
-    /** @return array<string, mixed>|null */
-    public function courseCategoryDay(string $day, AttemptRecords $records): ?array
-    {
-        return self::categoryDay(
-            $records->course,
-            $day,
-            SchedulingPolicy::isFieldCourse($records->course, $records->departmentId()),
-        );
-    }
-
-    /**
-     * field_day_constraint, minor_day_constraint: the days a course's category
-     * allows. The one implementation; the constraint kernel calls it too, each
-     * side resolving field-ness from its own data.
-     *
-     * Anything that is not a major takes the minor limit, as a course with no
-     * category is not a major elsewhere (SchedulingPolicy::isMajorCourse).
-     *
-     * @param  Course|array<string, mixed>  $course
-     * @return array{rule: string, message: string}|null
-     */
-    public static function categoryDay(Course|array $course, string $day, bool $isFieldCourse): ?array
-    {
-        // NSTP may use any day, and valid_day already rejects anything else, so
-        // it only needs to be exempted from the field and minor limits below.
-        if (SchedulingPolicy::isNstpCourse($course)) {
-            return null;
-        }
-
-        if ($isFieldCourse) {
-            return in_array($day, SchedulingPolicy::WEEKDAYS, true) ? null : [
-                'rule' => 'field_day_constraint',
-                'message' => 'PATHFIT and other field courses must be scheduled Monday through Friday.',
-            ];
-        }
-
-        if (! SchedulingPolicy::isMajorCourse($course)) {
-            return in_array($day, SchedulingPolicy::WEEKDAYS_AND_SATURDAY, true) ? null : [
-                'rule' => 'minor_day_constraint',
-                'message' => 'Minor courses (GEC, GEE, and similar) must be scheduled Monday through Saturday.',
             ];
         }
 

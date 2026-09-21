@@ -176,8 +176,10 @@ final class DepartmentRoomFairness
             }
 
             $roomType = (string) ($course->room_type_required ?? 'lecture');
-            $courseCode = (string) ($course->course_code ?? '');
-            if ($roomType === 'field' || preg_match('/\b(?:NSTP|ROTC|CWTS|LTS)\b/i', $courseCode) === 1) {
+            // A field course needs no classroom. Field is the course record or
+            // the department's field list -- never the course's name, so an
+            // NSTP course the department schedules in classrooms counts.
+            if (SchedulingPolicy::isFieldCourse((array) $course, $departmentId)) {
                 continue;
             }
 
@@ -212,7 +214,7 @@ final class DepartmentRoomFairness
         // shortest standard schedulable block. This is a fairness heuristic,
         // not a per-section daily course limit.
         $teachingDays = count(SchedulingPolicy::WEEKDAYS_AND_SATURDAY);
-        $minimumBlockSlots = min(self::CLASSROOM_SCHEDULABLE_BLOCK_SLOTS);
+        $minimumBlockSlots = min(SchedulingPolicy::CLASSROOM_SCHEDULABLE_BLOCK_SLOTS);
         $meetingsPerRoomDay = max(1, intdiv(SchedulingPolicy::totalSlots(), $minimumBlockSlots));
         $demandShare = ($roomCount * $teachingDays * $meetingsPerRoomDay) / max(1, $totalDemand);
 
@@ -255,16 +257,14 @@ final class DepartmentRoomFairness
         return $targets;
     }
 
-    public function minimumOnlineTarget(int $sectionId, array $existingSectionDeliveryCounts): int
-    {
-        $onlineTargets = $this->targets['section_online_targets'] ?? [];
-        $target = max(0, (int) ($onlineTargets[$sectionId] ?? 0));
-        $existingOnline = max(0, (int) ($existingSectionDeliveryCounts[$sectionId]['online'] ?? 0));
-
-        return max(0, $target - $existingOnline);
-    }
-
     /**
+     * Soft cost of how a solution spreads online delivery and laboratory use.
+     *
+     * Every term here charges online meetings or laboratory overuse, never a
+     * face-to-face lecture: a room that is free is used. The forecast targets
+     * used to charge "excess" physical meetings too, which ranked a solution
+     * that moved a lecture online above one that kept it in a free room.
+     *
      * @param  array<int, array{physical: int, online: int, protected_physical: int}>  $generatedDeliveryCountsBySection
      */
     public function penalty(array $generatedDeliveryCountsBySection, array $existingSectionDeliveryCounts): int
@@ -290,19 +290,8 @@ final class DepartmentRoomFairness
             $generatedPhysical = max(0, (int) ($generatedCounts['physical'] ?? 0));
             $generatedOnline = max(0, (int) ($generatedCounts['online'] ?? 0));
             $protectedPhysical = max(0, (int) ($generatedCounts['protected_physical'] ?? 0));
-            $regularPhysical = max(0, (int) ($generatedCounts['regular_physical'] ?? ($generatedPhysical - $protectedPhysical)));
-            $regularTotal = max(0, $regularPhysical + $generatedOnline);
-
-            if ($regularTotal > 0) {
-                $allowedRegularPhysical = (int) ceil($regularTotal * $targetPhysicalRatio);
-                $excessPhysicalBlocks = max(0, $regularPhysical - $allowedRegularPhysical);
-                $penalty += (int) round($excessPhysicalBlocks * 18 * $scarcityMultiplier);
-            }
 
             $regularTarget = max(0, (int) ($regularPhysicalTargets[$sectionId] ?? PHP_INT_MAX));
-            if ($regularTarget !== PHP_INT_MAX && $regularPhysical > $regularTarget) {
-                $penalty += (int) round(($regularPhysical - $regularTarget) * 240 * max(0.25, $scarcityMultiplier));
-            }
 
             $labTarget = max(0, (int) ($labPhysicalTargets[$sectionId] ?? PHP_INT_MAX));
             if ($labTarget !== PHP_INT_MAX && $protectedPhysical > $labTarget) {
@@ -317,23 +306,6 @@ final class DepartmentRoomFairness
             $onlineTarget = max(0, (int) ($onlineTargets[$sectionId] ?? PHP_INT_MAX));
             if ($onlineTarget !== PHP_INT_MAX && $projectedSectionOnline > $onlineTarget) {
                 $penalty += (int) round(($projectedSectionOnline - $onlineTarget) * 520 * max(0.25, $scarcityMultiplier));
-            }
-
-            if ($onlineTarget > 0 && $generatedOnline === 0 && $regularPhysical > $regularTarget) {
-                $penalty += 300;
-            }
-
-            $projectedSectionPhysical = (int) $existingCounts['physical'] + $generatedPhysical;
-            $allSectionPhysicalCounts = array_map(
-                static fn (array $counts): int => (int) ($counts['physical'] ?? 0),
-                $existingSectionDeliveryCounts,
-            );
-            $allSectionPhysicalCounts[$sectionId] = $projectedSectionPhysical;
-
-            if (count($allSectionPhysicalCounts) > 1) {
-                $averagePhysical = array_sum($allSectionPhysicalCounts) / count($allSectionPhysicalCounts);
-                $excessOverAverage = max(0.0, $projectedSectionPhysical - $averagePhysical - 1.0);
-                $penalty += (int) round($excessOverAverage * 4 * $scarcityMultiplier);
             }
 
             $allSectionOnlineCounts = array_map(

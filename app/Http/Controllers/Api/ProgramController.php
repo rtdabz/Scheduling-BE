@@ -27,7 +27,7 @@ class ProgramController extends Controller
             ->with('department:id,department_name,department_code')
             ->when($departmentId, fn ($query) => $query->where('department_id', $departmentId))
             ->when($programId !== null, fn ($query) => $query->whereKey($programId))
-            ->orderBy('cluster')
+            ->orderBy('code')->orderBy('major')
             ->orderBy('code')
             ->get();
 
@@ -40,7 +40,7 @@ class ProgramController extends Controller
 
         $program = Program::create([
             'department_id' => $validated['department_id'],
-            'cluster' => isset($validated['cluster']) && trim($validated['cluster']) !== '' ? trim($validated['cluster']) : null,
+            'major' => trim((string) ($validated['major'] ?? '')),
             'code' => strtoupper(trim($validated['code'])),
             'name' => isset($validated['name']) && trim($validated['name']) !== '' ? trim($validated['name']) : null,
         ]);
@@ -58,9 +58,9 @@ class ProgramController extends Controller
 
         $program->update([
             ...$validated,
-            'cluster' => array_key_exists('cluster', $validated)
-                ? (isset($validated['cluster']) && trim($validated['cluster']) !== '' ? trim($validated['cluster']) : null)
-                : $program->cluster,
+            'major' => array_key_exists('major', $validated)
+                ? trim((string) ($validated['major'] ?? ''))
+                : $program->major,
             'code' => array_key_exists('code', $validated) ? strtoupper(trim($validated['code'])) : $program->code,
             'name' => array_key_exists('name', $validated)
                 ? (isset($validated['name']) && trim($validated['name']) !== '' ? trim($validated['name']) : null)

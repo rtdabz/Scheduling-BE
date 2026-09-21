@@ -4,26 +4,21 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Engine\Constraints\Families;
 
-use App\Models\Rooms;
 use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
-use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 
 /**
- * room_availability, room_conflict. Kernel counterpart of
- * Rules\RoomAvailabilityRule: the room must be marked available, and a lecture
- * or laboratory room holds one class; field and online are shared without a
- * limit.
+ * room_availability, room_department_alignment. Kernel counterpart of
+ * Rules\RoomAvailabilityRule and DepartmentAssignmentRule: the room must be
+ * accessible to the department and marked available. Booking clashes live in
+ * OverlapConflict.
  */
 final class RoomAvailabilityConstraints
 {
-    /**
-     * @param  list<array<string, mixed>|ScheduleRow>  $others
-     * @return list<ConstraintViolation>
-     */
-    public function forRow(ScheduleRow $row, array $others, SchedulingSnapshot $snapshot): array
+    /** @return list<ConstraintViolation> */
+    public function forRow(ScheduleRow $row, SchedulingSnapshot $snapshot): array
     {
         if ($row->roomId === null) {
             return [];
@@ -55,23 +50,6 @@ final class RoomAvailabilityConstraints
                 'Room '.($room['room_code'] ?? $row->roomId).' is not available for scheduling.',
                 context: ['room_id' => $row->roomId],
             );
-        }
-
-        if ($row->mode === 'online' || Rooms::isSharedType((string) ($room['room_type'] ?? ''))) {
-            return $violations;
-        }
-
-        // Any row holding the room occupies it, whatever its mode. Online saves
-        // clear room_id, so an online row that still has one is legacy data;
-        // RuleEngine and the solver's index both count it, and so does this.
-        foreach ($others as $other) {
-            if (ConstraintSupport::sameSemester($row, $other)
-                && SchedulingConstraintPredicates::rowOverlaps($row, $other)
-                && $row->roomId === ConstraintSupport::nullableIntValue($other, 'room_id')) {
-                $violations[] = ConstraintSupport::violation('room_conflict', 'Room is already booked for an overlapping class.', context: ConstraintSupport::conflictContext($other));
-
-                break;
-            }
         }
 
         return $violations;

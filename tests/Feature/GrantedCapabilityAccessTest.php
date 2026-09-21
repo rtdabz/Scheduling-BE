@@ -15,8 +15,8 @@ use Tests\TestCase;
  *
  * Faculty load, availability and the timeslot grid were gated on hardcoded role
  * names left over from before the capability system. A Program Head or Dean the
- * VPAA had granted every capability was still refused, and a Director was
- * refused the scheduling grid outright -- "access granted but still locked".
+ * VPAA had granted every capability was still refused -- "access granted but
+ * still locked".
  */
 class GrantedCapabilityAccessTest extends TestCase
 {
@@ -71,7 +71,7 @@ class GrantedCapabilityAccessTest extends TestCase
     /** @return list<array{0: string}> */
     public static function grantedRoles(): array
     {
-        return [['secretary'], ['program_head'], ['dean'], ['director']];
+        return [['secretary'], ['program_head'], ['dean']];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('grantedRoles')]
@@ -119,7 +119,7 @@ class GrantedCapabilityAccessTest extends TestCase
     {
         $faculty = $this->instructor();
 
-        foreach (['secretary', 'program_head', 'dean', 'director'] as $role) {
+        foreach (['secretary', 'program_head', 'dean'] as $role) {
             Sanctum::actingAs($this->account($role, ['schedule.view', 'schedule.assign_instructor']));
 
             $this->putJson("/api/faculties/{$faculty->id}", ['first_name' => 'Renamed'])

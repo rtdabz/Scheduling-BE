@@ -10,13 +10,12 @@ use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Constraints\Families\DeliveryModeConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\InstructorAvailabilityConstraints;
-use App\Services\Scheduling\Engine\Constraints\Families\InstructorConflictConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\MeetingDayConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\MeetingGroupConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\OperatingHoursConstraints;
+use App\Services\Scheduling\Engine\Constraints\Families\OverlapConflict;
 use App\Services\Scheduling\Engine\Constraints\Families\RoomAvailabilityConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\RoomTypeConstraints;
-use App\Services\Scheduling\Engine\Constraints\Families\SectionConflictConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\SectionLoadConstraints;
 
 /**
@@ -40,9 +39,6 @@ final class SchedulingConstraintKernel
         'slot_grid' => 201,
         'operating_hours' => 202,
         'preferred_pattern' => 205,
-        'field_day_constraint' => 210,
-        'minor_day_constraint' => 220,
-        'major_sunday_mode_constraint' => 230,
         'field_evening_window' => 240,
         'forced_course_day' => 250,
         'room_type_match' => 300,
@@ -61,6 +57,7 @@ final class SchedulingConstraintKernel
         'minor_split_eligibility' => 530,
         'minor_split_pattern' => 540,
         'minor_split_duration' => 550,
+        'split_group_same_time' => 555,
         'split_group_day_separation' => 560,
     ];
 
@@ -72,9 +69,7 @@ final class SchedulingConstraintKernel
 
     private readonly RoomTypeConstraints $roomTypes;
 
-    private readonly SectionConflictConstraints $sectionConflicts;
-
-    private readonly InstructorConflictConstraints $instructorConflicts;
+    private readonly OverlapConflict $overlaps;
 
     private readonly RoomAvailabilityConstraints $roomAvailability;
 
@@ -90,8 +85,7 @@ final class SchedulingConstraintKernel
         $this->meetingDays = new MeetingDayConstraints;
         $this->operatingHours = new OperatingHoursConstraints;
         $this->roomTypes = new RoomTypeConstraints;
-        $this->sectionConflicts = new SectionConflictConstraints;
-        $this->instructorConflicts = new InstructorConflictConstraints;
+        $this->overlaps = new OverlapConflict;
         $this->roomAvailability = new RoomAvailabilityConstraints;
         $this->meetingGroups = new MeetingGroupConstraints;
         $this->instructorAvailability = new InstructorAvailabilityConstraints;
@@ -125,9 +119,8 @@ final class SchedulingConstraintKernel
             ...$this->meetingDays->forRow($row, $course, $snapshot),
             ...$this->operatingHours->forRow($row, $course, $snapshot),
             ...$this->roomTypes->forRow($row, $course, $snapshot),
-            ...$this->sectionConflicts->forRow($row, $others),
-            ...$this->instructorConflicts->forRow($row, $others),
-            ...$this->roomAvailability->forRow($row, $others, $snapshot),
+            ...$this->overlaps->forRow($row, $others, $snapshot),
+            ...$this->roomAvailability->forRow($row, $snapshot),
             ...$this->instructorAvailability->forRow($row, $snapshot),
             ...$this->sectionLoad->forRow($row, $course, $others, $snapshot),
         ]);

@@ -8,6 +8,7 @@ use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Constraints\Families\MeetingDayConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\RoomTypeConstraints;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintKernel;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use DateTimeImmutable;
 use Tests\TestCase;
 
@@ -23,19 +24,23 @@ class SchedulingConstraintKernelTest extends TestCase
 
     private const LECTURE_ROOM = 20;
 
-    public function test_day_family_limits_minors_but_exempts_nstp(): void
+    public function test_the_day_family_limits_no_course_by_its_category(): void
     {
         $days = new MeetingDayConstraints;
         $snapshot = $this->snapshot();
 
-        $this->assertSame(
-            ['minor_day_constraint'],
-            $this->rules($days->forRow($this->row(self::MINOR, 'Sunday'), $snapshot->coursesById[self::MINOR], $snapshot)),
-        );
-        $this->assertSame(
-            [],
-            $this->rules($days->forRow($this->row(self::NSTP, 'Sunday'), $snapshot->coursesById[self::NSTP], $snapshot)),
-        );
+        // Minors were Monday-Saturday and field courses Monday-Friday. Every
+        // course may now use every day; only a pattern or a Required Day
+        // narrows it.
+        foreach ([self::MINOR, self::NSTP] as $courseId) {
+            foreach (SchedulingPolicy::PERSISTABLE_DAYS as $day) {
+                $this->assertSame(
+                    [],
+                    $this->rules($days->forRow($this->row($courseId, $day), $snapshot->coursesById[$courseId], $snapshot)),
+                    "{$courseId} should be allowed on {$day}",
+                );
+            }
+        }
     }
 
     public function test_room_mode_family_reports_a_field_row_in_a_lecture_room_once(): void
@@ -70,13 +75,17 @@ class SchedulingConstraintKernelTest extends TestCase
 
     public function test_kernel_orders_findings_from_different_families_by_priority(): void
     {
-        // Another section in the same room, on a Sunday a minor may not use:
-        // the day rule (220) outranks the room clash (430).
+        // Another section in the same room at the same time, and a pattern this
+        // day is not part of: the pattern rule (205) outranks the room clash
+        // (430).
         $snapshot = $this->snapshot(persisted: [$this->persisted(id: 7, sectionId: 2, roomId: self::LECTURE_ROOM, day: 'Sunday')]);
 
-        $violations = (new SchedulingConstraintKernel)->evaluateRow($this->row(self::MINOR, 'Sunday'), $snapshot);
+        $violations = (new SchedulingConstraintKernel)->evaluateRow(
+            $this->row(self::MINOR, 'Sunday', preferredPattern: 'MW'),
+            $snapshot,
+        );
 
-        $this->assertSame(['minor_day_constraint', 'room_conflict'], $this->rules($violations));
+        $this->assertSame(['preferred_pattern', 'room_conflict'], $this->rules($violations));
     }
 
     /** @param list<ConstraintViolation> $violations */
@@ -85,7 +94,7 @@ class SchedulingConstraintKernelTest extends TestCase
         return array_map(static fn (ConstraintViolation $violation): string => $violation->ruleId, $violations);
     }
 
-    private function row(int $courseId, string $day, string $mode = 'on-site', ?int $roomId = self::LECTURE_ROOM): ScheduleRow
+    private function row(int $courseId, string $day, string $mode = 'on-site', ?int $roomId = self::LECTURE_ROOM, ?string $preferredPattern = null): ScheduleRow
     {
         return new ScheduleRow(
             semesterId: 1,
@@ -97,6 +106,7 @@ class SchedulingConstraintKernelTest extends TestCase
             endTime: '09:00:00',
             mode: $mode,
             roomId: $roomId,
+            preferredPattern: $preferredPattern,
         );
     }
 

@@ -10,7 +10,7 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
 /**
  * hybrid_component_count, hybrid_components, minor_split_component_count,
  * minor_split_eligibility, minor_split_pattern, minor_split_duration,
- * split_group_day_separation.
+ * split_group_same_time, split_group_day_separation.
  *
  * Linked meetings (one split_group_id) that cannot be judged one row at a time.
  * The shape rules cover the explicit Generator configurations -- Hybrid and
@@ -136,6 +136,25 @@ final class MeetingGroupRule
                 if ($totalMinutes <= 0 || $totalMinutes > max(1, SchedulingPolicy::unitMinutes($units))) {
                     $mismatches[] = ['rule' => 'minor_split_duration', 'message' => 'Split Session meeting durations must not add up to more than the course contact hours.'];
                 }
+            }
+        }
+
+        // Hybrid Split and Split Session are one class met on two days, so both
+        // meetings keep one time slot. Only Integrated Hybrid's lecture and
+        // laboratory have lengths -- and so times -- of their own.
+        $sameTimeShape = $course !== null && $count === 2 && match ($kind) {
+            'minor_split' => true,
+            'hybrid' => (int) (is_array($course) ? ($course['lab_hours'] ?? 0) : ($course->lab_hours ?? 0)) === 0,
+            default => false,
+        };
+        if ($sameTimeShape) {
+            $slots = array_unique(array_map(
+                static fn (array $row): string => SchedulingPolicy::timeToMinutes((string) ($row['start_time'] ?? '00:00'))
+                    .'-'.SchedulingPolicy::timeToMinutes((string) ($row['end_time'] ?? '00:00')),
+                $rows,
+            ));
+            if (count($slots) > 1) {
+                $mismatches[] = ['rule' => 'split_group_same_time', 'message' => 'Both meetings of a Split Session or Hybrid Split must use the same start and end time.'];
             }
         }
 

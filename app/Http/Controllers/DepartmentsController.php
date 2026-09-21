@@ -21,7 +21,7 @@ class DepartmentsController extends Controller
         $departments = Cache::remember(ApiCache::key('departments.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Departments::query()
             ->withCount(['rooms', 'sections', 'faculties'])
             ->with([
-                'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
+                'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
                 'users' => fn ($query) => $query
                     ->whereIn('role', ['dean', 'secretary', 'program_head'])
                     ->select('id', 'name', 'role', 'department_id'),
@@ -43,7 +43,7 @@ class DepartmentsController extends Controller
         ApiCache::forgetGroups(['departments.index', 'initial.data']);
 
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
-            'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
+            'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
                 ->whereIn('role', ['dean', 'secretary', 'program_head'])
                 ->select('id', 'name', 'role', 'department_id'),
@@ -56,7 +56,7 @@ class DepartmentsController extends Controller
     public function show(Departments $department)
     {
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
-            'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
+            'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
                 ->whereIn('role', ['dean', 'secretary', 'program_head'])
                 ->select('id', 'name', 'role', 'department_id'),
@@ -96,7 +96,7 @@ class DepartmentsController extends Controller
         ApiCache::forgetGroups(['departments.index', 'initial.data']);
 
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
-            'programs' => fn ($query) => $query->orderBy('cluster')->orderBy('code'),
+            'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
                 ->where('role', 'dean')
                 ->select('id', 'name', 'department_id'),

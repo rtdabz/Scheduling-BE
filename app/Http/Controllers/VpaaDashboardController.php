@@ -30,21 +30,15 @@ use Illuminate\Support\Facades\Cache;
 class VpaaDashboardController extends Controller
 {
     /**
-     * Rows that still describe a live intention to meet. Rejected, returned and
-     * withdrawn rows are excluded: they describe a plan nobody is acting on, so
-     * counting them would report load against timetables that do not exist.
+     * Rows this dashboard counts: the meetings the VPAA has approved.
+     *
+     * Drafts, submissions with the Dean and cohorts still awaiting VPAA action
+     * are excluded along with rejected and withdrawn rows - the VPAA portal
+     * reports the approved timetable, not a department's work in progress, so
+     * utilisation and coverage here describe schedules that are actually in
+     * force. See SchedulingPolicy::VPAA_VISIBLE_STATUSES.
      */
-    private const LIVE_STATUSES = [
-        'draft',
-        'completed',
-        'submitted',
-        'approved_by_dean',
-        'conditionally_approved',
-        'approved',
-        'faculty_assignment',
-        'reassignment',
-        'finalized',
-    ];
+    private const LIVE_STATUSES = SchedulingPolicy::VPAA_VISIBLE_STATUSES;
 
     public function __invoke(): JsonResponse
     {

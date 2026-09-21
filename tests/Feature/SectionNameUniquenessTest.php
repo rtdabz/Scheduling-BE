@@ -100,21 +100,27 @@ class SectionNameUniquenessTest extends TestCase
             ->assertOk();
     }
 
-    public function test_an_archived_name_is_free_again_but_cannot_be_restored_over_its_replacement(): void
+    public function test_a_deleted_section_is_totally_removed_and_its_name_is_immediately_free_again(): void
     {
         $fixture = $this->fixture();
         $archived = $this->createSection($fixture, 'BSIT 1A');
         $archived->delete();
+        $section = $this->createSection($fixture, 'BSIT 1A');
+
+        $this->actingAs($fixture['secretary'])
+            ->deleteJson("/api/sections/{$section->id}")
+            ->assertOk()
+            ->assertJsonPath('message', 'Section deleted successfully');
+
+        $this->assertDatabaseMissing('sections', ['id' => $section->id]);
 
         $this->actingAs($fixture['secretary'])
             ->postJson('/api/sections', $this->payload($fixture, 'BSIT 1A'))
             ->assertCreated();
 
         $this->actingAs($fixture['vpaa'], 'sanctum')
-            ->postJson("/api/archives/sections/{$archived->id}/restore")
-            ->assertStatus(422);
-
-        $this->assertSoftDeleted('sections', ['id' => $archived->id]);
+            ->postJson("/api/archives/sections/{$section->id}/restore")
+            ->assertNotFound();
     }
 
     /** @return array<string, mixed> */

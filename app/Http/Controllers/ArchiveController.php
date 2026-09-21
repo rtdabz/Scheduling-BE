@@ -9,7 +9,6 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleSplit;
-use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\TimeslotOverride;
 use App\Models\User;
@@ -29,7 +28,6 @@ class ArchiveController extends Controller
         'faculties' => Faculty::class,
         'courses' => Course::class,
         'semesters' => Semester::class,
-        'sections' => Sections::class,
         'schedules' => Schedule::class,
         'schedule-splits' => ScheduleSplit::class,
         'timeslot-overrides' => TimeslotOverride::class,
@@ -59,15 +57,6 @@ class ArchiveController extends Controller
 
         $record = $modelClass::onlyTrashed()->findOrFail($id);
 
-        // Sections have no unique index to trip below (archived rows would
-        // collide with it), so a restored name is checked by hand.
-        if ($record instanceof Sections
-            && Sections::nameTaken((int) $record->department_id, (int) $record->semester_id, (string) $record->section_name)) {
-            return response()->json([
-                'message' => 'This section cannot be restored because an active section in the same department and semester is already named '.$record->section_name.'.',
-            ], 422);
-        }
-
         try {
             $record->restore();
         } catch (QueryException) {
@@ -81,9 +70,6 @@ class ArchiveController extends Controller
             'rooms.index',
             'faculties.index',
             'courses.index',
-            'sections.index',
-            'sections.by_semester',
-            'sections.by_department',
             'semesters.index',
             'semesters.active',
             'initial.data',
@@ -102,7 +88,6 @@ class ArchiveController extends Controller
             'faculties' => trim((string) $record->getAttribute('first_name').' '.(string) $record->getAttribute('last_name')),
             'courses' => trim((string) $record->getAttribute('course_code').' - '.(string) $record->getAttribute('course_name')),
             'semesters' => trim((string) $record->getAttribute('academic_year').' '.(string) $record->getAttribute('semester')),
-            'sections' => (string) $record->getAttribute('section_name'),
             'schedules' => 'Schedule #'.$record->getKey(),
             'schedule-splits' => 'Schedule split #'.$record->getKey(),
             'timeslot-overrides' => (string) $record->getAttribute('duration_minutes').' minute override',

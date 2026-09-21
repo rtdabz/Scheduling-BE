@@ -274,13 +274,21 @@ class DepartmentScheduleController extends Controller
      * Only a VPAA sees the institution. Everyone else is scoped to the
      * department they are assigned to, and an unassigned account sees nothing
      * rather than everything.
+     *
+     * The VPAA's own counts cover approved meetings only: work still in a
+     * department's hands, or awaiting VPAA action, is not part of the portal's
+     * timetable. Pending submissions are reviewed on the Schedule Approval
+     * screen instead.
      */
     public function scheduleOverview(Request $request): JsonResponse
     {
         $user = $request->user();
 
         if ($user->role === 'vpaa') {
-            return response()->json($this->scheduleOverviews->overview());
+            return response()->json($this->scheduleOverviews->overview(
+                null,
+                SchedulingPolicy::VPAA_VISIBLE_STATUSES,
+            ));
         }
 
         $departmentId = $user->department_id !== null ? (int) $user->department_id : null;

@@ -40,6 +40,18 @@ class AuthenticationWorkflowTest extends TestCase
             ->assertStatus(403);
     }
 
+    public function test_legacy_director_account_cannot_login_after_portal_removal(): void
+    {
+        $user = User::factory()->create([
+            'role' => 'director',
+            'password' => Hash::make('StrongPass123'),
+        ]);
+
+        $this->postJson('/api/login', ['username' => $user->username, 'password' => 'StrongPass123'])
+            ->assertStatus(403)
+            ->assertJsonPath('message', 'This account role is no longer supported. Contact the VPAA office.');
+    }
+
     public function test_vpaa_can_create_and_disable_a_google_enabled_user(): void
     {
         $vpaa = User::factory()->create(['role' => 'vpaa']);

@@ -26,7 +26,7 @@ class UpdateUserRequest extends FormRequest
             'last_name' => 'required|string|max:100',
             'suffix' => ['nullable', Rule::in(Faculty::NAME_SUFFIXES)],
             'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($this->targetUser()->id)],
-            'role' => 'required|string|in:dean,program_head,secretary,director',
+            'role' => 'required|string|in:dean,program_head,secretary',
             'is_active' => 'required|boolean',
             'allow_google_login' => 'sometimes|boolean',
             'department_id' => 'required|exists:departments,id',

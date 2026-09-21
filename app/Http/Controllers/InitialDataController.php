@@ -12,6 +12,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\FacultyLoadService;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
@@ -48,6 +49,7 @@ class InitialDataController extends Controller
 
     public function __construct(
         private readonly FacultyLoadService $facultyLoad,
+        private readonly ScheduleAuthorizationService $authorization,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -70,6 +72,10 @@ class InitialDataController extends Controller
                 ? null
                 : (int) $user?->department_id,
             'program_id' => $user?->role === 'program_head' ? (int) ($user?->program_id ?? 0) : null,
+            // A VPAA's payload carries approved meetings only; the approval
+            // queue asks for the pending ones too, so the two must not share a
+            // cached payload.
+            'approval_queue' => $this->authorization->visibleScheduleStatuses($request),
             'per_page' => min(max((int) $request->query('per_page', 0), 0), 500),
             'schedule_limit' => min(max((int) $request->query('schedule_limit', 500), 1), 2000),
             'pages' => collect(['rooms', 'courses', 'sections', 'schedules', 'departments', 'users'])
@@ -142,6 +148,7 @@ class InitialDataController extends Controller
             || in_array($section, $include, true);
 
         $pageSize = min(max((int) $request->query('per_page', 0), 0), 500);
+        $scheduleLimit = min(max((int) $request->query('schedule_limit', 500), 1), 2000);
         $user = $request->user();
         $departmentId = $user->isVpaa() || $user->department_id === null
             ? null
@@ -355,12 +362,26 @@ class InitialDataController extends Controller
                     ->orWhere('teaching_program_id', $facultyProgramId),
             ))
             ->when($activeSemesterId !== null, fn (Builder $query) => $query->where('semester_id', $activeSemesterId))
+            // The VPAA portal reads the approved timetable only; a department's
+            // work in progress and anything still awaiting VPAA action is not
+            // part of it. Department users are unaffected.
+            ->when(
+                ($visibleStatuses = $this->authorization->visibleScheduleStatuses($request)) !== null,
+                fn (Builder $query) => $query->whereIn('status', $visibleStatuses),
+            )
             ->latest()
             // Keep the default response bounded for institution-wide viewers.
             // Callers that genuinely need more rows can opt in up to 2,000 and
-            // should use the paged response mode for larger datasets.
-            ->limit(min(max((int) $request->query('schedule_limit', 500), 1), 2000))
+            // should use the paged response mode for larger datasets. One row
+            // past the limit is read only to tell the caller the list was cut:
+            // the scheduler checks conflicts against these rows, and silently
+            // missing ones is worse than saying so.
+            ->limit($scheduleLimit + 1)
             ->get();
+        $schedulesTruncated = $schedules->count() > $scheduleLimit;
+        if ($schedulesTruncated) {
+            $schedules = $schedules->take($scheduleLimit)->values();
+        }
 
         $needsSubmissions = $wants('schedules') || $wants('schedule_submissions');
         $scheduleSubmissions = ! $needsSubmissions ? collect() : ScheduleSubmission::query()
@@ -454,6 +475,7 @@ class InitialDataController extends Controller
                 : collect(),
             'sections' => $sections,
             'schedules' => $schedules,
+            'schedules_truncated' => $schedulesTruncated,
             'schedule_submissions' => $scheduleSubmissions,
             'departments' => $departments,
             'scheduling_ready' => $departmentId === null || Departments::query()->whereKey($departmentId)->whereHas('programs')->exists(),

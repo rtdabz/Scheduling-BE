@@ -9,16 +9,16 @@ use App\Services\Scheduling\Engine\Rules\CurriculumPlacementRule;
 use App\Services\Scheduling\Engine\Rules\DeliveryModeRule;
 use App\Services\Scheduling\Engine\Rules\DepartmentAssignmentRule;
 use App\Services\Scheduling\Engine\Rules\InstructorAvailabilityRule;
-use App\Services\Scheduling\Engine\Rules\InstructorConflictRule;
 use App\Services\Scheduling\Engine\Rules\MeetingDayRule;
 use App\Services\Scheduling\Engine\Rules\MeetingGroupRule;
 use App\Services\Scheduling\Engine\Rules\OperatingHoursRule;
 use App\Services\Scheduling\Engine\Rules\ReferenceIntegrityRule;
+use App\Services\Scheduling\Engine\Rules\OverlapConflict;
 use App\Services\Scheduling\Engine\Rules\RoomAvailabilityRule;
 use App\Services\Scheduling\Engine\Rules\RoomTypeRule;
 use App\Services\Scheduling\Engine\Rules\RuleLookupCache;
-use App\Services\Scheduling\Engine\Rules\SectionConflictRule;
 use App\Services\Scheduling\Schedule\FacultyConflictOverride;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 
 /**
  * Validates one schedule attempt (a single meeting about to be saved) against
@@ -42,9 +42,7 @@ class RuleEngine
 
     private readonly InstructorAvailabilityRule $instructorAvailability;
 
-    private readonly InstructorConflictRule $instructorConflicts;
-
-    private readonly SectionConflictRule $sectionConflicts;
+    private readonly OverlapConflict $overlaps;
 
     private readonly RoomAvailabilityRule $roomAvailability;
 
@@ -71,9 +69,8 @@ class RuleEngine
         $this->curriculum = new CurriculumPlacementRule($lookups);
         $this->departments = new DepartmentAssignmentRule($lookups);
         $this->instructorAvailability = new InstructorAvailabilityRule;
-        $this->instructorConflicts = new InstructorConflictRule;
-        $this->sectionConflicts = new SectionConflictRule;
-        $this->roomAvailability = new RoomAvailabilityRule($lookups);
+        $this->overlaps = new OverlapConflict($lookups);
+        $this->roomAvailability = new RoomAvailabilityRule;
         $this->roomTypes = new RoomTypeRule($lookups);
         $this->operatingHours = new OperatingHoursRule;
         $this->meetingDays = new MeetingDayRule($lookups);
@@ -116,10 +113,8 @@ class RuleEngine
             ...$violations,
             ...array_filter([
                 $this->deliveryModes->hybridShape($attempt),
-                $this->roomAvailability->booking($attempt),
-                $this->instructorConflicts->check($attempt),
             ]),
-            ...$this->sectionConflicts->check($attempt),
+            ...$this->overlaps->check($attempt),
             ...array_filter([
                 $hasMissingRecord ? null : $this->roomTypeFor($attempt),
                 $this->meetingDays->preferredPattern($day, $attempt['preferred_pattern'] ?? null),
@@ -131,6 +126,45 @@ class RuleEngine
         // An instructor conflict someone already chose to override does not come
         // back on the next save of the same meeting.
         return FacultyConflictOverride::withoutStanding($attempt, array_values($violations));
+    }
+
+    /**
+     * The rules a change of instructor alone can break: every `faculty`
+     * catalog rule, plus these from other categories.
+     *
+     * `relational_integrity` is kept whole: a missing record means the
+     * instructor rules could not be evaluated at all, not that they passed.
+     */
+    private const INSTRUCTOR_ASSIGNMENT_RULES = ['faculty_conflict', 'required_field'];
+
+    private const INSTRUCTOR_ASSIGNMENT_CATEGORIES = ['faculty', 'relational_integrity'];
+
+    /**
+     * Validate a change of instructor on a meeting that is not moving.
+     *
+     * Choosing an instructor does not move the class, so placement rules are
+     * not re-judged. A class that satisfied them when it was placed can stop
+     * satisfying them later (a Required Day set for its course, a room taken out
+     * of service, a field-course list edited). Re-running them here refused the
+     * staffing of such a class -- or removing its instructor -- for a reason
+     * the change had nothing to do with. Moving the class goes through
+     * validate() and still answers to every rule.
+     *
+     * @param  array<string, mixed>  $attempt
+     * @return list<array<string, mixed>>
+     */
+    public function validateInstructorAssignment(array $attempt): array
+    {
+        return array_values(array_filter(
+            $this->validate($attempt),
+            static fn (array $violation): bool => self::concernsInstructor((string) ($violation['rule'] ?? '')),
+        ));
+    }
+
+    private static function concernsInstructor(string $rule): bool
+    {
+        return in_array($rule, self::INSTRUCTOR_ASSIGNMENT_RULES, true)
+            || in_array(SchedulingPolicy::CONSTRAINT_CATALOG[$rule]['category'] ?? null, self::INSTRUCTOR_ASSIGNMENT_CATEGORIES, true);
     }
 
     /**
@@ -210,8 +244,6 @@ class RuleEngine
                 ...$this->instructorAvailability->check($attempt, $records),
                 ...array_values(array_filter([
                     $this->roomAvailability->status($records),
-                    $this->meetingDays->courseCategoryDay($day, $records),
-                    $this->deliveryModes->sundayMajor($day, $records),
                     $this->operatingHours->fieldEveningWindow($attempt, $records),
                     $this->meetingDays->forcedDay($day, $records),
                 ])),

@@ -7,6 +7,7 @@ namespace App\Services\Scheduling\Schedule;
 use App\Models\Course;
 use App\Models\Program;
 use App\Models\Schedule;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -28,6 +29,38 @@ final class ScheduleAuthorizationService
         }
 
         return (int) $user->department_id;
+    }
+
+    /** Statuses awaiting the VPAA's own decision; readable only on the approval queue. */
+    private const PENDING_VPAA_STATUSES = ['approved_by_dean', 'conditionally_approved'];
+
+    /**
+     * The schedule statuses the requester may read, or null for no restriction.
+     *
+     * Only the VPAA is restricted: its portal shows the approved timetable, so
+     * anything the VPAA has not approved yet - a department draft, a submission
+     * with the Dean, a Dean-approved cohort awaiting VPAA action - is not
+     * readable there. Department users keep seeing their own work in progress.
+     *
+     * The one exception is the Schedule Approval screen, which has to show the
+     * VPAA what it is being asked to approve. It opts in explicitly with
+     * `?approval_queue=1`, and only an account that may actually approve gets
+     * the pending rows; the flag is inert for everyone else.
+     *
+     * @return list<string>|null
+     */
+    public function visibleScheduleStatuses(Request $request): ?array
+    {
+        $user = $request->user();
+        if ($user?->isVpaa() !== true) {
+            return null;
+        }
+
+        if ($request->boolean('approval_queue') && $user->hasCapability('schedule.approve_vpaa')) {
+            return array_merge(SchedulingPolicy::VPAA_VISIBLE_STATUSES, self::PENDING_VPAA_STATUSES);
+        }
+
+        return SchedulingPolicy::VPAA_VISIBLE_STATUSES;
     }
 
     public function payloadBelongsToDepartment(Request $request, int $departmentId): bool

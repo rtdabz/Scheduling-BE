@@ -245,7 +245,7 @@ class InstructorAssignmentController extends Controller
                 'faculty_id' => $facultyId,
                 'ignore_schedule_id' => $linkedScheduleIds,
             ]);
-            $violations = array_merge($violations, $this->ruleEngine->validate($attempt));
+            $violations = array_merge($violations, $this->ruleEngine->validateInstructorAssignment($attempt));
         }
 
         // The instructor's own clashes may be assigned over on purpose; anything

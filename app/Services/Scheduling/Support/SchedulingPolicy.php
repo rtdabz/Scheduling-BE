@@ -43,7 +43,11 @@ final class SchedulingPolicy
         'Sunday',
     ];
 
-    /** Mon-Fri only. Used for PATHFIT and other non-NSTP field courses. */
+    /**
+     * Mon-Fri. A preference only: no course is limited to these days any more,
+     * so this is used for ordering and for callers that ask for a working week,
+     * never to refuse a placement.
+     */
     public const WEEKDAYS = [
         'Monday',
         'Tuesday',
@@ -52,7 +56,7 @@ final class SchedulingPolicy
         'Friday',
     ];
 
-    /** Mon-Sat. Used for major and non-field minor course day constraints. */
+    /** Mon-Sat. A preference only; see WEEKDAYS. */
     public const WEEKDAYS_AND_SATURDAY = [
         'Monday',
         'Tuesday',
@@ -127,6 +131,19 @@ final class SchedulingPolicy
     public const INSTRUCTOR_ASSIGNABLE_STATUSES = ['approved', 'faculty_assignment', 'reassignment'];
 
     /**
+     * Statuses a VPAA may read a meeting at.
+     *
+     * The VPAA portal shows the approved institutional timetable, not work in
+     * progress: a department's drafts, a submission sitting with the Dean and
+     * even a Dean-approved cohort awaiting VPAA action stay out of it. VPAA
+     * approval is what moves meetings to `faculty_assignment`, so that is the
+     * first status the portal reads. Pending submissions are reviewed on the
+     * Schedule Approval screen, which reads `schedule_submissions` and is
+     * deliberately not filtered by this list.
+     */
+    public const VPAA_VISIBLE_STATUSES = ['approved', 'faculty_assignment', 'reassignment', 'finalized'];
+
+    /**
      * Statuses at which an existing instructor assignment counts as real: it is
      * listed in the assignment workspace and included in teaching load. A row
      * that fell back to `draft`, `completed` or `revision` is no longer an
@@ -150,155 +167,6 @@ final class SchedulingPolicy
      * Friday and Saturday still generates.
      */
     public const SINGLE_MEETING_PREFERRED_DAYS = ['Friday', 'Saturday'];
-
-    /**
-     * The teaching periods a section can be pinned to on the Preferred Meetings
-     * board, as wall-clock windows.
-     *
-     * A section assigned to one of these is only ever offered candidates that fit
-     * inside it: it is a hard window, not a preference, and no retry strategy can
-     * widen it. That makes the width the binding constraint on what a pinned
-     * section can be given -- a meeting longer than the window has no start time
-     * at all -- so the solver, the feasibility pre-check and the UI must all read
-     * the same definition. They used to carry three separate copies.
-     */
-    public const PREFERRED_PERIOD_WINDOWS = [
-        'morning' => ['07:00', '11:30'],
-        'afternoon' => ['11:30', '16:00'],
-        'evening' => ['16:00', '20:30'],
-    ];
-
-    /** @return list<string> */
-    public static function preferredPeriods(): array
-    {
-        return array_keys(self::PREFERRED_PERIOD_WINDOWS);
-    }
-
-    public static function normalizePreferredPeriod(mixed $period): ?string
-    {
-        if (! is_string($period)) {
-            return null;
-        }
-
-        $normalized = strtolower(trim($period));
-
-        return array_key_exists($normalized, self::PREFERRED_PERIOD_WINDOWS)
-            ? $normalized
-            : null;
-    }
-
-    /**
-     * The periods one course of a section may meet in: its own Preferred
-     * Meeting from Setup Courses' Configure (`preferred_periods_by_course_id`,
-     * one or more periods) when set, otherwise the section's single period.
-     * Null means any time. The override moves one course -- e.g. a field
-     * course out of an Evening section -- without moving the section's others.
-     *
-     * @param  array<string, mixed>  $config  a section config
-     * @return list<string>|null in day order
-     */
-    public static function coursePreferredPeriods(array $config, int $courseId): ?array
-    {
-        $overrides = is_array($config['preferred_periods_by_course_id'] ?? null)
-            ? $config['preferred_periods_by_course_id']
-            : [];
-
-        $own = self::normalizePreferredPeriods($overrides[$courseId] ?? $overrides[(string) $courseId] ?? null);
-        if ($own !== null) {
-            return $own;
-        }
-
-        $section = self::normalizePreferredPeriod($config['preferred_period'] ?? null);
-
-        return $section === null ? null : [$section];
-    }
-
-    /**
-     * One period or a list of them, deduplicated in day order; null when none
-     * is a known period.
-     *
-     * @return list<string>|null
-     */
-    public static function normalizePreferredPeriods(mixed $periods): ?array
-    {
-        $chosen = [];
-        foreach ((array) $periods as $period) {
-            $normalized = self::normalizePreferredPeriod($period);
-            if ($normalized !== null) {
-                $chosen[$normalized] = true;
-            }
-        }
-
-        $ordered = array_values(array_filter(
-            self::preferredPeriods(),
-            static fn (string $period): bool => isset($chosen[$period]),
-        ));
-
-        return $ordered === [] ? null : $ordered;
-    }
-
-    /**
-     * The slot windows a set of periods allows. Touching windows merge, so
-     * Morning + Afternoon is one 7:00 AM - 4:00 PM window a meeting may
-     * straddle, while Morning + Evening stays two.
-     *
-     * @param  list<string>  $periods
-     * @return list<array{0: int, 1: int}>
-     */
-    public static function preferredPeriodsSlotRanges(array $periods): array
-    {
-        $ranges = [];
-        foreach (self::normalizePreferredPeriods($periods) ?? [] as $period) {
-            [$from, $to] = self::preferredPeriodSlotRange($period);
-            if ($to <= $from) {
-                continue;
-            }
-
-            $last = array_key_last($ranges);
-            if ($last !== null && $from <= $ranges[$last][1]) {
-                $ranges[$last][1] = max($ranges[$last][1], $to);
-            } else {
-                $ranges[] = [$from, $to];
-            }
-        }
-
-        return $ranges;
-    }
-
-    /** @param  list<string>  $periods */
-    public static function preferredPeriodsLabel(array $periods): string
-    {
-        return implode(' or ', array_map(
-            static fn (string $period): string => self::preferredPeriodLabel($period),
-            $periods,
-        ));
-    }
-
-    /**
-     * The window as grid slots, clamped to the institution's operating hours.
-     *
-     * Clamping matters: the windows are fixed wall-clock ranges while the grid is
-     * a stored setting, so a campus that closes before 8:30 PM has a shorter
-     * evening than the window names. The clamp keeps every caller agreeing on the
-     * width that is actually bookable.
-     *
-     * @return array{0: int, 1: int}
-     */
-    public static function preferredPeriodSlotRange(string $period): array
-    {
-        [$fromTime, $toTime] = self::PREFERRED_PERIOD_WINDOWS[$period]
-            ?? [self::openingTime(), self::closingTime()];
-        $openingMinutes = self::timeToMinutes(self::openingTime());
-        $totalSlots = self::totalSlots();
-
-        $from = (int) ceil((self::timeToMinutes($fromTime) - $openingMinutes) / self::SLOT_MINUTES);
-        $to = (int) floor((self::timeToMinutes($toTime) - $openingMinutes) / self::SLOT_MINUTES);
-
-        return [
-            max(0, min($totalSlots, $from)),
-            max(0, min($totalSlots, $to)),
-        ];
-    }
 
     /**
      * Step 1's Preferred Days, in calendar order, or null when the run may use
@@ -332,34 +200,6 @@ final class SchedulingPolicy
     public static function countAllowedDays(array $days, ?array $allowedDays): int
     {
         return $allowedDays === null ? count($days) : count(array_intersect($days, $allowedDays));
-    }
-
-    /** Human wording for the window, e.g. 'Morning (7:00 AM - 11:30 AM)'. */
-    public static function preferredPeriodLabel(string $period): string
-    {
-        [$from, $to] = self::PREFERRED_PERIOD_WINDOWS[$period] ?? [null, null];
-
-        if ($from === null) {
-            return ucfirst($period);
-        }
-
-        return sprintf(
-            '%s (%s - %s)',
-            ucfirst($period),
-            self::formatClockLabel($from),
-            self::formatClockLabel($to),
-        );
-    }
-
-    private static function formatClockLabel(string $time): string
-    {
-        $minutes = self::timeToMinutes($time);
-        $hour = intdiv($minutes, 60);
-        $minute = $minutes % 60;
-        $suffix = $hour >= 12 ? 'PM' : 'AM';
-        $hour12 = $hour % 12 === 0 ? 12 : $hour % 12;
-
-        return sprintf('%d:%02d %s', $hour12, $minute, $suffix);
     }
 
     /**
@@ -683,24 +523,6 @@ final class SchedulingPolicy
             'description' => 'Field schedules cannot be marked hybrid.',
             'enforced_by' => ['request_validation', 'csp'],
         ],
-        'field_day_constraint' => [
-            'severity' => 'hard',
-            'category' => 'calendar',
-            'description' => 'Non-NSTP field courses are limited to weekdays.',
-            'enforced_by' => ['rule_engine', 'csp'],
-        ],
-        'minor_day_constraint' => [
-            'severity' => 'hard',
-            'category' => 'calendar',
-            'description' => 'Minor courses may be scheduled Monday through Saturday but not Sunday.',
-            'enforced_by' => ['rule_engine', 'csp'],
-        ],
-        'major_sunday_mode_constraint' => [
-            'severity' => 'hard',
-            'category' => 'calendar',
-            'description' => 'Major Sunday meetings must be online when the department Sunday-online setting is enabled.',
-            'enforced_by' => ['rule_engine', 'csp'],
-        ],
         'field_evening_window' => [
             'severity' => 'hard',
             'category' => 'time',
@@ -848,6 +670,12 @@ final class SchedulingPolicy
             'severity' => 'hard',
             'category' => 'meeting_group',
             'description' => 'The combined duration of a minor split group must not exceed the course contact-hour requirement.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'split_group_same_time' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'Both meetings of a Split Session or Hybrid Split use the same start and end time.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'class_duration' => [
@@ -1329,30 +1157,6 @@ final class SchedulingPolicy
         }
 
         return $value;
-    }
-
-    /**
-     * Returns true when the course is an NSTP-type course (ROTC, CWTS, or LTS).
-     *
-     * @param  Course|array<string, mixed>  $course
-     */
-    public static function isNstpCourse(Course|array $course): bool
-    {
-        $code = strtoupper((string) (self::courseAttribute($course, 'course_code', 'subject_code') ?? ''));
-        $name = strtoupper((string) (self::courseAttribute($course, 'course_name', 'subject_name') ?? ''));
-        $category = strtolower((string) (self::courseAttribute($course, 'course_category', 'subject_category') ?? ''));
-
-        if (in_array($category, ['nstp', 'rotc', 'cwts', 'lts'], true)) {
-            return true;
-        }
-
-        foreach (['NSTP', 'ROTC', 'CWTS', 'LTS'] as $keyword) {
-            if (str_contains($code, $keyword) || str_contains($name, $keyword)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

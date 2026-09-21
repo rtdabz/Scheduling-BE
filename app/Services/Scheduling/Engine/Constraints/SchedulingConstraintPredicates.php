@@ -31,12 +31,6 @@ final class SchedulingConstraintPredicates
     // and the solver. These keep the kernel call sites short; the snapshot's
     // field-course codes stand in for the database lookup.
 
-    /** @param array<string, mixed> $course */
-    public static function isNstpCourse(array $course): bool
-    {
-        return SchedulingPolicy::isNstpCourse($course);
-    }
-
     /**
      * @param  array<string, mixed>  $course
      * @param  list<string>  $fieldCourseCodes

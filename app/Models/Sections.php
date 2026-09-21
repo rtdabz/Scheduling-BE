@@ -3,12 +3,9 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Sections extends Model
 {
-    use SoftDeletes;
-
     protected $fillable = [
         'section_name',
         'year_level',
@@ -34,9 +31,8 @@ class Sections extends Model
     }
 
     /**
-     * Whether a live section already uses this name in the department for the
-     * semester. Archived (soft-deleted) sections do not count, so a name frees up
-     * once its section is archived; restoring that section checks again.
+     * Whether a section already uses this name in the department for the
+     * semester.
      */
     public static function nameTaken(int $departmentId, int $semesterId, string $name, ?int $ignoreId = null): bool
     {

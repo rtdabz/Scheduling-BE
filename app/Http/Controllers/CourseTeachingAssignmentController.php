@@ -110,7 +110,7 @@ class CourseTeachingAssignmentController extends Controller
                     fn ($query) => $query->where('department_id', '!=', $departmentId))
                 ->orderBy('department_id')
                 ->orderBy('code')
-                ->get(['id', 'department_id', 'code', 'name', 'cluster']),
+                ->get(['id', 'department_id', 'code', 'name', 'major']),
             'incoming_cross_department_courses' => $incoming,
             'courses' => $courses
                 ->map(fn (Course $course): array => $this->present($course, $instructorClasses[(int) $course->id] ?? 0))
@@ -271,7 +271,7 @@ class CourseTeachingAssignmentController extends Controller
             // to rather than the one it is retiring.
             ->orderByDesc('curriculum.effective_school_year')
             ->orderByDesc('curriculum_course.curriculum_id')
-            ->get(['curriculum_course.course_id', 'curriculum_course.year_level', 'curriculum_course.curriculum_id', 'curriculum.name as curriculum_name', 'curriculum.program_id as curriculum_program_id', 'programs.code as curriculum_program_code', 'programs.name as curriculum_program_name', 'programs.cluster as curriculum_program_cluster'])
+            ->get(['curriculum_course.course_id', 'curriculum_course.year_level', 'curriculum_course.curriculum_id', 'curriculum.name as curriculum_name', 'curriculum.program_id as curriculum_program_id', 'programs.code as curriculum_program_code', 'programs.name as curriculum_program_name', 'programs.major as curriculum_program_major'])
             // A course placed by both curricula appears once. The scalar year
             // level this collapses to is only a display default — anything that
             // schedules a cohort resolves the placement through that section's
@@ -303,7 +303,7 @@ class CourseTeachingAssignmentController extends Controller
                 $course->curriculum_program_id = $placement->curriculum_program_id;
                 $course->curriculum_program_code = $placement->curriculum_program_code;
                 $course->curriculum_program_name = $placement->curriculum_program_name;
-                $course->curriculum_program_cluster = $placement->curriculum_program_cluster;
+                $course->curriculum_program_major = $placement->curriculum_program_major;
             }
         });
     }
@@ -549,13 +549,13 @@ class CourseTeachingAssignmentController extends Controller
             'program_id' => $course->program_id === null ? null : (int) $course->program_id,
             'program_code' => $course->program?->code,
             'program_name' => $course->program?->name,
-            'program_cluster' => $course->program?->cluster,
+            'program_major' => $course->program?->major,
             'curriculum_program_id' => $course->getAttribute('curriculum_program_id') === null
                 ? null
                 : (int) $course->getAttribute('curriculum_program_id'),
             'curriculum_program_code' => $course->getAttribute('curriculum_program_code'),
             'curriculum_program_name' => $course->getAttribute('curriculum_program_name'),
-            'curriculum_program_cluster' => $course->getAttribute('curriculum_program_cluster'),
+            'curriculum_program_major' => $course->getAttribute('curriculum_program_major'),
             'delegable' => SchedulingPolicy::isDelegableCourse($course),
             // Classes this semester that already have an instructor. While any do,
             // the teaching college cannot be changed.

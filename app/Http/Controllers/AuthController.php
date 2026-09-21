@@ -47,6 +47,10 @@ class AuthController extends Controller
             return response()->json(['message' => 'This account has been disabled. Contact the VPAA office.'], 403);
         }
 
+        if (! $this->capabilities->supportsRole((string) $user->role)) {
+            return response()->json(['message' => 'This account role is no longer supported. Contact the VPAA office.'], 403);
+        }
+
         return $this->authenticatedResponse($request, $user, 'password');
     }
 
@@ -146,6 +150,10 @@ class AuthController extends Controller
             return $this->googleErrorRedirect($frontendUrl, 'This account has been disabled. Contact the VPAA office.');
         }
 
+        if (! $this->capabilities->supportsRole((string) $user->role)) {
+            return $this->googleErrorRedirect($frontendUrl, 'This account role is no longer supported. Contact the VPAA office.');
+        }
+
         if (strtolower((string) $user->email) !== $email) {
             return $this->googleErrorRedirect($frontendUrl, 'The Google email does not match the approved account email.');
         }
@@ -182,7 +190,7 @@ class AuthController extends Controller
             ? User::find($exchange['user_id'])
             : null;
 
-        if (! $user || ! $user->is_active) {
+        if (! $user || ! $user->is_active || ! $this->capabilities->supportsRole((string) ($user->role ?? ''))) {
             return response()->json(['message' => 'The Google login request is invalid or expired.'], 401);
         }
 

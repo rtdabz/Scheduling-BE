@@ -11,6 +11,7 @@ use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\TimeslotService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
@@ -25,14 +26,34 @@ class DayCategoryConstraintParityTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_nstp_courses_may_use_any_day_including_sunday(): void
+    public function test_nstp_field_courses_are_limited_to_weekdays_like_any_field_course(): void
     {
         $rules = $this->violationRulesForEachDay($this->course('CWTS1', 'Civic Welfare Training', 'major', 'field'));
 
-        foreach ($rules as $day => $dayRules) {
-            $this->assertNotContains('field_day_constraint', $dayRules, "NSTP should not hit the field rule on {$day}");
-            $this->assertNotContains('major_sunday_mode_constraint', $dayRules, "NSTP should not hit the Sunday rule on {$day}");
+        foreach (['Monday', 'Friday'] as $day) {
+            $this->assertNotContains('field_day_constraint', $rules[$day], "NSTP should be allowed on {$day}");
         }
+        foreach (['Saturday', 'Sunday'] as $day) {
+            $this->assertContains('field_day_constraint', $rules[$day], "NSTP should be rejected on {$day} unless pinned");
+        }
+    }
+
+    public function test_a_field_course_may_meet_on_the_weekend_day_the_department_pinned_it_to(): void
+    {
+        [, $department] = $this->fixture();
+        $course = $this->course('CWTS2', 'Civic Welfare Training', 'major', 'field');
+        DB::table('department_forced_course_days')->insert([
+            'department_id' => $department->id,
+            'course_id' => $course->id,
+            'day' => 'Saturday',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $rules = $this->violationRulesForEachDay($course);
+
+        $this->assertNotContains('field_day_constraint', $rules['Saturday']);
+        $this->assertContains('field_day_constraint', $rules['Sunday']);
     }
 
     public function test_non_nstp_field_courses_are_limited_to_weekdays(): void

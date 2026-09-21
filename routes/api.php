@@ -20,6 +20,7 @@ use App\Http\Controllers\RealtimeConfigController;
 use App\Http\Controllers\ReportsController;
 use App\Http\Controllers\RoomRequestController;
 use App\Http\Controllers\RoomsController;
+use App\Http\Controllers\ScheduleConflictController;
 use App\Http\Controllers\ScheduleController;
 use App\Http\Controllers\ScheduleHistoryController;
 use App\Http\Controllers\ScheduleRecommendationController;
@@ -103,7 +104,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // it, so every role that maintains faculty or courses reads this list.
         Route::get('programs', [ProgramController::class, 'index']);
 
-        // Department schedule-status is readable by all four operational roles.
+        // Department schedule-status is readable by all three operational roles.
         Route::get('departments/{id}/schedule-status', [DepartmentScheduleController::class, 'scheduleStatus']);
 
         Route::get('rooms', [RoomsController::class, 'index']);
@@ -134,7 +135,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('sections/department/{departmentId}', [SectionsController::class, 'byDepartment']);
         Route::get('sections/{section}', [SectionsController::class, 'show']);
 
-        // Schedule reads remain available to all four roles.
+        // Schedule reads remain available to all three operational roles.
         Route::get('schedules/pending-department-count', [ScheduleController::class, 'pendingDepartmentCount']);
         Route::get('schedules/semester/{semesterId}', [ScheduleController::class, 'bySemester']);
         Route::get('schedules/section/{sectionId}', [ScheduleController::class, 'bySection']);
@@ -217,9 +218,20 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     // The three timeslot reads describe the grid every scheduling screen draws
-    // against; none of them writes. Listing role names here meant a role added
-    // later (director) was locked out of the grid no matter what the VPAA
-    // granted it, and 'admin' named a role that does not exist.
+    // against; none of them writes. Authorization is capability-based, so new
+    // operational roles do not need to be added to this route.
+    // Conflict inbox and resolution workflow. Conflicts are derived on every
+    // read, so `{conflict}` is a content identifier -- `rule:lowId:highId` --
+    // rather than a row in a table. Reading the list only needs schedule.view;
+    // the controller checks the capability and the department the action itself
+    // needs, because a move, a reassignment and an override are not the same
+    // permission.
+    Route::middleware('capability:schedule.view')->group(function () {
+        Route::get('conflicts', [ScheduleConflictController::class, 'index']);
+        Route::post('conflicts/{conflict}/resolve', [ScheduleConflictController::class, 'resolve']);
+        Route::post('conflicts/{conflict}/override', [ScheduleConflictController::class, 'override']);
+    });
+
     Route::middleware('capability:schedule.view')->group(function () {
         Route::get('timeslots', [TimeslotController::class, 'index']);
         Route::post('timeslots/generate', [TimeslotController::class, 'generateSlots']);
@@ -288,6 +300,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('capability:schedule.generate')->group(function () {
         Route::post('schedule-recommendations/auto-generate', [ScheduleRecommendationController::class, 'autoGenerateAndApply']);
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
+        Route::post('schedule-recommendations/available-slots', [ScheduleRecommendationController::class, 'availableSlots']);
         Route::post('schedule-recommendations/preview/queue', [ScheduleRecommendationController::class, 'queuePreview'])->middleware('throttle:10,1');
         Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview'])->middleware('throttle:5,1');
         Route::post('schedule-recommendations/year-level-preview/queue', [ScheduleRecommendationController::class, 'queueYearLevelPreview'])->middleware('throttle:5,1');

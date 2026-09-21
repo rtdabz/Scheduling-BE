@@ -166,4 +166,9 @@ class CapabilityRegistry
     {
         return config('capabilities.role_defaults', []);
     }
+
+    public function supportsRole(string $role): bool
+    {
+        return array_key_exists(strtolower($role), $this->roleDefaults());
+    }
 }

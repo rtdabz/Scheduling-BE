@@ -181,6 +181,75 @@ class InitialDataPayloadTest extends TestCase
         $this->assertSame([$beedCourse->id], collect($beedResponse->json('schedules'))->pluck('course_id')->unique()->values()->all());
     }
 
+    /**
+     * The scheduler checks conflicts against these rows, so a list cut at
+     * `schedule_limit` has to say so rather than silently drop classes.
+     */
+    public function test_schedule_list_reports_when_it_is_cut_at_the_limit(): void
+    {
+        [$user, $department] = $this->fixture();
+        $semester = Semester::query()->where('is_active', true)->firstOrFail();
+        $section = Sections::query()->where('department_id', $department->id)->firstOrFail();
+        $course = Course::query()->where('course_code', 'PAY101')->firstOrFail();
+
+        foreach (['Monday', 'Tuesday', 'Wednesday'] as $day) {
+            Schedule::create([
+                'semester_id' => $semester->id,
+                'section_id' => $section->id,
+                'course_id' => $course->id,
+                'department_id' => $department->id,
+                'day' => $day,
+                'start_time' => '08:00', 'end_time' => '09:00',
+                'mode' => 'online', 'status' => 'draft',
+            ]);
+        }
+
+        $cut = $this->actingAs($user)->getJson('/api/initial-data?include=schedules&schedule_limit=2')->assertOk();
+        $this->assertCount(2, $cut->json('schedules'));
+        $this->assertTrue($cut->json('schedules_truncated'));
+
+        $whole = $this->actingAs($user)->getJson('/api/initial-data?include=schedules&schedule_limit=3')->assertOk();
+        $this->assertCount(3, $whole->json('schedules'));
+        $this->assertFalse($whole->json('schedules_truncated'));
+    }
+
+    public function test_the_vpaa_payload_carries_approved_schedules_only(): void
+    {
+        [, $department] = $this->fixture();
+        $semester = Semester::query()->where('is_active', true)->firstOrFail();
+        $section = Sections::query()->where('department_id', $department->id)->firstOrFail();
+        $course = Course::query()->where('course_code', 'PAY101')->firstOrFail();
+
+        $statuses = ['draft', 'submitted', 'approved_by_dean', 'faculty_assignment'];
+        foreach ($statuses as $index => $status) {
+            Schedule::create([
+                'semester_id' => $semester->id,
+                'section_id' => $section->id,
+                'course_id' => $course->id,
+                'department_id' => $department->id,
+                'day' => 'Monday',
+                'start_time' => sprintf('%02d:00', 8 + $index), 'end_time' => sprintf('%02d:00', 9 + $index),
+                'mode' => 'online', 'status' => $status,
+            ]);
+        }
+
+        $vpaa = $this->grantCapabilities(User::factory()->create(['role' => 'vpaa', 'department_id' => null]));
+
+        $portal = $this->actingAs($vpaa)->getJson('/api/initial-data?include=schedules')->assertOk();
+        $this->assertSame(
+            ['faculty_assignment'],
+            collect($portal->json('schedules'))->pluck('status')->all(),
+        );
+
+        // The Schedule Approval screen has to show what it is being asked to
+        // approve, so it opts into the pending rows explicitly.
+        $queue = $this->actingAs($vpaa)->getJson('/api/initial-data?include=schedules&approval_queue=1')->assertOk();
+        $this->assertSame(
+            ['approved_by_dean', 'faculty_assignment'],
+            collect($queue->json('schedules'))->pluck('status')->sort()->values()->all(),
+        );
+    }
+
     /** @return array{0: User, 1: Departments} */
     private function fixture(): array
     {

@@ -5,66 +5,44 @@ namespace Tests\Unit;
 use App\Services\Scheduling\Engine\CspSolver;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
-use ReflectionProperty;
 
 /**
- * Sunday is a fallback day by default: its candidates sit in a search tier the
- * solver only opens once Monday-Saturday has failed, and the day-balance ranking
- * charges a flat penalty for using it. A department that turned Sunday Online
- * Only off teaches on Sunday, so for that department Sunday must rank as an
- * ordinary teaching day instead.
+ * Sunday is an ordinary teaching day. It used to sit in a search tier the
+ * solver only opened once Monday-Saturday had failed, carry a flat 5000-point
+ * day-balance penalty, and take an extra allocation step when online — all
+ * gated by a per-department `sunday_online_only_enabled` switch. The switch and
+ * every one of those handicaps are gone, so Sunday must now rank exactly as
+ * Saturday does.
  */
 class CspSundayTeachingDayTest extends TestCase
 {
-    private function solver(bool $sundayIsRegularTeachingDay): CspSolver
+    public function test_sunday_is_searched_in_the_same_tier_as_saturday(): void
     {
         $solver = new CspSolver;
-        $flag = new ReflectionProperty($solver, 'sundayIsRegularTeachingDay');
-        $flag->setValue($solver, $sundayIsRegularTeachingDay);
-
-        return $solver;
-    }
-
-    public function test_sunday_is_a_fallback_search_tier_while_sunday_online_only_is_on(): void
-    {
-        $solver = $this->solver(false);
         $dayTier = new ReflectionMethod($solver, 'candidateSearchDayTier');
 
-        $this->assertSame(2, $dayTier->invoke($solver, $this->candidate('Sunday')));
-        $this->assertSame(0, $dayTier->invoke($solver, $this->candidate('Saturday')));
-    }
-
-    public function test_sunday_joins_the_normal_search_tier_once_the_department_teaches_on_it(): void
-    {
-        $solver = $this->solver(true);
-        $dayTier = new ReflectionMethod($solver, 'candidateSearchDayTier');
-
+        $this->assertSame(0, $dayTier->invoke($solver, $this->candidate('Sunday')));
         $this->assertSame(
             $dayTier->invoke($solver, $this->candidate('Saturday')),
             $dayTier->invoke($solver, $this->candidate('Sunday')),
-            'A department that teaches on Sunday should not have Sunday gated behind a fallback tier.',
         );
     }
 
-    public function test_the_flat_sunday_penalty_applies_only_while_sunday_online_only_is_on(): void
+    public function test_sunday_carries_no_flat_day_balance_penalty(): void
     {
-        $gated = $this->solver(false);
-        $open = $this->solver(true);
-        $gatedPenalty = new ReflectionMethod($gated, 'candidateDayBalancePenalty');
-        $openPenalty = new ReflectionMethod($open, 'candidateDayBalancePenalty');
-        $sunday = $this->candidate('Sunday');
+        $solver = new CspSolver;
+        $penalty = new ReflectionMethod($solver, 'candidateDayBalancePenalty');
 
-        $this->assertGreaterThanOrEqual(5000, $gatedPenalty->invoke($gated, $sunday, [], 42));
+        // The old gate added 5000 for any Sunday block, whatever the day loads.
         $this->assertLessThan(
-            $gatedPenalty->invoke($gated, $sunday, [], 42),
-            $openPenalty->invoke($open, $sunday, [], 42),
-            'Opening Sunday must drop the fallback-day penalty, not merely allow the placement.',
+            5000,
+            $penalty->invoke($solver, $this->candidate('Sunday'), [], 42),
         );
     }
 
-    public function test_an_open_sunday_is_day_balanced_like_any_other_teaching_day(): void
+    public function test_sunday_is_day_balanced_like_any_other_teaching_day(): void
     {
-        $solver = $this->solver(true);
+        $solver = new CspSolver;
         $penalty = new ReflectionMethod($solver, 'candidateDayBalancePenalty');
 
         // Monday already carries a class; an empty Sunday is the better spread.
@@ -74,22 +52,14 @@ class CspSundayTeachingDayTest extends TestCase
         );
     }
 
-    public function test_an_online_sunday_loses_its_surcharge_once_sunday_is_a_teaching_day(): void
+    public function test_an_online_sunday_ranks_with_an_online_saturday(): void
     {
-        $gated = $this->solver(false);
-        $open = $this->solver(true);
-        $gatedPriority = new ReflectionMethod($gated, 'candidateAllocationPriority');
-        $openPriority = new ReflectionMethod($open, 'candidateAllocationPriority');
-        $saturday = $this->candidate('Saturday', 'online', null);
-        $sunday = $this->candidate('Sunday', 'online', null);
+        $solver = new CspSolver;
+        $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
 
-        $this->assertGreaterThan(
-            $gatedPriority->invoke($gated, $saturday, 1),
-            $gatedPriority->invoke($gated, $sunday, 1),
-        );
         $this->assertSame(
-            $openPriority->invoke($open, $saturday, 1),
-            $openPriority->invoke($open, $sunday, 1),
+            $priority->invoke($solver, $this->candidate('Saturday', 'online', null), 1),
+            $priority->invoke($solver, $this->candidate('Sunday', 'online', null), 1),
         );
     }
 

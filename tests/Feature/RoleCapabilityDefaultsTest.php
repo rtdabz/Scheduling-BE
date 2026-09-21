@@ -74,6 +74,29 @@ class RoleCapabilityDefaultsTest extends TestCase
         $this->assertSame([], $secretary->getDirectPermissions()->pluck('name')->all());
     }
 
+    public function test_director_is_no_longer_an_assignable_account_role(): void
+    {
+        $department = Departments::create([
+            'department_code' => 'CCS',
+            'department_name' => 'College of Computer Studies',
+        ]);
+        $vpaa = User::factory()->create(['role' => 'vpaa', 'is_active' => true]);
+        Sanctum::actingAs($vpaa);
+
+        $this->postJson('/api/user', [
+            'first_name' => 'Former',
+            'last_name' => 'Director',
+            'username' => 'former.director',
+            'email' => 'former.director@example.test',
+            'password' => 'CorrectHorse42',
+            'role' => 'director',
+            'department_id' => $department->id,
+            'faculty_mode' => 'none',
+        ])->assertUnprocessable()->assertJsonValidationErrors('role');
+
+        $this->assertDatabaseMissing('users', ['username' => 'former.director']);
+    }
+
     public function test_the_per_account_permission_endpoints_are_gone(): void
     {
         $vpaa = User::factory()->create(['role' => 'vpaa', 'is_active' => true]);

@@ -175,7 +175,6 @@ class KernelRuleEngineParityTest extends TestCase
             $model = (new Course)->forceFill($course);
             $label = $course['course_code'];
 
-            $this->assertSame(SchedulingPolicy::isNstpCourse($model), SchedulingPolicy::isNstpCourse($course), $label);
             $this->assertSame(SchedulingPolicy::isMajorCourse($model), SchedulingPolicy::isMajorCourse($course), $label);
             $this->assertSame(SchedulingPolicy::isLaboratoryCourse($model), SchedulingPolicy::isLaboratoryCourse($course), $label);
             $this->assertSame(SchedulingPolicy::isLectureOnlyMajor($model), SchedulingPolicy::isLectureOnlyMajor($course), $label);

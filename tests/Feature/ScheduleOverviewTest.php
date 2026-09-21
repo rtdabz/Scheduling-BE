@@ -149,7 +149,46 @@ class ScheduleOverviewTest extends TestCase
         $this->assertSame(2, $section['meetings']);
         $this->assertSame(1, $section['classes']);
         $this->assertSame(['Monday' => 1, 'Wednesday' => 1], $section['day_load']);
-        $this->assertSame('draft', $section['status']);
+        $this->assertSame('approved', $section['status']);
+    }
+
+    public function test_the_vpaa_does_not_see_meetings_it_has_not_approved(): void
+    {
+        $context = $this->scaffold();
+
+        // Still in the department's hands, and one cohort the Dean endorsed but
+        // the VPAA has not acted on yet: neither belongs in the VPAA portal.
+        Schedule::create($this->meeting($context, ['day' => 'Monday', 'status' => 'draft']));
+        Schedule::create($this->meeting($context, [
+            'course_id' => $context['second_course']->id,
+            'day' => 'Tuesday',
+            'status' => 'approved_by_dean',
+        ]));
+
+        $department = $this->departmentRow($this->overview(), 'CIT');
+
+        $this->assertSame(0, $department['meetings']);
+        $this->assertSame(0, $department['classes']);
+        $this->assertSame(0, $department['sections_scheduled']);
+        $this->assertSame(2, $department['sections_total'], 'The sections themselves are still listed.');
+    }
+
+    public function test_a_dean_still_sees_its_own_unapproved_meetings(): void
+    {
+        $context = $this->scaffold();
+        Schedule::create($this->meeting($context, ['day' => 'Monday', 'status' => 'draft']));
+
+        $dean = $this->grantCapabilities(User::factory()->create([
+            'role' => 'dean',
+            'department_id' => $context['department']->id,
+        ]));
+
+        $response = $this->actingAs($dean)->getJson('/api/departments/schedule-overview');
+        $response->assertOk();
+
+        $department = $this->departmentRow($response->json(), 'CIT');
+        $this->assertSame(1, $department['meetings']);
+        $this->assertSame('draft', $department['status']);
     }
 
     /** @return array<string, mixed> */
@@ -189,7 +228,9 @@ class ScheduleOverviewTest extends TestCase
             'start_time' => '09:00:00',
             'end_time' => '11:00:00',
             'mode' => 'on-site',
-            'status' => 'draft',
+            // VPAA-approved, because most cases here read the overview as the
+            // VPAA and its portal reports approved meetings only.
+            'status' => 'faculty_assignment',
         ], $overrides);
     }
 

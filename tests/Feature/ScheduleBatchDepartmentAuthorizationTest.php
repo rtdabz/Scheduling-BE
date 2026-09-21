@@ -429,8 +429,17 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
         $this->assertArrayNotHasKey('logo', $semesterRows[0]['department']);
         $this->assertNotContains($foreign->id, array_column($semesterRows, 'id'));
 
+        // The VPAA is unscoped by department but reads approved meetings only,
+        // so these drafts are not in its portal until approval moves them.
         $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
-        $this->assertCount(3, $this->actingAs($vpaa)->getJson("/api/schedules/semester/{$semester->id}")->assertOk()->json());
+        $this->assertSame([], $ids($this->actingAs($vpaa)->getJson("/api/schedules/semester/{$semester->id}")));
+
+        $own->update(['status' => 'faculty_assignment']);
+        $foreign->update(['status' => 'faculty_assignment']);
+        $this->assertSame(
+            collect([$own->id, $foreign->id])->sort()->values()->all(),
+            $ids($this->actingAs($vpaa)->getJson("/api/schedules/semester/{$semester->id}")),
+        );
     }
 
     private function fixture(): array

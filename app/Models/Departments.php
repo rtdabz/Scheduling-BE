@@ -24,7 +24,6 @@ class Departments extends Model
         'custom_lab_duration_other_enabled',
         'gec_split_schedule_override_enabled',
         'major_lecture_split_schedule_override_enabled',
-        'sunday_online_only_enabled',
     ];
 
     protected $casts = [
@@ -36,7 +35,6 @@ class Departments extends Model
         'custom_lab_duration_other_enabled' => 'boolean',
         'gec_split_schedule_override_enabled' => 'boolean',
         'major_lecture_split_schedule_override_enabled' => 'boolean',
-        'sunday_online_only_enabled' => 'boolean',
         'scheduling_profile' => 'string',
     ];
 

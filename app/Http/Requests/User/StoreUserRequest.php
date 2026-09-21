@@ -27,7 +27,7 @@ class StoreUserRequest extends FormRequest
             'username' => 'required|string|max:255|unique:users,username',
             'email' => 'required|email|max:255|unique:users,email',
             'password' => ['required', Password::min(10)->letters()->mixedCase()->numbers()],
-            'role' => 'required|string|in:dean,program_head,secretary,director',
+            'role' => 'required|string|in:dean,program_head,secretary',
             'is_active' => 'sometimes|boolean',
             'allow_google_login' => 'sometimes|boolean',
             'department_id' => 'required|exists:departments,id',

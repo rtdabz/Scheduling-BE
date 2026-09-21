@@ -21,6 +21,20 @@ abstract class DesignationRequest extends FormRequest
     /** The designation being edited, or null when creating one. */
     abstract protected function existing(): ?Designation;
 
+    /**
+     * Canonicalize the values the controller persists before validation runs.
+     *
+     * The controller also trims these fields as a final persistence guard, but
+     * duplicate checks must use that same representation. Otherwise a value
+     * such as "Dean " passes validation and is later stored as "Dean".
+     */
+    protected function prepareForValidation(): void
+    {
+        if ($this->has('name')) {
+            $this->merge(['name' => trim((string) $this->input('name'))]);
+        }
+    }
+
     /** @return array<string, mixed> */
     public function rules(): array
     {

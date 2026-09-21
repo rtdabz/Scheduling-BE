@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Services\Scheduling\Lock\DatabaseSchedulingScopeLock;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingQueryCounter;
 use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Engine\Solver\CspYearLevelSchedulingSolverAdapter;
@@ -12,7 +13,9 @@ use App\Services\Scheduling\Engine\Solver\SchedulingSolver;
 use App\Services\Scheduling\Engine\Solver\YearLevelSchedulingSolver;
 use App\Support\LiveUpdateRecorder;
 use App\Support\LiveUpdates;
+use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 
@@ -40,6 +43,16 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         LiveUpdateRecorder::register($this->app);
+
+        // SchedulingPolicy memoises department settings (field-course codes,
+        // operating hours) in static properties. Saving a setting clears them
+        // only in the web process that saved it; a queue worker lives across
+        // many jobs, so without this it kept generating against the settings
+        // it first read -- a course taken off the field list stayed Field.
+        Event::listen(JobProcessing::class, static function (): void {
+            SchedulingPolicy::clearFieldCourseCache();
+            SchedulingPolicy::clearTimeCache();
+        });
 
         $queryCounter = $this->app->make(SchedulingQueryCounter::class);
         DB::listen(function ($query) use ($queryCounter): void {

@@ -23,6 +23,7 @@ use App\Services\Scheduling\Generation\CourseSetupOverrides;
 use App\Services\Scheduling\Generation\GenerateSectionSchedulePlans;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
+use App\Services\Scheduling\Manual\AvailableSlotFinder;
 use App\Services\Scheduling\Schedule\CommitSchedulePlan;
 use App\Services\Scheduling\Schedule\PreviewedPlanStore;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
@@ -30,6 +31,7 @@ use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
 use App\Services\Scheduling\Schedule\SplitScheduleService;
 use App\Services\Scheduling\Support\SchedulingMetricsReporter;
 use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use App\Services\Scheduling\YearLevel\YearLevelGenerationEligibilityService;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use App\Services\SystemNotificationService;
@@ -326,6 +328,70 @@ class ScheduleRecommendationController extends Controller
         ], 201);
     }
 
+    /**
+     * Every placement the rules allow for one meeting of one course, with a
+     * per-room count for the dialog's room picker.
+     *
+     * This is deliberately not the CSP: the solver answers with a few ranked
+     * timetables, which left the user choosing between three Fridays with no
+     * way to see the rest of the week. See AvailableSlotFinder.
+     */
+    public function availableSlots(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'section_id' => 'required|integer|exists:sections,id',
+            'course_id' => 'required|integer|exists:courses,id',
+            'duration_slots' => 'required|integer|min:1|max:48',
+            'modes' => 'sometimes|array|min:1',
+            'modes.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
+            'meeting_type' => 'sometimes|nullable|in:lecture,laboratory',
+            'excluded_days' => 'sometimes|array',
+            'excluded_days.*' => SchedulingPolicy::allowedDaysRule('required'),
+            'ignore_schedule_ids' => 'sometimes|array',
+            'ignore_schedule_ids.*' => 'integer',
+            'tentative_schedules' => 'sometimes|array',
+            'tentative_schedules.*.id' => 'sometimes|nullable|integer',
+            'tentative_schedules.*.semester_id' => 'required|integer|exists:semesters,id',
+            'tentative_schedules.*.section_id' => 'required|integer|exists:sections,id',
+            'tentative_schedules.*.course_id' => 'required|integer|exists:courses,id',
+            'tentative_schedules.*.faculty_id' => 'nullable|integer|exists:faculties,id',
+            'tentative_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
+            'tentative_schedules.*.department_id' => 'required|integer|exists:departments,id',
+            'tentative_schedules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
+            'tentative_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+            'tentative_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:tentative_schedules.*.start_time'],
+            'tentative_schedules.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('required'),
+        ]);
+
+        /** @var Sections $section */
+        $section = Sections::query()->findOrFail($validated['section_id']);
+
+        if (($guard = $this->departmentGuard($request, (int) $section->department_id)) !== null) {
+            return $guard;
+        }
+
+        $snapshot = app(SchedulingSnapshotRepository::class)->capture(
+            semesterId: (int) $section->semester_id,
+            departmentId: (int) $section->department_id,
+            sectionIds: [(int) $section->id],
+            courseIds: [(int) $validated['course_id']],
+        );
+
+        $result = app(AvailableSlotFinder::class)->find(
+            snapshot: $snapshot,
+            sectionId: (int) $section->id,
+            courseId: (int) $validated['course_id'],
+            durationSlots: (int) $validated['duration_slots'],
+            modes: $validated['modes'] ?? AvailableSlotFinder::MODES,
+            tentativeSchedules: $validated['tentative_schedules'] ?? [],
+            ignoreScheduleIds: array_map('intval', $validated['ignore_schedule_ids'] ?? []),
+            meetingType: $validated['meeting_type'] ?? null,
+            excludedDays: $validated['excluded_days'] ?? [],
+        );
+
+        return response()->json($result);
+    }
+
     public function preview(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -365,6 +431,10 @@ class ScheduleRecommendationController extends Controller
             'selected_gec_course_ids.*' => 'integer|exists:courses,id',
             'hybrid_split_course_ids' => 'sometimes|array',
             'hybrid_split_course_ids.*' => 'integer|exists:courses,id',
+            'component_minutes_by_course_id' => 'sometimes|array',
+            'component_minutes_by_course_id.*' => 'array',
+            'component_minutes_by_course_id.*.lecture' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
+            'component_minutes_by_course_id.*.laboratory' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
             'max_solutions' => 'sometimes|integer|min:1|max:5',
             'max_iterations' => 'sometimes|integer|min:1',
             'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
@@ -387,6 +457,7 @@ class ScheduleRecommendationController extends Controller
 
         try {
             $validated = [...$validated, ...$this->courseSelection->resolve($section, $validated)];
+            $validated = $this->withComponentOverrides($section, $validated);
             $generated = $this->sectionGeneration->generate($section, $validated);
             $profile = $generated->profile;
             $preparedConfiguration = $generated->preparedConfiguration;
@@ -424,6 +495,30 @@ class ScheduleRecommendationController extends Controller
             'recommendations' => $solutions,
             'schedule_plans' => array_map(static fn (SchedulePlan $plan): array => $plan->toArray(), $plans),
         ]);
+    }
+
+    /**
+     * Integrated's lecture and laboratory lengths for a single-section solve,
+     * as the Setup Courses "Configure" panel and the drop dialog both send
+     * them: minutes per component, normalised to slots and refused here when
+     * the validator would refuse the result at save time. The year-level
+     * endpoints do the same per section config.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, mixed>
+     *
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    private function withComponentOverrides(Sections $section, array $input): array
+    {
+        $input[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
+            $section,
+            $input['component_minutes_by_course_id'] ?? [],
+            array_map('intval', $input['course_ids'] ?? []),
+            $input,
+        );
+
+        return $input;
     }
 
     public function queuePreview(Request $request): JsonResponse
@@ -525,12 +620,6 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.preferred_patterns' => 'sometimes|array',
             'section_configs.*.preferred_patterns.*' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
             'section_configs.*.delivery_modes_by_course_id' => 'sometimes|array',
-            'section_configs.*.time_preferences_by_course_id' => 'sometimes|array',
-            'section_configs.*.time_preferences_by_course_id.*' => 'nullable|in:morning,afternoon,evening',
-            'section_configs.*.preferred_period' => 'sometimes|nullable|in:morning,afternoon,evening',
-            'section_configs.*.preferred_periods_by_course_id' => 'sometimes|array',
-            'section_configs.*.preferred_periods_by_course_id.*' => 'array',
-            'section_configs.*.preferred_periods_by_course_id.*.*' => 'in:morning,afternoon,evening',
             'section_configs.*.allowed_days' => 'sometimes|nullable|array',
             'section_configs.*.allow_friday_saturday_split' => 'sometimes|boolean',
             'section_configs.*.allowed_days.*' => SchedulingPolicy::allowedDaysRule(),
@@ -602,9 +691,6 @@ class ScheduleRecommendationController extends Controller
                     'hybrid_split_course_ids' => $hybridSplitIds,
                     'preferred_patterns' => $preferredPatterns,
                     'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
-                    'time_preferences_by_course_id' => $config['time_preferences_by_course_id'] ?? [],
-                    'preferred_period' => $config['preferred_period'] ?? null,
-                    'preferred_periods_by_course_id' => $config['preferred_periods_by_course_id'] ?? [],
                     'allowed_days' => SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null),
                     'allow_friday_saturday_split' => (bool) ($config['allow_friday_saturday_split'] ?? false),
                     'seed' => $this->yearLevelConfigSeed(
@@ -722,12 +808,6 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.hybrid_split_course_ids.*' => 'integer|exists:courses,id',
             'section_configs.*.preferred_patterns' => 'sometimes|array',
             'section_configs.*.delivery_modes_by_course_id' => 'sometimes|array',
-            'section_configs.*.time_preferences_by_course_id' => 'sometimes|array',
-            'section_configs.*.time_preferences_by_course_id.*' => 'nullable|in:morning,afternoon,evening',
-            'section_configs.*.preferred_period' => 'sometimes|nullable|in:morning,afternoon,evening',
-            'section_configs.*.preferred_periods_by_course_id' => 'sometimes|array',
-            'section_configs.*.preferred_periods_by_course_id.*' => 'array',
-            'section_configs.*.preferred_periods_by_course_id.*.*' => 'in:morning,afternoon,evening',
             'section_configs.*.allowed_days' => 'sometimes|nullable|array',
             'section_configs.*.allow_friday_saturday_split' => 'sometimes|boolean',
             'section_configs.*.allowed_days.*' => SchedulingPolicy::allowedDaysRule(),
@@ -781,9 +861,6 @@ class ScheduleRecommendationController extends Controller
                 'selected_split_session_course_ids' => $splitIds, 'balanced_split_course_ids' => $gecIds,
                 'hybrid_split_course_ids' => $hybridSplitIds,
                 'preferred_patterns' => $preferredPatterns, 'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
-                'time_preferences_by_course_id' => $config['time_preferences_by_course_id'] ?? [],
-                'preferred_period' => $config['preferred_period'] ?? null,
-                'preferred_periods_by_course_id' => $config['preferred_periods_by_course_id'] ?? [],
                 'allowed_days' => SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null),
                 'allow_friday_saturday_split' => (bool) ($config['allow_friday_saturday_split'] ?? false),
                 'seed' => $this->yearLevelConfigSeed((int) $validated['semester_id'], (int) $validated['department_id'], (int) $validated['year_level'], (int) $section->id, $courseIds, $splitIds, $gecIds, $preferredPatterns),
@@ -982,6 +1059,10 @@ class ScheduleRecommendationController extends Controller
             'split_gec_enabled' => 'sometimes|boolean',
             'selected_gec_course_ids' => 'sometimes|array',
             'selected_gec_course_ids.*' => 'integer|exists:courses,id',
+            'component_minutes_by_course_id' => 'sometimes|array',
+            'component_minutes_by_course_id.*' => 'array',
+            'component_minutes_by_course_id.*.lecture' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
+            'component_minutes_by_course_id.*.laboratory' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
             'tentative_schedules' => 'sometimes|array',
             'tentative_schedules.*.id' => 'sometimes|integer|exists:schedules,id',
             'tentative_schedules.*.semester_id' => 'required|integer|exists:semesters,id',
@@ -1044,6 +1125,7 @@ class ScheduleRecommendationController extends Controller
 
         try {
             $solverInput = [...$solverInput, ...$this->courseSelection->resolve($section, $solverInput)];
+            $solverInput = $this->withComponentOverrides($section, $solverInput);
             $generated = $this->sectionGeneration->generate($section, $solverInput);
             $profile = $generated->profile;
             $preparedConfiguration = $generated->preparedConfiguration;

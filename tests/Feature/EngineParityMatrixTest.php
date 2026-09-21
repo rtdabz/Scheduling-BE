@@ -231,6 +231,13 @@ class EngineParityMatrixTest extends TestCase
         $this->assertGroupParity([], $course, 'hybrid', [$meeting('Monday', 'online'), $meeting('Wednesday', 'on-site')]);
         $this->assertGroupParity(['split_group_day_separation'], $course, 'hybrid', [$meeting('Monday', 'online'), $meeting('Monday', 'on-site')]);
         $this->assertGroupParity(['hybrid_components'], $course, 'hybrid', [$meeting('Monday', 'online'), $meeting('Wednesday', 'online')]);
+
+        // Both meetings of a Hybrid Split or Split Session share one time slot.
+        $later = static fn (array $row): array => [...$row, 'start_time' => '10:00', 'end_time' => '11:30'];
+        $this->assertGroupParity(['split_group_same_time'], $course, 'hybrid', [$meeting('Monday', 'online'), $later($meeting('Wednesday', 'on-site'))]);
+        $split = static fn (string $day): array => [...$meeting($day, 'on-site'), 'preferred_pattern' => 'MW'];
+        $this->assertGroupParity([], $course, 'minor_split', [$split('Monday'), $split('Wednesday')]);
+        $this->assertGroupParity(['split_group_same_time'], $course, 'minor_split', [$split('Monday'), $later($split('Wednesday'))]);
     }
 
     /**

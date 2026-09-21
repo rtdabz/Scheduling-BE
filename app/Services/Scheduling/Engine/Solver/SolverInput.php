@@ -73,9 +73,6 @@ final class SolverInput
             'requirements_by_course_id' => $input['requirements_by_course_id']
                 ?? $input['requirementsByCourseId']
                 ?? [],
-            'time_preferences_by_course_id' => $input['time_preferences_by_course_id']
-                ?? $input['timePreferencesByCourseId']
-                ?? [],
             'allowed_days' => SchedulingPolicy::normalizeAllowedDays(
                 $input['allowed_days'] ?? $input['allowedDays'] ?? null,
             ),
@@ -83,12 +80,6 @@ final class SolverInput
                 $input['allow_friday_saturday_split'] ?? $input['allowFridaySaturdaySplit'] ?? false,
                 FILTER_VALIDATE_BOOLEAN,
             ),
-            'preferred_period' => self::normalizePreferredPeriod(
-                $input['preferred_period'] ?? $input['preferredPeriod'] ?? null,
-            ),
-            'preferred_periods_by_course_id' => is_array($input['preferred_periods_by_course_id'] ?? null)
-                ? $input['preferred_periods_by_course_id']
-                : [],
             'tentative_schedules' => is_array($input['tentative_schedules'] ?? null)
                 ? $input['tentative_schedules']
                 : [],
@@ -279,36 +270,6 @@ final class SolverInput
         return $normalized;
     }
 
-    /**
-     * @param  array<int|string, mixed>  $timePreferencesByCourseId
-     * @param  list<int|string>  $validCourseIds
-     * @return array<int, string>
-     */
-    public static function normalizeTimePreferences(array $timePreferencesByCourseId, array $validCourseIds): array
-    {
-        if ($timePreferencesByCourseId === []) {
-            return [];
-        }
-
-        $allowed = ['morning', 'afternoon', 'evening'];
-        $valid = array_map('intval', $validCourseIds);
-        $normalized = [];
-
-        foreach ($timePreferencesByCourseId as $courseId => $preference) {
-            $courseId = (int) $courseId;
-            if (! in_array($courseId, $valid, true)) {
-                continue;
-            }
-
-            $preference = is_string($preference) ? strtolower(trim($preference)) : '';
-            if (in_array($preference, $allowed, true)) {
-                $normalized[$courseId] = $preference;
-            }
-        }
-
-        return $normalized;
-    }
-
     public static function normalizePreferredPatternsByCourseId(
         array $preferredPatternsByCourseId,
         array $validCourseIds,
@@ -330,11 +291,6 @@ final class SolverInput
         }
 
         return $normalized;
-    }
-
-    public static function normalizePreferredPeriod(mixed $period): ?string
-    {
-        return SchedulingPolicy::normalizePreferredPeriod($period);
     }
 
     public static function normalizePreferredPattern(mixed $preferredPattern): ?string
