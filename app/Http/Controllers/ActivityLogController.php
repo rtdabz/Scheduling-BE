@@ -50,13 +50,33 @@ class ActivityLogController extends Controller
             ->when($validated['event'] ?? null, fn ($q, $event) => $q->where('action', $event))
             ->when(in_array($category, ['scheduling', 'schedule_workflow', 'faculty_assignment'], true), function ($q) use ($category) {
                 if ($category === 'scheduling') {
-                    return $q->where('action', 'like', 'recommendation_%');
+                    return $q->where(function ($sub) {
+                        $sub->where('action', 'like', 'recommendation_%')
+                            ->orWhere('action', 'like', 'conflict_%')
+                            ->orWhere('action', 'like', 'schedule_auto_%')
+                            ->orWhereIn('action', ['conflict_detected', 'recommendation_applied', 'recommendation_rejected', 'schedule_auto_generated']);
+                    });
                 }
                 if ($category === 'faculty_assignment') {
-                    return $q->where('action', 'like', 'instructor_%');
+                    return $q->where(function ($sub) {
+                        $sub->where('action', 'like', 'instructor_%')
+                            ->orWhere('action', 'like', 'cross_department_%')
+                            ->orWhere('action', 'like', 'designation_%')
+                            ->orWhere('action', 'like', 'max_units_%')
+                            ->orWhereIn('action', ['instructor_assigned', 'cross_department_assigned', 'designation_updated', 'max_units_overridden']);
+                    });
                 }
                 return $q->where('action', 'not like', 'recommendation_%')
-                    ->where('action', 'not like', 'instructor_%');
+                    ->where('action', 'not like', 'conflict_%')
+                    ->where('action', 'not like', 'schedule_auto_%')
+                    ->where('action', 'not like', 'instructor_%')
+                    ->where('action', 'not like', 'cross_department_%')
+                    ->where('action', 'not like', 'designation_%')
+                    ->where('action', 'not like', 'max_units_%')
+                    ->whereNotIn('action', [
+                        'conflict_detected', 'recommendation_applied', 'recommendation_rejected', 'schedule_auto_generated',
+                        'instructor_assigned', 'cross_department_assigned', 'designation_updated', 'max_units_overridden',
+                    ]);
             })
             ->latest('created_at')->latest('id')
             ->limit($candidateLimit)
@@ -72,9 +92,10 @@ class ActivityLogController extends Controller
             ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('actor_user_id', $id))
             ->when($validated['event'] ?? null, fn ($q, $event) => $q->where('event', $event))
             ->when(in_array($category, ['authentication', 'user_management'], true), function ($q) use ($category) {
+                $userMgmtEvents = ['user_created', 'user_updated', 'user_deactivated', 'user_deleted', 'department_created'];
                 return $category === 'user_management'
-                    ? $q->whereIn('event', ['user_created', 'user_updated', 'user_deleted'])
-                    : $q->whereNotIn('event', ['user_created', 'user_updated', 'user_deleted']);
+                    ? $q->whereIn('event', $userMgmtEvents)
+                    : $q->whereNotIn('event', $userMgmtEvents);
             })
             ->latest('created_at')->latest('id')
             ->limit($candidateLimit)
@@ -155,7 +176,7 @@ class ActivityLogController extends Controller
     {
         $metadata = $log->metadata ?? [];
         $subjectSnapshot = $metadata['_subject'] ?? null;
-        $isUserManagement = in_array($log->event, ['user_created', 'user_updated', 'user_deleted'], true);
+        $isUserManagement = in_array($log->event, ['user_created', 'user_updated', 'user_deactivated', 'user_deleted', 'department_created'], true);
         $actor = $log->actor ?? ($isUserManagement ? null : $log->subject);
 
         return [
@@ -179,7 +200,21 @@ class ActivityLogController extends Controller
 
     private function schedulingCategory(string $action): string
     {
-        return str_starts_with($action, 'recommendation_') ? 'scheduling'
-            : (str_starts_with($action, 'instructor_') ? 'faculty_assignment' : 'schedule_workflow');
+        if (in_array($action, ['conflict_detected', 'recommendation_applied', 'recommendation_rejected', 'schedule_auto_generated'], true)
+            || str_starts_with($action, 'recommendation_')
+            || str_starts_with($action, 'conflict_')
+            || str_starts_with($action, 'schedule_auto_')) {
+            return 'scheduling';
+        }
+
+        if (in_array($action, ['instructor_assigned', 'cross_department_assigned', 'designation_updated', 'max_units_overridden'], true)
+            || str_starts_with($action, 'instructor_')
+            || str_starts_with($action, 'cross_department_')
+            || str_starts_with($action, 'designation_')
+            || str_starts_with($action, 'max_units_')) {
+            return 'faculty_assignment';
+        }
+
+        return 'schedule_workflow';
     }
 }
