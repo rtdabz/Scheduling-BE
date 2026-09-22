@@ -117,6 +117,17 @@ return [
             // with the office that owns room administration.
             'allowed_roles' => ['vpaa'],
         ],
+        'curriculum.manage' => [
+            'requires' => ['schedule.view'],
+            'module' => 'curriculum',
+            'title' => 'Manage Curriculum',
+            'description' => 'Create, edit, duplicate, activate, and archive curricula and their course placements.',
+            // Curriculum authoring sits with the department secretary, who runs
+            // the programs the curriculum describes. The dean and the VPAA read
+            // curricula through the view routes and hold no write access, so
+            // neither role may be granted this.
+            'allowed_roles' => ['secretary'],
+        ],
     ],
 
     'modules' => [
@@ -144,6 +155,10 @@ return [
             'title' => 'Room Requests',
             'description' => "Borrowing another department's vacant rooms for a semester.",
         ],
+        'curriculum' => [
+            'title' => 'Curriculum',
+            'description' => 'Curriculum records and the courses placed in each year level and semester.',
+        ],
     ],
 
     /*
@@ -154,7 +169,10 @@ return [
      *
      * Secretaries and program heads build their department's timetable end to
      * end; approvals, room review and designations stay with the dean and VPAA.
-     * The VPAA keeps the full set: it is the break-glass account.
+     *
+     * The VPAA holds every capability except `curriculum.manage`: the
+     * curriculum is authored by the department secretary that owns the
+     * programs, and the VPAA and dean read it without being able to change it.
      */
     'role_defaults' => [
         'vpaa' => [
@@ -170,7 +188,7 @@ return [
             'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
             'schedule.generate', 'schedule.submit', 'schedule.withdraw',
             'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
-            'room.request',
+            'room.request', 'curriculum.manage',
         ],
         'program_head' => [
             'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',

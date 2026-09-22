@@ -85,8 +85,8 @@ final class DeliveryModeRule
      * implementation; the constraint kernel calls it too.
      *
      * Integrated Hybrid's lecture and laboratory lengths are the user's to set
-     * in Setup Courses, so only their delivery is fixed here; the week's total
-     * stays capped by `class_duration`. Hybrid Split is a fixed shape and keeps
+     * in Setup Courses, so only their delivery is fixed here; `class_duration`
+     * holds each session to one teaching day. Hybrid Split is a fixed shape and keeps
      * its exact length.
      *
      * @param  Course|array<string, mixed>  $course

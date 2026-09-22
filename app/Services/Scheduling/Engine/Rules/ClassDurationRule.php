@@ -25,6 +25,12 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
  * slots plus the department's laboratory length — so anything the Generator
  * can produce always fits. (`lecture_hours`/`lab_hours` hold units.)
  *
+ * An Integrated class (On-site or Hybrid) is the exception: its lecture and
+ * laboratory take whatever lengths the user set, so each session is judged on
+ * its own -- the section's linked meetings of that type against one teaching
+ * day -- and never against the unit-derived total
+ * ({@see SchedulingPolicy::isIntegratedSession}).
+ *
  * Every status counts. Rejected (VPAA sent it back) and revision (withdrawn
  * to edit) meetings are live classes that get fixed and resubmitted, and they
  * already hold their room and time in the conflict rules.
@@ -40,7 +46,11 @@ final class ClassDurationRule
     public function check(array $attempt, AttemptRecords $records): ?array
     {
         $course = $records->course;
-        $allowedMinutes = $this->allowedWeeklyMinutes($records);
+        $meetingType = isset($attempt['meeting_type']) ? (string) $attempt['meeting_type'] : null;
+        $isIntegratedSession = SchedulingPolicy::isIntegratedSession($course, $meetingType, $attempt['split_group_id'] ?? null);
+        $allowedMinutes = $isIntegratedSession
+            ? SchedulingPolicy::integratedSessionCeilingMinutes()
+            : $this->allowedWeeklyMinutes($records);
         if ($allowedMinutes <= 0) {
             return null;
         }
@@ -50,7 +60,16 @@ final class ClassDurationRule
             ->where('semester_id', (int) $attempt['semester_id'])
             ->where('section_id', (int) $records->section->id)
             ->where('course_id', (int) $course->id)
+            // meeting_type / split_group_id live on schedule_splits and are read
+            // through the split relation's accessors, not schedules columns.
+            ->with('split:id,schedule_id,split_group_id,meeting_type')
             ->get(['id', 'start_time', 'end_time']);
+        // An Integrated session's length is the user's to set, so only the
+        // section's other linked meetings of the same session count against it.
+        if ($isIntegratedSession) {
+            $rows = $rows->filter(static fn (Schedule $row): bool => $row->meeting_type === $meetingType
+                && SchedulingPolicy::isIntegratedSession($course, $row->meeting_type, $row->split_group_id));
+        }
         $minutesOf = static fn (Schedule $row): int => max(0, RuleSupport::durationMinutes((string) $row->start_time, (string) $row->end_time));
 
         // Before this save: every live meeting, including the ones being edited
@@ -68,12 +87,21 @@ final class ClassDurationRule
 
         return [
             'rule' => 'class_duration',
-            'message' => sprintf(
-                '%s would meet %s a week for this section, but the course carries at most %s.',
-                (string) $course->course_code,
-                $this->hours($totalMinutes),
-                $this->hours($allowedMinutes),
-            ),
+            'message' => $isIntegratedSession
+                ? sprintf(
+                    '%s would meet %s of %s a week for this section, but its %s is one meeting of at most %s.',
+                    (string) $course->course_code,
+                    $this->hours($totalMinutes),
+                    $meetingType,
+                    $meetingType,
+                    $this->hours($allowedMinutes),
+                )
+                : sprintf(
+                    '%s would meet %s a week for this section, but the course carries at most %s.',
+                    (string) $course->course_code,
+                    $this->hours($totalMinutes),
+                    $this->hours($allowedMinutes),
+                ),
             'scheduled_minutes' => $totalMinutes,
             'allowed_minutes' => $allowedMinutes,
         ];

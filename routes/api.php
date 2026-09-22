@@ -334,9 +334,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
     });
 
-    // Curriculum ownership is centralized in the VPAA portal. Other roles retain
-    // the read routes above but cannot mutate curriculum records or placements.
-    Route::middleware('role:vpaa')->group(function () {
+    // Curriculum authoring belongs to the department secretary that owns the
+    // programs. The dean and the VPAA keep the read routes above -- they review
+    // curricula but cannot mutate the records or their course placements.
+    Route::middleware('capability:curriculum.manage')->group(function () {
         Route::post('curriculum/{curriculum}/courses', [CurriculumController::class, 'attachCourse']);
         Route::post('curriculum/{curriculum}/courses/batch', [CurriculumController::class, 'attachCoursesBatch']);
         Route::post('curriculum/{curriculum}/courses/batch-create', [CurriculumController::class, 'batchCreateAndAttachCourses']);

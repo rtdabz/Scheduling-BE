@@ -37,9 +37,12 @@ final class InstructorAvailabilityConstraints
         }
 
         $dayIndex = InstructorAvailabilityRule::DAY_INDEX[$row->day] ?? null;
-        if (($faculty['employment_type'] ?? null) === 'part-time' && $dayIndex !== null) {
+        // A part-timer with no windows recorded at all is unrestricted, as in
+        // InstructorAvailabilityRule.
+        $recorded = (array) ($faculty['availabilities'] ?? []);
+        if (($faculty['employment_type'] ?? null) === 'part-time' && $dayIndex !== null && $recorded !== []) {
             $windows = [];
-            foreach ((array) ($faculty['availabilities'] ?? []) as $window) {
+            foreach ($recorded as $window) {
                 if ((int) ($window['day_index'] ?? -1) === $dayIndex) {
                     $windows[] = [
                         SchedulingPolicy::normalizeTime((string) $window['start_time']),

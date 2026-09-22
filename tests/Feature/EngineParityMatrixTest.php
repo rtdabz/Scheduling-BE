@@ -141,6 +141,10 @@ class EngineParityMatrixTest extends TestCase
         $partTimer->availabilities()->create(['day_index' => 0, 'start_time' => '13:00', 'end_time' => '17:00']);
         $this->assertParity(['part_time_faculty_availability'], $this->attempt(['faculty_id' => $partTimer->id]));
 
+        // No windows recorded at all: unrestricted.
+        $unrecorded = $this->faculty(['employment_type' => 'part-time']);
+        $this->assertParity([], $this->attempt(['faculty_id' => $unrecorded->id]));
+
         $busy = $this->faculty();
         $this->persist(['faculty_id' => $busy->id, 'section_id' => $this->otherSection()->id, 'room_id' => null, 'mode' => 'online']);
         $this->assertParity(['faculty_conflict'], $this->attempt(['faculty_id' => $busy->id]));
@@ -189,6 +193,28 @@ class EngineParityMatrixTest extends TestCase
 
             $this->assertParity(['class_duration'], $this->attempt(['course_id' => $course->id, 'start_time' => '08:00', 'end_time' => '11:00']), $status);
         }
+    }
+
+    public function test_class_duration_leaves_an_integrated_sessions_length_to_the_user(): void
+    {
+        // 2 lecture + 1 laboratory unit carries 5 h as a unit total. A linked
+        // 3 h laboratory plus a 3 h lecture is 6 h, but each Integrated session
+        // takes the length the user set, so neither engine holds it to 5 h.
+        $course = $this->course(['lecture_hours' => 2, 'lab_hours' => 1, 'units' => 3]);
+        $this->persist([
+            'course_id' => $course->id, 'split_group_id' => 'integrated-1', 'meeting_type' => 'laboratory',
+            'day' => 'Friday', 'start_time' => '08:00', 'end_time' => '11:00', 'room_id' => null, 'mode' => 'online',
+        ]);
+
+        $this->assertParity([], $this->attempt([
+            'course_id' => $course->id, 'split_group_id' => 'integrated-1', 'meeting_type' => 'lecture',
+            'start_time' => '08:00', 'end_time' => '11:00',
+        ]), 'linked lecture');
+
+        // An unlinked block is not an Integrated session and keeps the ceiling.
+        $this->assertParity(['class_duration'], $this->attempt([
+            'course_id' => $course->id, 'start_time' => '08:00', 'end_time' => '11:00', 'room_id' => $this->room('laboratory')->id,
+        ]), 'unlinked block');
     }
 
     /**

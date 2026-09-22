@@ -1017,7 +1017,7 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertSame($labRoom->id, $laboratory['room_id']);
     }
 
-    public function test_split_laboratory_generation_uses_saturday_real_room_after_weekdays_are_exhausted(): void
+    public function test_split_laboratory_generation_uses_a_weekend_real_room_after_weekdays_are_exhausted(): void
     {
         [$semester, $department, $section, $course, $labRoom, $blockingSection, $blockingCourse] =
             $this->splitLaboratoryWeekdayPriorityFixture();
@@ -1050,9 +1050,12 @@ class DefaultLectureLabGenerationTest extends TestCase
         $lecture = collect($solutions[0]['schedules'])->firstWhere('meeting_type', 'lecture');
         $this->assertNotNull($laboratory);
         $this->assertNotNull($lecture);
-        $this->assertSame('Saturday', $laboratory['day']);
+        // Integrated pairs include Thursday-Saturday, Wednesday-Saturday and
+        // Friday-Sunday, and Sunday is an ordinary teaching day, so either
+        // weekend day may hold the laboratory.
+        $this->assertContains($laboratory['day'], ['Saturday', 'Sunday']);
         $this->assertSame($labRoom->id, $laboratory['room_id']);
-        $this->assertContains($lecture['day'], SchedulingPolicy::WEEKDAYS_AND_SATURDAY);
+        $this->assertContains($lecture['day'], SchedulingPolicy::WEEKDAYS);
         $this->assertSame('online', $lecture['mode']);
         $this->assertNull($lecture['room_id']);
     }

@@ -23,7 +23,7 @@ use Illuminate\Validation\ValidationException;
  *   component_slots_by_course_id: {courseId: {lecture: slots, laboratory: slots}}
  *   preferred_rooms_by_course_id: {courseId: roomId}
  *
- * The second map is Integrated Hybrid's: its online lecture and on-site
+ * The second map is Integrated's (On-site or Hybrid): its lecture and
  * laboratory are separate sessions, each with its own user-chosen length.
  *
  * The requirement builders copy them onto each course's requirements, which is
@@ -59,13 +59,13 @@ final class CourseSetupOverrides
     }
 
     /**
-     * Integrated Hybrid's lecture and laboratory lengths, in minutes, into
-     * slots. Either may be left out to keep the course's own length for it
-     * (one hour per lecture unit; three hours per laboratory unit or the
-     * department's Custom Lab Duration). Each must fit the teaching day, and
-     * together they may not exceed the course's weekly ceiling
-     * (`class_duration`). A length sent for a course that is not Integrated
-     * Hybrid in this section is dropped, not refused.
+     * Integrated's (On-site or Hybrid) lecture and laboratory lengths, in
+     * minutes, into slots. Either may be left out to keep the course's own
+     * length for it (one hour per lecture unit; three hours per laboratory
+     * unit or the department's Custom Lab Duration). A length that is given is
+     * used exactly: each must only be whole half-hours and fit the teaching
+     * day, with no unit-derived total over the pair. A length sent for a
+     * course that is not Integrated in this section is dropped, not refused.
      *
      * @param  array<int|string, mixed>  $minutesByCourseId  courseId => {lecture?, laboratory?}
      * @param  list<int>  $courseIds
@@ -103,13 +103,10 @@ final class CourseSetupOverrides
             $laboratory = self::componentMinutesToSlots($code, 'laboratory', $minutes['laboratory'] ?? null)
                 ?? SchedulingPolicy::laboratoryComponentSlots($course, $section->department);
 
+            // Each is the user's exact length: no unit-derived total caps the
+            // pair (class_duration judges an Integrated session on its own).
             self::assertFitsTheDay($code, 'lecture', $lecture);
             self::assertFitsTheDay($code, 'laboratory', $laboratory);
-            self::assertWithinCeiling(
-                $code,
-                ($lecture + $laboratory) * SchedulingPolicy::SLOT_MINUTES,
-                SchedulingPolicy::courseWeeklyCeilingMinutes($course, $section->department),
-            );
 
             $normalized[$courseId] = ['lecture' => $lecture, 'laboratory' => $laboratory];
         }

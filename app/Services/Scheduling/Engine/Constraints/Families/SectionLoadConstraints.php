@@ -42,14 +42,30 @@ final class SectionLoadConstraints
      */
     private function classDuration(ScheduleRow $row, array $course, array $sameSection, SchedulingSnapshot $snapshot): ?ConstraintViolation
     {
-        $allowed = SchedulingPolicy::courseWeeklyCeilingMinutes($course, $snapshot->departmentSettings);
+        // Same decision as RuleEngine: an Integrated session's length is the
+        // user's to set, so it counts only the section's other linked meetings
+        // of that session, against one teaching day.
+        $isIntegratedSession = SchedulingPolicy::isIntegratedSession($course, $row->meetingType, $row->splitGroupId);
+        $allowed = $isIntegratedSession
+            ? SchedulingPolicy::integratedSessionCeilingMinutes(
+                isset($snapshot->operatingHours['opening_time']) ? (string) $snapshot->operatingHours['opening_time'] : null,
+                isset($snapshot->operatingHours['closing_time']) ? (string) $snapshot->operatingHours['closing_time'] : null,
+            )
+            : SchedulingPolicy::courseWeeklyCeilingMinutes($course, $snapshot->departmentSettings);
         if ($allowed <= 0) {
             return null;
         }
+        $counts = static fn (array|ScheduleRow $other): bool => ! $isIntegratedSession
+            || (ConstraintSupport::stringValue($other, 'meeting_type') === $row->meetingType
+                && SchedulingPolicy::isIntegratedSession(
+                    $course,
+                    ConstraintSupport::stringValue($other, 'meeting_type'),
+                    ConstraintSupport::stringValue($other, 'split_group_id'),
+                ));
 
         $total = self::minutes($row);
         foreach ($sameSection as $other) {
-            if (ConstraintSupport::intValue($other, 'course_id') === $row->courseId) {
+            if (ConstraintSupport::intValue($other, 'course_id') === $row->courseId && $counts($other)) {
                 $total += self::minutes($other);
             }
         }
@@ -60,7 +76,8 @@ final class SectionLoadConstraints
         foreach ($snapshot->persistedSchedules as $persisted) {
             if ((int) ($persisted['section_id'] ?? 0) === $row->sectionId
                 && (int) ($persisted['course_id'] ?? 0) === $row->courseId
-                && (int) ($persisted['semester_id'] ?? 0) === $row->semesterId) {
+                && (int) ($persisted['semester_id'] ?? 0) === $row->semesterId
+                && $counts($persisted)) {
                 $before += self::minutes($persisted);
             }
         }
@@ -72,7 +89,9 @@ final class SectionLoadConstraints
         return ConstraintSupport::violation(
             'class_duration',
             sprintf(
-                '%s would meet %s minutes a week for this section, but the course carries at most %s.',
+                $isIntegratedSession
+                    ? '%s would meet %s minutes of '.$row->meetingType.' a week for this section, but one session is at most %s.'
+                    : '%s would meet %s minutes a week for this section, but the course carries at most %s.',
                 (string) ($course['course_code'] ?? 'This course'),
                 $total,
                 $allowed,

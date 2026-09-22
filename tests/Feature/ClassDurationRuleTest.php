@@ -59,6 +59,25 @@ class ClassDurationRuleTest extends TestCase
         $this->assertNotNull($this->durationViolation($f, 'Tuesday', '08:00', '11:30'));
     }
 
+    public function test_an_integrated_session_takes_the_length_the_user_set(): void
+    {
+        // IT 101: 2 lecture units, 1 laboratory unit (5 h as a unit total). The
+        // laboratory is 3 h and the lecture set to 3 h: 6 h, used exactly.
+        $f = $this->fixture(lectureHours: 2, labHours: 1);
+        $laboratory = ['meeting_type' => 'laboratory', 'split_group_id' => 'integrated-1'];
+        $lecture = ['meeting_type' => 'lecture', 'split_group_id' => 'integrated-1'];
+        $this->persist($f, 'Monday', '08:00', '11:00', $laboratory);
+
+        $this->assertNull($this->durationViolation($f, 'Tuesday', '08:00', '11:00', link: $lecture));
+
+        // Each session is still one meeting: a lecture longer than the teaching
+        // day in total is a duplicate, not a longer class.
+        $this->persist($f, 'Tuesday', '07:00', '19:00', $lecture);
+        $violation = $this->durationViolation($f, 'Wednesday', '08:00', '11:00', link: $lecture);
+        $this->assertNotNull($violation);
+        $this->assertSame(900, $violation['scheduled_minutes']);
+    }
+
     public function test_data_already_over_does_not_block_an_edit_that_adds_no_time(): void
     {
         $f = $this->fixture();
@@ -85,9 +104,9 @@ class ClassDurationRuleTest extends TestCase
     }
 
     /** @return array<string, mixed>|null */
-    private function durationViolation(array $f, string $day, string $start, string $end, ?int $ignore = null): ?array
+    private function durationViolation(array $f, string $day, string $start, string $end, ?int $ignore = null, array $link = []): ?array
     {
-        $violations = app(RuleEngine::class)->validate([
+        $violations = app(RuleEngine::class)->validate($link + [
             'semester_id' => $f['semester']->id,
             'section_id' => $f['section']->id,
             'course_id' => $f['course']->id,
@@ -103,9 +122,9 @@ class ClassDurationRuleTest extends TestCase
         return collect($violations)->firstWhere('rule', 'class_duration');
     }
 
-    private function persist(array $f, string $day, string $start, string $end): Schedule
+    private function persist(array $f, string $day, string $start, string $end, array $link = []): Schedule
     {
-        return Schedule::create([
+        return Schedule::create($link + [
             'semester_id' => $f['semester']->id,
             'section_id' => $f['section']->id,
             'course_id' => $f['course']->id,

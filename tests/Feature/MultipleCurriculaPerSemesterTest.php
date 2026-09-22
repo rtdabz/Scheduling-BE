@@ -171,7 +171,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $fixture = $this->fixture();
         Sections::whereKey($fixture['year2']->id)->update(['curriculum_id' => $fixture['new']->id]);
 
-        $this->actingAs($fixture['vpaa'])
+        $this->actingAs($fixture['secretary'])
             ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'deactivated'])
             ->assertOk();
 
@@ -208,7 +208,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         // IT 2A follows the old curriculum, and no schedule exists for it.
         $this->assertSame($fixture['old']->id, $fixture['year2']->refresh()->curriculum_id);
 
-        $this->actingAs($fixture['vpaa'])
+        $this->actingAs($fixture['secretary'])
             ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'deactivated'])
             ->assertOk();
 
@@ -219,7 +219,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
     {
         $fixture = $this->fixture();
 
-        $this->actingAs($fixture['vpaa'])
+        $this->actingAs($fixture['secretary'])
             ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'archived'])
             ->assertOk();
 
@@ -231,7 +231,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $fixture = $this->fixture();
         $this->plot($fixture, $fixture['year2'], $fixture['old'], $fixture['oldCourse']);
 
-        $this->actingAs($fixture['vpaa'])
+        $this->actingAs($fixture['secretary'])
             ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'deactivated'])
             ->assertStatus(422)
             ->assertJsonPath('blocking_sections.0.section_name', 'IT 2A');
@@ -244,9 +244,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $fixture = $this->fixture();
         $this->plot($fixture, $fixture['year2'], $fixture['old'], $fixture['oldCourse']);
 
-        // Curriculum ownership sits with the VPAA portal; a secretary can read
-        // curricula but not retire one.
-        $this->actingAs($fixture['vpaa'])
+        $this->actingAs($fixture['secretary'])
             ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'archived'])
             ->assertStatus(422)
             ->assertJsonPath('blocking_sections.0.section_name', 'IT 2A');
@@ -265,7 +263,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $schedule = $this->plot($fixture, $fixture['year2'], $fixture['old'], $fixture['oldCourse']);
         $schedule->delete();
 
-        $this->actingAs($fixture['vpaa'])
+        $this->actingAs($fixture['secretary'])
             ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'deactivated'])
             ->assertOk();
     }
@@ -279,7 +277,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $fixture = $this->fixture();
         $this->plot($fixture, $fixture['year1'], $fixture['new'], $fixture['newCourse']);
 
-        $this->actingAs($fixture['vpaa'])
+        $this->actingAs($fixture['secretary'])
             ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'deactivated'])
             ->assertOk();
     }
@@ -311,7 +309,7 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $fixture = $this->fixture();
         Sections::whereKey($fixture['year2']->id)->update(['curriculum_id' => $fixture['new']->id]);
 
-        $this->actingAs($fixture['vpaa'])
+        $this->actingAs($fixture['secretary'])
             ->patchJson('/api/curriculum/'.$fixture['old']->id.'/status', ['status' => 'archived'])
             ->assertOk();
 
@@ -477,11 +475,13 @@ class MultipleCurriculaPerSemesterTest extends TestCase
             'newCourse' => $newCourse,
             'year1' => $section('IT 1A', '1', $new),
             'year2' => $section('IT 2A', '2', $old),
+            // Curriculum authoring sits with the secretary, so it holds
+            // `curriculum.manage` on top of the workspace capabilities. Retiring
+            // a curriculum is exercised through this account because the VPAA no
+            // longer holds curriculum write access at all.
             'secretary' => $this->grantCapabilities(
                 User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]),
-            ),
-            'vpaa' => $this->grantCapabilities(
-                User::factory()->create(['role' => 'vpaa', 'department_id' => $department->id]),
+                [...self::SCHEDULE_WORKSPACE_CAPABILITIES, 'curriculum.manage'],
             ),
         ];
     }

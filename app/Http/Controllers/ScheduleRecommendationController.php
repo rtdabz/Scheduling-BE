@@ -347,6 +347,7 @@ class ScheduleRecommendationController extends Controller
             'meeting_type' => 'sometimes|nullable|in:lecture,laboratory',
             'excluded_days' => 'sometimes|array',
             'excluded_days.*' => SchedulingPolicy::allowedDaysRule('required'),
+            'search_from_day' => SchedulingPolicy::allowedDaysRule('sometimes'),
             'ignore_schedule_ids' => 'sometimes|array',
             'ignore_schedule_ids.*' => 'integer',
             'tentative_schedules' => 'sometimes|array',
@@ -387,6 +388,7 @@ class ScheduleRecommendationController extends Controller
             ignoreScheduleIds: array_map('intval', $validated['ignore_schedule_ids'] ?? []),
             meetingType: $validated['meeting_type'] ?? null,
             excludedDays: $validated['excluded_days'] ?? [],
+            searchFromDay: $validated['search_from_day'] ?? null,
         );
 
         return response()->json($result);
@@ -439,6 +441,9 @@ class ScheduleRecommendationController extends Controller
             'max_iterations' => 'sometimes|integer|min:1',
             'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
             'seed' => 'sometimes|integer',
+            // The day the placement collided on: alternatives are offered on
+            // it first, then day by day after it.
+            'search_from_day' => SchedulingPolicy::allowedDaysRule('sometimes'),
             ...$this->configurationConfirmationRules(),
         ]);
 

@@ -50,16 +50,19 @@ final class InstructorAvailabilityRule
             $start = SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00'));
             $end = SchedulingPolicy::normalizeTime((string) ($attempt['end_time'] ?? '00:00'));
 
-            $windows = $faculty->availabilities()
-                ->where('day_index', $dayIndex)
-                ->get()
+            $recorded = $faculty->availabilities()->get();
+            $windows = $recorded
+                ->filter(static fn ($window): bool => (int) $window->day_index === $dayIndex)
                 ->map(static fn ($window): array => [
                     SchedulingPolicy::normalizeTime((string) $window->start_time),
                     SchedulingPolicy::normalizeTime((string) $window->end_time),
                 ])
+                ->values()
                 ->all();
 
-            if (! self::coveredContinuously($windows, $start, $end)) {
+            // A part-timer with no windows recorded at all is unrestricted: no
+            // availability has been declared, so there is nothing to fall outside.
+            if ($recorded->isNotEmpty() && ! self::coveredContinuously($windows, $start, $end)) {
                 $violations[] = [
                     'rule' => 'part_time_faculty_availability',
                     'message' => 'The selected assignment falls outside the instructor\'s availability window for '.$day.'.',

@@ -51,6 +51,7 @@ final class AvailableSlotFinder
      * @param  list<string>  $excludedDays  days this meeting may not use
      * @param  list<array<string, mixed>>  $tentativeSchedules  unsaved rows the dialog is holding
      * @param  list<int>  $ignoreScheduleIds  rows being replaced by this placement
+     * @param  string|null  $searchFromDay  the day listed first; the other weekdays follow, the weekend last
      * @return array{
      *     slots: list<array<string, mixed>>,
      *     rooms: list<array{room_id: int|null, room_code: string, room_type: string, mode: string, slot_count: int}>,
@@ -68,6 +69,7 @@ final class AvailableSlotFinder
         array $ignoreScheduleIds = [],
         ?string $meetingType = null,
         array $excludedDays = [],
+        ?string $searchFromDay = null,
     ): array {
         if ($durationSlots <= 0) {
             throw new InvalidArgumentException('A meeting must be at least one slot long.');
@@ -173,8 +175,14 @@ final class AvailableSlotFinder
             }
         }
 
-        usort($slots, static fn (array $left, array $right): int => [$left['day_index'], $left['start_slot'], $left['room_code']]
-            <=> [$right['day_index'], $right['start_slot'], $right['room_code']]);
+        // Days are listed from the day the placement collided on, so the other
+        // times on that day come first, then the next weekday, and the weekend
+        // only after every weekday.
+        $dayOrder = static fn (array $slot): int => $searchFromDay !== null
+            ? SchedulingPolicy::searchDayRank($slot['day'], $searchFromDay)
+            : $slot['day_index'];
+        usort($slots, static fn (array $left, array $right): int => [$dayOrder($left), $left['start_slot'], $left['room_code']]
+            <=> [$dayOrder($right), $right['start_slot'], $right['room_code']]);
 
         $rooms = array_values(array_filter(
             $countsByRoom,

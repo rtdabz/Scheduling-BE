@@ -83,6 +83,9 @@ final class SolverInput
             'tentative_schedules' => is_array($input['tentative_schedules'] ?? null)
                 ? $input['tentative_schedules']
                 : [],
+            'search_from_day' => in_array($input['search_from_day'] ?? $input['searchFromDay'] ?? null, SchedulingPolicy::PERSISTABLE_DAYS, true)
+                ? (string) ($input['search_from_day'] ?? $input['searchFromDay'])
+                : null,
             'max_solutions' => (int) ($input['max_solutions'] ?? $input['maxSolutions'] ?? 2),
             'max_iterations' => (int) ($input['max_iterations'] ?? $input['maxIterations'] ?? 250_000),
             'timeout_seconds' => (float) ($input['timeout_seconds'] ?? $input['timeoutSeconds'] ?? 8.0),

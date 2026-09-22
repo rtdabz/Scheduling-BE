@@ -43,6 +43,7 @@ final readonly class GenerationConfiguration implements SchedulingContract
         public bool $allowRoomTbaFallback = true,
         public bool $allowOnlineFallback = true,
         public int $schemaVersion = self::SCHEMA_VERSION,
+        public ?string $searchFromDay = null,
     ) {
         if ($this->sectionId <= 0 || $this->courseIds === []) {
             throw new InvalidArgumentException('Generation requires a section and at least one course.');
@@ -60,6 +61,10 @@ final readonly class GenerationConfiguration implements SchedulingContract
             if (! SchedulingPolicy::isValidPreferredPattern($pattern)) {
                 throw new InvalidArgumentException('Unsupported preferred meeting pattern.');
             }
+        }
+
+        if ($this->searchFromDay !== null && ! in_array($this->searchFromDay, SchedulingPolicy::PERSISTABLE_DAYS, true)) {
+            throw new InvalidArgumentException('Unsupported search start day.');
         }
 
         foreach ($this->deliveryModesByCourseId as $mode) {
@@ -95,6 +100,9 @@ final readonly class GenerationConfiguration implements SchedulingContract
             allowRoomTbaFallback: filter_var($payload['allow_room_tba_fallback'] ?? $payload['allowRoomTbaFallback'] ?? true, FILTER_VALIDATE_BOOLEAN),
             allowOnlineFallback: filter_var($payload['allow_online_fallback'] ?? $payload['allowOnlineFallback'] ?? true, FILTER_VALIDATE_BOOLEAN),
             schemaVersion: (int) ($payload['schema_version'] ?? self::SCHEMA_VERSION),
+            searchFromDay: isset($payload['search_from_day']) && $payload['search_from_day'] !== ''
+                ? (string) $payload['search_from_day']
+                : null,
         );
     }
 
@@ -121,6 +129,9 @@ final readonly class GenerationConfiguration implements SchedulingContract
             'throw_on_empty_domain' => $this->throwOnEmptyDomain,
             'allow_room_tba_fallback' => $this->allowRoomTbaFallback,
             'allow_online_fallback' => $this->allowOnlineFallback,
+            // Only present when set, so every configuration that does not use
+            // it keeps the fingerprint it had before the field existed.
+            ...($this->searchFromDay !== null ? ['search_from_day' => $this->searchFromDay] : []),
         ];
     }
 

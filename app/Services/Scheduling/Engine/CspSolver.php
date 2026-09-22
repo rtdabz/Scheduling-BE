@@ -196,6 +196,13 @@ class CspSolver
      */
     private bool $lateWeekCapacityPreference = true;
 
+    /**
+     * The day a single-course alternatives list starts from -- the day the
+     * user's placement collided on. Alternatives are offered on that day
+     * first, then the other weekdays day by day, and the weekend last.
+     */
+    private ?string $searchFromDay = null;
+
     /** @var array<int, Course> */
     private array $loadedCoursesById = [];
 
@@ -325,6 +332,7 @@ class CspSolver
             throwOnEmptyDomain: $schema['throw_on_empty_domain'],
             allowRoomTbaFallback: $schema['allow_room_tba_fallback'],
             allowOnlineFallback: $schema['allow_online_fallback'],
+            searchFromDay: $schema['search_from_day'],
         );
     }
 
@@ -408,6 +416,7 @@ class CspSolver
         bool $allowRoomTbaFallback = true,
         bool $allowOnlineFallback = true,
         bool $allowFridaySaturdaySplit = false,
+        ?string $searchFromDay = null,
     ): array {
         SolverInput::validateArguments(
             courseIds: $courseIds,
@@ -434,6 +443,9 @@ class CspSolver
         $this->allowedDays = SchedulingPolicy::normalizeAllowedDays($allowedDays);
         $this->allowFridaySaturdaySplit = $allowFridaySaturdaySplit;
         $this->lateWeekCapacityPreference = count($courseIds) > 1;
+        // A start day only means something for an alternatives list: a
+        // timetable of many courses has no single day the user is looking at.
+        $this->searchFromDay = $this->lateWeekCapacityPreference ? null : $searchFromDay;
 
         $courseIds = SolverInput::normalizeCourseIds($courseIds);
 
@@ -801,8 +813,13 @@ class CspSolver
             $rawSolutions,
         );
 
-        // Select a diverse subset of the scored solutions.
-        $ranked = $this->solutionDiversity()->selectDiverse($scored, $maxSolutions);
+        // Select a diverse subset of the scored solutions. With a start day the
+        // days are exhausted in order: the start day's options come first,
+        // spread over its times and rooms, and a later day is offered only
+        // for the places the earlier days could not fill.
+        $ranked = $this->searchFromDay !== null
+            ? $this->selectDiverseFromDay($scored, $maxSolutions, $this->searchFromDay)
+            : $this->solutionDiversity()->selectDiverse($scored, $maxSolutions);
 
         // Strip the internal _raw field and assign sequential ranks.
         foreach ($ranked as $index => &$solution) {
@@ -813,6 +830,34 @@ class CspSolver
         unset($solution);
 
         return $ranked;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $scored
+     * @return list<array<string, mixed>>
+     */
+    private function selectDiverseFromDay(array $scored, int $limit, string $fromDay): array
+    {
+        $byDistance = [];
+        foreach ($scored as $solution) {
+            $distance = PHP_INT_MAX;
+            foreach ($solution['_raw'] as $assignment) {
+                $distance = min($distance, self::candidateDayDistance($assignment, $fromDay));
+            }
+            $byDistance[$distance][] = $solution;
+        }
+        ksort($byDistance);
+
+        $selected = [];
+        foreach ($byDistance as $solutions) {
+            $remaining = $limit - count($selected);
+            if ($remaining <= 0) {
+                break;
+            }
+            array_push($selected, ...$this->solutionDiversity()->selectDiverse($solutions, $remaining));
+        }
+
+        return $selected;
     }
 
     /** @param list<array<string, mixed>> $assignments */
@@ -1046,9 +1091,11 @@ class CspSolver
             }
             foreach ($dayPriority as $dayTier) {
                 if ($dayBuckets[$dayTier] !== []) {
-                    $groups[] = $this->lateWeekCapacityPreference
-                        ? $dayBuckets[$dayTier]
-                        : self::interleaveByDay($dayBuckets[$dayTier]);
+                    $groups[] = match (true) {
+                        $this->lateWeekCapacityPreference => $dayBuckets[$dayTier],
+                        $this->searchFromDay !== null => self::orderFromDay($dayBuckets[$dayTier], $this->searchFromDay),
+                        default => self::interleaveByDay($dayBuckets[$dayTier]),
+                    };
                 }
             }
         }
@@ -1095,6 +1142,64 @@ class CspSolver
         }
 
         return $interleaved;
+    }
+
+    /**
+     * Orders candidates day by day starting from $fromDay: that day first, then
+     * the other weekdays, the weekend last (SchedulingPolicy::searchDayRank).
+     * Within a day the start times are dealt
+     * out in turn, so the pool holds different times on the day rather than one
+     * time in every room.
+     *
+     * @param  list<array<string, mixed>>  $candidates
+     * @return list<array<string, mixed>>
+     */
+    private static function orderFromDay(array $candidates, string $fromDay): array
+    {
+        $byDistance = [];
+        foreach ($candidates as $candidate) {
+            $byDistance[self::candidateDayDistance($candidate, $fromDay)][] = $candidate;
+        }
+        ksort($byDistance);
+
+        $ordered = [];
+        foreach ($byDistance as $dayCandidates) {
+            $byStart = [];
+            foreach ($dayCandidates as $candidate) {
+                $byStart[(int) ($candidate['blocks'][0]['start_slot'] ?? 0)][] = $candidate;
+            }
+            while ($byStart !== []) {
+                foreach ($byStart as $start => $startCandidates) {
+                    $ordered[] = array_shift($startCandidates);
+                    if ($startCandidates === []) {
+                        unset($byStart[$start]);
+
+                        continue;
+                    }
+                    $byStart[$start] = $startCandidates;
+                }
+            }
+        }
+
+        return $ordered;
+    }
+
+    /**
+     * How soon a placement is reached searching from $fromDay: the best
+     * SchedulingPolicy::searchDayRank of its meetings, so a split meeting on
+     * the start day counts as being on it.
+     *
+     * @param  array<string, mixed>  $placement  a candidate or an assignment
+     */
+    private static function candidateDayDistance(array $placement, string $fromDay): int
+    {
+        $nearest = PHP_INT_MAX;
+
+        foreach ($placement['blocks'] ?? [] as $block) {
+            $nearest = min($nearest, SchedulingPolicy::searchDayRank((string) ($block['day'] ?? ''), $fromDay));
+        }
+
+        return $nearest;
     }
 
     private function candidateSearchDayTier(array $candidate): int
@@ -2359,6 +2464,16 @@ class CspSolver
             ['Wednesday', 'Saturday'],
             ['Thursday', 'Saturday'],
             ['Friday', 'Saturday'],
+            // Sunday is an ordinary teaching day (SchedulingPolicy::DAYS), so it
+            // needs pairs too -- without these, a run whose allowed days require
+            // Sunday (Preferred Days, a forced course day) left this list empty
+            // and Integrated classes could not be generated at all.
+            ['Monday', 'Sunday'],
+            ['Tuesday', 'Sunday'],
+            ['Wednesday', 'Sunday'],
+            ['Thursday', 'Sunday'],
+            ['Friday', 'Sunday'],
+            ['Saturday', 'Sunday'],
         ];
 
         foreach ($fallbackPairs as $days) {

@@ -78,6 +78,8 @@ final class ConstraintSupport
         if ($row instanceof ScheduleRow) {
             return match ($key) {
                 'mode' => $row->mode,
+                'meeting_type' => (string) $row->meetingType,
+                'split_group_id' => (string) $row->splitGroupId,
                 default => '',
             };
         }

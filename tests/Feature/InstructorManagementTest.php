@@ -334,7 +334,7 @@ class InstructorManagementTest extends TestCase
      * empty window set blocks a part-timer everywhere. That makes the editor the
      * only way such an instructor becomes assignable at all.
      */
-    public function test_a_part_timer_without_windows_cannot_be_assigned(): void
+    public function test_a_part_timer_without_windows_is_unrestricted(): void
     {
         $f = $this->fixture();
         $f['faculty']->update(['employment_type' => 'part-time']);
@@ -352,7 +352,7 @@ class InstructorManagementTest extends TestCase
             'mode' => 'on-site',
         ]);
 
-        $this->assertContains('part_time_faculty_availability', array_column($violations, 'rule'));
+        $this->assertNotContains('part_time_faculty_availability', array_column($violations, 'rule'));
     }
 
     public function test_a_class_inside_a_window_clears_the_availability_rule(): void

@@ -247,6 +247,21 @@ class AvailableSlotFinderTest extends TestCase
      * day, so the day the partner meeting holds is never offered — a slot there
      * could only ever fail on save.
      */
+    public function test_it_lists_from_the_start_day_then_the_weekdays_and_the_weekend_last(): void
+    {
+        $context = $this->scaffold();
+        $course = $this->course($context, 'IT 101', 2, 'major');
+        $this->lectureRoom($context, 'LEC-1');
+
+        $slots = $this->find($context, $course, 4, searchFromDay: 'Wednesday')['slots'];
+
+        $days = array_values(array_unique(array_column($slots, 'day')));
+        // The weekdays wrap round from Wednesday; whatever weekend days the
+        // rules allow come after all of them.
+        $this->assertSame(['Wednesday', 'Thursday', 'Friday', 'Monday', 'Tuesday'], array_slice($days, 0, 5));
+        $this->assertSame([], array_diff(array_slice($days, 5), ['Saturday', 'Sunday']));
+    }
+
     public function test_it_never_offers_the_day_a_linked_meeting_already_holds(): void
     {
         $context = $this->scaffold();
@@ -279,7 +294,7 @@ class AvailableSlotFinderTest extends TestCase
      * @param  array{semester: Semester, department: Departments, section: Sections}  $context
      * @param  list<string>  $modes
      */
-    private function find(array $context, Course $course, int $durationSlots, array $modes = ['on-site'], ?string $meetingType = null, array $excludedDays = []): array
+    private function find(array $context, Course $course, int $durationSlots, array $modes = ['on-site'], ?string $meetingType = null, array $excludedDays = [], ?string $searchFromDay = null): array
     {
         $snapshot = app(SchedulingSnapshotRepository::class)->capture(
             semesterId: (int) $context['semester']->id,
@@ -296,6 +311,7 @@ class AvailableSlotFinderTest extends TestCase
             modes: $modes,
             meetingType: $meetingType,
             excludedDays: $excludedDays,
+            searchFromDay: $searchFromDay,
         );
     }
 

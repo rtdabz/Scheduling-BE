@@ -586,7 +586,7 @@ final class SchedulingPolicy
         'part_time_faculty_availability' => [
             'severity' => 'hard',
             'category' => 'faculty',
-            'description' => 'Part-time instructors can only be assigned from 5:00 PM onward on weekdays, or at any time on Saturdays or Sundays.',
+            'description' => 'A part-time instructor with recorded availability windows can only be assigned inside them. One with no windows recorded is unrestricted.',
             'enforced_by' => ['rule_engine'],
         ],
         'section_active' => [
@@ -681,7 +681,7 @@ final class SchedulingPolicy
         'class_duration' => [
             'severity' => 'hard',
             'category' => 'time',
-            'description' => "A section's meetings for one course may not add up to more weekly time than the course carries (the larger of the Generator's single-block and lecture/laboratory shapes).",
+            'description' => "A section's meetings for one course may not add up to more weekly time than the course carries (the larger of the Generator's single-block and lecture/laboratory shapes). An Integrated class's lecture and laboratory take the lengths the user sets, so each is judged on its own against one teaching day.",
             'enforced_by' => ['rule_engine'],
         ],
         'split_group_day_separation' => [
@@ -1033,6 +1033,24 @@ final class SchedulingPolicy
         return (int) ($offset / self::SLOT_MINUTES);
     }
 
+    /**
+     * Where $day falls when alternatives are looked for from $fromDay, the day
+     * a placement collided on: that day first (0), then the other weekdays in
+     * week order wrapping round from it, and the weekend only after every
+     * weekday. From Thursday: Thu, Fri, Mon, Tue, Wed, Sat, Sun.
+     */
+    public static function searchDayRank(string $day, string $fromDay): int
+    {
+        if ($day === $fromDay) {
+            return 0;
+        }
+
+        $week = count(self::DAYS);
+        $offset = (self::dayIndex($day) - self::dayIndex($fromDay) + $week) % $week;
+
+        return in_array($day, self::WEEKDAYS, true) ? $offset : $week + $offset;
+    }
+
     public static function dayIndex(string $day): int
     {
         // Called inside solver ranking loops, so resolve through a flipped
@@ -1250,7 +1268,8 @@ final class SchedulingPolicy
      * The most weekly time a section may spend on one course: the larger of
      * the Generator's two shapes, one block of `units × 60` minutes or a
      * lecture/laboratory split. `class_duration` refuses a save past it, so a
-     * custom duration chosen in Setup Courses is capped here too.
+     * custom duration chosen in Setup Courses is capped here too -- except an
+     * Integrated session's, see {@see isIntegratedSession}.
      *
      * Accepts the model (RuleEngine) or the snapshot's array form (constraint
      * kernel) so both validators share one ceiling.
@@ -1271,6 +1290,38 @@ final class SchedulingPolicy
             : 0;
 
         return max($singleBlock, $lectureMinutes + $laboratoryMinutes);
+    }
+
+    /**
+     * Whether a meeting is one session of an Integrated class (On-site or
+     * Hybrid): a linked lecture or laboratory of a course that has both.
+     *
+     * Its length is the user's to set, in Setup Courses or the drop dialog,
+     * so it is never held to {@see courseWeeklyCeilingMinutes}'s unit-derived
+     * total. `class_duration` judges each session on its own instead, against
+     * {@see integratedSessionCeilingMinutes}. A single block is not linked, so
+     * it keeps the course ceiling even when it carries a meeting type.
+     *
+     * @param  Course|array<string, mixed>  $course
+     */
+    public static function isIntegratedSession(Course|array $course, ?string $meetingType, ?string $splitGroupId): bool
+    {
+        return in_array($meetingType, ['lecture', 'laboratory'], true)
+            && trim((string) $splitGroupId) !== ''
+            && (int) (self::courseAttribute($course, 'lecture_hours') ?? 0) > 0
+            && (int) (self::courseAttribute($course, 'lab_hours') ?? 0) > 0;
+    }
+
+    /**
+     * The most weekly time one Integrated session (all of a section's linked
+     * lecture meetings, or all of its laboratory meetings) may take: one
+     * teaching day. The session is a single meeting, so anything longer is a
+     * duplicated placement, not a longer class.
+     */
+    public static function integratedSessionCeilingMinutes(?string $openingTime = null, ?string $closingTime = null): int
+    {
+        return max(0, self::timeToMinutes($closingTime ?? self::closingTime())
+            - self::timeToMinutes($openingTime ?? self::openingTime()));
     }
 
     /**

@@ -322,16 +322,38 @@ class HybridShapesAndPreferredRoomTest extends TestCase
         $this->assertSaveAccepts($course, $rows);
     }
 
-    public function test_integrated_hybrid_lengths_may_not_exceed_the_course_week(): void
+    public function test_integrated_lengths_are_used_exactly_past_the_unit_total(): void
     {
-        // 2 lecture + 1 laboratory unit carries at most 5 h a week.
+        // 2 lecture + 1 laboratory unit is 5 h as a unit total; the user sets
+        // a 3 h lecture beside the 3 h laboratory, and gets exactly that.
+        $course = $this->course('IT 103', lecture: 2, laboratory: 1, units: 3, category: 'major');
+        $this->room('LAB 1', 'laboratory');
+        $components = CourseSetupOverrides::normalizeComponents(
+            $this->section,
+            [(int) $course->id => ['lecture' => 180]],
+            [(int) $course->id],
+            ['selected_split_session_course_ids' => [(int) $course->id]],
+        );
+        // A blank laboratory keeps the course's own length.
+        $this->assertSame([(int) $course->id => ['lecture' => 6, 'laboratory' => 6]], $components);
+
+        $rows = $this->generate($course, ['integrated_hybrid' => true], options: [
+            CourseSetupOverrides::COMPONENTS_KEY => $components,
+        ]);
+
+        $this->assertIntegratedHybrid($rows, lectureMinutes: 180, laboratoryMinutes: 180);
+        $this->assertSaveAccepts($course, $rows);
+    }
+
+    public function test_an_integrated_length_must_be_whole_half_hours(): void
+    {
         $course = $this->course('IT 103', lecture: 2, laboratory: 1, units: 3, category: 'major');
 
         $this->expectException(ValidationException::class);
 
         CourseSetupOverrides::normalizeComponents(
             $this->section,
-            [(int) $course->id => ['lecture' => 180, 'laboratory' => 180]],
+            [(int) $course->id => ['lecture' => 100]],
             [(int) $course->id],
             ['selected_split_session_course_ids' => [(int) $course->id]],
         );

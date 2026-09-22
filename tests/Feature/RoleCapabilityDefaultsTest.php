@@ -37,11 +37,21 @@ class RoleCapabilityDefaultsTest extends TestCase
         }
     }
 
+    /**
+     * Secretaries and program heads build timetables with the same capabilities;
+     * the one difference is curriculum authoring, which only the secretary holds.
+     */
     public function test_secretaries_and_program_heads_share_one_set_of_capabilities(): void
     {
         $defaults = app(CapabilityRegistry::class)->roleDefaults();
 
-        $this->assertEqualsCanonicalizing($defaults['secretary'], $defaults['program_head']);
+        $this->assertEqualsCanonicalizing(
+            array_values(array_diff($defaults['secretary'], ['curriculum.manage'])),
+            $defaults['program_head'],
+        );
+        $this->assertContains('curriculum.manage', $defaults['secretary']);
+        $this->assertNotContains('curriculum.manage', $defaults['vpaa']);
+        $this->assertNotContains('curriculum.manage', $defaults['dean']);
         $this->assertContains('schedule.create', $defaults['secretary']);
         $this->assertNotContains('schedule.approve_dean', $defaults['secretary']);
         $this->assertNotContains('schedule.approve_vpaa', $defaults['secretary']);

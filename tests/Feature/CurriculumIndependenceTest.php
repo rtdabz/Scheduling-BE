@@ -70,14 +70,14 @@ class CurriculumIndependenceTest extends TestCase
             'username' => 'sec_user',
             'email' => 'sec@example.com',
             'password' => bcrypt('password'),
-            'role' => 'vpaa',
+            'role' => 'secretary',
         ]);
-        $this->grantCapabilities($user, ['schedule.view']);
+        $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
 
         $dept = Departments::create(['department_name' => 'Dept', 'department_code' => 'D']);
         $user->update(['department_id' => $dept->id]);
-        $this->grantCapabilities($user, ['schedule.view']);
+        $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
         $curr = Curriculum::create([
             'name' => 'Curriculum 1',
@@ -193,20 +193,20 @@ class CurriculumIndependenceTest extends TestCase
     public function test_curriculum_cannot_attach_major_course_from_another_department_with_same_code()
     {
         $user = User::create([
-            'name' => 'VPAA User',
-            'username' => 'vpaa_admin4',
-            'email' => 'vpaa4@example.com',
+            'name' => 'Secretary User',
+            'username' => 'sec_admin4',
+            'email' => 'sec4@example.com',
             'password' => bcrypt('password'),
-            'role' => 'vpaa',
+            'role' => 'secretary',
         ]);
-        $this->grantCapabilities($user, ['schedule.view']);
+        $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
 
         $itDept = Departments::create(['department_name' => 'IT Dept', 'department_code' => 'IT']);
         $baDept = Departments::create(['department_name' => 'BA Dept', 'department_code' => 'BA']);
 
         $user->update(['department_id' => $itDept->id]);
-        $this->grantCapabilities($user, ['schedule.view']);
+        $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
         $itCurriculum = Curriculum::create([
             'name' => 'IT Curriculum',
@@ -250,9 +250,9 @@ class CurriculumIndependenceTest extends TestCase
             'username' => 'sec_cross_minor',
             'email' => 'sec-cross-minor@example.com',
             'password' => bcrypt('password'),
-            'role' => 'vpaa',
+            'role' => 'secretary',
         ]);
-        $this->grantCapabilities($user, ['schedule.view']);
+        $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
 
         $hmDept = Departments::create(['department_name' => 'Hospitality Management', 'department_code' => 'HM']);
@@ -266,7 +266,7 @@ class CurriculumIndependenceTest extends TestCase
             'status' => 'deactivated',
         ]);
         $user->update(['department_id' => $hmDept->id]);
-        $this->grantCapabilities($user, ['schedule.view']);
+        $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
 
         $itOwnedMinor = Course::create([
@@ -447,14 +447,14 @@ class CurriculumIndependenceTest extends TestCase
             'username' => 'sec_user2',
             'email' => 'sec2@example.com',
             'password' => bcrypt('password'),
-            'role' => 'vpaa',
+            'role' => 'secretary',
         ]);
-        $this->grantCapabilities($user, ['schedule.view']);
+        $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
 
         $dept = Departments::create(['department_name' => 'IT Dept', 'department_code' => 'IT']);
         $user->update(['department_id' => $dept->id]);
-        $this->grantCapabilities($user, ['schedule.view']);
+        $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
         $curriculum = Curriculum::create([
             'name' => 'IT Curriculum',
