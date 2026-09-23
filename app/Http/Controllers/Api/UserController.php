@@ -42,7 +42,7 @@ class UserController extends Controller
                 'middle_initial' => isset($validated['middle_initial']) ? strtoupper(trim($validated['middle_initial'])) : null,
                 'last_name' => trim($validated['last_name']),
                 'suffix' => $validated['suffix'] ?? null,
-                'username' => strtolower(trim($validated['username'])),
+                'username' => $this->availableUsername($validated['username']),
                 'email' => strtolower(trim($validated['email'])),
                 // Unusable until the user opens their setup link and chooses one.
                 'password' => Str::random(64),
@@ -272,6 +272,33 @@ class UserController extends Controller
         throw ValidationException::withMessages([
             'role' => "{$scope} already has an active {$label} ({$holder->name}). Deactivate them first.",
         ]);
+    }
+
+    /**
+     * The requested username, or the first numbered variant still free
+     * (ccssecretary, ccssecretary2, ...). Archived accounts keep their names
+     * so audit history never points at two people.
+     */
+    private function availableUsername(string $requested): string
+    {
+        $base = strtolower(trim($requested));
+        $taken = User::withTrashed()
+            // A `_` in the base may widen the match; the exact check is below.
+            ->whereRaw('LOWER(username) LIKE ?', [$base.'%'])
+            ->pluck('username')
+            ->map(fn (string $name) => strtolower($name))
+            ->flip();
+
+        if (! $taken->has($base)) {
+            return $base;
+        }
+
+        $suffix = 2;
+        while ($taken->has($base.$suffix)) {
+            $suffix++;
+        }
+
+        return $base.$suffix;
     }
 
     private function sendInvitation(Request $request, User $user): string

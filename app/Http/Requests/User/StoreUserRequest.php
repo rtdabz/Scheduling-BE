@@ -23,7 +23,9 @@ class StoreUserRequest extends FormRequest
             'middle_initial' => ['nullable', 'string', 'size:1', 'alpha'],
             'last_name' => 'required|string|max:100',
             'suffix' => ['nullable', Rule::in(Faculty::NAME_SUFFIXES)],
-            'username' => 'required|string|max:255|unique:users,username',
+            // Not unique here: the controller numbers a taken name, since the
+            // form proposes the same department+role name for every holder.
+            'username' => 'required|string|max:250',
             'email' => 'required|email|max:255|unique:users,email',
             'role' => 'required|string|in:dean,program_head,secretary',
             'is_active' => 'sometimes|boolean',
@@ -44,6 +46,16 @@ class StoreUserRequest extends FormRequest
             ],
             'designation_id' => ['nullable', 'integer'],
             'designation_ids' => ['nullable', 'array'],
+        ];
+    }
+
+    /** @return array<string, string> */
+    public function messages(): array
+    {
+        return [
+            // Archived accounts keep their email, so a returning user is
+            // restored rather than recreated.
+            'email.unique' => 'This email belongs to an existing or archived account. If it was archived, restore it from Archives instead.',
         ];
     }
 }

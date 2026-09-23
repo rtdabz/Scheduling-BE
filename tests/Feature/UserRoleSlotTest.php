@@ -94,6 +94,30 @@ class UserRoleSlotTest extends TestCase
             ->assertJsonValidationErrors(['role' => 'BSIT already has an active Program Head']);
     }
 
+    public function test_a_replacement_after_archiving_gets_a_numbered_username(): void
+    {
+        $first = $this->createUser('first', ['username' => 'ccssecretary'])->assertCreated();
+        $this->updateUser($first->json('data.id'), ['is_active' => false])->assertOk();
+        $this->actingAs($this->vpaa, 'sanctum')->deleteJson('/api/user/'.$first->json('data.id'))->assertOk();
+
+        $this->createUser('second', ['username' => 'ccssecretary'])
+            ->assertCreated()
+            ->assertJsonPath('data.username', 'ccssecretary2');
+        $this->createUser('third', ['username' => 'CCSSecretary', 'is_active' => false])
+            ->assertCreated()
+            ->assertJsonPath('data.username', 'ccssecretary3');
+    }
+
+    public function test_an_archived_accounts_email_points_to_restore(): void
+    {
+        $first = $this->createUser('first')->assertCreated();
+        $this->actingAs($this->vpaa, 'sanctum')->deleteJson('/api/user/'.$first->json('data.id'))->assertOk();
+
+        $this->createUser('first', ['username' => 'someone.else'])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.email.0', 'This email belongs to an existing or archived account. If it was archived, restore it from Archives instead.');
+    }
+
     private function createUser(string $handle, array $overrides = [])
     {
         return $this->actingAs($this->vpaa, 'sanctum')->postJson('/api/user', $overrides + [
