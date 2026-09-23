@@ -380,7 +380,20 @@ final class ValidateGenerationConfiguration
                     'No eligible lecture room is available for an on-site course.',
                     $this->courseContext($course),
                 );
-                $recommendations[] = $this->deliveryModeRecommendation($configuration, $course, 'online');
+                // Online only clears this when the course may meet online;
+                // otherwise it would trade this violation for room_type_match.
+                $recommendations[] = SchedulingConstraintPredicates::allowsOnline($course, $snapshot->fieldCourseCodes)
+                    ? $this->deliveryModeRecommendation($configuration, $course, 'online')
+                    : $this->recommendation(
+                        id: "lecture-room-{$courseId}",
+                        title: 'Provide lecture room capacity',
+                        cause: 'The course must meet on-site but no eligible lecture room is available.',
+                        adjustment: 'Add or re-enable a lecture room for the department before generating.',
+                        impact: 'high',
+                        configuration: $configuration,
+                        courseId: $courseId,
+                        course: $course,
+                    );
             }
 
             if (($isLaboratory || $isLectureLabSplit) && ! $hasLaboratoryRoom) {
@@ -430,7 +443,7 @@ final class ValidateGenerationConfiguration
             if (count($courseIds) >= 2) {
                 $violations[] = $this->violation(
                     'same_day_concentration',
-                    sprintf('All %d Required Day courses are assigned to %s. The schedule may be too concentrated and should be reviewed.', count($courseIds), $day),
+                    sprintf('%d Required Day courses are assigned to %s. The schedule may be too concentrated and should be reviewed.', count($courseIds), $day),
                     ['day' => $day, 'course_ids' => $courseIds, 'course_count' => count($courseIds)],
                     'warning',
                 );

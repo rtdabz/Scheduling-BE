@@ -168,7 +168,9 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
 
         $recommendationIds = collect($response->json('recommendations'))->pluck('id')->all();
         $this->assertContains('strategy-alternate_pattern', $recommendationIds);
-        $this->assertContains('advisory-resources', $recommendationIds);
+        // A fixed-pattern bottleneck is a meeting-shape problem; room advice
+        // would not have unblocked it.
+        $this->assertNotContains('advisory-resources', $recommendationIds);
         $this->assertNotEmpty($response->json('recommendations.0.adjustments'));
         $this->assertSame(0, Schedule::query()->count());
     }

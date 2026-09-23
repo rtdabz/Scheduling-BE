@@ -514,7 +514,8 @@ class YearLevelScheduleGenerationService
             if (array_filter($config['preferred_patterns'] ?? []) !== []) {
                 return true;
             }
-            if (($config['selected_split_session_course_ids'] ?? []) !== []) {
+            if (($config['selected_split_session_course_ids'] ?? []) !== []
+                || ($config['balanced_split_course_ids'] ?? []) !== []) {
                 return true;
             }
             foreach (($config['delivery_modes_by_course_id'] ?? []) as $mode) {
@@ -691,12 +692,27 @@ class YearLevelScheduleGenerationService
                 if (! in_array($courseId, $splitIds, true)) {
                     return null;
                 }
-                $config['selected_split_session_course_ids'] = array_values(array_diff($splitIds, [$courseId]));
                 $remainingSplitIds = array_values(array_diff($splitIds, [$courseId]));
                 $config['selected_split_session_course_ids'] = $remainingSplitIds;
                 if ($remainingSplitIds === []) {
                     $config['is_hybrid'] = false;
                 }
+
+                return $config;
+
+            case 'disable_minor_split':
+                $balancedIds = array_map('intval', $config['balanced_split_course_ids'] ?? []);
+                if (! in_array($courseId, $balancedIds, true)) {
+                    return null;
+                }
+                // A Hybrid Split is a Split Session with one meeting online, so
+                // it goes with the split, and so does the split's day pattern.
+                $config['balanced_split_course_ids'] = array_values(array_diff($balancedIds, [$courseId]));
+                $config['hybrid_split_course_ids'] = array_values(array_diff(
+                    array_map('intval', $config['hybrid_split_course_ids'] ?? []),
+                    [$courseId],
+                ));
+                unset($config['preferred_patterns'][$courseId]);
 
                 return $config;
 

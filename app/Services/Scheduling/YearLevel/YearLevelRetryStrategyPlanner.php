@@ -13,8 +13,8 @@ use Illuminate\Support\Collection;
  * Raising the iteration limit does not help here: the same ordering explores the
  * same dead end more slowly. What helps is changing the shape of the problem, so
  * every strategy either re-orders the search or relaxes exactly one *user
- * preference* — a chosen MW/TTh pattern, a lecture/lab split toggle, a forced
- * delivery mode. Institutional rules (room types, forced day rules, operating
+ * preference* — a chosen MW/TTh pattern, a lecture/lab or Split Session toggle,
+ * a forced delivery mode. Institutional rules (room types, forced day rules, operating
  * hours, conflict checks) are never touched, and each applied relaxation is
  * reported back so the user sees what changed.
  */
@@ -45,6 +45,7 @@ class YearLevelRetryStrategyPlanner
             $this->clearBottleneckPattern($configsBySectionId, $courses, $sectionNames, $focusSectionId, $focusCourseId),
             $this->clearSectionPatterns($configsBySectionId, $courses, $sectionNames, $focusSectionId),
             $this->clearBottleneckSplit($configsBySectionId, $courses, $sectionNames, $focusSectionId, $focusCourseId),
+            $this->clearBottleneckBalancedSplit($configsBySectionId, $courses, $sectionNames, $focusSectionId, $focusCourseId),
             $this->disableSectionHybrid($configsBySectionId, $courses, $sectionNames, $focusSectionId),
             $this->clearSectionForcedModes($configsBySectionId, $courses, $sectionNames, $focusSectionId),
             $this->clearAllPatterns($configsBySectionId, $courses, $sectionNames),
@@ -59,21 +60,21 @@ class YearLevelRetryStrategyPlanner
                 'alternate_pattern', 'clear_bottleneck_pattern', 'alternate_ordering', 'clear_section_patterns', 'clear_all_patterns',
             ],
             YearLevelGenerationDiagnostics::TYPE_LECTURE_LAB_SPLIT => [
-                'alternate_ordering', 'clear_bottleneck_split', 'alternate_pattern', 'clear_section_patterns',
                 'alternate_ordering', 'clear_bottleneck_split', 'disable_section_hybrid', 'alternate_pattern', 'clear_section_patterns',
             ],
+            YearLevelGenerationDiagnostics::TYPE_BALANCED_SPLIT => [
+                'alternate_ordering', 'clear_bottleneck_pattern', 'clear_bottleneck_balanced_split', 'clear_section_patterns',
+            ],
             YearLevelGenerationDiagnostics::TYPE_LABORATORY_ROOM => [
-                'alternate_ordering', 'clear_bottleneck_split', 'clear_section_forced_modes', 'clear_section_patterns',
                 'alternate_ordering', 'clear_bottleneck_split', 'disable_section_hybrid', 'clear_section_forced_modes', 'clear_section_patterns',
             ],
             YearLevelGenerationDiagnostics::TYPE_FORCED_ON_SITE,
             YearLevelGenerationDiagnostics::TYPE_LIMITED_ROOMS => [
-                'clear_section_forced_modes', 'alternate_ordering', 'clear_section_patterns', 'clear_bottleneck_split',
                 'clear_section_forced_modes', 'alternate_ordering', 'clear_section_patterns', 'clear_bottleneck_split', 'disable_section_hybrid',
             ],
             default => [
-                'alternate_ordering', 'clear_bottleneck_pattern', 'clear_bottleneck_split', 'clear_section_forced_modes', 'clear_all_patterns',
-                'alternate_ordering', 'clear_bottleneck_pattern', 'clear_bottleneck_split', 'disable_section_hybrid', 'clear_section_forced_modes', 'clear_all_patterns',
+                'alternate_ordering', 'clear_bottleneck_pattern', 'clear_bottleneck_split', 'clear_bottleneck_balanced_split',
+                'disable_section_hybrid', 'clear_section_forced_modes', 'clear_all_patterns',
             ],
         };
 
@@ -337,6 +338,62 @@ class YearLevelRetryStrategyPlanner
     }
 
     /**
+     * Let a Split Session course meet once instead of twice. The solver can
+     * already fall back to one meeting on its own, but only for some shapes;
+     * when the bottleneck is the two-meeting pair itself, dropping the split
+     * is the one change that removes it.
+     *
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @param  Collection<int, Course>  $courses
+     * @param  array<int, string>  $sectionNames
+     * @return array<string, mixed>|null
+     */
+    private function clearBottleneckBalancedSplit(
+        array $configsBySectionId,
+        Collection $courses,
+        array $sectionNames,
+        int $focusSectionId,
+        int $focusCourseId,
+    ): ?array {
+        $adjustments = [];
+
+        foreach ($this->focusedSectionIds($configsBySectionId, $focusSectionId) as $sectionId) {
+            $splitIds = array_map('intval', $configsBySectionId[$sectionId]['balanced_split_course_ids'] ?? []);
+            if ($splitIds === []) {
+                continue;
+            }
+
+            $courseId = $focusCourseId > 0 && in_array($focusCourseId, $splitIds, true)
+                ? $focusCourseId
+                : $splitIds[0];
+            $adjustments[] = [
+                'type' => 'disable_minor_split',
+                'section_id' => $sectionId,
+                'course_id' => $courseId,
+                'value' => null,
+                'section_name' => $sectionNames[$sectionId] ?? '',
+                'course_code' => $this->courseCode($courses, $courseId),
+            ];
+        }
+
+        if ($adjustments === []) {
+            return null;
+        }
+
+        return [
+            'key' => 'clear_bottleneck_balanced_split',
+            'label' => sprintf('Schedule %s as one regular meeting', $adjustments[0]['course_code']),
+            'description' => sprintf(
+                'Turn off Split Session for %s in %s so it needs one full-length meeting instead of two vacant equal-length meetings on different days.',
+                $adjustments[0]['course_code'],
+                $adjustments[0]['section_name'] !== '' ? $adjustments[0]['section_name'] : 'the section',
+            ),
+            'impact' => 'high',
+            'adjustments' => $adjustments,
+        ];
+    }
+
+    /**
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
      * @param  array<int, string>  $sectionNames
@@ -361,11 +418,17 @@ class YearLevelRetryStrategyPlanner
         return [
             'key' => 'disable_section_hybrid',
             'label' => sprintf('Turn off hybrid split sessions in %s', $sectionNames[$focusSectionId] ?? 'the section'),
-            'description' => sprintf(
-                'Schedule all %d split courses in %s as standard single sessions to resolve schedule crowding while keeping hybrid scheduling active on the other sections.',
-                count($splitIds),
-                $sectionNames[$focusSectionId] ?? 'the section',
-            ),
+            'description' => $splitIds === []
+                ? sprintf(
+                    'Turn off hybrid delivery in %s while keeping hybrid scheduling active on the other sections.',
+                    $sectionNames[$focusSectionId] ?? 'the section',
+                )
+                : sprintf(
+                    'Schedule all %d lecture/lab split course%s in %s as standard single sessions to resolve schedule crowding while keeping hybrid scheduling active on the other sections.',
+                    count($splitIds),
+                    count($splitIds) === 1 ? '' : 's',
+                    $sectionNames[$focusSectionId] ?? 'the section',
+                ),
             'impact' => 'high',
             'adjustments' => [[
                 'type' => 'disable_section_hybrid',

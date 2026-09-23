@@ -708,23 +708,44 @@ class YearLevelFeasibilityService
         }
 
         $blocking = [];
-        $reported = [];
         $dayList = implode(', ', $this->allowedDays);
+        if (count($this->allowedDays) >= 2) {
+            return [];
+        }
+
+        // One blocking entry per course, but every section that configured it
+        // is a target, so applying the fix clears the whole block at once.
+        $indexByCourseId = [];
         foreach ($sections as $section) {
             $config = $configsBySectionId[(int) $section->id] ?? [];
-            $twoDayIds = array_map('intval', [
-                ...($config['selected_split_session_course_ids'] ?? []),
-                ...($config['hybrid_split_course_ids'] ?? []),
-            ]);
+            $lectureLabIds = array_map('intval', $config['selected_split_session_course_ids'] ?? []);
+            $hybridSplitIds = array_map('intval', $config['hybrid_split_course_ids'] ?? []);
 
             foreach ($this->configuredCourses($config, $courses) as $course) {
                 $courseId = (int) $course->id;
-                if (isset($reported[$courseId]) || ! in_array($courseId, $twoDayIds, true) || count($this->allowedDays) >= 2) {
+                $isLectureLab = in_array($courseId, $lectureLabIds, true);
+                if (! $isLectureLab && ! in_array($courseId, $hybridSplitIds, true)) {
                     continue;
                 }
 
-                $reported[$courseId] = true;
                 $code = (string) ($course->course_code ?? $course->course_name ?? "Course {$courseId}");
+                $target = [
+                    'section_id' => (int) $section->id,
+                    'section_name' => (string) $section->section_name,
+                    'course_id' => $courseId,
+                    'course_code' => $code,
+                    // The two-day shape comes from a different toggle in each
+                    // case, so the fix that removes it differs too.
+                    'adjustment_type' => $isLectureLab ? 'disable_lecture_lab_split' : 'disable_hybrid_split',
+                ];
+
+                if (isset($indexByCourseId[$courseId])) {
+                    $blocking[$indexByCourseId[$courseId]]['context']['targets'][] = $target;
+
+                    continue;
+                }
+
+                $indexByCourseId[$courseId] = count($blocking);
                 $blocking[] = [
                     'code' => 'preferred_days_too_few_for_hybrid',
                     'message' => sprintf(
@@ -740,6 +761,7 @@ class YearLevelFeasibilityService
                         'course_id' => $courseId,
                         'course_code' => $code,
                         'allowed_days' => $this->allowedDays,
+                        'targets' => [$target],
                     ],
                 ];
             }

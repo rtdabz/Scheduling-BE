@@ -3,6 +3,7 @@
 namespace App\Services\Scheduling\YearLevel;
 
 use App\Models\Course;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
 /**
@@ -54,23 +55,42 @@ class YearLevelGenerationDiagnostics
             $code = (string) ($constraint['code'] ?? 'blocking_constraint');
             $context = (array) ($constraint['context'] ?? []);
             $adjustments = [];
+            $courseCode = (string) ($context['course_code'] ?? '');
             $title = match ($code) {
                 'no_physical_rooms' => 'Add a usable lecture or laboratory room',
                 'insufficient_room_slots' => 'Reduce on-site demand for this year level',
-                'no_laboratory_room' => 'Add a laboratory room for this department',
-                'insufficient_laboratory_slots' => 'Free up laboratory capacity',
                 'fixed_pattern_overloaded' => sprintf(
                     'Let the generator choose days for %s courses',
                     (string) ($context['pattern'] ?? 'fixed-pattern'),
                 ),
-                'preferred_days_too_few_for_hybrid' => 'Recommend adding another Preferred Day',
+                'preferred_days_too_few_for_hybrid' => sprintf(
+                    'Add a Preferred Day, or schedule %s on-site',
+                    $courseCode !== '' ? $courseCode : 'the course',
+                ),
+                'component_duration_exceeds_day' => sprintf(
+                    'Shorten the %s block or extend operating hours',
+                    $courseCode !== '' ? $courseCode : 'course',
+                ),
+                'forced_day_capacity_exceeded' => sprintf(
+                    'Release the %s Required Day or add rooms',
+                    (string) ($context['forced_day'] ?? ''),
+                ),
                 default => 'Adjust the generation scope',
             };
 
-            if ($code === 'fixed_pattern_overloaded') {
+            // Only preferences the wizard owns become adjustments. Rooms,
+            // operating hours, course units and Required Days are department
+            // data, so those blocks stay as advice. A null type means each
+            // target names its own fix.
+            $adjustmentType = match ($code) {
+                'fixed_pattern_overloaded' => 'clear_pattern',
+                'preferred_days_too_few_for_hybrid' => null,
+                default => false,
+            };
+            if ($adjustmentType !== false) {
                 foreach (($context['targets'] ?? []) as $target) {
                     $adjustments[] = [
-                        'type' => 'clear_pattern',
+                        'type' => $adjustmentType ?? (string) ($target['adjustment_type'] ?? ''),
                         'section_id' => (int) ($target['section_id'] ?? 0),
                         'course_id' => (int) ($target['course_id'] ?? 0),
                         'value' => null,
@@ -254,10 +274,11 @@ class YearLevelGenerationDiagnostics
             $splitIds = array_map('intval', $configsBySectionId[$sectionId]['balanced_split_course_ids'] ?? []);
             $hybridIds = array_map('intval', $configsBySectionId[$sectionId]['hybrid_split_course_ids'] ?? []);
 
-            // Hybrid Split is offered as an advisory only. The solver is not
-            // allowed to silently change delivery mode or meeting shape.
+            // Hybrid Split is never applied by the retry ladder: the solver is
+            // not allowed to silently change delivery mode or meeting shape.
+            // It is offered here for the user to apply explicitly.
             if ($course !== null
-                && (int) ($course->lab_hours ?? 0) === 0
+                && SchedulingPolicy::hybridSplitEligible($course)
                 && in_array($courseId, $splitIds, true)
                 && (bool) ($bottleneck['hybrid_split_slot_available'] ?? false)
                 && ! in_array($courseId, $hybridIds, true)) {
@@ -271,26 +292,56 @@ class YearLevelGenerationDiagnostics
                     'course_id' => $courseId,
                     'course_code' => $courseCode,
                     'impact' => 'medium',
-                    'adjustments' => [],
+                    'adjustments' => [[
+                        'type' => 'enable_hybrid_split',
+                        'section_id' => $sectionId,
+                        'course_id' => $courseId,
+                        'value' => null,
+                        'section_name' => $sectionName,
+                        'course_code' => $courseCode,
+                    ]],
                     'status' => 'active',
                     'resolved' => false,
                 ];
             }
 
-            $recommendations[] = [
-                'id' => 'recommend-regular-meeting-'.$sectionId.'-'.$courseId,
-                'title' => 'Recommend Regular Meeting',
-                'detected_cause' => sprintf('%s cannot be accommodated as a two-meeting Split schedule.', $courseCode),
-                'suggested_adjustment' => sprintf('Let %s use one full-duration meeting and choose On-site or Online delivery in the course configuration. This remains a suggestion and requires your action.', $courseCode),
-                'section_id' => $sectionId,
-                'section_name' => $sectionName,
-                'course_id' => $courseId,
-                'course_code' => $courseCode,
-                'impact' => 'high',
-                'adjustments' => [],
-                'status' => 'active',
-                'resolved' => false,
-            ];
+            // The retry ladder may already offer this exact change as a
+            // strategy; listing it twice would read as two different fixes.
+            if (! $this->offersAdjustment($recommendations, 'disable_minor_split', $sectionId, $courseId)) {
+                $recommendations[] = [
+                    'id' => 'recommend-regular-meeting-'.$sectionId.'-'.$courseId,
+                    'title' => 'Recommend Regular Meeting',
+                    'detected_cause' => sprintf('%s cannot be accommodated as a two-meeting Split schedule.', $courseCode),
+                    'suggested_adjustment' => sprintf('Let %s use one full-duration meeting instead of a two-meeting Split Session.', $courseCode),
+                    'section_id' => $sectionId,
+                    'section_name' => $sectionName,
+                    'course_id' => $courseId,
+                    'course_code' => $courseCode,
+                    'impact' => 'high',
+                    'adjustments' => [[
+                        'type' => 'disable_minor_split',
+                        'section_id' => $sectionId,
+                        'course_id' => $courseId,
+                        'value' => null,
+                        'section_name' => $sectionName,
+                        'course_code' => $courseCode,
+                    ]],
+                    'status' => 'active',
+                    'resolved' => false,
+                ];
+            }
+        }
+
+        // Room-time advice only helps when rooms are what ran out. A pattern
+        // or split bottleneck is a meeting-shape problem that more rooms
+        // would not have changed.
+        if (! in_array($bottleneck['type'] ?? null, [
+            self::TYPE_LABORATORY_ROOM,
+            self::TYPE_FORCED_ON_SITE,
+            self::TYPE_LIMITED_ROOMS,
+            self::TYPE_SEARCH_EXHAUSTED,
+        ], true)) {
+            return $recommendations;
         }
 
         $recommendations[] = [
@@ -311,6 +362,22 @@ class YearLevelGenerationDiagnostics
         ];
 
         return $recommendations;
+    }
+
+    /** @param  list<array<string, mixed>>  $recommendations */
+    private function offersAdjustment(array $recommendations, string $type, int $sectionId, int $courseId): bool
+    {
+        foreach ($recommendations as $recommendation) {
+            foreach ((array) ($recommendation['adjustments'] ?? []) as $adjustment) {
+                if (($adjustment['type'] ?? null) === $type
+                    && (int) ($adjustment['section_id'] ?? 0) === $sectionId
+                    && (int) ($adjustment['course_id'] ?? 0) === $courseId) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

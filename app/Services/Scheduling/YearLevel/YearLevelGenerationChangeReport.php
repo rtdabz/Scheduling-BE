@@ -160,6 +160,7 @@ class YearLevelGenerationChangeReport
             'set_pattern' => "Meeting pattern changed to {$value}",
             'clear_pattern' => 'Meeting pattern set to Automatic',
             'disable_lecture_lab_split' => 'Lecture/lab split turned off',
+            'disable_minor_split' => 'Split Session turned off; scheduled as one meeting',
             'set_delivery_mode' => $value === 'automatic' ? 'Delivery mode set to Automatic' : "Delivery mode set to {$value}",
             'disable_section_hybrid' => 'Hybrid delivery turned off for the section',
             default => 'Configuration adjusted',
