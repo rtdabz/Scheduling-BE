@@ -35,6 +35,9 @@ class Departments extends Model
         'custom_lab_duration_other_enabled' => 'boolean',
         'gec_split_schedule_override_enabled' => 'boolean',
         'major_lecture_split_schedule_override_enabled' => 'boolean',
+        // Deliberately not fillable: only the department secretary changes it,
+        // through SchedulingSettingsController.
+        'sunday_classes_enabled' => 'boolean',
         'scheduling_profile' => 'string',
     ];
 

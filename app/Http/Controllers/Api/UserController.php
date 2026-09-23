@@ -7,16 +7,16 @@ use App\Http\Requests\User\StoreUserRequest;
 use App\Http\Requests\User\UpdateUserRequest;
 use App\Models\Program;
 use App\Models\User;
-use App\Notifications\WicarsAccountCreatedNotification;
+use App\Notifications\AccountInvitationNotification;
 use App\Services\AuthenticationAuditService;
 use App\Services\FacultyDesignationService;
 use App\Services\UserFacultyProfileService;
 use App\Support\ApiCache;
-use App\Support\CapabilityRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class UserController extends Controller
@@ -24,13 +24,13 @@ class UserController extends Controller
     public function __construct(
         private readonly AuthenticationAuditService $audit,
         private readonly UserFacultyProfileService $facultyProfiles,
-        private readonly CapabilityRegistry $capabilities,
     ) {}
 
     public function store(StoreUserRequest $request): JsonResponse
     {
         $validated = $request->validated();
         $this->ensureRoleDepartmentHierarchy($validated['role'], (int) $validated['department_id']);
+        $this->ensureRoleSlotAvailable($validated, (bool) ($validated['is_active'] ?? true));
         $facultyMode = $validated['faculty_mode'] ?? UserFacultyProfileService::MODE_CREATE;
         $designationIds = app(FacultyDesignationService::class)->idsFrom($request);
         app(FacultyDesignationService::class)->validate($designationIds);
@@ -44,7 +44,8 @@ class UserController extends Controller
                 'suffix' => $validated['suffix'] ?? null,
                 'username' => strtolower(trim($validated['username'])),
                 'email' => strtolower(trim($validated['email'])),
-                'password' => Hash::make($validated['password']),
+                // Unusable until the user opens their setup link and chooses one.
+                'password' => Str::random(64),
                 'role' => $validated['role'],
                 'is_active' => $validated['is_active'] ?? true,
                 // Google login is enabled automatically for every account.
@@ -68,7 +69,7 @@ class UserController extends Controller
 
             return $user;
         });
-        $user->notify(new WicarsAccountCreatedNotification);
+        $this->sendInvitation($request, $user);
         // A brand-new account cannot appear on an existing timetable, so the
         // `schedules`/`courses`/`sections` portions of the initial-data payload
         // are untouched and only the sections below need rebuilding.
@@ -93,6 +94,7 @@ class UserController extends Controller
         // The VPAA account is refused in UpdateUserRequest::authorize().
         $validated = $request->validated();
         $this->ensureRoleDepartmentHierarchy($validated['role'], (int) $validated['department_id']);
+        $this->ensureRoleSlotAvailable($validated, (bool) $validated['is_active'], $user->id);
 
         DB::transaction(function () use ($validated, $request, $user) {
             $user->update([
@@ -174,6 +176,27 @@ class UserController extends Controller
     }
 
     /**
+     * Emails a fresh one-time setup link, e.g. when the first one expired or
+     * the user forgot their password and asked the VPAA office for help.
+     */
+    public function resendInvitation(Request $request, User $user): JsonResponse
+    {
+        if ($user->role === 'vpaa') {
+            return response()->json(['message' => 'The VPAA account cannot be changed here.'], 403);
+        }
+
+        if (! $user->is_active) {
+            return response()->json(['message' => 'Activate this account before sending a setup link.'], 422);
+        }
+
+        if ($this->sendInvitation($request, $user) === Password::RESET_THROTTLED) {
+            return response()->json(['message' => 'A setup link was just sent. Please wait a minute before sending another.'], 429);
+        }
+
+        return response()->json(['message' => "A setup link has been sent to {$user->email}."]);
+    }
+
+    /**
      * Unlinked instructors in a department, so the Create User form can attach
      * an account to an existing roster entry instead of duplicating it.
      */
@@ -207,6 +230,62 @@ class UserController extends Controller
         throw ValidationException::withMessages([
             'role' => 'Only a Dean can be assigned to a department without a program.',
         ]);
+    }
+
+    /**
+     * Each role slot (Dean and Secretary per department, Program Head per
+     * program) holds at most one active account. Deactivated holders do not
+     * count, so a replacement can be added once the previous one is turned off.
+     */
+    private function ensureRoleSlotAvailable(array $validated, bool $isActive, ?int $ignoreUserId = null): void
+    {
+        if (! $isActive) {
+            return;
+        }
+
+        $role = $validated['role'];
+        $holder = User::query()
+            ->with(['department', 'program'])
+            ->where('role', $role)
+            ->where('is_active', true)
+            ->when($ignoreUserId !== null, fn ($query) => $query->whereKeyNot($ignoreUserId))
+            ->when(
+                $role === 'program_head',
+                fn ($query) => $query->where('program_id', $validated['program_id'] ?? null),
+                fn ($query) => $query->where('department_id', $validated['department_id']),
+            )
+            ->first();
+
+        if ($holder === null) {
+            return;
+        }
+
+        $label = match ($role) {
+            'dean' => 'Dean',
+            'program_head' => 'Program Head',
+            default => 'Secretary',
+        };
+        $scope = $role === 'program_head'
+            ? ($holder->program?->code ?? $holder->program?->name ?? 'This program')
+            : ($holder->department?->department_code ?? $holder->department?->department_name ?? 'This department');
+
+        throw ValidationException::withMessages([
+            'role' => "{$scope} already has an active {$label} ({$holder->name}). Deactivate them first.",
+        ]);
+    }
+
+    private function sendInvitation(Request $request, User $user): string
+    {
+        $status = Password::broker('invites')->sendResetLink(
+            ['email' => $user->email],
+            fn (User $invitee, string $token) => $invitee->notify(new AccountInvitationNotification($token)),
+        );
+
+        if ($status === Password::RESET_LINK_SENT) {
+            $this->audit->record($request, 'invitation_sent', $user);
+        }
+
+        return $status;
     }
 
     private function withAccessState(User $user): User

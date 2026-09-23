@@ -2,12 +2,23 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Schedule extends Model
 {
-    use SoftDeletes;
+    use MassPrunable, SoftDeletes;
+
+    /**
+     * Archived rows are removed for good once past the retention period
+     * (model:prune, scheduled daily). History snapshots keep the record.
+     */
+    public function prunable(): Builder
+    {
+        return static::onlyTrashed()->where('deleted_at', '<', now()->subMonths((int) config('app.schedule_archive_retention_months', 12)));
+    }
 
     protected $table = 'schedules';
 

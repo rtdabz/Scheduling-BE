@@ -27,11 +27,12 @@ class SchedulingConstraintKernelTest extends TestCase
     public function test_the_day_family_limits_no_course_by_its_category(): void
     {
         $days = new MeetingDayConstraints;
-        $snapshot = $this->snapshot();
+        // Sunday open, so only the category could still rule a day out.
+        $snapshot = $this->snapshot(departmentSettings: ['sunday_classes_enabled' => true]);
 
         // Minors were Monday-Saturday and field courses Monday-Friday. Every
-        // course may now use every day; only a pattern or a Required Day
-        // narrows it.
+        // course may now use every day the department teaches; only a pattern
+        // or a Required Day narrows it.
         foreach ([self::MINOR, self::NSTP] as $courseId) {
             foreach (SchedulingPolicy::PERSISTABLE_DAYS as $day) {
                 $this->assertSame(
@@ -78,14 +79,26 @@ class SchedulingConstraintKernelTest extends TestCase
         // Another section in the same room at the same time, and a pattern this
         // day is not part of: the pattern rule (205) outranks the room clash
         // (430).
-        $snapshot = $this->snapshot(persisted: [$this->persisted(id: 7, sectionId: 2, roomId: self::LECTURE_ROOM, day: 'Sunday')]);
+        $snapshot = $this->snapshot(persisted: [$this->persisted(id: 7, sectionId: 2, roomId: self::LECTURE_ROOM, day: 'Friday')]);
 
         $violations = (new SchedulingConstraintKernel)->evaluateRow(
-            $this->row(self::MINOR, 'Sunday', preferredPattern: 'MW'),
+            $this->row(self::MINOR, 'Friday', preferredPattern: 'MW'),
             $snapshot,
         );
 
         $this->assertSame(['preferred_pattern', 'room_conflict'], $this->rules($violations));
+    }
+
+    public function test_kernel_refuses_sunday_until_the_department_enables_sunday_classes(): void
+    {
+        $closed = (new SchedulingConstraintKernel)->evaluateRow($this->row(self::MINOR, 'Sunday'), $this->snapshot());
+        $this->assertSame(['sunday_classes'], $this->rules($closed));
+
+        $open = (new SchedulingConstraintKernel)->evaluateRow(
+            $this->row(self::MINOR, 'Sunday'),
+            $this->snapshot(departmentSettings: ['sunday_classes_enabled' => true]),
+        );
+        $this->assertSame([], $open);
     }
 
     /** @param list<ConstraintViolation> $violations */
@@ -128,7 +141,7 @@ class SchedulingConstraintKernelTest extends TestCase
         ];
     }
 
-    private function snapshot(array $persisted = []): SchedulingSnapshot
+    private function snapshot(array $persisted = [], array $departmentSettings = []): SchedulingSnapshot
     {
         return new SchedulingSnapshot(
             fingerprint: 'kernel-test',
@@ -143,6 +156,7 @@ class SchedulingConstraintKernelTest extends TestCase
                 self::LECTURE_ROOM => ['id' => self::LECTURE_ROOM, 'room_type' => 'lecture'],
             ],
             persistedSchedules: $persisted,
+            departmentSettings: $departmentSettings,
         );
     }
 }

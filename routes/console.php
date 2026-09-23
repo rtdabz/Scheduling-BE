@@ -16,4 +16,9 @@ Schedule::command('cache:prune-expired')
     ->withoutOverlapping()
     ->runInBackground();
 
+// Archived schedules and splits past their retention period; see Schedule::prunable().
+Schedule::command('model:prune', ['--model' => [App\Models\Schedule::class, App\Models\ScheduleSplit::class]])
+    ->daily()
+    ->withoutOverlapping();
+
 

@@ -30,6 +30,29 @@ class YearLevelScheduleGenerationService
 
     private const SECTION_SOLUTIONS_PER_ATTEMPT = 3;
 
+    /**
+     * Step budget of a section's first search; each restart doubles it. A
+     * depth-first search that commits to a poor early placement can spend its
+     * whole budget under it: one BSIT 3E search ran 24 seconds and ~190,000
+     * steps without a result, while a different seed placed the same section
+     * in 56 steps. Short, reseeded restarts leave such a dead end quickly, and
+     * the doubling still gives a genuinely hard section long searches.
+     */
+    private const RESTART_INITIAL_ITERATIONS = 2000;
+
+    /** Seed stride between restarts, apart from the attempt stride (7919). */
+    private const RESTART_SEED_STRIDE = 104729;
+
+    /**
+     * Per-attempt cap for a section while the previous section still has
+     * other arrangements to try. An arrangement can leave the next section no
+     * timetable at all -- BSIT 3D taking the last Monday/Wednesday lecture-room
+     * pairs BSIT 3E needed -- and the search cannot prove that quickly; trying
+     * the previous section's next arrangement is far cheaper than spending the
+     * full attempt on it. The last arrangement keeps the full budget.
+     */
+    private const SIBLING_ATTEMPT_SECONDS = 6.0;
+
     private const MAX_SECTION_ORDER_CANDIDATES = 2;
 
     private const MAX_COMPLETE_CANDIDATES_PER_ORDER = 6;
@@ -441,10 +464,11 @@ class YearLevelScheduleGenerationService
             static fn (array $room): bool => ! in_array((string) ($room['room_type'] ?? ''), ['online', 'field'], true),
         ));
 
+        $teachingDays = $this->teachingDays();
         foreach ($configsBySectionId as $sectionId => $config) {
             $sectionName = $sectionNames[(int) $sectionId] ?? 'the section';
             $allowedDays = SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null);
-            if ($allowedDays !== null && count($allowedDays) < count(SchedulingPolicy::DAYS) && $physicalRoomCount > 0) {
+            if ($allowedDays !== null && count(array_intersect($allowedDays, $teachingDays)) < count($teachingDays) && $physicalRoomCount > 0) {
                 $recommendations[] = [
                     'id' => 'preferred-days-add-day-'.$sectionId,
                     'title' => 'Recommend adding another day',
@@ -856,6 +880,7 @@ class YearLevelScheduleGenerationService
         int $index = 0,
         array $combined = [],
         array $scheduledSections = [],
+        bool $alternativesRemain = false,
     ): void {
         if ($index >= count($sections)) {
             $completeCandidates[] = [
@@ -888,6 +913,7 @@ class YearLevelScheduleGenerationService
             timeBudget: $sectionTimeBudget,
             seedOffset: $seedOffset,
             allowRoomTbaFallback: $allowRoomTbaFallback,
+            maxAttemptSeconds: $alternativesRemain ? self::SIBLING_ATTEMPT_SECONDS : null,
         );
 
         if ($solutions === []) {
@@ -919,7 +945,7 @@ class YearLevelScheduleGenerationService
             count($nextScheduledSections) === count($sections),
         );
 
-        foreach ($ranked as $candidate) {
+        foreach (array_values($ranked) as $rank => $candidate) {
             $selectedSchedules = array_slice($candidate['schedules'], count($combined));
             $this->tentativeSchedules = array_merge($combined, $selectedSchedules);
 
@@ -936,6 +962,7 @@ class YearLevelScheduleGenerationService
                 index: $index + 1,
                 combined: array_merge($combined, $selectedSchedules),
                 scheduledSections: $nextScheduledSections,
+                alternativesRemain: $rank < count($ranked) - 1,
             );
 
             if (
@@ -1045,6 +1072,19 @@ class YearLevelScheduleGenerationService
     }
 
     /**
+     * The days this department books: Sunday only once its secretary has
+     * enabled Sunday classes.
+     *
+     * @return list<string>
+     */
+    private function teachingDays(): array
+    {
+        return SchedulingPolicy::teachingDays(
+            (bool) ($this->generationSnapshot?->departmentSettings['sunday_classes_enabled'] ?? false),
+        );
+    }
+
+    /**
      * Check the captured room/schedule snapshot for at least one vacant 1.5-hour
      * physical slot. This gates the Hybrid Split suggestion; it is not a solver
      * placement and therefore does not change generation outcomes.
@@ -1064,7 +1104,10 @@ class YearLevelScheduleGenerationService
             return false;
         }
 
-        $days = SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null) ?? SchedulingPolicy::DAYS;
+        $days = array_values(array_intersect(
+            SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null) ?? SchedulingPolicy::DAYS,
+            $this->teachingDays(),
+        ));
         $durationSlots = SchedulingPolicy::hybridSplitMeetingSlots();
         $opening = SchedulingPolicy::timeToMinutes(SchedulingPolicy::openingTime());
         $persisted = $this->generationSnapshot->persistedSchedules;
@@ -1156,6 +1199,7 @@ class YearLevelScheduleGenerationService
         float $timeBudget,
         int $seedOffset = 0,
         bool $allowRoomTbaFallback = true,
+        ?float $maxAttemptSeconds = null,
     ): array {
         $baseSeed = isset($config['seed']) ? (int) $config['seed'] : random_int(1, 1000000);
         $baseSeed += $seedOffset;
@@ -1171,34 +1215,58 @@ class YearLevelScheduleGenerationService
                 break;
             }
 
-            $attemptTimeout = min($isSplitHeavy ? 24 : 6, $remainingSeconds);
+            // The attempt keeps its old time and step limits; within them it
+            // restarts with a fresh seed and twice the steps whenever a search
+            // stops at its limit. The first restart uses the attempt's own
+            // seed, so a section that solves quickly is placed exactly as before.
+            $attemptDeadline = microtime(true) + min($isSplitHeavy ? 24 : 6, $maxAttemptSeconds ?? INF, $remainingSeconds);
+            $iterationBudget = $isSplitHeavy ? 400000 : 250000;
+            $restartIterations = self::RESTART_INITIAL_ITERATIONS;
+            $limitReached = false;
 
-            $this->solver->setInputSnapshot($this->generationSnapshot);
-            $solutions = $this->solver->solveRankedFromSchema(array_merge($config, [
-                'section_id' => (int) $section->id,
-                // Branch-local infeasibility must be returned to the
-                // coordinator so it can try another section ordering/slot.
-                'throw_on_empty_domain' => false,
-                // Exhaust every physical room/laboratory combination before
-                // allowing TBA. A later retry can still use TBA when the
-                // physical-only pass proves that no complete arrangement exists.
-                'allow_room_tba_fallback' => $allowRoomTbaFallback && $attempt > 0,
-                'max_solutions' => self::SECTION_SOLUTIONS_PER_ATTEMPT,
-                'max_iterations' => $isSplitHeavy ? 400000 : 250000,
-                'timeout_seconds' => $attemptTimeout,
-                'seed' => $baseSeed + ($attempt * 7919),
-                'tentative_schedules' => $this->tentativeSchedules,
-            ]));
-            $this->recordSolverMetrics();
+            for ($restart = 0; ; $restart++) {
+                $restartTimeout = $attemptDeadline - microtime(true);
+                if ($restart > 0 && $restartTimeout < 0.3) {
+                    break;
+                }
 
-            if (! $allowRoomTbaFallback) {
-                $solutions = array_values(array_filter(
-                    $solutions,
-                    fn (array $solution): bool => ! $this->scheduleRowsContainRoomTba($solution['schedules'] ?? []),
-                ));
+                $this->solver->setInputSnapshot($this->generationSnapshot);
+                $solutions = $this->solver->solveRankedFromSchema(array_merge($config, [
+                    'section_id' => (int) $section->id,
+                    // Branch-local infeasibility must be returned to the
+                    // coordinator so it can try another section ordering/slot.
+                    'throw_on_empty_domain' => false,
+                    // Exhaust every physical room/laboratory combination before
+                    // allowing TBA. A later retry can still use TBA when the
+                    // physical-only pass proves that no complete arrangement exists.
+                    'allow_room_tba_fallback' => $allowRoomTbaFallback && $attempt > 0,
+                    'max_solutions' => self::SECTION_SOLUTIONS_PER_ATTEMPT,
+                    'max_iterations' => min($restartIterations, $iterationBudget),
+                    'timeout_seconds' => max(0.3, $restartTimeout),
+                    'seed' => $baseSeed + ($attempt * 7919) + ($restart * self::RESTART_SEED_STRIDE),
+                    'tentative_schedules' => $this->tentativeSchedules,
+                ]));
+                $this->recordSolverMetrics();
+                $iterationBudget -= $this->solver->iterationsUsed();
+                $limitReached = $this->solver->searchLimitReached();
+
+                if (! $allowRoomTbaFallback) {
+                    $solutions = array_values(array_filter(
+                        $solutions,
+                        fn (array $solution): bool => ! $this->scheduleRowsContainRoomTba($solution['schedules'] ?? []),
+                    ));
+                }
+
+                // A search that ended before its limit tried every candidate:
+                // another seed would only repeat it.
+                if ($solutions !== [] || ! $limitReached || $iterationBudget <= 0) {
+                    break;
+                }
+
+                $restartIterations *= 2;
             }
 
-            if (! $allowRoomTbaFallback && $solutions === [] && $this->solver->searchLimitReached()) {
+            if (! $allowRoomTbaFallback && $solutions === [] && $limitReached) {
                 // An iteration/timeout stop is not proof that every valid
                 // laboratory placement was exhausted. Do not open Room TBA
                 // for an inconclusive physical search; let the year-level

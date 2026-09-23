@@ -65,6 +65,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::put('/user/{user}', [UserController::class, 'update']);
         Route::delete('/user/{user}', [UserController::class, 'destroy']);
         Route::delete('/user/{user}/google-link', [UserController::class, 'unlinkGoogle']);
+        Route::post('/user/{user}/invitation', [UserController::class, 'resendInvitation']);
 
         Route::get('/archives', [ArchiveController::class, 'index']);
         Route::post('/archives/{type}/{id}/restore', [ArchiveController::class, 'restore'])
@@ -201,9 +202,9 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
     // Room requests: a department borrowing another department's vacant room
     // for weekly windows of a semester. Both lists are gated by capability, never
-    // role, so the role defaults in config/capabilities.php decide who may ask
-    // and who may decide.
-    Route::middleware('capability:room.request,room.review_requests')->group(function () {
+    // role, so the role defaults in config/capabilities.php decide who may ask,
+    // who may decide (the owning department) and who only watches (the VPAA).
+    Route::middleware('capability:room.request,room.review_requests,room.view_all_requests')->group(function () {
         Route::get('room-requests', [RoomRequestController::class, 'index']);
         Route::get('room-requests/rooms/{room}/occupancy', [RoomRequestController::class, 'occupancy'])->whereNumber('room');
     });

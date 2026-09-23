@@ -245,6 +245,7 @@ class RuleEngine
                 ...array_values(array_filter([
                     $this->roomAvailability->status($records),
                     $this->operatingHours->fieldEveningWindow($attempt, $records),
+                    $this->meetingDays->sundayClasses($day, $records),
                     $this->meetingDays->forcedDay($day, $records),
                 ])),
             ],

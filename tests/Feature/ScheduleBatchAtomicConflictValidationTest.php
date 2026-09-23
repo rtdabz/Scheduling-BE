@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Course;
+use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Rooms;
@@ -196,6 +197,41 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
     }
 
     /** @return array{0: Departments, 1: Semester, 2: Rooms, 3: Course, 4: Course, 5: Sections, 6: User} */
+    public function test_batch_records_the_section_curriculum(): void
+    {
+        [$dept, $semester, $room, $course, $otherCourse, $section, $user] = $this->fixture();
+        $curriculum = Curriculum::create([
+            'name' => 'Atomic Curriculum',
+            'code' => 'ATM-CUR',
+            'department_id' => $dept->id,
+            'program_id' => $section->program_id,
+            'effective_school_year' => '2026-2027',
+            'status' => 'active',
+        ]);
+        $section->forceFill(['curriculum_id' => $curriculum->id])->save();
+
+        $this->actingAs($user)->postJson('/api/schedules/batch', [
+            'operations' => [[
+                'semester_id' => $semester->id,
+                'section_id' => $section->id,
+                'course_id' => $course->id,
+                'room_id' => $room->id,
+                'department_id' => $dept->id,
+                'day' => 'Tuesday',
+                'start_time' => '10:00',
+                'end_time' => '11:00',
+                'mode' => 'on-site',
+                'status' => 'draft',
+            ]],
+        ])->assertOk();
+
+        $this->assertDatabaseHas('schedules', [
+            'section_id' => $section->id,
+            'day' => 'Tuesday',
+            'curriculum_id' => $curriculum->id,
+        ]);
+    }
+
     private function fixture(): array
     {
         $dept = Departments::create(['department_name' => 'Atomic Dept', 'department_code' => 'ATM']);

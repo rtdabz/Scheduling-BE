@@ -19,8 +19,9 @@ use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
- * The placement dialog's exhaustive slot list: every room, Monday to Sunday,
- * filtered to what the constraint kernel actually accepts.
+ * The placement dialog's exhaustive slot list: every room, Monday to Saturday
+ * (Sunday too once the department enables Sunday classes), filtered to what the
+ * constraint kernel actually accepts.
  */
 class AvailableSlotFinderTest extends TestCase
 {
@@ -41,12 +42,25 @@ class AvailableSlotFinderTest extends TestCase
             $this->assertGreaterThan(0, $room['slot_count']);
         }
 
-        $days = array_values(array_unique(array_column($result['slots'], 'day')));
-        sort($days);
-        // A major may use Sunday online only, so an on-site scan stops at Saturday.
+        // Sunday classes are off by default, so an open week is Monday-Saturday.
         $this->assertSame(
             ['Friday', 'Monday', 'Saturday', 'Thursday', 'Tuesday', 'Wednesday'],
-            $days,
+            $this->sortedDays($result['slots']),
+        );
+    }
+
+    public function test_sunday_is_offered_once_the_department_enables_sunday_classes(): void
+    {
+        $context = $this->scaffold();
+        $course = $this->course($context, 'IT 101', 2, 'major');
+        $this->lectureRoom($context, 'LEC-1');
+        $this->enableSundayClasses($context);
+
+        $result = $this->find($context, $course, 4);
+
+        $this->assertSame(
+            ['Friday', 'Monday', 'Saturday', 'Sunday', 'Thursday', 'Tuesday', 'Wednesday'],
+            $this->sortedDays($result['slots']),
         );
     }
 
@@ -90,7 +104,7 @@ class AvailableSlotFinderTest extends TestCase
         }
     }
 
-    public function test_a_field_course_is_offered_the_field_and_only_weekdays(): void
+    public function test_a_field_course_is_offered_the_field_on_any_day(): void
     {
         $context = $this->scaffold();
         $course = $this->course($context, 'PATH FIT 1', 2, 'minor');
@@ -111,12 +125,13 @@ class AvailableSlotFinderTest extends TestCase
             'updated_at' => now(),
         ]);
         SchedulingPolicy::clearFieldCourseCache();
+        $this->enableSundayClasses($context);
 
         $result = $this->find($context, $course, 4, ['field']);
 
         $this->assertSame(['FIELD'], array_column($result['rooms'], 'room_code'));
         $this->assertSame(
-            ['Friday', 'Monday', 'Thursday', 'Tuesday', 'Wednesday'],
+            ['Friday', 'Monday', 'Saturday', 'Sunday', 'Thursday', 'Tuesday', 'Wednesday'],
             $this->sortedDays($result['slots']),
         );
     }
@@ -282,6 +297,12 @@ class AvailableSlotFinderTest extends TestCase
     }
 
     /** @return list<string> */
+    /** @param  array{department: Departments}  $context */
+    private function enableSundayClasses(array $context): void
+    {
+        $context['department']->forceFill(['sunday_classes_enabled' => true])->save();
+    }
+
     private function sortedDays(array $slots): array
     {
         $days = array_values(array_unique(array_column($slots, 'day')));

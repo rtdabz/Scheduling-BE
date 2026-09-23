@@ -151,11 +151,21 @@ final class SchedulingPolicy
      */
     public const INSTRUCTOR_ASSIGNED_STATUSES = ['approved', 'faculty_assignment', 'reassignment', 'finalized'];
 
-    /** @var array<string, array{0: string, 1: string}> */
+    /**
+     * Named two-day patterns a user may choose. FS is selectable, but the
+     * solver only pairs Friday + Saturday on its own when the run allows it
+     * (see AUTO_SPLIT_PATTERNS and CspSolver's allowFridaySaturdaySplit).
+     *
+     * @var array<string, array{0: string, 1: string}>
+     */
     public const FIXED_MEETING_PATTERNS = [
         'MW' => ['Monday', 'Wednesday'],
         'TTh' => ['Tuesday', 'Thursday'],
+        'FS' => ['Friday', 'Saturday'],
     ];
+
+    /** The named patterns the solver picks unprompted. */
+    public const AUTO_SPLIT_PATTERNS = ['MW', 'TTh'];
 
     /**
      * Days preferred for a single-meeting class that occupies a real lecture
@@ -255,6 +265,14 @@ final class SchedulingPolicy
      * Applied when an on-site course is scheduled online as a fallback.
      */
     public const SOFT_ONLINE_FALLBACK_PENALTY = 1000;
+
+    /**
+     * Applied per meeting that overlaps another section's meeting of the same
+     * course where one side is online and the other face-to-face. One
+     * instructor often teaches both, so the overlap usually becomes a faculty
+     * conflict once instructors are assigned.
+     */
+    public const SOFT_MIXED_MODE_COURSE_OVERLAP_PENALTY = 2000;
 
     /** Prefer a feasible weekday physical placement over a weekend placement. */
     public const SOFT_WEEKDAY_PHYSICAL_MIGRATION_PENALTY = 6000;
@@ -424,7 +442,7 @@ final class SchedulingPolicy
         'csp_generation_day' => [
             'severity' => 'hard',
             'category' => 'calendar',
-            'description' => 'CSP-generated schedules use the Monday-Sunday grid used by the scheduler UI.',
+            'description' => 'CSP-generated schedules use the Monday-Saturday grid, plus Sunday when the department allows Sunday classes.',
             'enforced_by' => ['csp'],
         ],
         'operating_hours' => [
@@ -504,6 +522,12 @@ final class SchedulingPolicy
             'category' => 'meeting_pattern',
             'description' => 'When a meeting pattern is declared, all generated or saved days must belong to that pattern.',
             'enforced_by' => ['request_validation', 'rule_engine', 'csp'],
+        ],
+        'sunday_classes' => [
+            'severity' => 'hard',
+            'category' => 'calendar',
+            'description' => 'A class may meet on Sunday only when its department allows Sunday classes.',
+            'enforced_by' => ['rule_engine', 'csp'],
         ],
         'forced_course_day' => [
             'severity' => 'hard',
@@ -1051,6 +1075,20 @@ final class SchedulingPolicy
         return in_array($day, self::WEEKDAYS, true) ? $offset : $week + $offset;
     }
 
+    /**
+     * The days a department may book. Sunday is an overflow day the
+     * department secretary opens (`sunday_classes_enabled`); without it the
+     * week is Monday-Saturday.
+     *
+     * @return list<string>
+     */
+    public static function teachingDays(bool $sundayClassesEnabled): array
+    {
+        return $sundayClassesEnabled
+            ? self::DAYS
+            : array_values(array_diff(self::DAYS, ['Sunday']));
+    }
+
     public static function dayIndex(string $day): int
     {
         // Called inside solver ranking loops, so resolve through a flipped
@@ -1131,6 +1169,20 @@ final class SchedulingPolicy
         } catch (InvalidArgumentException) {
             return false;
         }
+    }
+
+    public static function isFixedMeetingPattern(?string $preferredPattern): bool
+    {
+        return $preferredPattern !== null && array_key_exists($preferredPattern, self::FIXED_MEETING_PATTERNS);
+    }
+
+    /** @return list<array{0: string, 1: string}> */
+    public static function autoSplitDayPairs(): array
+    {
+        return array_map(
+            static fn (string $pattern): array => self::FIXED_MEETING_PATTERNS[$pattern],
+            self::AUTO_SPLIT_PATTERNS,
+        );
     }
 
     /** @return array{0: string, 1: string}|null */

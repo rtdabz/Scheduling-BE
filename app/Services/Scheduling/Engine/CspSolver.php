@@ -177,6 +177,13 @@ class CspSolver
     private ?array $allowedDays = null;
 
     /**
+     * The department's Sunday Classes setting (sunday_classes rule). Off, no
+     * candidate is built on Sunday, so a run cannot even try it; read from the
+     * snapshot at the start of every solve.
+     */
+    private bool $sundayClassesEnabled = false;
+
+    /**
      * Setup Courses' "Allow Friday and Saturday as Paired Days": a Split
      * Session or Hybrid Split may also meet Friday + Saturday, after MW and TTh.
      */
@@ -602,6 +609,7 @@ class CspSolver
         $settings = $snapshot->departmentSettings;
         $lectureLabScheduleOverrideEnabled = (bool) ($settings['lecture_lab_schedule_override_enabled'] ?? false);
         $this->departmentLabSettings = $settings;
+        $this->sundayClassesEnabled = (bool) ($settings['sunday_classes_enabled'] ?? false);
         $forcedDaysByCourseId = $this->forcedDaysByCourseId((int) $section->department_id, $courseIds);
         $this->generationForcedDaysByCourseId = $forcedDaysByCourseId;
 
@@ -1307,6 +1315,7 @@ class CspSolver
                 'candidate' => $candidate,
                 'allocation' => $this->candidateAllocationPriority($candidate, $sectionId),
                 'preferred_room' => $this->candidatePreferredRoomRank($candidate),
+                'mixed_mode_overlap' => $this->candidateMixedModeCourseOverlaps($candidate, $sectionId),
                 'day_pair' => $this->candidateDayPairLoadRank($candidate, $dayLoads, $sectionId),
                 'penalty' => $this->candidateTentativeGapPenalty($candidate, $assignments)
                     + $this->candidateDayBalancePenalty($candidate, $dayLoads, $sectionId),
@@ -1317,6 +1326,7 @@ class CspSolver
         usort(
             $ranked,
             static fn (array $left, array $right): int => $left['allocation'] <=> $right['allocation']
+                ?: $left['mixed_mode_overlap'] <=> $right['mixed_mode_overlap']
                 ?: $left['preferred_room'] <=> $right['preferred_room']
                 ?: $left['day_pair'] <=> $right['day_pair']
                 ?: $left['penalty'] <=> $right['penalty']
@@ -1324,6 +1334,36 @@ class CspSolver
         );
 
         return array_column($ranked, 'candidate');
+    }
+
+    /**
+     * Blocks of the candidate that overlap another section's meeting of the
+     * same course where exactly one side is online. One instructor often
+     * teaches every section of a course, so such an overlap usually turns into
+     * a faculty conflict at assignment time. Unlike online-vs-online it is a
+     * preference, not a rule: dense loads may have no other place to go.
+     */
+    private function candidateMixedModeCourseOverlaps(array $candidate, int $sectionId): int
+    {
+        $courseId = (int) ($candidate['course_id'] ?? 0);
+        $overlaps = 0;
+
+        foreach ($candidate['blocks'] ?? [] as $block) {
+            $online = (string) ($block['mode'] ?? $candidate['mode'] ?? 'on-site') === 'online';
+            $day = (string) ($block['day'] ?? '');
+            $startMinutes = $this->timeToMinutes((string) ($block['start_time'] ?? ''));
+            $endMinutes = $this->timeToMinutes((string) ($block['end_time'] ?? ''));
+
+            foreach ($this->existingScheduleIndex["c:{$courseId}:{$day}"] ?? [] as $existing) {
+                if ($existing['online'] !== $online
+                    && (int) ($existing['section_id'] ?? 0) !== $sectionId
+                    && $this->entryOverlaps($existing, $startMinutes, $endMinutes)) {
+                    $overlaps++;
+                }
+            }
+        }
+
+        return $overlaps;
     }
 
     /**
@@ -1670,6 +1710,7 @@ class CspSolver
                     $durationSlots,
                     $forcedDay ?? '',
                     $this->allowedDays ?? [],
+                    $this->sundayClassesEnabled ? 1 : 0,
                     $this->allowFridaySaturdaySplit ? 1 : 0,
                     SchedulingPolicy::fieldDayEndTime(),
                     array_key_exists((int) $course->id, $deliveryModesByCourseId) ? 1 : 0,
@@ -1684,6 +1725,7 @@ class CspSolver
                 $emptyAfterRequirements = $cached['empty_after_requirements'];
                 $emptyAfterForcedDay = $cached['empty_after_forced_day'] ?? false;
                 $emptyAfterDays = $cached['empty_after_days'] ?? false;
+                $emptyAfterSunday = $cached['empty_after_sunday'] ?? false;
             } else {
             $domain = match (true) {
                 // Lecture and laboratory are always two separate meetings of
@@ -1777,6 +1819,15 @@ class CspSolver
                 $emptyAfterDays = $domain === [];
             }
 
+            // allowedDayModePairsForCourse already leaves Sunday out; this also
+            // catches a shape built from its own day list (an anchored meeting,
+            // a forced day) so a closed Sunday is never offered.
+            $emptyAfterSunday = false;
+            if (! $this->sundayClassesEnabled && $domain !== []) {
+                $domain = $this->filterDomainByDays($domain, SchedulingPolicy::teachingDays(false));
+                $emptyAfterSunday = $domain === [];
+            }
+
             // The domain is shuffled and then ordered by allocation priority.
             // A (day, start_slot) sort used to run here as well, but the
             // Fisher-Yates shuffle below discards that ordering entirely before
@@ -1792,6 +1843,7 @@ class CspSolver
                 'empty_after_requirements' => $emptyAfterRequirements,
                 'empty_after_forced_day' => $emptyAfterForcedDay,
                 'empty_after_days' => $emptyAfterDays,
+                'empty_after_sunday' => $emptyAfterSunday,
             ];
             }
 
@@ -1799,6 +1851,22 @@ class CspSolver
             // It is a linear pass and costs far less than rebuilding.
             $shuffleSeed = abs($sectionId * 2053 + (int) $course->id * 97 + $seed);
             $domain = $this->seededShuffle($domain, $shuffleSeed);
+
+            // Sunday was the only day left, and the department has not opened
+            // it. Point at the Sunday Classes setting, not at Preferred Days or
+            // a Required Day that are otherwise valid.
+            $blockedBySunday = ! $this->sundayClassesEnabled && (
+                $emptyAfterSunday
+                || ($emptyAfterForcedDay && $forcedDay === 'Sunday')
+                || ($emptyAfterDays && $this->allowedDays === ['Sunday'])
+            );
+            if ($throwOnEmptyDomain && $blockedBySunday) {
+                throw new RuntimeException(sprintf(
+                    '%s / %s can only be scheduled on Sunday, but Sunday classes are not enabled for this department. Ask the department secretary to enable Sunday classes, or choose another day.',
+                    $this->sectionLabel($sectionId),
+                    (string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id)),
+                ));
+            }
 
             // Step 1's Preferred Days removed every candidate. Named apart from
             // the period so the fix points at the right control.
@@ -2025,15 +2093,17 @@ class CspSolver
      */
     private function allowedDayModePairsForCourse(Course $course): array
     {
+        $days = SchedulingPolicy::teachingDays($this->sundayClassesEnabled);
+
         if ($this->isFieldCourse($course)) {
             return array_map(
                 static fn (string $day): array => [$day, 'field'],
-                SchedulingPolicy::DAYS,
+                $days,
             );
         }
 
         $pairs = [];
-        foreach (SchedulingPolicy::DAYS as $day) {
+        foreach ($days as $day) {
             $pairs[] = [$day, 'on-site'];
             $pairs[] = [$day, 'online'];
         }
@@ -2444,7 +2514,7 @@ class CspSolver
         )));
 
         $pairs = [];
-        foreach (SchedulingPolicy::FIXED_MEETING_PATTERNS as $days) {
+        foreach (SchedulingPolicy::autoSplitDayPairs() as $days) {
             if (in_array($days[0], $onSiteDays, true) && in_array($days[1], $onSiteDays, true)) {
                 $pairs[] = $days;
             }
@@ -2791,13 +2861,13 @@ class CspSolver
             $this->allowedDayModePairsForCourse($course),
         )));
         $days = array_values(array_filter(
-            SchedulingPolicy::DAYS,
+            SchedulingPolicy::teachingDays($this->sundayClassesEnabled),
             fn (string $day): bool => in_array($day, $courseDays, true)
                 && ($this->allowedDays === null || in_array($day, $this->allowedDays, true)),
         ));
 
         $pairs = array_values(array_filter(
-            SchedulingPolicy::FIXED_MEETING_PATTERNS,
+            SchedulingPolicy::autoSplitDayPairs(),
             static fn (array $pair): bool => in_array($pair[0], $days, true) && in_array($pair[1], $days, true),
         ));
         // Friday + Saturday is a third regular pair when the run allows it: it
@@ -3609,6 +3679,9 @@ class CspSolver
                 $score += 250;
             }
 
+            $score += $this->candidateMixedModeCourseOverlaps($assignment, (int) ($assignment['section_id'] ?? 0))
+                * SchedulingPolicy::SOFT_MIXED_MODE_COURSE_OVERLAP_PENALTY;
+
             foreach ($assignment['blocks'] as $block) {
                 if (
                     ($block['mode'] ?? $assignment['mode'] ?? '') === 'online'
@@ -4180,9 +4253,18 @@ class CspSolver
      */
     private function isRegularFridaySaturdayPair(array $candidate): bool
     {
-        return $this->allowFridaySaturdaySplit
-            && ! empty($candidate['preferred_pattern'])
-            && $this->candidateRegularDayPairIndex($candidate) === 2;
+        if ($this->candidateRegularDayPairIndex($candidate) !== 2) {
+            return false;
+        }
+
+        // A course the user set to FS asked for these days: ranking them in
+        // the weekend tier let an MW/TTh fallback win every time. Automatic
+        // pairs are labelled days:X-Y, so this never promotes those.
+        if (($candidate['preferred_pattern'] ?? null) === 'FS' && empty($candidate['_pattern_fallback'])) {
+            return true;
+        }
+
+        return $this->allowFridaySaturdaySplit && ! empty($candidate['preferred_pattern']);
     }
 
     /**
@@ -4377,17 +4459,6 @@ class CspSolver
         return false;
     }
 
-    private function candidateContainsSaturdayBlock(array $candidate): bool
-    {
-        foreach ($candidate['blocks'] ?? [] as $block) {
-            if (($block['day'] ?? null) === 'Saturday') {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private function candidateContainsLaboratoryBlock(array $candidate): bool
     {
         foreach ($candidate['blocks'] ?? [] as $block) {
@@ -4483,7 +4554,7 @@ class CspSolver
      *   "r:{roomId}:{day}"     → time ranges already booked for that room on that day
      *   "s:{sectionId}:{day}" → time ranges already booked for that section on that day
      *   "f:{facultyId}:{day}" → time ranges already booked for that instructor on that day
-     *   "c:{courseId}:{day}"  → online time ranges already used by other sections
+     *   "c:{courseId}:{day}"  → time ranges other sections use for the course (with online flag)
      *
      * This single query replaces the repeated per-candidate DB queries that were
      * previously issued inside the backtracking loop.
@@ -4610,11 +4681,10 @@ class CspSolver
             }
 
             $this->existingScheduleIndex["s:{$schedule->section_id}:{$schedule->day}"][] = $timeRange;
-            if (($schedule->mode ?? null) === 'online') {
-                $this->existingScheduleIndex["c:{$schedule->course_id}:{$schedule->day}"][] = $timeRange + [
-                    'section_id' => (int) $schedule->section_id,
-                ];
-            }
+            $this->existingScheduleIndex["c:{$schedule->course_id}:{$schedule->day}"][] = $timeRange + [
+                'section_id' => (int) $schedule->section_id,
+                'online' => ($schedule->mode ?? null) === 'online',
+            ];
 
             // Index instructor availability so the CSP can avoid recommending
             // slots that conflict with an already-assigned faculty member.
@@ -4714,7 +4784,8 @@ class CspSolver
 
         if ($mode === 'online') {
             foreach ($this->existingScheduleIndex["c:{$courseId}:{$day}"] ?? [] as $existing) {
-                if ((int) ($existing['section_id'] ?? 0) !== $sectionId
+                if ($existing['online']
+                    && (int) ($existing['section_id'] ?? 0) !== $sectionId
                     && $this->entryOverlaps($existing, $startMinutes, $endMinutes)) {
                     return true;
                 }

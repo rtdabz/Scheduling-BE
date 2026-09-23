@@ -42,10 +42,7 @@ class EngineParityMatrixTest extends TestCase
         'class_duration',
         'faculty_active',
         'faculty_conflict',
-        'field_day_constraint',
         'field_evening_window',
-        'major_sunday_mode_constraint',
-        'minor_day_constraint',
         'operating_hours',
         'part_time_faculty_availability',
         'preferred_pattern',
@@ -173,13 +170,16 @@ class EngineParityMatrixTest extends TestCase
     public function test_day_rules_agree(): void
     {
         $this->assertParity(['preferred_pattern'], $this->attempt(['day' => 'Friday', 'preferred_pattern' => 'MW']));
-        $this->assertParity(['major_sunday_mode_constraint'], $this->attempt(['day' => 'Sunday']));
+
+        // Every day is a teaching day: a major on-site Sunday, a minor online
+        // Sunday and a field Saturday all agree on no violation, on both sides.
+        $this->assertParity([], $this->attempt(['day' => 'Sunday']));
 
         $minor = $this->course(['course_category' => 'minor']);
-        $this->assertParity(['minor_day_constraint'], $this->attempt(['course_id' => $minor->id, 'day' => 'Sunday', 'room_id' => null, 'mode' => 'online']));
+        $this->assertParity([], $this->attempt(['course_id' => $minor->id, 'day' => 'Sunday', 'room_id' => null, 'mode' => 'online']));
 
         $field = $this->course(['room_type_required' => 'field', 'course_category' => 'minor']);
-        $this->assertParity(['field_day_constraint'], $this->attempt([
+        $this->assertParity([], $this->attempt([
             'course_id' => $field->id, 'room_id' => $this->room('field')->id, 'mode' => 'field', 'day' => 'Saturday',
         ]));
     }

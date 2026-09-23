@@ -143,6 +143,9 @@ class ScheduleController extends Controller
         if ((int) $section->department_id !== (int) $validated['department_id'] || (int) $section->program_id !== (int) $validated['program_id']) {
             return response()->json(['message' => 'The schedule Department, Program, and Section must match.'], 422);
         }
+        // Record the curriculum the row was scheduled under; the client never
+        // supplies it.
+        $validated['curriculum_id'] = $section->curriculum_id;
 
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
@@ -501,9 +504,10 @@ class ScheduleController extends Controller
                             $op['course_id'] = $op['subject_id'];
                         }
 
+                        $sectionId = (int) ($op['section_id'] ?? 0);
+                        $opSection = $sectionsById[$sectionId] ??= Sections::find($sectionId);
                         if (! isset($op['program_id'])) {
-                            $sectionId = (int) ($op['section_id'] ?? 0);
-                            $op['program_id'] = ($sectionsById[$sectionId] ??= Sections::find($sectionId))?->program_id;
+                            $op['program_id'] = $opSection?->program_id;
                         }
 
                         if (isset($op['id'])) {
@@ -511,8 +515,15 @@ class ScheduleController extends Controller
                             if (! $schedule) {
                                 throw (new ModelNotFoundException)->setModel(Schedule::class, [$op['id']]);
                             }
+                            // Keep the curriculum a row was generated from unless
+                            // it moves to another section or never had one.
+                            $targetSectionId = isset($op['section_id']) ? $sectionId : (int) $schedule->section_id;
+                            if ($schedule->curriculum_id === null || (int) $schedule->section_id !== $targetSectionId) {
+                                $op['curriculum_id'] = ($sectionsById[$targetSectionId] ??= Sections::find($targetSectionId))?->curriculum_id;
+                            }
                             $schedule->update($op);
                         } else {
+                            $op['curriculum_id'] = $opSection?->curriculum_id;
                             $schedule = Schedule::create($op);
                         }
                         $savedIds[] = (int) $schedule->id;
@@ -1339,6 +1350,11 @@ class ScheduleController extends Controller
             return response()->json([
                 'message' => 'Schedule status must be changed through the approval workflow.',
             ], 422);
+        }
+
+        // A row moved to another section takes that section's curriculum.
+        if (array_key_exists('section_id', $validated) && (int) $validated['section_id'] !== (int) $schedule->section_id) {
+            $validated['curriculum_id'] = Sections::whereKey($validated['section_id'])->value('curriculum_id');
         }
 
         $manualFacultyScheduleIds = $manualFacultySchedules

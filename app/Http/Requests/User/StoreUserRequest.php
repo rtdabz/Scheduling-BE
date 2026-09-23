@@ -6,7 +6,6 @@ use App\Models\Faculty;
 use App\Services\UserFacultyProfileService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
-use Illuminate\Validation\Rules\Password;
 
 class StoreUserRequest extends FormRequest
 {
@@ -26,7 +25,6 @@ class StoreUserRequest extends FormRequest
             'suffix' => ['nullable', Rule::in(Faculty::NAME_SUFFIXES)],
             'username' => 'required|string|max:255|unique:users,username',
             'email' => 'required|email|max:255|unique:users,email',
-            'password' => ['required', Password::min(10)->letters()->mixedCase()->numbers()],
             'role' => 'required|string|in:dean,program_head,secretary',
             'is_active' => 'sometimes|boolean',
             'allow_google_login' => 'sometimes|boolean',

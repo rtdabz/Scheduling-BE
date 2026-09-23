@@ -10,6 +10,7 @@ use App\Models\Sections;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -124,6 +125,26 @@ final class CourseSetupOverrides
      *
      * @throws ValidationException
      */
+    /**
+     * Preferred Days may name Sunday only once the department secretary has
+     * enabled Sunday classes; otherwise the solver would drop it silently.
+     *
+     * @param  list<string>|null  $allowedDays
+     */
+    public static function assertSundayAllowed(Sections $section, ?array $allowedDays): void
+    {
+        if ($allowedDays === null || ! in_array('Sunday', $allowedDays, true)) {
+            return;
+        }
+
+        $enabled = (bool) DB::table('departments')
+            ->where('id', (int) $section->department_id)
+            ->value('sunday_classes_enabled');
+        if (! $enabled) {
+            throw ValidationException::withMessages(['allowed_days' => 'Sunday classes are not enabled for this department. Remove Sunday from the Preferred Days, or ask the department secretary to enable Sunday classes.']);
+        }
+    }
+
     public static function assertRequiredDaysAllowed(Sections $section, array $courseIds, ?array $allowedDays): void
     {
         if ($allowedDays === null) {

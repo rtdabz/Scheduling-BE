@@ -108,6 +108,16 @@ class DepartmentsController extends Controller
      */
     public function destroy(Departments $department)
     {
+        // Archiving is a soft delete, so no foreign key rule fires: anything
+        // still attached would keep pointing at an archived department.
+        if ($department->programs()->exists() || $department->sections()->exists()
+            || $department->faculties()->exists() || $department->users()->exists()
+            || $department->rooms()->exists()) {
+            return response()->json([
+                'message' => 'This department cannot be archived while programs, sections, faculty, users, or rooms are assigned to it.',
+            ], 422);
+        }
+
         $department->delete();
         ApiCache::forgetGroups(['departments.index', 'initial.data']);
 

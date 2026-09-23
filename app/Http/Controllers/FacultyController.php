@@ -280,7 +280,7 @@ class FacultyController extends Controller
     {
         return $this->facultyLoad
             ->decorate($faculty, $this->activeSemesterId())
-            ->load(['department', 'program', 'availabilities', 'designation.parent', 'designations.parent']);
+            ->load(['department', 'program', 'availabilities', 'designations.parent']);
     }
 
     private function activeSemesterId(): ?int

@@ -95,7 +95,7 @@ class RuleEngineSplitValidationTest extends TestCase
         $this->assertNotContains('subject_section_time_conflict', $nextSlotRules);
     }
 
-    public function test_minor_course_is_valid_on_saturday_but_not_sunday(): void
+    public function test_minor_course_is_valid_on_saturday_and_sunday(): void
     {
         $semester = Semester::create([
             'academic_year' => '2026-2027',
@@ -153,7 +153,7 @@ class RuleEngineSplitValidationTest extends TestCase
         ])))->pluck('rule')->all();
 
         $this->assertNotContains('minor_day_constraint', $saturdayRules);
-        $this->assertContains('minor_day_constraint', $sundayRules);
+        $this->assertNotContains('minor_day_constraint', $sundayRules);
     }
 
     public function test_split_schedule_validates_relational_integrity_and_conflicts()

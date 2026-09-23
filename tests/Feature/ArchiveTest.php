@@ -47,6 +47,36 @@ class ArchiveTest extends TestCase
         $this->assertDatabaseHas('rooms', ['id' => $room->id, 'deleted_at' => null]);
     }
 
+    public function test_a_department_in_use_cannot_be_archived(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $department = Departments::create(['department_name' => 'In Use Dept', 'department_code' => 'IUD']);
+        Rooms::create(['room_code' => 'IUD-101', 'room_type' => 'lecture', 'department_id' => $department->id]);
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->deleteJson("/api/departments/{$department->id}")
+            ->assertStatus(422);
+
+        $this->assertNotNull(Departments::find($department->id));
+    }
+
+    public function test_a_department_logo_must_be_a_bounded_image_data_url(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $department = Departments::create(['department_name' => 'Logo Dept', 'department_code' => 'LGD']);
+
+        foreach (['javascript:alert(1)', 'data:image/jpeg;base64,'.str_repeat('A', 200000)] as $logo) {
+            $this->actingAs($vpaa, 'sanctum')
+                ->putJson("/api/departments/{$department->id}", ['logo' => $logo])
+                ->assertStatus(422)
+                ->assertJsonValidationErrors(['logo']);
+        }
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->putJson("/api/departments/{$department->id}", ['logo' => 'data:image/jpeg;base64,AAAA'])
+            ->assertOk();
+    }
+
     public function test_non_vpaa_cannot_access_the_archive(): void
     {
         $secretary = User::factory()->create(['role' => 'secretary']);

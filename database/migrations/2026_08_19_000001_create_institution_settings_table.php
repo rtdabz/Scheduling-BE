@@ -18,16 +18,15 @@ return new class extends Migration
     {
         Schema::create('institution_settings', function (Blueprint $table) {
             $table->id();
-            $table->string('president_name', 150)->default('ATTY. NADYA B. EMANO-ELIPE');
-            $table->string('president_title', 150)->default('OIC-College President');
+            $table->string('president_name', 150)->default('College President');
+            $table->string('president_title', 150)->default('President');
             $table->timestamps();
         });
 
-        // Seed the values the print builders already used, so documents printed
-        // before anyone visits Settings come out unchanged.
+        // A neutral placeholder; the VPAA sets the real signatory in Settings.
         DB::table('institution_settings')->insert([
-            'president_name' => 'ATTY. NADYA B. EMANO-ELIPE',
-            'president_title' => 'OIC-College President',
+            'president_name' => 'College President',
+            'president_title' => 'President',
             'created_at' => now(),
             'updated_at' => now(),
         ]);

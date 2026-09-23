@@ -150,7 +150,7 @@ class BatchConflictValidatorTest extends TestCase
 
         $rows = [];
         foreach (['A', 'B', 'C', 'D'] as $offset => $suffix) {
-            $section = $this->section("BCV-1{$suffix}", $dept, $semester);
+            $section = $this->section("BCV-2{$suffix}", $dept, $semester);
             $rows[] = array_merge(
                 $this->row($semester, $dept, $section, $this->course("BCVF{$offset}", $dept, 'field'), $field, 'Monday', '08:00', '10:00'),
                 ['mode' => 'field'],

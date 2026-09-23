@@ -69,6 +69,15 @@ class User extends Authenticatable
                 return;
             }
 
+            // users.role is the one place a role is written. The linked faculty
+            // profile's administrative_role and the Spatie assignment below are
+            // copies, kept in step here so no save path can leave them behind.
+            Faculty::query()
+                ->where('user_id', $user->id)
+                ->whereNotNull('administrative_role')
+                ->where('administrative_role', '!=', $role)
+                ->update(['administrative_role' => $role]);
+
             // A role row is missing only when the seeder has not run (or the
             // column holds a value that is not a real role). Syncing would
             // throw; leaving the roles untouched keeps the save itself intact.

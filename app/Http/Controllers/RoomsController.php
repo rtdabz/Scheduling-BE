@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Requests\Room\StoreRoomRequest;
 use App\Http\Requests\Room\UpdateRoomRequest;
 use App\Models\Rooms;
+use App\Models\Schedule;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -85,6 +86,11 @@ class RoomsController extends Controller
     public function destroy($id)
     {
         $room = Rooms::findOrFail($id);
+        if (Schedule::where('room_id', $room->id)->exists()) {
+            return response()->json([
+                'message' => 'This room cannot be archived while classes are scheduled in it.',
+            ], 422);
+        }
         $room->delete();
         ApiCache::forgetGroups([
             'rooms.index',

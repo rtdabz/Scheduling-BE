@@ -27,9 +27,7 @@ use App\Services\Scheduling\Manual\AvailableSlotFinder;
 use App\Services\Scheduling\Schedule\CommitSchedulePlan;
 use App\Services\Scheduling\Schedule\PreviewedPlanStore;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
-use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
 use App\Services\Scheduling\Schedule\SplitScheduleService;
-use App\Services\Scheduling\Support\SchedulingMetricsReporter;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use App\Services\Scheduling\YearLevel\YearLevelGenerationEligibilityService;
@@ -62,11 +60,9 @@ class ScheduleRecommendationController extends Controller
         private readonly ScheduleGenerationPreflightService $preflight,
         private readonly ScheduleRequirementBuilderResolver $requirementBuilders,
         private readonly SystemNotificationService $notifications,
-        private readonly SchedulingMetricsReporter $metricsReporter,
         private readonly GenerateSectionSchedulePlans $sectionGeneration,
         private readonly CommitSchedulePlan $planCommitter,
         private readonly ScheduleAuthorizationService $authorization,
-        private readonly SectionCurriculumResolver $curriculumResolver,
         private readonly PreviewedPlanStore $previewedPlans,
         private readonly GenerationCourseSelection $courseSelection,
     ) {}
@@ -710,6 +706,7 @@ class ScheduleRecommendationController extends Controller
                     ),
                 ];
                 // Step 1's Preferred Days must leave room for every Required Day.
+                CourseSetupOverrides::assertSundayAllowed($section, $sectionConfig['allowed_days']);
                 CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
                 // Setup Courses "Configure" choices, normalised to the shape
                 // each course is generated in; refused here when the validator
@@ -871,6 +868,7 @@ class ScheduleRecommendationController extends Controller
                 'seed' => $this->yearLevelConfigSeed((int) $validated['semester_id'], (int) $validated['department_id'], (int) $validated['year_level'], (int) $section->id, $courseIds, $splitIds, $gecIds, $preferredPatterns),
             ];
             // Step 1's Preferred Days must leave room for every Required Day.
+            CourseSetupOverrides::assertSundayAllowed($section, $sectionConfig['allowed_days']);
             CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
             // Setup Courses "Configure" choices, normalised to the shape
             // each course is generated in; refused here when the validator

@@ -21,7 +21,8 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 /**
- * A secretary borrowing another department's vacant room through the VPAA.
+ * A secretary borrowing another department's vacant room. The owning
+ * department's secretary decides; the VPAA is only notified.
  *
  * The workflow tests cover who may ask and decide and when a room counts as
  * vacant. The parity tests matter most: once a grant is approved, the
@@ -42,7 +43,7 @@ class RoomRequestTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_secretary_requests_another_departments_room_and_the_vpaa_is_notified(): void
+    public function test_secretary_requests_another_departments_room_and_its_secretary_is_asked(): void
     {
         $f = $this->fixture();
 
@@ -56,9 +57,10 @@ class RoomRequestTest extends TestCase
             ->assertJsonPath('data.windows.0.start_time', '11:00');
 
         $this->assertTrue(SystemNotification::query()
-            ->where('user_id', $f['vpaa']->id)
+            ->where('user_id', $f['ownerSecretary']->id)
             ->where('type', 'room_request_submitted')
             ->exists());
+        $this->assertFalse(SystemNotification::query()->where('user_id', $f['vpaa']->id)->exists());
     }
 
     public function test_own_and_shared_rooms_cannot_be_requested(): void
@@ -96,18 +98,37 @@ class RoomRequestTest extends TestCase
         $first = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
         $second = $this->actingAs($otherSecretary)->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
 
-        $this->actingAs($f['vpaa'])->postJson("/api/room-requests/{$first}/approve")->assertOk()->assertJsonPath('data.status', 'approved');
-        $this->actingAs($f['vpaa'])->postJson("/api/room-requests/{$second}/approve")->assertStatus(422);
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$first}/approve")->assertOk()->assertJsonPath('data.status', 'approved');
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$second}/approve")->assertStatus(422);
 
         $this->assertSame('pending', RoomRequest::find($second)->status);
     }
 
-    public function test_secretary_cannot_review_requests(): void
+    /** The requester, the owning dean and the VPAA are all refused; only the owning secretary decides. */
+    public function test_only_the_owning_departments_secretary_can_review(): void
     {
         $f = $this->fixture();
         $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->json('data.id');
+        $ownerDean = User::factory()->create(['role' => 'dean', 'department_id' => $f['owner']->id]);
 
-        $this->actingAs($f['secretary'])->postJson("/api/room-requests/{$id}/approve")->assertForbidden();
+        foreach ([$f['secretary'], $ownerDean, $f['vpaa']] as $user) {
+            $this->actingAs($user)->postJson("/api/room-requests/{$id}/approve")->assertForbidden();
+        }
+
+        $this->assertSame('pending', RoomRequest::find($id)->status);
+    }
+
+    public function test_approval_notifies_the_vpaa_that_the_room_is_borrowed(): void
+    {
+        $f = $this->fixture();
+        $this->approvedGrant($f);
+
+        $notice = SystemNotification::query()
+            ->where('user_id', $f['vpaa']->id)
+            ->where('type', 'room_request_borrowed')
+            ->first();
+        $this->assertNotNull($notice, 'The VPAA was not told about the borrowing.');
+        $this->assertStringContainsString('CIT is borrowing LAB-1 from CAS', $notice->message);
     }
 
     public function test_rejection_requires_a_reason_and_notifies_the_requester(): void
@@ -115,8 +136,8 @@ class RoomRequestTest extends TestCase
         $f = $this->fixture();
         $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->json('data.id');
 
-        $this->actingAs($f['vpaa'])->postJson("/api/room-requests/{$id}/reject")->assertStatus(422);
-        $this->actingAs($f['vpaa'])
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/reject")->assertStatus(422);
+        $this->actingAs($f['ownerSecretary'])
             ->postJson("/api/room-requests/{$id}/reject", ['remarks' => 'The lab is under maintenance.'])
             ->assertOk()
             ->assertJsonPath('data.status', 'rejected');
@@ -185,19 +206,24 @@ class RoomRequestTest extends TestCase
         $id = $this->approvedGrant($f);
         $class = $this->bookRoom($f, $f['requester'], 'Monday', '11:00:00', '13:00:00', $f['section'], $f['course']);
 
-        $this->actingAs($f['vpaa'])
+        $this->actingAs($f['ownerSecretary'])
             ->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'CAS needs it back.'])
             ->assertStatus(422);
 
         $class->delete();
 
-        $this->actingAs($f['vpaa'])
+        $this->actingAs($f['ownerSecretary'])
             ->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'CAS needs it back.'])
             ->assertOk()
             ->assertJsonPath('data.status', 'revoked');
+
+        $this->assertTrue(SystemNotification::query()
+            ->where('user_id', $f['vpaa']->id)
+            ->where('type', 'room_request_returned')
+            ->exists());
     }
 
-    public function test_requester_lists_only_their_department_while_the_vpaa_sees_all(): void
+    public function test_requester_lists_its_own_while_the_owner_and_the_vpaa_see_both(): void
     {
         $f = $this->fixture();
         $third = Departments::create(['department_name' => 'College of Engineering', 'department_code' => 'COE']);
@@ -207,6 +233,7 @@ class RoomRequestTest extends TestCase
         $this->actingAs($this->secretaryFor($third))->postJson('/api/room-requests', $this->payload($f))->assertCreated();
 
         $this->actingAs($f['secretary'])->getJson('/api/room-requests')->assertOk()->assertJsonCount(1);
+        $this->actingAs($f['ownerSecretary'])->getJson('/api/room-requests')->assertOk()->assertJsonCount(2);
         $this->actingAs($f['vpaa'])->getJson('/api/room-requests')->assertOk()->assertJsonCount(2);
     }
 
@@ -248,7 +275,7 @@ class RoomRequestTest extends TestCase
     private function approvedGrant(array $f): int
     {
         $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
-        $this->actingAs($f['vpaa'])->postJson("/api/room-requests/{$id}/approve")->assertOk();
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/approve")->assertOk();
 
         return (int) $id;
     }
@@ -400,7 +427,8 @@ class RoomRequestTest extends TestCase
             'course' => $course,
             'room' => $this->room('LAB-1', 'laboratory', $owner->id),
             'secretary' => $this->secretaryFor($requester),
-            'vpaa' => User::factory()->create(['role' => 'vpaa', 'department_id' => $owner->id]),
+            'ownerSecretary' => $this->secretaryFor($owner),
+            'vpaa' => User::factory()->create(['role' => 'vpaa', 'department_id' => null]),
         ];
     }
 }

@@ -219,10 +219,10 @@ class DepartmentSchedulingPreflightTest extends TestCase
     public function test_a_forced_day_the_course_cannot_use_is_named_as_the_cause(): void
     {
         [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
-        // Minor courses are limited to Monday-Saturday, so forcing one onto
-        // Sunday leaves nothing to choose from. A *field* course pinned to a
-        // weekend is legal: the pin opens that day (MeetingDayRule::categoryDay).
-        $course->update(['course_category' => 'minor']);
+        // With Sunday classes on, a Required Day only empties the domain when
+        // something else rules that day out -- here an MW meeting pattern,
+        // whose candidates never fall on Sunday.
+        $department->forceFill(['sunday_classes_enabled' => true])->save();
         $this->attachCourse($department, $course, $section);
         DB::table('department_forced_course_days')->insert([
             'department_id' => $department->id,
@@ -243,7 +243,63 @@ class DepartmentSchedulingPreflightTest extends TestCase
             maxSolutions: 1,
             maxIterations: 1000,
             timeoutSeconds: 1,
+            preferredPatternsByCourseId: [$course->id => 'MW'],
         );
+    }
+
+    public function test_a_sunday_required_day_names_the_disabled_sunday_setting(): void
+    {
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        $this->attachCourse($department, $course, $section);
+        DB::table('department_forced_course_days')->insert([
+            'department_id' => $department->id,
+            'course_id' => $course->id,
+            'day' => 'Sunday',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('BA 1A / BA 101 can only be scheduled on Sunday, but Sunday classes are not enabled for this department.');
+
+        app(CspSolver::class)->solveRanked(
+            sectionId: (int) $section->id,
+            courseIds: [$course->id],
+            requirementsByCourseId: $requirements,
+            maxSolutions: 1,
+            maxIterations: 1000,
+            timeoutSeconds: 1,
+        );
+    }
+
+    public function test_an_fs_pattern_places_both_meetings_on_friday_and_saturday(): void
+    {
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        $this->attachCourse($department, $course, $section);
+        Rooms::create([
+            'room_code' => 'BA 102',
+            'building' => 'Building 1',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+        $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: (int) $section->id,
+            courseIds: [$course->id],
+            requirementsByCourseId: $requirements,
+            maxSolutions: 1,
+            maxIterations: 1000,
+            timeoutSeconds: 1,
+            preferredPatternsByCourseId: [$course->id => 'FS'],
+        );
+
+        $this->assertNotEmpty($solutions);
+        $days = array_column($solutions[0]['schedules'], 'day');
+        sort($days);
+        $this->assertSame(['Friday', 'Saturday'], $days);
     }
 
     public function test_department_audit_reports_profile_and_room_counts(): void

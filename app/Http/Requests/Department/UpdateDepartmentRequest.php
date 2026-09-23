@@ -21,7 +21,9 @@ class UpdateDepartmentRequest extends FormRequest
             'department_name' => 'sometimes|required|string|max:255|unique:departments,department_name,'.$id,
             'department_code' => 'sometimes|required|string|max:20|unique:departments,department_code,'.$id,
             'scheduling_profile' => 'sometimes|in:standard,laboratory_enabled',
-            'logo' => 'nullable|string',
+            // Stored inline as a data URL; the client resizes to 300px JPEG, so a
+            // real logo is far below this cap.
+            'logo' => ['nullable', 'string', 'max:200000', 'regex:/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/]+={0,2}$/'],
         ];
     }
 }

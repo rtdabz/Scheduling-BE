@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Semester;
@@ -66,7 +67,7 @@ class VpaaDashboardController extends Controller
     private function build(?int $semesterId): array
     {
         $meetings = $this->meetings($semesterId);
-        $rooms = Rooms::query()->get(['id', 'room_code', 'building', 'room_type', 'status']);
+        $rooms = Rooms::query()->get(['id', 'room_code', 'building', 'room_type', 'status', 'department_id']);
         $physicalRooms = $rooms->reject(fn ($room) => $this->isVirtualRoom($room->room_type))->values();
 
         return [
@@ -147,8 +148,21 @@ class VpaaDashboardController extends Controller
             0,
             $this->minutes(SchedulingPolicy::closingTime()) - $this->minutes(SchedulingPolicy::openingTime()),
         );
-        // Six teaching days; Sunday is not part of the bookable week.
-        $weeklyCapacity = $openMinutes * 6;
+        // Monday-Saturday, plus Sunday where it can be booked: a room whose
+        // department has Sunday classes enabled, or a shared room while any
+        // department does.
+        $sundayDepartmentIds = Departments::query()
+            ->where('sunday_classes_enabled', true)
+            ->pluck('id')
+            ->map(static fn ($id): int => (int) $id)
+            ->all();
+        $weeklyCapacityFor = static function ($room) use ($openMinutes, $sundayDepartmentIds): int {
+            $sundayBookable = $room->department_id === null
+                ? $sundayDepartmentIds !== []
+                : in_array((int) $room->department_id, $sundayDepartmentIds, true);
+
+            return $openMinutes * ($sundayBookable ? 7 : 6);
+        };
 
         $bookedByRoom = [];
         $classesByRoom = [];
@@ -162,8 +176,9 @@ class VpaaDashboardController extends Controller
             $classesByRoom[$roomId] = ($classesByRoom[$roomId] ?? 0) + 1;
         }
 
-        $rows = $physicalRooms->map(function ($room) use ($bookedByRoom, $classesByRoom, $weeklyCapacity): array {
+        $rows = $physicalRooms->map(function ($room) use ($bookedByRoom, $classesByRoom, $weeklyCapacityFor): array {
             $booked = $bookedByRoom[$room->id] ?? 0;
+            $weeklyCapacity = $weeklyCapacityFor($room);
 
             return [
                 'id' => (int) $room->id,
@@ -172,6 +187,7 @@ class VpaaDashboardController extends Controller
                 'room_type' => $room->room_type,
                 'meetings' => $classesByRoom[$room->id] ?? 0,
                 'booked_minutes' => $booked,
+                'capacity_minutes' => $weeklyCapacity,
                 'utilization' => $weeklyCapacity > 0 ? (int) round(($booked / $weeklyCapacity) * 100) : 0,
                 'is_unavailable' => trim(strtolower((string) ($room->status ?? 'available'))) !== 'available',
             ];
@@ -179,9 +195,9 @@ class VpaaDashboardController extends Controller
 
         $buildings = $rows
             ->groupBy(fn (array $row) => $row['building'] ?? 'Unassigned')
-            ->map(function (Collection $group, string $building) use ($weeklyCapacity): array {
+            ->map(function (Collection $group, string $building): array {
                 $booked = (int) $group->sum('booked_minutes');
-                $capacity = $weeklyCapacity * $group->count();
+                $capacity = (int) $group->sum('capacity_minutes');
 
                 return [
                     'building' => $building,

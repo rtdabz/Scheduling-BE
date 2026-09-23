@@ -119,7 +119,7 @@ class DesignationManagementTest extends TestCase
             ->assertStatus(403);
 
         $faculty = $f['faculty']->fresh();
-        $this->assertNull($faculty->designation_id);
+        $this->assertSame(0, $faculty->designations()->count());
         $this->assertSame(0, (int) $faculty->deload_units);
 
         // Assigned on its own, the deload still comes from the designation row.
@@ -311,9 +311,7 @@ class DesignationManagementTest extends TestCase
             ->assertJsonPath('deload_units', 6)
             ->assertJsonPath('required_units', 15)
             ->assertJsonPath('designations.0.id', $coach->id)
-            ->assertJsonPath('designations.2.id', $adviser->id)
-            // The first listed is the primary designation older readers use.
-            ->assertJsonPath('designation_id', $coach->id);
+            ->assertJsonPath('designations.2.id', $adviser->id);
     }
 
     public function test_an_instructor_cannot_hold_more_than_three_designations(): void
@@ -341,8 +339,7 @@ class DesignationManagementTest extends TestCase
         $this->actingAs($f['vpaa'])
             ->patchJson("/api/faculties/{$f['faculty']->id}", ['designation_ids' => []])
             ->assertOk()
-            ->assertJsonPath('deload_units', 0)
-            ->assertJsonPath('designation_id', null);
+            ->assertJsonPath('deload_units', 0);
 
         $this->assertSame(0, $f['faculty']->designations()->count());
     }

@@ -354,6 +354,7 @@ class CurriculumController extends Controller
             }
         });
 
+        Course::syncPlacementFromCurricula(array_filter([$validated['course_id'], $validated['replace_course_id'] ?? null]));
         ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json(['message' => 'Course attached successfully']);
@@ -385,6 +386,7 @@ class CurriculumController extends Controller
 
         $curriculum->courses()->syncWithoutDetaching($syncData);
 
+        Course::syncPlacementFromCurricula(array_keys($syncData));
         ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json(['message' => count($syncData).' course(s) attached successfully']);
@@ -518,6 +520,7 @@ class CurriculumController extends Controller
             }
         }
 
+        Course::syncPlacementFromCurricula($curriculum->courses()->pluck('courses.id'));
         ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json([
@@ -533,6 +536,7 @@ class CurriculumController extends Controller
 
         $curriculum->courses()->detach($course->id);
 
+        Course::syncPlacementFromCurricula([$course->id]);
         ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
 
         return response()->json(['message' => 'Course removed successfully']);

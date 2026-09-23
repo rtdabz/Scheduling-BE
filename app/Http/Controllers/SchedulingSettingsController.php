@@ -7,6 +7,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
+use App\Models\Semester;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
@@ -22,7 +23,12 @@ class SchedulingSettingsController extends Controller
         $section = $this->resolveSection($request, $department);
         $lectureLabAvailable = $this->hasLectureLabCourses($department);
 
-        return response()->json($this->settingsPayload($department, $section, $lectureLabAvailable));
+        return response()->json($this->settingsPayload(
+            $department,
+            $section,
+            $lectureLabAvailable,
+            $this->canManageSundayClasses($request),
+        ));
     }
 
     public function update(Request $request): JsonResponse
@@ -38,6 +44,7 @@ class SchedulingSettingsController extends Controller
             'custom_lab_duration_other_enabled' => 'sometimes|required|boolean',
             'gec_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'major_lecture_split_schedule_override_enabled' => 'sometimes|required|boolean',
+            'sunday_classes_enabled' => 'sometimes|required|boolean',
             'forced_day_rules' => 'sometimes|array',
             'forced_day_rules.*.course_id' => 'required|integer|exists:courses,id',
             'forced_day_rules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
@@ -47,6 +54,26 @@ class SchedulingSettingsController extends Controller
 
         $department = $this->resolveDepartment($request);
         $section = $this->resolveSection($request, $department);
+
+        // Sunday is an overflow day the dean agrees to verbally; the department
+        // secretary is the one who records it here. Resending the current value
+        // is harmless, so only an actual change is refused to other roles.
+        $sundayClassesEnabled = array_key_exists('sunday_classes_enabled', $validated)
+            ? (bool) $validated['sunday_classes_enabled']
+            : (bool) $department->sunday_classes_enabled;
+        if ($sundayClassesEnabled !== (bool) $department->sunday_classes_enabled
+            && ! $this->canManageSundayClasses($request)) {
+            return response()->json([
+                'message' => 'Only the department secretary can enable or disable Sunday classes.',
+            ], 403);
+        }
+        if (! $sundayClassesEnabled
+            && collect($validated['forced_day_rules'] ?? [])->contains(static fn (array $rule): bool => $rule['day'] === 'Sunday')) {
+            return response()->json([
+                'message' => 'Sunday classes are not enabled for this department, so no course can have Sunday as its Required Day.',
+            ], 422);
+        }
+
         $laboratorySettingKeys = [
             'lecture_lab_schedule_override_enabled',
             'custom_lab_duration_override_enabled',
@@ -148,6 +175,9 @@ class SchedulingSettingsController extends Controller
             }
             $department->major_lecture_split_schedule_override_enabled = (bool) $validated['major_lecture_split_schedule_override_enabled'];
         }
+        // Turning Sunday off leaves classes already on Sunday in place; the
+        // sunday_classes rule only refuses new Sunday placements.
+        $department->sunday_classes_enabled = $sundayClassesEnabled;
         $department->save();
 
         if (array_key_exists('forced_day_rules', $validated)) {
@@ -163,10 +193,34 @@ class SchedulingSettingsController extends Controller
             $department,
             $section,
             $this->hasLectureLabCourses($department),
+            $this->canManageSundayClasses($request),
         ));
     }
 
-    private function settingsPayload(Departments $department, ?Sections $section, bool $lectureLabAvailable): array
+    private function canManageSundayClasses(Request $request): bool
+    {
+        return $request->user()?->role === 'secretary';
+    }
+
+    /**
+     * Classes this department already holds on Sunday in the active semester,
+     * so turning Sunday off can say how many stay behind.
+     */
+    private function sundayClassCount(Departments $department): int
+    {
+        $semesterId = Semester::query()->where('is_active', true)->value('id');
+        if ($semesterId === null) {
+            return 0;
+        }
+
+        return DB::table('schedules')
+            ->where('department_id', $department->id)
+            ->where('semester_id', $semesterId)
+            ->where('day', 'Sunday')
+            ->count();
+    }
+
+    private function settingsPayload(Departments $department, ?Sections $section, bool $lectureLabAvailable, bool $canManageSundayClasses): array
     {
         $fieldCourseOptions = $this->fieldCourseOptions($department, $section);
         $courseOptions = $this->forcedDayCourses($department, $section);
@@ -184,6 +238,9 @@ class SchedulingSettingsController extends Controller
             'major_lecture_split_schedule_override_enabled' => (bool) $department->major_lecture_split_schedule_override_enabled,
             'lecture_lab_available' => $lectureLabAvailable,
             'major_lecture_split_available' => $this->hasMajorLectureOnlyCourses($department),
+            'sunday_classes_enabled' => (bool) $department->sunday_classes_enabled,
+            'can_manage_sunday_classes' => $canManageSundayClasses,
+            'sunday_class_count' => $this->sundayClassCount($department),
             'generation_period' => $section ? [
                 'section_id' => (int) $section->id,
                 'semester' => (string) $section->semester,

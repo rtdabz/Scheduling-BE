@@ -87,10 +87,11 @@ class UserFacultyProfileLinkingTest extends TestCase
         $user = $this->createUser(['faculty_mode' => 'create', 'designation_id' => $designation->id])
             ->assertCreated();
 
-        $this->assertDatabaseHas('faculties', [
-            'user_id' => $user->json('data.id'),
+        $faculty = Faculty::where('user_id', $user->json('data.id'))->firstOrFail();
+        $this->assertSame(6, (int) $faculty->deload_units);
+        $this->assertDatabaseHas('designation_faculty', [
+            'faculty_id' => $faculty->id,
             'designation_id' => $designation->id,
-            'deload_units' => 6,
         ]);
     }
 

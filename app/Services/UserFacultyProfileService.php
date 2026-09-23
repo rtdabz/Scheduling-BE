@@ -107,7 +107,7 @@ class UserFacultyProfileService
             ->where('department_id', $departmentId)
             ->orderBy('last_name')
             ->orderBy('first_name')
-            ->get(['id', 'first_name', 'middle_name', 'last_name', 'employment_type', 'program_id', 'designation_id', 'status']);
+            ->get(['id', 'first_name', 'middle_name', 'last_name', 'employment_type', 'program_id', 'status']);
     }
 
     /**
@@ -163,16 +163,54 @@ class UserFacultyProfileService
             return [$user->first_name, $user->middle_initial ?: null, $user->last_name, $user->suffix ?: null];
         }
 
-        return [...$this->splitName((string) $user->name), null];
+        return $this->splitName((string) $user->name);
     }
 
+    /**
+     * Splits "Kay Rejoice C. Waga Jr." or "Waga, Kay Rejoice C. Jr.". First
+     * names may be two or three words, so only a trailing initial ("C" or
+     * "C.") is taken as the middle name; every other given word stays in the
+     * first name.
+     *
+     * @return array{0: string, 1: ?string, 2: string, 3: ?string}
+     */
     private function splitName(string $name): array
     {
-        $parts = preg_split('/\s+/', trim($name)) ?: [];
-        $firstName = array_shift($parts) ?: 'Unknown';
-        $lastName = count($parts) > 0 ? array_pop($parts) : '';
-        $middleName = count($parts) > 0 ? implode(' ', $parts) : null;
+        $isSuffix = static fn (string $word): bool => (bool) preg_match('/^(jr|sr|i{2,3}|iv|v)\.?$/i', $word);
+        $words = static fn (string $text): array => preg_split('/\s+/', trim($text), -1, PREG_SPLIT_NO_EMPTY) ?: [];
 
-        return [$firstName, $middleName, $lastName];
+        $suffix = null;
+        if (str_contains($name, ',')) {
+            [$lastPart, $givenPart] = array_map('trim', explode(',', $name, 2));
+            $lastWords = $words($lastPart);
+            $given = $words(str_replace(',', ' ', $givenPart));
+            // "Waga Jr., Kay" as well as "Waga, Kay Jr."
+            if (count($lastWords) > 1 && $isSuffix(end($lastWords))) {
+                $suffix = array_pop($lastWords);
+            }
+            $lastName = implode(' ', $lastWords);
+        } else {
+            $given = $words($name);
+            if (count($given) > 2 && $isSuffix(end($given))) {
+                $suffix = array_pop($given);
+            }
+            $lastWords = count($given) > 1 ? [array_pop($given)] : [];
+            // Surname particles belong to the last name: "Juan dela Cruz".
+            while (count($given) > 1 && preg_match('/^(de|del|dela|della|delos|de\'|des|di|da|du|la|las|los|san|santa|sta\.?|van|von|der|den|y)$/i', end($given))) {
+                array_unshift($lastWords, array_pop($given));
+            }
+            $lastName = implode(' ', $lastWords);
+        }
+
+        if ($suffix === null && count($given) > 1 && $isSuffix(end($given))) {
+            $suffix = array_pop($given);
+        }
+
+        $middleName = null;
+        if (count($given) > 1 && preg_match('/^\p{L}\.?$/u', end($given))) {
+            $middleName = rtrim((string) array_pop($given), '.');
+        }
+
+        return [implode(' ', $given) ?: 'Unknown', $middleName, $lastName, $suffix];
     }
 }

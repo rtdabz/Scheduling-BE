@@ -198,6 +198,60 @@ class SchedulingSettingsControllerTest extends TestCase
             ->assertJsonPath('major_lecture_split_schedule_override_enabled', false);
     }
 
+    public function test_sunday_classes_start_off_and_the_secretary_turns_them_on_and_off(): void
+    {
+        [$user, $department] = $this->laboratoryDepartment();
+
+        $this->actingAs($user)->getJson('/api/scheduling-settings')
+            ->assertOk()
+            ->assertJsonPath('sunday_classes_enabled', false)
+            ->assertJsonPath('can_manage_sunday_classes', true);
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['sunday_classes_enabled' => true])
+            ->assertOk()
+            ->assertJsonPath('sunday_classes_enabled', true);
+        $this->assertTrue((bool) $department->refresh()->sunday_classes_enabled);
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['sunday_classes_enabled' => false])
+            ->assertOk()
+            ->assertJsonPath('sunday_classes_enabled', false);
+        $this->assertFalse((bool) $department->refresh()->sunday_classes_enabled);
+    }
+
+    public function test_only_the_secretary_can_change_sunday_classes(): void
+    {
+        [, $department] = $this->laboratoryDepartment();
+        $programHead = $this->grantCapabilities(User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $department->id,
+        ]));
+
+        $this->actingAs($programHead)->getJson('/api/scheduling-settings')
+            ->assertOk()
+            ->assertJsonPath('can_manage_sunday_classes', false);
+
+        $this->actingAs($programHead)->patchJson('/api/scheduling-settings', ['sunday_classes_enabled' => true])
+            ->assertForbidden();
+        $this->assertFalse((bool) $department->refresh()->sunday_classes_enabled);
+
+        // Resending the current value is not a change, so it is not refused.
+        $this->actingAs($programHead)->patchJson('/api/scheduling-settings', ['sunday_classes_enabled' => false])
+            ->assertOk();
+    }
+
+    public function test_a_sunday_required_day_needs_sunday_classes(): void
+    {
+        [$user, $department] = $this->laboratoryDepartment();
+        $course = Course::create(['course_code' => 'IT 101', 'course_name' => 'Programming 1', 'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3, 'course_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'status' => 'active']);
+        $rules = ['forced_day_rules' => [['course_id' => $course->id, 'day' => 'Sunday']]];
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', $rules)
+            ->assertStatus(422);
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', [...$rules, 'sunday_classes_enabled' => true])
+            ->assertOk();
+    }
+
     private function laboratoryDepartment(bool $splitEnabled = true): array
     {
         $department = Departments::create([

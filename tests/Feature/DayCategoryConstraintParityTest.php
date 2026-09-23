@@ -11,96 +11,54 @@ use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\TimeslotService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
  * Pins the server side of the day/category contract that the browser mirrors in
- * wicars-ui/src/pages/ClassSchedules/SchedulerPanel/hooks/useConflict.ts.
- *
- * Audit finding #2 was that only the server enforced these rules, so the
- * placement modal reported a valid placement that the save then rejected. The
- * expectations here and in useConflict.test.ts must be kept in step.
+ * wicars-ui/src/pages/ClassSchedules/SchedulerPanel/hooks/useConflict.ts: every
+ * course category may use every day. Field courses were once Monday-Friday,
+ * minors Monday-Saturday, and a Sunday major had to be online -- those limits
+ * (and the department's `sunday_online_only_enabled` switch) are gone, along
+ * with the `field_day_constraint`, `minor_day_constraint` and
+ * `major_sunday_mode_constraint` rules that enforced them (see
+ * MeetingDayRule's class doc). Only a Required Day (`forced_course_day`,
+ * covered by ForcedDayCapacityCheckTest and friends) or a declared meeting
+ * pattern narrows a course's days now.
  */
 class DayCategoryConstraintParityTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_nstp_field_courses_are_limited_to_weekdays_like_any_field_course(): void
+    public function test_field_courses_may_meet_any_day_of_the_week(): void
     {
-        $rules = $this->violationRulesForEachDay($this->course('CWTS1', 'Civic Welfare Training', 'major', 'field'));
+        $nstp = $this->violationRulesForEachDay($this->course('CWTS1', 'Civic Welfare Training', 'major', 'field'));
+        $nonNstp = $this->violationRulesForEachDay($this->course('PATHFIT1', 'Movement Competency', 'major', 'field'));
 
-        foreach (['Monday', 'Friday'] as $day) {
-            $this->assertNotContains('field_day_constraint', $rules[$day], "NSTP should be allowed on {$day}");
-        }
-        foreach (['Saturday', 'Sunday'] as $day) {
-            $this->assertContains('field_day_constraint', $rules[$day], "NSTP should be rejected on {$day} unless pinned");
+        foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day) {
+            $this->assertNotContains('field_day_constraint', $nstp[$day], "NSTP should be allowed on {$day}");
+            $this->assertNotContains('field_day_constraint', $nonNstp[$day], "Field course should be allowed on {$day}");
         }
     }
 
-    public function test_a_field_course_may_meet_on_the_weekend_day_the_department_pinned_it_to(): void
-    {
-        [, $department] = $this->fixture();
-        $course = $this->course('CWTS2', 'Civic Welfare Training', 'major', 'field');
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $department->id,
-            'course_id' => $course->id,
-            'day' => 'Saturday',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
-
-        $rules = $this->violationRulesForEachDay($course);
-
-        $this->assertNotContains('field_day_constraint', $rules['Saturday']);
-        $this->assertContains('field_day_constraint', $rules['Sunday']);
-    }
-
-    public function test_non_nstp_field_courses_are_limited_to_weekdays(): void
-    {
-        $rules = $this->violationRulesForEachDay($this->course('PATHFIT1', 'Movement Competency', 'major', 'field'));
-
-        foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] as $day) {
-            $this->assertNotContains('field_day_constraint', $rules[$day], "Field course should be allowed on {$day}");
-        }
-
-        foreach (['Saturday', 'Sunday'] as $day) {
-            $this->assertContains('field_day_constraint', $rules[$day], "Field course should be rejected on {$day}");
-        }
-    }
-
-    public function test_minor_courses_are_limited_to_monday_through_saturday(): void
+    public function test_minor_courses_may_meet_any_day_of_the_week(): void
     {
         $rules = $this->violationRulesForEachDay($this->course('GEC1', 'Understanding the Self', 'minor', 'lecture'));
 
-        foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as $day) {
+        foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day) {
             $this->assertNotContains('minor_day_constraint', $rules[$day], "Minor course should be allowed on {$day}");
         }
-
-        $this->assertContains('minor_day_constraint', $rules['Sunday']);
     }
 
-    public function test_major_courses_on_sunday_require_online_delivery(): void
+    public function test_major_courses_may_meet_on_site_on_sunday(): void
     {
         [$semester, $department, $section, $room] = $this->fixture();
         $course = $this->course('IT101', 'Intro to Computing', 'major', 'lecture');
 
         $onSite = $this->rules($this->attempt($semester, $department, $section, $course, 'Sunday', 'on-site', $room->id));
-        $this->assertContains('major_sunday_mode_constraint', $onSite);
+        $this->assertNotContains('major_sunday_mode_constraint', $onSite);
 
         $online = $this->rules($this->attempt($semester, $department, $section, $course, 'Sunday', 'online', null));
         $this->assertNotContains('major_sunday_mode_constraint', $online);
-    }
-
-    public function test_sunday_rule_can_be_disabled_per_department(): void
-    {
-        [$semester, $department, $section, $room] = $this->fixture();
-        $department->update(['sunday_online_only_enabled' => false]);
-        $course = $this->course('IT101', 'Intro to Computing', 'major', 'lecture');
-
-        $rules = $this->rules($this->attempt($semester, $department, $section, $course, 'Sunday', 'on-site', $room->id));
-
-        $this->assertNotContains('major_sunday_mode_constraint', $rules);
     }
 
     public function test_field_courses_must_end_by_the_institution_field_end_time(): void

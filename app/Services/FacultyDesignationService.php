@@ -11,11 +11,9 @@ use Illuminate\Validation\ValidationException;
 /**
  * The one place an instructor's designations are written.
  *
- * An instructor holds up to MAX_PER_FACULTY designations. Three columns are kept
- * in step from that list, so nothing else has to know it is a list:
+ * An instructor holds up to MAX_PER_FACULTY designations:
  *
  * - `designation_faculty` holds the designations and their order;
- * - `faculties.designation_id` is the first of them, for readers that want one;
  * - `faculties.deload_units` is the sum of their deloads, which is the figure
  *   SchedulingPolicy::facultyBasicLoad() and the generator snapshot read.
  */
@@ -104,7 +102,7 @@ class FacultyDesignationService
     }
 
     /**
-     * Writes the instructor's designations and the two columns derived from them.
+     * Writes the instructor's designations and the deload derived from them.
      *
      * @param  list<int>  $ids
      */
@@ -118,7 +116,6 @@ class FacultyDesignationService
             );
 
             $faculty->forceFill([
-                'designation_id' => $ids[0] ?? null,
                 'deload_units' => $this->deloadFor($ids),
             ])->save();
         });

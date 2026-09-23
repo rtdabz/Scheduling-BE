@@ -552,6 +552,32 @@ class ScheduleQualityEvaluatorTest extends TestCase
         $this->assertGreaterThan(0, $ranked[1]['score_breakdown']['configuration_violations']);
     }
 
+    /**
+     * Only MW and TTh used to be recognised here; any other pattern silently
+     * counted as a match, so FS and custom days:X-Y pairs were never scored.
+     */
+    public function test_every_preferred_pattern_is_scored_not_only_mw_and_tth(): void
+    {
+        $sections = [$this->section(1, '1')];
+        $meetings = fn (string $first, string $second): array => [
+            $this->row(1, 101, 101, 'on-site', null, '08:00', '09:30', $first),
+            $this->row(1, 101, 101, 'on-site', null, '08:00', '09:30', $second),
+        ];
+
+        foreach (['FS' => ['Friday', 'Saturday'], 'days:0-3' => ['Monday', 'Thursday']] as $pattern => [$first, $second]) {
+            $configs = [1 => [
+                'balanced_split_course_ids' => [101],
+                'preferred_patterns' => [101 => $pattern],
+            ]];
+
+            $violations = fn (array $schedules): int => $this->evaluator
+                ->rank([['score' => 1, 'schedules' => $schedules]], $sections, $configs)[0]['score_breakdown']['configuration_violations'];
+
+            $this->assertSame(0, $violations($meetings($first, $second)), "{$pattern} on its own days");
+            $this->assertGreaterThan(0, $violations($meetings('Tuesday', 'Wednesday')), "{$pattern} on other days");
+        }
+    }
+
     public function test_a_sunday_meeting_costs_exactly_what_a_saturday_one_does(): void
     {
         $sections = [$this->section(1, '1')];

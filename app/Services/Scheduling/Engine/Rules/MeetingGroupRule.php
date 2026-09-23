@@ -42,7 +42,7 @@ final class MeetingGroupRule
             $pattern = SchedulingPolicy::normalizePreferredPattern($first['preferred_pattern'] ?? null);
             $kind = match (true) {
                 $isHybrid => 'hybrid',
-                in_array($pattern, ['MW', 'TTh'], true) => 'minor_split',
+                SchedulingPolicy::isFixedMeetingPattern($pattern) => 'minor_split',
                 default => 'linked',
             };
 
@@ -118,8 +118,8 @@ final class MeetingGroupRule
                 // An ineligible course has no Split Session shape to judge.
                 $mismatches[] = ['rule' => 'minor_split_eligibility', 'message' => 'Split Session is available only for minor courses or lecture-only majors.'];
             } else {
-                if (in_array($pattern, ['MW', 'TTh'], true)) {
-                    $expectedDays = $sorted($pattern === 'MW' ? ['Monday', 'Wednesday'] : ['Tuesday', 'Thursday']);
+                if (SchedulingPolicy::isFixedMeetingPattern($pattern)) {
+                    $expectedDays = $sorted(SchedulingPolicy::FIXED_MEETING_PATTERNS[$pattern]);
                     if ($sorted($column('day')) !== $expectedDays) {
                         $mismatches[] = ['rule' => 'minor_split_pattern', 'message' => "Split Session {$pattern} meetings must use the configured day pair."];
                     }

@@ -20,6 +20,17 @@ class Curriculum extends Model
 
     protected $fillable = ['name', 'department_id', 'program_id', 'code', 'effective_school_year', 'status', 'description'];
 
+    protected static function booted(): void
+    {
+        // Activating, retiring or re-dating a curriculum can change which one
+        // is newest for its courses; see Course::curriculumPlacements().
+        static::updated(function (self $curriculum): void {
+            if ($curriculum->wasChanged(['status', 'effective_school_year'])) {
+                Course::syncPlacementFromCurricula($curriculum->courses()->pluck('courses.id'));
+            }
+        });
+    }
+
     /** The newest active curriculum of its department/program group. */
     public const LIFECYCLE_NEW = 'new';
 

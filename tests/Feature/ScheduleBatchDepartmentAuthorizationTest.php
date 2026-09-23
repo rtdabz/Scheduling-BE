@@ -282,7 +282,7 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
         ]);
         $programId = Program::query()->where('department_id', $deptA->id)->value('id');
         $sections = collect(range(1, 4))->map(fn (int $number) => Sections::create([
-            'section_name' => "A{$number}",
+            'section_name' => "F{$number}",
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $deptA->id,

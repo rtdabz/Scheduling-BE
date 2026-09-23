@@ -103,6 +103,14 @@ return [
             'expire' => 60,
             'throttle' => 60,
         ],
+
+        // One-time account setup links emailed when the VPAA creates a user.
+        'invites' => [
+            'provider' => 'users',
+            'table' => 'account_invitation_tokens',
+            'expire' => (int) env('AUTH_INVITATION_EXPIRE', 4320),
+            'throttle' => 60,
+        ],
     ],
 
     /*

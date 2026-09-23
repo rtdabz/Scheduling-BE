@@ -7,11 +7,13 @@ use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
 /**
- * valid_day, preferred_pattern, forced_course_day.
+ * valid_day, preferred_pattern, sunday_classes, forced_course_day.
  *
- * Every course may use every day. A meeting is narrowed only by what the user
- * asked for -- a declared meeting pattern, or the day the department pinned the
- * course to -- never by the kind of course it is.
+ * Every course may use every day the department teaches: Monday-Saturday, plus
+ * Sunday once the department secretary allows it. A meeting is narrowed only
+ * by what the department or user asked for -- Sunday classes, a declared
+ * meeting pattern, or the day the course is pinned to -- never by the kind of
+ * course it is.
  *
  * The category day limits are gone: field courses were Monday to Friday, minors
  * Monday to Saturday, and a Sunday major had to be online. Sunday is now an
@@ -78,6 +80,42 @@ final class MeetingDayRule
         );
 
         return self::forcedDayMismatch(is_string($forcedDay) ? $forcedDay : null, $day);
+    }
+
+    /** @return array<string, mixed>|null */
+    public function sundayClasses(string $day, AttemptRecords $records): ?array
+    {
+        if ($day !== 'Sunday') {
+            return null;
+        }
+
+        $departmentId = $records->departmentId();
+        $enabled = $this->lookups->remember(
+            "sundayClasses:{$departmentId}",
+            fn () => (bool) DB::table('departments')->where('id', $departmentId)->value('sunday_classes_enabled'),
+        );
+
+        return self::sundayClassesMismatch((bool) $enabled, $day);
+    }
+
+    /**
+     * sunday_classes: Sunday is an overflow day. A department books it only
+     * after its secretary turns Sunday classes on; classes already on Sunday
+     * when it is turned off stay, but nothing new may be placed there. Shared
+     * with the constraint kernel, which reads the setting from its snapshot.
+     *
+     * @return array{rule: string, message: string}|null
+     */
+    public static function sundayClassesMismatch(bool $sundayClassesEnabled, string $day): ?array
+    {
+        if ($day !== 'Sunday' || $sundayClassesEnabled) {
+            return null;
+        }
+
+        return [
+            'rule' => 'sunday_classes',
+            'message' => 'Sunday classes are not enabled for this department. The department secretary can turn them on in Scheduling Settings.',
+        ];
     }
 
     /**

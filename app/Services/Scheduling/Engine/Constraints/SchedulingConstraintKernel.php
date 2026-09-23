@@ -40,6 +40,7 @@ final class SchedulingConstraintKernel
         'operating_hours' => 202,
         'preferred_pattern' => 205,
         'field_evening_window' => 240,
+        'sunday_classes' => 245,
         'forced_course_day' => 250,
         'room_type_match' => 300,
         'room_availability' => 310,

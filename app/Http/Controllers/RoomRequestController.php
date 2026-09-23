@@ -21,13 +21,15 @@ use Illuminate\Validation\ValidationException;
 /**
  * A department borrowing another department's vacant room for a semester.
  *
- * The secretary asks for weekly windows in one room; the VPAA approves,
- * rejects or later revokes. Approval is what RoomAccessPolicy reads, so a
- * grant takes effect in the validator and the generator at the same moment.
+ * The secretary asks for weekly windows in one room; the secretary of the
+ * department that owns the room approves, rejects or later revokes. The VPAA
+ * only watches and is notified when a room is lent or handed back. Approval is
+ * what RoomAccessPolicy reads, so a grant takes effect in the validator and
+ * the generator at the same moment.
  */
 class RoomRequestController extends Controller
 {
-    private const REVIEW_CAPABILITY = 'room.review_requests';
+    private const OVERSIGHT_CAPABILITY = 'room.view_all_requests';
 
     /** Only real, bookable rooms can be lent; ONLINE and FIELD are shared already. */
     private const LENDABLE_ROOM_TYPES = ['lecture', 'laboratory'];
@@ -43,13 +45,16 @@ class RoomRequestController extends Controller
             'scope' => 'nullable|in:department,all',
         ]);
 
-        // A reviewer sees every department's requests unless they ask for
-        // their own; everyone else only ever sees their department's.
-        $seesAll = $user->hasCapability(self::REVIEW_CAPABILITY) && ($validated['scope'] ?? 'all') === 'all';
+        // The VPAA sees every department's requests unless they ask for their
+        // own; a department sees the requests it sent and the ones for its rooms.
+        $seesAll = $user->hasCapability(self::OVERSIGHT_CAPABILITY) && ($validated['scope'] ?? 'all') === 'all';
+        $departmentId = (int) $user->department_id;
 
         $requests = RoomRequest::query()
             ->with($this->relations())
-            ->when(! $seesAll, fn ($query) => $query->where('requesting_department_id', (int) $user->department_id))
+            ->when(! $seesAll, fn ($query) => $query->where(fn ($query) => $query
+                ->where('requesting_department_id', $departmentId)
+                ->orWhere('owner_department_id', $departmentId)))
             ->when(isset($validated['semester_id']), fn ($query) => $query->where('semester_id', (int) $validated['semester_id']))
             ->when(isset($validated['status']), fn ($query) => $query->where('status', $validated['status']))
             ->orderByRaw("CASE WHEN status = 'pending' THEN 0 ELSE 1 END")
@@ -163,7 +168,7 @@ class RoomRequestController extends Controller
         $this->notifySubmitted($roomRequest, $user);
 
         return response()->json([
-            'message' => 'Room request submitted to the VPAA.',
+            'message' => sprintf('Room request sent to %s for approval.', $roomRequest->ownerDepartment?->department_code ?? 'the room\'s department'),
             'data' => $this->present($roomRequest),
         ], 201);
     }
@@ -188,6 +193,7 @@ class RoomRequestController extends Controller
         $model = DB::transaction(function () use ($roomRequest, $validated, $user): RoomRequest {
             /** @var RoomRequest $model */
             $model = RoomRequest::query()->with('windows')->lockForUpdate()->findOrFail($roomRequest);
+            $this->assertOwnerReviewer($model, $user);
             $this->assertStatus($model, [RoomRequest::STATUS_PENDING]);
 
             // Lock the room so two approvals for the same slot serialize.
@@ -219,6 +225,7 @@ class RoomRequestController extends Controller
         $model->load($this->relations());
         $this->flushSchedulingCaches();
         $this->notifyReviewed($model, $user, 'approved');
+        $this->notifyVpaa($model, $user, 'room_request_borrowed');
 
         return response()->json([
             'message' => 'Room request approved.',
@@ -228,10 +235,12 @@ class RoomRequestController extends Controller
 
     public function reject(Request $request, int $roomRequest): JsonResponse
     {
+        $model = RoomRequest::query()->findOrFail($roomRequest);
+        $this->assertOwnerReviewer($model, $request->user());
         $validated = $request->validate(['remarks' => 'required|string|max:1000']);
 
         return $this->close(
-            RoomRequest::query()->findOrFail($roomRequest),
+            $model,
             $request->user(),
             RoomRequest::STATUS_REJECTED,
             trim((string) $validated['remarks']),
@@ -241,10 +250,12 @@ class RoomRequestController extends Controller
 
     public function revoke(Request $request, int $roomRequest): JsonResponse
     {
+        $model = RoomRequest::query()->findOrFail($roomRequest);
+        $this->assertOwnerReviewer($model, $request->user());
         $validated = $request->validate(['remarks' => 'required|string|max:1000']);
 
         return $this->close(
-            RoomRequest::query()->findOrFail($roomRequest),
+            $model,
             $request->user(),
             RoomRequest::STATUS_REVOKED,
             trim((string) $validated['remarks']),
@@ -310,6 +321,10 @@ class RoomRequestController extends Controller
             $this->notifyReviewed($model, $user, $status);
         }
 
+        if ($wasApproved) {
+            $this->notifyVpaa($model, $user, 'room_request_returned');
+        }
+
         return response()->json([
             'message' => match ($status) {
                 RoomRequest::STATUS_REJECTED => 'Room request rejected.',
@@ -318,6 +333,14 @@ class RoomRequestController extends Controller
             },
             'data' => $this->present($model),
         ]);
+    }
+
+    /** Only the department that owns the room decides whether to lend it. */
+    private function assertOwnerReviewer(RoomRequest $model, User $user): void
+    {
+        if ($model->owner_department_id === null || (int) $model->owner_department_id !== (int) $user->department_id) {
+            abort(403, 'Only the department that owns this room can decide on this request.');
+        }
     }
 
     private function assertLendable(Rooms $room, int $departmentId): void
@@ -520,33 +543,18 @@ class RoomRequestController extends Controller
         $room = $model->room?->room_code ?? 'a room';
         $requester = $model->requestingDepartment?->department_code ?? 'A department';
         $windows = RoomAccessPolicy::describe($this->windowArrays($model));
-        $metadata = ['room_request_id' => $model->id, 'room_id' => $model->room_id];
 
-        $this->notifications->createForUsers(
-            User::query()->where('role', 'vpaa')->get(),
+        $this->notifications->notifyRoles(
+            ['secretary'],
             'room_request_submitted',
-            'Room request awaiting review',
+            'Room request awaiting your review',
             "{$requester} requests {$room} ({$windows}). Purpose: {$model->purpose}",
             $actor,
-            (int) $model->requesting_department_id,
+            (int) $model->owner_department_id,
             (int) $model->semester_id,
             null,
-            [...$metadata, 'link' => '/vpaa/room-requests'],
+            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/secretary/room-requests'],
         );
-
-        if ($model->owner_department_id !== null) {
-            $this->notifications->notifyRoles(
-                ['secretary', 'dean'],
-                'room_request_submitted_owner',
-                'Your room was requested',
-                "{$requester} asked the VPAA to use {$room} ({$windows}).",
-                $actor,
-                (int) $model->owner_department_id,
-                (int) $model->semester_id,
-                null,
-                $metadata,
-            );
-        }
     }
 
     private function notifyReviewed(RoomRequest $model, User $actor, string $outcome): void
@@ -583,8 +591,8 @@ class RoomRequestController extends Controller
 
     private function notifyCancelled(RoomRequest $model, User $actor): void
     {
-        $this->notifications->createForUsers(
-            User::query()->where('role', 'vpaa')->get(),
+        $this->notifications->notifyRoles(
+            ['secretary'],
             'room_request_cancelled',
             'Room request cancelled',
             sprintf(
@@ -593,10 +601,38 @@ class RoomRequestController extends Controller
                 $model->room?->room_code ?? 'a room',
             ),
             $actor,
+            (int) $model->owner_department_id,
+            (int) $model->semester_id,
+            null,
+            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/secretary/room-requests'],
+        );
+    }
+
+    /**
+     * The VPAA takes no part in the decision; they are only told when a room
+     * starts or stops being lent between departments.
+     */
+    private function notifyVpaa(RoomRequest $model, User $actor, string $type): void
+    {
+        $requester = $model->requestingDepartment?->department_code ?? 'A department';
+        $owner = $model->ownerDepartment?->department_code ?? 'another department';
+        $room = $model->room?->room_code ?? 'a room';
+        $windows = RoomAccessPolicy::describe($this->windowArrays($model));
+
+        [$title, $message] = $type === 'room_request_borrowed'
+            ? ['Room borrowed', "{$requester} is borrowing {$room} from {$owner} ({$windows})."]
+            : ['Room returned', "{$requester} is no longer borrowing {$room} from {$owner} ({$windows})."];
+
+        $this->notifications->createForUsers(
+            User::query()->where('role', 'vpaa')->get(),
+            $type,
+            $title,
+            $message,
+            $actor,
             (int) $model->requesting_department_id,
             (int) $model->semester_id,
             null,
-            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/vpaa/room-requests'],
+            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/room-requests'],
         );
     }
 

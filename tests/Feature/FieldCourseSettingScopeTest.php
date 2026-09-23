@@ -146,6 +146,24 @@ class FieldCourseSettingScopeTest extends TestCase
     }
 
     /** @return array{0: Departments, 1: User} */
+    public function test_renaming_a_course_code_carries_its_field_setting_over(): void
+    {
+        [$deptA] = $this->department('AAA');
+        [$deptB] = $this->department('BBB');
+        $courseA = $this->course('PATHFIT 1', $deptA);
+        $this->course('PATHFIT 1', $deptB);
+        foreach ([$deptA, $deptB] as $dept) {
+            DB::table('field_course_settings')->insert(['department_id' => $dept->id, 'enabled' => true, 'course_code' => 'PATHFIT 1']);
+        }
+
+        $courseA->update(['course_code' => 'PE 101']);
+
+        $this->assertDatabaseHas('field_course_settings', ['department_id' => $deptA->id, 'course_code' => 'PE 101']);
+        $this->assertDatabaseMissing('field_course_settings', ['department_id' => $deptA->id, 'course_code' => 'PATHFIT 1']);
+        // Another department's course under the old code keeps its setting.
+        $this->assertDatabaseHas('field_course_settings', ['department_id' => $deptB->id, 'course_code' => 'PATHFIT 1']);
+    }
+
     private function department(string $code): array
     {
         $semester = Semester::firstOrCreate(

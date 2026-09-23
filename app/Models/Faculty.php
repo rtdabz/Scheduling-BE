@@ -17,7 +17,6 @@ class Faculty extends Model
     protected $fillable = [
         'user_id',
         'administrative_role',
-        'designation_id',
         'first_name',
         'last_name',
         'middle_name',
@@ -32,15 +31,6 @@ class Faculty extends Model
         'status',
         'profile_picture',
     ];
-
-    /**
-     * The instructor's primary designation -- the first of `designations`, kept
-     * in step by FacultyDesignationService for readers that want just one.
-     */
-    public function designation()
-    {
-        return $this->belongsTo(Designation::class, 'designation_id');
-    }
 
     /** Every designation the instructor holds (up to three), in their listed order. */
     public function designations()

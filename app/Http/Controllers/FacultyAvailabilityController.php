@@ -120,7 +120,7 @@ class FacultyAvailabilityController extends Controller
         $windows = collect($validator->validated()['availabilities'] ?? [])
             ->map(fn (array $window) => [
                 'faculty_id' => $faculty->id,
-                'day_index' => (int) $window['day_index'],
+                'day' => SchedulingPolicy::DAYS[(int) $window['day_index']],
                 'start_time' => SchedulingPolicy::normalizeTime((string) $window['start_time']),
                 'end_time' => SchedulingPolicy::normalizeTime((string) $window['end_time']),
                 'created_at' => now(),
@@ -145,9 +145,10 @@ class FacultyAvailabilityController extends Controller
     private function windows(Faculty $faculty): array
     {
         return $faculty->availabilities()
-            ->orderBy('day_index')
             ->orderBy('start_time')
             ->get()
+            ->sortBy(fn ($window) => $window->day_index, SORT_NUMERIC)
+            ->values()
             ->map(fn ($window) => [
                 'id' => (int) $window->id,
                 'day_index' => (int) $window->day_index,

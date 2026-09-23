@@ -10,7 +10,7 @@ use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Rules\MeetingDayRule;
 
 /**
- * preferred_pattern, forced_course_day. Kernel counterpart of
+ * preferred_pattern, sunday_classes, forced_course_day. Kernel counterpart of
  * Rules\MeetingDayRule, whose static checks make each decision. valid_day needs
  * no kernel version: ScheduleRow refuses an unsupported day when it is built.
  */
@@ -27,6 +27,14 @@ final class MeetingDayConstraints
         $pattern = MeetingDayRule::preferredPattern($row->day, $row->preferredPattern);
         if ($pattern !== null) {
             $violations[] = ConstraintSupport::violation($pattern['rule'], $pattern['message']);
+        }
+
+        $sunday = MeetingDayRule::sundayClassesMismatch(
+            (bool) ($snapshot->departmentSettings['sunday_classes_enabled'] ?? false),
+            $row->day,
+        );
+        if ($sunday !== null) {
+            $violations[] = ConstraintSupport::violation($sunday['rule'], $sunday['message']);
         }
 
         $forcedDay = $snapshot->forcedDaysByCourseId[$row->courseId] ?? null;

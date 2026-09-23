@@ -1162,16 +1162,22 @@ class ScheduleQualityEvaluator
 
     private function rowsMatchPattern(array $rows, string $pattern): bool
     {
+        // Same parser the solver and rules use, so custom days:X-Y pairs and
+        // FS are scored too, not silently treated as a match.
+        try {
+            $expected = SchedulingPolicy::allowedDaysForPattern($pattern);
+        } catch (\InvalidArgumentException) {
+            return true;
+        }
+        if ($expected === null) {
+            return true;
+        }
+
         $days = array_values(array_unique(array_column($rows, 'day')));
         sort($days);
-        $expected = match (strtoupper(str_replace(['-', '/'], '', $pattern))) {
-            'MW' => ['Monday', 'Wednesday'],
-            'TTH' => ['Thursday', 'Tuesday'],
-            default => [],
-        };
         sort($expected);
 
-        return $expected === [] || $days === $expected;
+        return $days === $expected;
     }
 
     private function isRequiredDayPlacement(array $row, array $configsBySectionId): bool

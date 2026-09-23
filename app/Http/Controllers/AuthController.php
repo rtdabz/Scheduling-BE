@@ -217,23 +217,32 @@ class AuthController extends Controller
             'token' => 'required|string',
             'email' => 'required|email',
             'password' => ['required', 'confirmed', PasswordRule::min(10)->letters()->mixedCase()->numbers()],
+            'invite' => 'sometimes|boolean',
         ]);
+        // Each broker only accepts tokens from its own table, so the flag picks
+        // the expiry window but cannot turn a reset token into an invite.
+        $isInvite = $request->boolean('invite');
+        $credentials = collect($validated)->except('invite')->all();
 
-        $status = Password::reset($validated, function (User $user, string $password) use ($request) {
+        $status = Password::broker($isInvite ? 'invites' : null)->reset($credentials, function (User $user, string $password) use ($request, $isInvite) {
             $user->forceFill([
                 'password' => $password,
                 'remember_token' => Str::random(60),
             ])->save();
             $user->tokens()->delete();
+            // Whichever link was used, the other one must stop working too.
+            Password::broker($isInvite ? null : 'invites')->deleteToken($user);
             event(new PasswordReset($user));
-            $this->audit->record($request, 'password_reset', $user);
+            $this->audit->record($request, $isInvite ? 'invitation_accepted' : 'password_reset', $user);
         });
 
         if ($status !== Password::PASSWORD_RESET) {
             return response()->json(['message' => __($status)], 422);
         }
 
-        return response()->json(['message' => 'Password reset successfully. You may now sign in.']);
+        return response()->json(['message' => $isInvite
+            ? 'Your password is set. Sign in with your username and new password.'
+            : 'Password reset successfully. You may now sign in.']);
     }
 
     public function logout(Request $request): JsonResponse

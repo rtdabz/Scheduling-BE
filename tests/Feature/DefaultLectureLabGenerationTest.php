@@ -1265,6 +1265,83 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNull($solutions[0]['schedules'][0]['room_id']);
     }
 
+    public function test_generation_prefers_times_that_avoid_an_online_section_of_the_same_course(): void
+    {
+        $semester = Semester::create([
+            'academic_year' => '2026-2027',
+            'semester' => '1st',
+            'is_active' => true,
+            'is_enabled' => true,
+        ]);
+
+        $department = Departments::create([
+            'department_name' => 'College of Computer Studies',
+            'department_code' => 'CCS',
+        ]);
+
+        [$targetSection, $onlineSection] = array_map(static fn (string $name): Sections => Sections::create([
+            'section_name' => $name,
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'semester_id' => $semester->id,
+            'status' => 'active',
+        ]), ['BSIT 1C', 'BSIT 1D']);
+
+        $course = Course::create([
+            'course_code' => 'IT 101',
+            'course_name' => 'Introduction to Computing',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'major',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+
+        Rooms::create([
+            'room_code' => 'B4-101',
+            'building' => 'Building 4',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+
+        // The other section's online IT 101 runs all day except Tuesday and
+        // Thursday. The room is free every day, so only the preference moves
+        // the face-to-face class off those days.
+        foreach (['Monday', 'Wednesday', 'Friday', 'Saturday', 'Sunday'] as $day) {
+            Schedule::create([
+                'semester_id' => $semester->id,
+                'section_id' => $onlineSection->id,
+                'department_id' => $department->id,
+                'course_id' => $course->id,
+                'room_id' => null,
+                'day' => $day,
+                'start_time' => '07:00:00',
+                'end_time' => '20:30:00',
+                'mode' => 'online',
+                'status' => 'draft',
+            ]);
+        }
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: $targetSection->id,
+            courseIds: [$course->id],
+            maxSolutions: 1,
+            seed: 1234,
+        );
+
+        $this->assertNotEmpty($solutions);
+        foreach ($solutions[0]['schedules'] as $schedule) {
+            $this->assertSame('on-site', $schedule['mode']);
+            $this->assertContains($schedule['day'], ['Tuesday', 'Thursday']);
+        }
+    }
+
     public function test_generation_falls_back_online_when_existing_classrooms_are_fully_booked(): void
     {
         $semester = Semester::create([
@@ -1319,7 +1396,9 @@ class DefaultLectureLabGenerationTest extends TestCase
             'department_id' => $department->id,
         ]);
 
-        foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as $day) {
+        // Every day is a teaching day now, so Sunday has to be booked solid too --
+        // otherwise the solver correctly fills it on-site instead of falling online.
+        foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day) {
             Schedule::create([
                 'semester_id' => $semester->id,
                 'section_id' => $blockingSection->id,
@@ -1404,7 +1483,9 @@ class DefaultLectureLabGenerationTest extends TestCase
             $courseIds[] = $course->id;
         }
 
-        foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as $day) {
+        // Every day is a teaching day now, so Sunday has to be booked solid too --
+        // otherwise the solver correctly fills it on-site instead of falling online.
+        foreach (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day) {
             Schedule::create([
                 'semester_id' => $semester->id,
                 'section_id' => $blockingSection->id,

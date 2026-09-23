@@ -67,6 +67,10 @@ return [
 
     'timezone' => env('APP_TIMEZONE', 'Asia/Manila'),
 
+    // Months an archived (soft-deleted) schedule is kept before model:prune
+    // removes it. History snapshots are not affected.
+    'schedule_archive_retention_months' => (int) env('SCHEDULE_ARCHIVE_RETENTION_MONTHS', 12),
+
     'performance_logging' => env('PERFORMANCE_LOGGING', false),
 
     /*

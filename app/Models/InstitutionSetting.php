@@ -20,8 +20,8 @@ class InstitutionSetting extends Model
     public static function current(): self
     {
         return static::query()->firstOrCreate([], [
-            'president_name' => 'ATTY. NADYA B. EMANO-ELIPE',
-            'president_title' => 'OIC-College President',
+            'president_name' => 'College President',
+            'president_title' => 'President',
         ]);
     }
 }

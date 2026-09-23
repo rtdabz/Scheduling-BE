@@ -6,6 +6,7 @@ use App\Http\Requests\Course\StoreCourseRequest;
 use App\Http\Requests\Course\UpdateCourseRequest;
 use App\Models\Course;
 use App\Models\Curriculum;
+use App\Models\Schedule;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
@@ -244,6 +245,11 @@ class CoursesController extends Controller
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) {
             return response()->json(['message' => 'Forbidden.'], 403);
+        }
+        if (Schedule::where('course_id', $course->id)->exists()) {
+            return response()->json([
+                'message' => 'This course cannot be archived while classes of it are scheduled.',
+            ], 422);
         }
         $course->delete();
         ApiCache::forgetGroups(['courses.index', 'initial.data']);
