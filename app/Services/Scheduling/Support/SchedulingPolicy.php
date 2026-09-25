@@ -239,6 +239,11 @@ final class SchedulingPolicy
 
     public const CUSTOM_PATTERN_REGEX = '/^days:([0-6])-([0-6])$/';
 
+    /** A Consecutive Days run's marker on each of its meetings: `consecutive:N`. */
+    public const CONSECUTIVE_PATTERN_REGEX = '/^consecutive:([2-7])$/';
+
+    public const MIN_CONSECUTIVE_DAYS = 2;
+
     public const SOFT_LATE_START_AFTER_SLOT = 22;
 
     public const SOFT_LATE_SLOT_PENALTY = 2;
@@ -273,6 +278,15 @@ final class SchedulingPolicy
      * conflict once instructors are assigned.
      */
     public const SOFT_MIXED_MODE_COURSE_OVERLAP_PENALTY = 2000;
+
+    /**
+     * Applied while ranking a Monday-Thursday single meeting in a lecture room
+     * whose pair day (MW, TTh) is free in that room at that time: taking it
+     * leaves the slot on the pair day unusable for a split session. A slot
+     * whose pair day is already booked costs nothing, so single meetings that
+     * cannot go late in the week fill the slots splits could not use anyway.
+     */
+    public const SOFT_SPLIT_PAIR_BREAK_PENALTY = 2000;
 
     /** Prefer a feasible weekday physical placement over a weekend placement. */
     public const SOFT_WEEKDAY_PHYSICAL_MIGRATION_PENALTY = 6000;
@@ -514,7 +528,7 @@ final class SchedulingPolicy
         'room_department_alignment' => [
             'severity' => 'hard',
             'category' => 'room',
-            'description' => 'A room must be shared or owned by the scheduled section department.',
+            'description' => 'A room must be shared or owned by the scheduled section department, and used on a day it belongs to the section program when the department divides its rooms between programs.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         'preferred_pattern' => [
@@ -699,8 +713,32 @@ final class SchedulingPolicy
         'split_group_same_time' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
-            'description' => 'Both meetings of a Split Session or Hybrid Split use the same start and end time.',
+            'description' => 'Every meeting of a Split Session, Hybrid Split or Consecutive Days class uses the same start and end time.',
             'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'consecutive_day_count' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'A Consecutive Days class keeps all N of its linked meetings.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'consecutive_days' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'A Consecutive Days class meets on N calendar-consecutive days, without gaps and without wrapping into the next week.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'consecutive_mode' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'Every meeting of a Consecutive Days class uses one delivery mode.',
+            'enforced_by' => ['rule_engine', 'csp'],
+        ],
+        'consecutive_days_shape' => [
+            'severity' => 'hard',
+            'category' => 'configuration',
+            'description' => 'A course set to Consecutive Days is not also split, Integrated or pinned to a two-day pattern in the same run.',
+            'enforced_by' => ['generation_configuration_validation'],
         ],
         'class_duration' => [
             'severity' => 'hard',
@@ -1169,6 +1207,145 @@ final class SchedulingPolicy
         } catch (InvalidArgumentException) {
             return false;
         }
+    }
+
+    /**
+     * A pattern a saved meeting may carry: a user-chosen two-day pattern, or
+     * the `consecutive:N` marker a Consecutive Days run is stamped with. The
+     * marker is never a Generator choice -- it comes from the course's
+     * Consecutive Days rule -- so only the save path accepts it.
+     */
+    public static function isValidRowPattern(mixed $pattern): bool
+    {
+        return self::consecutiveDayCount($pattern) !== null || self::isValidPreferredPattern($pattern);
+    }
+
+    public static function consecutivePattern(int $dayCount): string
+    {
+        return 'consecutive:'.$dayCount;
+    }
+
+    /** The N of a `consecutive:N` pattern, or null for any other pattern. */
+    public static function consecutiveDayCount(mixed $pattern): ?int
+    {
+        if (! is_string($pattern) || preg_match(self::CONSECUTIVE_PATTERN_REGEX, $pattern, $matches) !== 1) {
+            return null;
+        }
+
+        return (int) $matches[1];
+    }
+
+    /**
+     * How many classes' worth of weekly time a meeting's section may spend on
+     * its course: a Consecutive Days run is a Regular class met for its full
+     * length on each of its N days, so its week holds N; anything else one.
+     * `class_duration` multiplies the course's weekly ceiling by this.
+     */
+    public static function weeklyCeilingMeetings(mixed $pattern): int
+    {
+        return self::consecutiveDayCount($pattern) ?? 1;
+    }
+
+    /** The longest run the department's week allows: Monday-Saturday, or through Sunday. */
+    public static function maxConsecutiveDays(bool $sundayClassesEnabled): int
+    {
+        return count(self::teachingDays($sundayClassesEnabled));
+    }
+
+    /**
+     * Every run of $dayCount calendar-consecutive teaching days, in week order.
+     *
+     * The week does not wrap: Sunday -> Monday is the next week. A day the run
+     * may not use breaks it rather than being skipped, so with Sunday closed
+     * Saturday -> Monday is not consecutive, and a day left out of Step 1's
+     * Preferred Days ($allowedDays) removes every run through it.
+     *
+     * @param  list<string>|null  $allowedDays
+     * @return list<list<string>>
+     */
+    public static function consecutiveDayRuns(int $dayCount, bool $sundayClassesEnabled, ?array $allowedDays = null): array
+    {
+        $days = self::teachingDays($sundayClassesEnabled);
+        if ($dayCount < self::MIN_CONSECUTIVE_DAYS || $dayCount > count($days)) {
+            return [];
+        }
+
+        $runs = [];
+        for ($start = 0; $start + $dayCount <= count($days); $start++) {
+            $run = array_slice($days, $start, $dayCount);
+            if ($allowedDays === null || array_diff($run, $allowedDays) === []) {
+                $runs[] = $run;
+            }
+        }
+
+        return $runs;
+    }
+
+    /**
+     * Whether $days are distinct and calendar-consecutive, in any order.
+     *
+     * @param  list<string>  $days
+     */
+    public static function isConsecutiveDaySet(array $days): bool
+    {
+        if (count(array_unique($days)) !== count($days)) {
+            return false;
+        }
+
+        $indexes = array_map(self::dayIndex(...), $days);
+        sort($indexes);
+
+        return $indexes === range($indexes[0] ?? 0, ($indexes[0] ?? 0) + count($indexes) - 1);
+    }
+
+    /**
+     * The Consecutive Days rule in force for a section's courses, as
+     * course id => {day_count, preferred_start_day}. A section's own rule
+     * overrides the course-wide one (`section_id` null).
+     *
+     * @param  iterable<array<string, mixed>|object>  $rules  rows of course_consecutive_day_rules
+     * @return array<int, array{day_count: int, preferred_start_day: string|null}>
+     */
+    public static function resolveConsecutiveDayRules(iterable $rules, ?int $sectionId): array
+    {
+        $courseWide = [];
+        $ownSection = [];
+        foreach ($rules as $rule) {
+            $rule = (array) $rule;
+            $courseId = (int) ($rule['course_id'] ?? 0);
+            $ruleSectionId = isset($rule['section_id']) ? (int) $rule['section_id'] : null;
+            if ($courseId <= 0 || ($ruleSectionId !== null && $ruleSectionId !== $sectionId)) {
+                continue;
+            }
+
+            $resolved = [
+                'day_count' => (int) ($rule['day_count'] ?? 0),
+                'preferred_start_day' => isset($rule['preferred_start_day']) && $rule['preferred_start_day'] !== ''
+                    ? (string) $rule['preferred_start_day']
+                    : null,
+            ];
+            if ($ruleSectionId === null) {
+                $courseWide[$courseId] = $resolved;
+            } else {
+                $ownSection[$courseId] = $resolved;
+            }
+        }
+
+        return array_replace($courseWide, $ownSection);
+    }
+
+    /**
+     * @param  list<int>  $courseIds  Optional filter; every course when empty.
+     * @return array<int, array{day_count: int, preferred_start_day: string|null}>
+     */
+    public static function consecutiveDayRuleMap(int $departmentId, ?int $sectionId, array $courseIds = []): array
+    {
+        $rules = DB::table('course_consecutive_day_rules')
+            ->where('department_id', $departmentId)
+            ->when($courseIds !== [], fn ($query) => $query->whereIn('course_id', array_map('intval', $courseIds)))
+            ->get(['course_id', 'section_id', 'day_count', 'preferred_start_day']);
+
+        return self::resolveConsecutiveDayRules($rules, $sectionId);
     }
 
     public static function isFixedMeetingPattern(?string $preferredPattern): bool

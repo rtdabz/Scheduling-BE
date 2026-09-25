@@ -7,6 +7,7 @@ namespace App\Services\Scheduling\Engine\Constraints\Families;
 use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
+use App\Services\Scheduling\Support\ProgramRoomShares;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 
 /**
@@ -38,7 +39,7 @@ final class RoomAvailabilityConstraints
 
         $violations = [];
 
-        $access = $this->roomAccess($row, $room);
+        $access = $this->roomAccess($row, $room) ?? $this->programShare($row, $room, $snapshot);
         if ($access !== null) {
             $violations[] = $access;
         }
@@ -90,6 +91,34 @@ final class RoomAvailabilityConstraints
         return ConstraintSupport::violation(
             'room_department_alignment',
             'Room '.($room['room_code'] ?? $row->roomId).' is granted to your department only on '.RoomAccessPolicy::describe($windows).'.',
+            context: ['room_id' => $row->roomId],
+        );
+    }
+
+    /**
+     * room_department_alignment. Mirrors DepartmentAssignmentRule: in a
+     * department with several programs, a divided room belongs to one program
+     * per weekday; the snapshot carries that on the room record.
+     *
+     * @param  array<string, mixed>  $room
+     */
+    private function programShare(ScheduleRow $row, array $room, SchedulingSnapshot $snapshot): ?ConstraintViolation
+    {
+        if (! is_array($room['program_days'] ?? null) || (int) ($room['department_id'] ?? 0) !== $row->departmentId) {
+            return null;
+        }
+
+        $programId = $snapshot->sectionsById[$row->sectionId]['program_id'] ?? null;
+        $message = ProgramRoomShares::refusal(
+            $room['program_days'],
+            $programId === null ? null : (int) $programId,
+            $row->day,
+            (string) ($room['room_code'] ?? $row->roomId),
+        );
+
+        return $message === null ? null : ConstraintSupport::violation(
+            'room_department_alignment',
+            $message,
             context: ['room_id' => $row->roomId],
         );
     }

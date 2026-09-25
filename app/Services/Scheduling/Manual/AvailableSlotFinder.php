@@ -52,6 +52,8 @@ final class AvailableSlotFinder
      * @param  list<array<string, mixed>>  $tentativeSchedules  unsaved rows the dialog is holding
      * @param  list<int>  $ignoreScheduleIds  rows being replaced by this placement
      * @param  string|null  $searchFromDay  the day listed first; the other weekdays follow, the weekend last
+     * @param  int|null  $consecutiveDays  a Consecutive Days run: only a start and room free on every day of
+     *                                     a run of this many back-to-back days is listed, on the run's first day
      * @return array{
      *     slots: list<array<string, mixed>>,
      *     rooms: list<array{room_id: int|null, room_code: string, room_type: string, mode: string, slot_count: int}>,
@@ -70,10 +72,12 @@ final class AvailableSlotFinder
         ?string $meetingType = null,
         array $excludedDays = [],
         ?string $searchFromDay = null,
+        ?int $consecutiveDays = null,
     ): array {
         if ($durationSlots <= 0) {
             throw new InvalidArgumentException('A meeting must be at least one slot long.');
         }
+        $isRun = $consecutiveDays !== null;
 
         $section = $snapshot->sectionsById[$sectionId] ?? null;
         $course = $snapshot->coursesById[$courseId] ?? null;
@@ -114,6 +118,8 @@ final class AvailableSlotFinder
         $slots = [];
         $countsByRoom = [];
         $truncated = false;
+        // A run is listed only once every one of its days is known to be free.
+        $freeByPlacement = [];
 
         foreach ($this->candidateRooms($snapshot, $modes) as $room) {
             $roomId = $room['room_id'];
@@ -151,6 +157,12 @@ final class AvailableSlotFinder
                         continue;
                     }
 
+                    if ($isRun) {
+                        $freeByPlacement[$roomKey.'@'.$startSlot][$day] = true;
+
+                        continue;
+                    }
+
                     $countsByRoom[$roomKey]['slot_count']++;
 
                     if (count($slots) >= self::MAX_SLOTS) {
@@ -175,6 +187,10 @@ final class AvailableSlotFinder
             }
         }
 
+        if ($isRun) {
+            [$slots, $truncated] = $this->runSlots($snapshot, $freeByPlacement, $starts, $consecutiveDays, $countsByRoom);
+        }
+
         // Days are listed from the day the placement collided on, so the other
         // times on that day come first, then the next weekday, and the weekend
         // only after every weekday.
@@ -197,6 +213,62 @@ final class AvailableSlotFinder
             'total' => array_sum(array_column($rooms, 'slot_count')),
             'truncated' => $truncated,
         ];
+    }
+
+    /**
+     * Consecutive Days: each start and room free on every day of a run, as
+     * one slot on the run's first day that also names its days. The rooms'
+     * counts become counts of runs.
+     *
+     * @param  array<string, array<string, true>>  $freeByPlacement  "roomKey@startSlot" => free days
+     * @param  list<array{start_slot: int, end_slot: int, start_time: string, end_time: string}>  $starts
+     * @param  array<string, array{room_id: int|null, room_code: string, room_type: string, mode: string, slot_count: int}>  $countsByRoom
+     * @return array{0: list<array<string, mixed>>, 1: bool}
+     */
+    private function runSlots(SchedulingSnapshot $snapshot, array $freeByPlacement, array $starts, int $dayCount, array &$countsByRoom): array
+    {
+        $startsBySlot = [];
+        foreach ($starts as $start) {
+            $startsBySlot[$start['start_slot']] = $start;
+        }
+        $runs = SchedulingPolicy::consecutiveDayRuns(
+            $dayCount,
+            (bool) ($snapshot->departmentSettings['sunday_classes_enabled'] ?? false),
+        );
+
+        $slots = [];
+        $truncated = false;
+        foreach ($freeByPlacement as $placement => $freeDays) {
+            [$roomKey, $startSlot] = explode('@', $placement);
+            $room = $countsByRoom[$roomKey];
+            $start = $startsBySlot[(int) $startSlot];
+
+            foreach ($runs as $run) {
+                if (array_diff($run, array_keys($freeDays)) !== []) {
+                    continue;
+                }
+
+                $countsByRoom[$roomKey]['slot_count']++;
+                if (count($slots) >= self::MAX_SLOTS) {
+                    $truncated = true;
+
+                    continue;
+                }
+
+                $slots[] = [
+                    'day' => $run[0],
+                    'day_index' => SchedulingPolicy::dayIndex($run[0]),
+                    'run_days' => $run,
+                    ...$start,
+                    'mode' => $room['mode'],
+                    'room_id' => $room['room_id'],
+                    'room_code' => $room['room_code'],
+                    'room_type' => $room['room_type'],
+                ];
+            }
+        }
+
+        return [$slots, $truncated];
     }
 
     /**

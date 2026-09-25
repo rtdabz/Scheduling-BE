@@ -25,7 +25,7 @@ final readonly class MeetingGroup implements SchedulingContract
             throw new InvalidArgumentException('Meeting group identity is incomplete.');
         }
 
-        if (! in_array($this->type, ['single', 'multi_day', 'hybrid', 'minor_split'], true)) {
+        if (! in_array($this->type, ['single', 'multi_day', 'hybrid', 'minor_split', 'consecutive'], true)) {
             throw new InvalidArgumentException('Unsupported meeting group type.');
         }
 

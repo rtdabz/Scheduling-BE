@@ -13,8 +13,10 @@ class CspWeekdayFirstPriorityTest extends TestCase
         $solver = new CspSolver;
         $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
 
-        $weekdayPhysical = $this->candidate('Monday', 'on-site', 1, 'lecture');
-        $weekendPhysical = $this->candidate('Saturday', 'on-site', 1, 'lecture');
+        // A laboratory meeting: a single lecture-room meeting is steered late in
+        // the week instead (see the test below).
+        $weekdayPhysical = $this->candidate('Monday', 'on-site', 1, 'laboratory');
+        $weekendPhysical = $this->candidate('Saturday', 'on-site', 1, 'laboratory');
         $weekdayOnline = $this->candidate('Monday', 'online', null, 'online');
 
         $this->assertLessThan(
@@ -25,6 +27,73 @@ class CspWeekdayFirstPriorityTest extends TestCase
             $priority->invoke($solver, $weekdayOnline, 1),
             $priority->invoke($solver, $weekdayPhysical, 1),
         );
+    }
+
+    public function test_saturday_single_lecture_meeting_is_searched_with_friday_before_monday_to_thursday(): void
+    {
+        $solver = new CspSolver;
+        $priority = new ReflectionMethod($solver, 'candidateAllocationPriority');
+        $dayTier = new ReflectionMethod($solver, 'candidateSearchDayTier');
+
+        $monday = $this->candidate('Monday', 'on-site', 1, 'lecture');
+        $friday = $this->candidate('Friday', 'on-site', 1, 'lecture');
+        $saturday = $this->candidate('Saturday', 'on-site', 1, 'lecture');
+        $sunday = $this->candidate('Sunday', 'on-site', 1, 'lecture');
+
+        // Same allocation tier as the weekdays, so the day tier decides:
+        // Friday and Saturday (0) before Monday-Thursday (1).
+        $this->assertSame($priority->invoke($solver, $monday, 1), $priority->invoke($solver, $saturday, 1));
+        $this->assertSame($priority->invoke($solver, $friday, 1), $priority->invoke($solver, $saturday, 1));
+        $this->assertSame(0, $dayTier->invoke($solver, $saturday));
+        $this->assertSame(1, $dayTier->invoke($solver, $monday));
+
+        // Sunday is not one of the preferred late-week days.
+        $this->assertGreaterThan($priority->invoke($solver, $monday, 1), $priority->invoke($solver, $sunday, 1));
+    }
+
+    public function test_monday_to_thursday_single_meeting_prefers_a_slot_whose_pair_day_is_taken(): void
+    {
+        $solver = new CspSolver;
+        $penalty = new ReflectionMethod($solver, 'candidateSplitPairBreakPenalty');
+
+        $monday = $this->timedCandidate('Monday', 1, 0, 4);
+
+        // Wednesday is free at that time in that room: an MW split could have
+        // used the slot, so taking it on Monday costs.
+        $this->assertGreaterThan(0, $penalty->invoke($solver, $monday, []));
+
+        // Wednesday is already booked there, so no MW split can use the slot.
+        $wednesdayBooked = $this->timedCandidate('Wednesday', 1, 2, 6);
+        $this->assertSame(0, $penalty->invoke($solver, $monday, [$wednesdayBooked]));
+
+        // A booking in another room, or at another time, does not count.
+        $this->assertGreaterThan(0, $penalty->invoke($solver, $monday, [$this->timedCandidate('Wednesday', 2, 0, 4)]));
+        $this->assertGreaterThan(0, $penalty->invoke($solver, $monday, [$this->timedCandidate('Wednesday', 1, 4, 8)]));
+
+        // Friday has no pair day; laboratory rooms are out of scope.
+        $this->assertSame(0, $penalty->invoke($solver, $this->timedCandidate('Friday', 1, 0, 4), []));
+        $this->assertSame(0, $penalty->invoke($solver, $this->timedCandidate('Monday', 1, 0, 4, 'laboratory'), []));
+    }
+
+    private function timedCandidate(string $day, int $roomId, int $startSlot, int $endSlot, string $roomType = 'lecture'): array
+    {
+        $block = [
+            'day' => $day,
+            'start_slot' => $startSlot,
+            'end_slot' => $endSlot,
+            'start_time' => sprintf('%02d:%02d:00', 7 + intdiv($startSlot, 2), ($startSlot % 2) * 30),
+            'end_time' => sprintf('%02d:%02d:00', 7 + intdiv($endSlot, 2), ($endSlot % 2) * 30),
+            'mode' => 'on-site',
+            'room_id' => $roomId,
+            'room_type' => $roomType,
+        ];
+
+        return [
+            'mode' => 'on-site',
+            'room_id' => $roomId,
+            'room_type' => $roomType,
+            'blocks' => [$block],
+        ];
     }
 
     public function test_online_lecture_can_enter_the_same_search_tier_on_saturday(): void

@@ -51,7 +51,9 @@ final class SectionLoadConstraints
                 isset($snapshot->operatingHours['opening_time']) ? (string) $snapshot->operatingHours['opening_time'] : null,
                 isset($snapshot->operatingHours['closing_time']) ? (string) $snapshot->operatingHours['closing_time'] : null,
             )
-            : SchedulingPolicy::courseWeeklyCeilingMinutes($course, $snapshot->departmentSettings);
+            // A Consecutive Days run meets for the class's full length every day.
+            : SchedulingPolicy::courseWeeklyCeilingMinutes($course, $snapshot->departmentSettings)
+                * SchedulingPolicy::weeklyCeilingMeetings($row->preferredPattern);
         if ($allowed <= 0) {
             return null;
         }

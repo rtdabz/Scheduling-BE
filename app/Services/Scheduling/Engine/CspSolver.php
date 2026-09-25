@@ -155,6 +155,14 @@ class CspSolver
     /** @var array<int, string> */
     private array $generationForcedDaysByCourseId = [];
 
+    /**
+     * Course id => the Consecutive Days rule this section follows
+     * ({day_count, preferred_start_day}), from the snapshot.
+     *
+     * @var array<int, array{day_count: int, preferred_start_day: string|null}>
+     */
+    private array $consecutiveRulesByCourseId = [];
+
     /** @var array<int, list<array<string, mixed>>> */
     private array $requirementsByCourseId = [];
 
@@ -281,6 +289,15 @@ class CspSolver
     private float $timeoutSeconds = 8.0;
 
     private bool $searchLimitReached = false;
+
+    /**
+     * How often the last search reached a course with no candidate left that
+     * fits beside the courses already placed, keyed by course id. The course
+     * the search keeps stalling on is what actually blocks the section.
+     *
+     * @var array<int, int>
+     */
+    private array $deadEndsByCourseId = [];
 
     private float $metricsStartedAt = 0.0;
 
@@ -603,6 +620,7 @@ class CspSolver
             tentativeSchedules: $this->tentativeSchedules,
         );
         $this->blockRoomsOutsideGrantWindows();
+        $this->blockRoomsOnOtherProgramsDays($section);
 
         $solverSeed = $seed !== null ? (int) $seed : random_int(1, 1000000);
 
@@ -612,6 +630,10 @@ class CspSolver
         $this->sundayClassesEnabled = (bool) ($settings['sunday_classes_enabled'] ?? false);
         $forcedDaysByCourseId = $this->forcedDaysByCourseId((int) $section->department_id, $courseIds);
         $this->generationForcedDaysByCourseId = $forcedDaysByCourseId;
+        $this->consecutiveRulesByCourseId = array_intersect_key(
+            $snapshot->consecutiveDayRulesFor((int) $section->id),
+            array_fill_keys(array_map('intval', $courseIds), true),
+        );
 
         $variables = $this->buildVariables(
             courses: $courses,
@@ -715,6 +737,16 @@ class CspSolver
                     return $leftSplit ? -1 : 1;
                 }
 
+                // A Split Session or Hybrid Split needs one start time free on
+                // both days of a pair, so it claims Monday-Thursday before any
+                // single meeting. Placed after one, it would drop to its pattern
+                // fallbacks rather than the search moving the single meeting.
+                $leftSplitSession = (bool) ($left['is_split_session'] ?? false);
+                $rightSplitSession = (bool) ($right['is_split_session'] ?? false);
+                if ($leftSplitSession !== $rightSplitSession) {
+                    return $leftSplitSession ? -1 : 1;
+                }
+
                 $priorityComparison = ($left['scheduling_priority'] ?? 2)
                     <=> ($right['scheduling_priority'] ?? 2);
 
@@ -745,6 +777,8 @@ class CspSolver
 
         foreach ($variables as $variable) {
             if ($variable['domain'] === []) {
+                $this->recordDeadEnd((int) $variable['course_id']);
+
                 return [];
             }
         }
@@ -902,6 +936,17 @@ class CspSolver
         return $this->iterations;
     }
 
+    /** @return array<int, int> dead ends of the last search, keyed by course id */
+    public function deadEndsByCourseId(): array
+    {
+        return $this->deadEndsByCourseId;
+    }
+
+    private function recordDeadEnd(int $courseId): void
+    {
+        $this->deadEndsByCourseId[$courseId] = ($this->deadEndsByCourseId[$courseId] ?? 0) + 1;
+    }
+
     public function generationMetrics(): SchedulingGenerationMetrics
     {
         // A direct caller that passed no snapshot got one captured for it;
@@ -969,6 +1014,7 @@ class CspSolver
             static fn (array $candidate): bool => (bool) ($candidate['_room_tba'] ?? false),
         );
         $candidateGroups = $this->weekdayFirstCandidateGroups($domain, $hasRoomTbaCandidates, (int) $section->id);
+        $placeable = 0;
 
         foreach ($candidateGroups as $candidates) {
             $solutionsBeforeGroup = count($solutions);
@@ -998,6 +1044,7 @@ class CspSolver
                     continue;
                 }
 
+                $placeable++;
                 $nextAssignments = $assignments;
                 $nextAssignments[] = $this->withScheduleContext(
                     assignment: $candidate,
@@ -1024,6 +1071,10 @@ class CspSolver
             if (count($solutions) > $solutionsBeforeGroup) {
                 return;
             }
+        }
+
+        if ($placeable === 0) {
+            $this->recordDeadEnd((int) $variable['course_id']);
         }
     }
 
@@ -1318,7 +1369,8 @@ class CspSolver
                 'mixed_mode_overlap' => $this->candidateMixedModeCourseOverlaps($candidate, $sectionId),
                 'day_pair' => $this->candidateDayPairLoadRank($candidate, $dayLoads, $sectionId),
                 'penalty' => $this->candidateTentativeGapPenalty($candidate, $assignments)
-                    + $this->candidateDayBalancePenalty($candidate, $dayLoads, $sectionId),
+                    + $this->candidateDayBalancePenalty($candidate, $dayLoads, $sectionId)
+                    + $this->candidateSplitPairBreakPenalty($candidate, $assignments),
                 'index' => $index,
             ];
         }
@@ -1410,6 +1462,68 @@ class CspSolver
         }
 
         return $penalty;
+    }
+
+    /**
+     * A single lecture-room meeting that could not go late in the week should
+     * take a Monday-Thursday slot whose pair day (MW, TTh) is already booked in
+     * the same room at that time: no split session could use that slot anyway.
+     * One whose pair day is free is penalised, because it leaves that free slot
+     * on the pair day stranded for every MW/TTh split.
+     *
+     * Only a ranking penalty inside a tier; it never removes a candidate.
+     *
+     * @param  list<array<string, mixed>>  $assignments
+     */
+    private function candidateSplitPairBreakPenalty(array $candidate, array $assignments): int
+    {
+        if (! $this->lateWeekCapacityPreference || ! $this->prefersLateWeekPlacement($candidate)) {
+            return 0;
+        }
+
+        $block = $candidate['blocks'][0];
+        $day = (string) ($block['day'] ?? '');
+        $pairDay = null;
+        foreach (SchedulingPolicy::autoSplitDayPairs() as [$first, $second]) {
+            $pairDay = match ($day) {
+                $first => $second,
+                $second => $first,
+                default => $pairDay,
+            };
+        }
+
+        if ($pairDay === null) {
+            return 0;
+        }
+
+        $roomId = (int) (array_key_exists('room_id', $block) ? $block['room_id'] : $candidate['room_id']);
+
+        if ($this->overlapCountAtLeast(
+            "r:{$roomId}:{$pairDay}",
+            $this->timeToMinutes((string) ($block['start_time'] ?? '')),
+            $this->timeToMinutes((string) ($block['end_time'] ?? '')),
+            1,
+        )) {
+            return 0;
+        }
+
+        foreach ($assignments as $assignment) {
+            foreach ($assignment['blocks'] ?? [] as $assignedBlock) {
+                $assignedRoomId = SolverInput::nullableRoomId(
+                    array_key_exists('room_id', $assignedBlock)
+                        ? $assignedBlock['room_id']
+                        : ($assignment['room_id'] ?? null)
+                );
+
+                if (($assignedBlock['day'] ?? null) === $pairDay
+                    && $assignedRoomId === $roomId
+                    && $this->nonOverlappingSlotGap($block, $assignedBlock) === null) {
+                    return 0;
+                }
+            }
+        }
+
+        return SchedulingPolicy::SOFT_SPLIT_PAIR_BREAK_PENALTY;
     }
 
     /**
@@ -1665,6 +1779,18 @@ class CspSolver
             $requiresBalancedSplit = in_array((int) $course->id, $balancedSplitCourseIds, true);
             $requiresHybridSplit = in_array((int) $course->id, $hybridSplitCourseIds, true);
 
+            // Consecutive Days is the course's shape in this section: one class
+            // met on N back-to-back days. It replaces any split the run asked
+            // for (the preflight refuses that combination with a reason).
+            $consecutiveRule = $this->consecutiveRulesByCourseId[(int) $course->id] ?? null;
+            if ($consecutiveRule !== null) {
+                $hasBothComponents = false;
+                $courseIsHybrid = false;
+                $requiresBalancedSplit = false;
+                $requiresHybridSplit = false;
+                $preferredPattern = null;
+            }
+
             $lectureComponentSlots = null;
             $laboratoryComponentSlots = null;
             if ($hasBothComponents) {
@@ -1697,6 +1823,13 @@ class CspSolver
             // reads live room-usage counters that do change per attempt.
             $forcedDay = $forcedDaysByCourseId[(int) $course->id] ?? null;
 
+            // A run is a Regular class repeated: each of its days meets for the
+            // class's full length (an 8-unit course, 8 hours every day).
+            $consecutiveDayCount = $consecutiveRule['day_count'] ?? 0;
+            if ($throwOnEmptyDomain && $consecutiveRule !== null) {
+                $this->assertConsecutiveDaysPlaceable($course, $sectionId, $consecutiveDayCount, $consecutiveRule['preferred_start_day'] ?? null, $forcedDay);
+            }
+
             $domainCacheKey = $this->domainCacheKey(
                 courseId: (int) $course->id,
                 roomsSignature: $roomsSignature,
@@ -1716,6 +1849,8 @@ class CspSolver
                     array_key_exists((int) $course->id, $deliveryModesByCourseId) ? 1 : 0,
                     $requirementsByCourseId[(int) $course->id] ?? null,
                     $anchoredSchedulesByCourseId[(int) $course->id] ?? null,
+                    $consecutiveDayCount,
+                    $consecutiveRule['preferred_start_day'] ?? '',
                 ],
             );
 
@@ -1728,6 +1863,14 @@ class CspSolver
                 $emptyAfterSunday = $cached['empty_after_sunday'] ?? false;
             } else {
             $domain = match (true) {
+                $consecutiveRule !== null => $this->buildConsecutiveDaysDomain(
+                    course: $course,
+                    matchingRooms: $rooms,
+                    meetingSlots: $durationSlots,
+                    dayCount: $consecutiveDayCount,
+                    deliveryMode: $courseDeliveryMode,
+                    startDay: $consecutiveRule['preferred_start_day'] ?? null,
+                ),
                 // Lecture and laboratory are always two separate meetings of
                 // their own lengths. A preferred pattern used to send this
                 // course to the generic pattern builder, which split the
@@ -1752,14 +1895,16 @@ class CspSolver
                     durationSlots: $durationSlots,
                     preferredPattern: $preferredPattern,
                 ),
-                $courseDeliveryMode === 'online' && $preferredPattern === null => $this->buildSingleDayDomain(
+                // An Online Split Session is still two meetings: the split is
+                // checked before online, which alone would build one meeting.
+                $requiresBalancedSplit && $preferredPattern === null => $this->buildFlexibleBalancedSplitDomain(
                     course: $course,
                     matchingRooms: $rooms,
                     durationSlots: $durationSlots,
                     deliveryMode: $courseDeliveryMode,
                     isHybrid: false,
                 ),
-                $requiresBalancedSplit && $preferredPattern === null => $this->buildFlexibleBalancedSplitDomain(
+                $courseDeliveryMode === 'online' && $preferredPattern === null => $this->buildSingleDayDomain(
                     course: $course,
                     matchingRooms: $rooms,
                     durationSlots: $durationSlots,
@@ -1808,7 +1953,8 @@ class CspSolver
             $emptyAfterRequirements = $domain === [] && isset($requirementsByCourseId[(int) $course->id]);
 
             $emptyAfterForcedDay = false;
-            if ($forcedDay !== null && $domain !== []) {
+            // A run cannot sit on one Required Day; the pair is refused above.
+            if ($forcedDay !== null && $domain !== [] && $consecutiveRule === null) {
                 $domain = $this->filterDomainByForcedDay($domain, $forcedDay);
                 $emptyAfterForcedDay = $domain === [];
             }
@@ -1945,9 +2091,13 @@ class CspSolver
                 'scheduling_priority' => $this->courseSchedulingPriority($course),
                 'is_field' => $this->isFieldCourse($course),
                 'is_split_lecture_lab' => $hasBothComponents,
+                'is_split_session' => $requiresBalancedSplit || $requiresHybridSplit,
                 'physical_room_options' => $this->countPhysicalRoomOptions($domain),
                 'duration_slots' => $durationSlots,
-                'preferred_pattern' => $preferredPattern,
+                // A run is placed first: it needs one time free on N days.
+                'preferred_pattern' => $consecutiveRule !== null
+                    ? SchedulingPolicy::consecutivePattern($consecutiveDayCount)
+                    : $preferredPattern,
                 'forced_day' => $forcedDay,
                 'delivery_mode' => $courseDeliveryMode,
                 'is_hybrid' => $courseIsHybrid,
@@ -1956,6 +2106,119 @@ class CspSolver
         }
 
         return $variables;
+    }
+
+    /**
+     * Refuse, with the setting to change, a Consecutive Days course that can
+     * never be placed: it also has a Required Day, its ticked days fall
+     * outside the days this run may use, or those days have no N back-to-back.
+     */
+    private function assertConsecutiveDaysPlaceable(Course $course, int $sectionId, int $dayCount, ?string $startDay, ?string $forcedDay): void
+    {
+        $label = $this->sectionLabel($sectionId).' / '.(string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id));
+
+        if ($forcedDay !== null) {
+            throw new RuntimeException(sprintf(
+                '%s has a Required Day of %s and is also set to meet on %d consecutive days. Clear its Required Day in Setup Courses, or tick its meeting days instead.',
+                $label,
+                $forcedDay,
+                $dayCount,
+            ));
+        }
+
+        $runs = SchedulingPolicy::consecutiveDayRuns($dayCount, $this->sundayClassesEnabled, $this->allowedDays);
+        if ($startDay !== null && ! in_array($startDay, array_column($runs, 0), true)) {
+            $ticked = SchedulingPolicy::consecutiveDayRuns($dayCount, true)[SchedulingPolicy::dayIndex($startDay)] ?? [$startDay];
+            throw new RuntimeException(sprintf(
+                '%s is set to meet %s, but %s. Tick other meeting days in Setup Courses%s.',
+                $label,
+                implode(', ', $ticked),
+                match (true) {
+                    in_array('Sunday', $ticked, true) && ! $this->sundayClassesEnabled => 'Sunday classes are not enabled for this department',
+                    $this->allowedDays !== null => sprintf('the Preferred Days (%s) leave out some of those days', implode(', ', $this->allowedDays)),
+                    default => 'those days run past the end of the teaching week',
+                },
+                $this->allowedDays !== null ? ', or add those days to the Preferred Days' : '',
+            ));
+        }
+
+        if ($runs === []) {
+            throw new RuntimeException(sprintf(
+                '%s needs %d consecutive days, but %s. %s',
+                $label,
+                $dayCount,
+                $this->allowedDays !== null
+                    ? sprintf('the Preferred Days (%s) have no %d back-to-back days', implode(', ', $this->allowedDays), $dayCount)
+                    : sprintf('the %s teaching week is shorter than that', $this->sundayClassesEnabled ? 'Monday-Sunday' : 'Monday-Saturday'),
+                $this->allowedDays !== null
+                    ? 'Add the missing days to the Preferred Days, or choose fewer consecutive days.'
+                    : 'Choose fewer consecutive days.',
+            ));
+        }
+    }
+
+    /**
+     * Consecutive Days: a Regular class met on $dayCount calendar-consecutive
+     * days, for its full length, at one start time and in one room every day.
+     * With $startDay -- the first of the days ticked in Setup Courses -- the
+     * class meets on exactly those days; without it, on any run that fits.
+     *
+     * Built from the single-meeting candidates of that length, so the
+     * room types, delivery modes, field window and Room TBA / online fallbacks
+     * are exactly a single meeting's. A run is kept only when the same start,
+     * room and mode is a candidate on every one of its days. Sharing the room
+     * keeps the domain the size of a single meeting's instead of rooms^N.
+     *
+     * The blocks carry no meeting type: a run is not an Integrated lecture or
+     * laboratory session, and a typed linked meeting would be judged as one.
+     */
+    private function buildConsecutiveDaysDomain(
+        Course $course,
+        Collection $matchingRooms,
+        int $meetingSlots,
+        int $dayCount,
+        string $deliveryMode,
+        ?string $startDay = null,
+    ): array {
+        $placements = [];
+        foreach ($this->buildSingleDayDomain($course, $matchingRooms, $meetingSlots, $deliveryMode, false) as $single) {
+            $block = $single['blocks'][0];
+            unset($block['meeting_type']);
+            $key = implode('|', [
+                (string) ($single['mode'] ?? ''),
+                (string) ($single['room_type'] ?? ''),
+                (string) ($single['room_id'] ?? 'tba'),
+                ! empty($single['_room_tba']) ? 'tba' : 'room',
+                (int) $block['start_slot'],
+            ]);
+            $placements[$key]['candidate'] ??= $single;
+            $placements[$key]['blocks'][(string) $block['day']] = $block;
+        }
+
+        $pattern = SchedulingPolicy::consecutivePattern($dayCount);
+        $domain = [];
+        foreach (SchedulingPolicy::consecutiveDayRuns($dayCount, $this->sundayClassesEnabled, $this->allowedDays) as $run) {
+            if ($startDay !== null && $run[0] !== $startDay) {
+                continue;
+            }
+            foreach ($placements as $placement) {
+                $blocks = [];
+                foreach ($run as $day) {
+                    if (! isset($placement['blocks'][$day])) {
+                        continue 2;
+                    }
+                    $blocks[] = $placement['blocks'][$day];
+                }
+
+                $domain[] = [
+                    ...$placement['candidate'],
+                    'preferred_pattern' => $pattern,
+                    'blocks' => $blocks,
+                ];
+            }
+        }
+
+        return $domain;
     }
 
     /**
@@ -3756,10 +4019,14 @@ class CspSolver
                     $row['split_group_id'] = $splitGroupId;
                     $row['meeting_index'] = $index + 1;
 
-                    // Determine meeting type: lecture or laboratory
+                    // Determine meeting type: lecture or laboratory. A
+                    // Consecutive Days run is neither: typed, its linked
+                    // meetings would be judged as Integrated sessions.
                     $courseId = (int) $assignment['course_id'];
                     $courseObj = $this->loadedCoursesById[$courseId] ?? null;
-                    if (! empty($block['meeting_type'])) {
+                    if (SchedulingPolicy::consecutiveDayCount($assignment['preferred_pattern'] ?? null) !== null) {
+                        $row['meeting_type'] = null;
+                    } elseif (! empty($block['meeting_type'])) {
                         $row['meeting_type'] = $block['meeting_type'];
                     } elseif ($courseObj && $courseObj->lab_hours > 0) {
                         $blockSlots = $block['end_slot'] - $block['start_slot'];
@@ -3885,6 +4152,7 @@ class CspSolver
         $this->startedAt = microtime(true);
         $this->timeoutSeconds = $timeoutSeconds;
         $this->searchLimitReached = false;
+        $this->deadEndsByCourseId = [];
         $this->metricsStartedAt = microtime(true);
         $this->metricsVariableCount = 0;
         $this->metricsCandidateCountBefore = 0;
@@ -4268,6 +4536,19 @@ class CspSolver
     }
 
     /**
+     * A Saturday single meeting in a lecture room while a timetable is being
+     * built: one of SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS, so it is
+     * searched with Friday rather than after Monday-Thursday. Sunday stays in
+     * the weekend tier.
+     */
+    private function isLateWeekSaturdayMeeting(array $candidate): bool
+    {
+        return $this->lateWeekCapacityPreference
+            && ($candidate['blocks'][0]['day'] ?? null) === 'Saturday'
+            && $this->prefersLateWeekPlacement($candidate);
+    }
+
+    /**
      * The pair a two-meeting class prefers rotates by section and course
      * across MW and TTh -- and Friday + Saturday when the run allows it -- so
      * the pairs share the load instead of one filling first. It is only a
@@ -4322,9 +4603,13 @@ class CspSolver
         $mode = (string) ($candidate['mode'] ?? 'on-site');
 
         // An allowed Friday + Saturday pair ranks as a regular weekday pair,
-        // not in the Saturday tier.
+        // not in the Saturday tier. So does a Saturday single meeting in a
+        // lecture room: department policy wants it late in the week, and in
+        // the Saturday tier it was only reached after Monday-Thursday had
+        // been used up -- taking the lecture rooms the MW/TTh splits need.
         $containsWeekend = $this->candidateContainsWeekendBlock($candidate)
-            && ! $this->isRegularFridaySaturdayPair($candidate);
+            && ! $this->isRegularFridaySaturdayPair($candidate)
+            && ! $this->isLateWeekSaturdayMeeting($candidate);
 
         // A field course consumes no classroom, so it stays in the preferred
         // tier -- but a weekend field meeting is still a weekend meeting, and
@@ -4734,6 +5019,36 @@ class CspSolver
                         'end_minutes' => $range['end_minutes'],
                     ];
                 }
+            }
+        }
+    }
+
+    /**
+     * Books every divided room as occupied for the whole of each day another
+     * program owns (ProgramRoomShares), the same way a granted room is booked
+     * outside its windows. Per section, because one year-level run can hold
+     * sections of several programs. The generator never borrows another
+     * program's day, even a lendable one: borrowing is a deliberate manual
+     * placement, which the validator allows once the owner is done.
+     */
+    private function blockRoomsOnOtherProgramsDays(Sections $section): void
+    {
+        if ($section->program_id === null) {
+            return;
+        }
+
+        foreach ($this->snapshot()->roomsById as $roomId => $attributes) {
+            foreach ((array) ($attributes['program_days'] ?? []) as $day => $share) {
+                if ((int) ($share['program_id'] ?? 0) === (int) $section->program_id) {
+                    continue;
+                }
+
+                $this->existingScheduleIndex["r:{$roomId}:{$day}"][] = [
+                    'start_time' => '',
+                    'end_time' => '',
+                    'start_minutes' => 0,
+                    'end_minutes' => 24 * 60,
+                ];
             }
         }
     }

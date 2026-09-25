@@ -3,6 +3,7 @@
 namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Models\Program;
+use App\Services\Scheduling\Support\ProgramRoomShares;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
@@ -37,7 +38,7 @@ final class DepartmentAssignmentRule
             ];
         }
 
-        $roomViolation = $this->roomDepartment($attempt, $records);
+        $roomViolation = $this->roomDepartment($attempt, $records) ?? $this->roomProgramShare($attempt, $records);
         if ($roomViolation !== null) {
             $violations[] = $roomViolation;
         }
@@ -97,6 +98,37 @@ final class DepartmentAssignmentRule
         }
 
         return null;
+    }
+
+    /**
+     * In a department with several programs, each of its rooms belongs to one
+     * program per weekday (ProgramRoomShares). A section may use another
+     * program's day only once that program is done, and never under `strict`.
+     *
+     * @param  array<string, mixed>  $attempt
+     * @return array<string, mixed>|null
+     */
+    private function roomProgramShare(array $attempt, AttemptRecords $records): ?array
+    {
+        $room = $records->room;
+        $section = $records->section;
+        if ($room === null || $section->program_id === null || (int) $room->department_id !== (int) $section->department_id) {
+            return null;
+        }
+
+        $shares = $this->lookups->remember(
+            'program-room-shares:'.(int) $section->department_id.':'.(int) $records->semester->id,
+            fn () => app(ProgramRoomShares::class)->forDepartment((int) $section->department_id, (int) $records->semester->id),
+        );
+
+        $message = ProgramRoomShares::refusal(
+            $shares[(int) $room->id] ?? null,
+            (int) $section->program_id,
+            (string) ($attempt['day'] ?? ''),
+            (string) $room->room_code,
+        );
+
+        return $message === null ? null : ['rule' => 'room_department_alignment', 'message' => $message];
     }
 
     /**

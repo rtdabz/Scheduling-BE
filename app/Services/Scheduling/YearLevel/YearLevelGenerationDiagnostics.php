@@ -141,7 +141,10 @@ class YearLevelGenerationDiagnostics
         $courseCount = (int) ($failure['course_count'] ?? 0);
         $preflightPatternConflict = (bool) ($failure['preflight_pattern_conflict'] ?? false);
 
-        [$type, $focus] = match (true) {
+        // The course the solver actually stalled on names the cause. Only when
+        // that course carries no restrictive setting of its own does the
+        // section's most restrictive setting stand in for it.
+        [$type, $focus] = $this->observedBlocker($failure) ?? match (true) {
             $patternCourses !== [] => [self::TYPE_FIXED_PATTERN, $patternCourses[0]],
             $splitCourses !== [] => [self::TYPE_LECTURE_LAB_SPLIT, $splitCourses[0]],
             $balancedSplitCourses !== [] => [self::TYPE_BALANCED_SPLIT, $balancedSplitCourses[0]],
@@ -214,10 +217,13 @@ class YearLevelGenerationDiagnostics
         array $strategies,
         ?Collection $courses = null,
         array $configsBySectionId = [],
+        ?string $suggestedPreferredDay = null,
     ): array
     {
+        $preferredDay = $this->preferredDayRecommendation($suggestedPreferredDay, $configsBySectionId);
+
         if ($bottleneck === null) {
-            return [[
+            return [...$preferredDay, [
                 'id' => 'search-generic',
                 'title' => 'Reduce the constraints on this year level',
                 'detected_cause' => 'The generator explored every ordering it could within the time budget without finding a conflict-free timetable.',
@@ -273,6 +279,8 @@ class YearLevelGenerationDiagnostics
             $courseCode = (string) ($bottleneck['course_code'] ?? ($course?->course_code ?? 'the course'));
             $splitIds = array_map('intval', $configsBySectionId[$sectionId]['balanced_split_course_ids'] ?? []);
             $hybridIds = array_map('intval', $configsBySectionId[$sectionId]['hybrid_split_course_ids'] ?? []);
+            $mode = $configsBySectionId[$sectionId]['delivery_modes_by_course_id'][$courseId] ?? null;
+            $splitCause = sprintf('%s has no two free on-site slots for its Split Session.', $courseCode);
 
             // Hybrid Split is never applied by the retry ladder: the solver is
             // not allowed to silently change delivery mode or meeting shape.
@@ -284,9 +292,9 @@ class YearLevelGenerationDiagnostics
                 && ! in_array($courseId, $hybridIds, true)) {
                 $recommendations[] = [
                     'id' => 'recommend-hybrid-split-'.$sectionId.'-'.$courseId,
-                    'title' => 'Recommend Hybrid Split',
-                    'detected_cause' => sprintf('%s cannot find two vacant physical Split meetings.', $courseCode),
-                    'suggested_adjustment' => sprintf('Use two 1.5-hour meetings for %s in %s, with one meeting online and one on-site, if those vacant slots fit your teaching plan.', $courseCode, $sectionName),
+                    'title' => 'Hybrid Split',
+                    'detected_cause' => $splitCause,
+                    'suggested_adjustment' => sprintf('Meet once online and once on campus: two 1.5-hour meetings for %s in %s.', $courseCode, $sectionName),
                     'section_id' => $sectionId,
                     'section_name' => $sectionName,
                     'course_id' => $courseId,
@@ -305,14 +313,47 @@ class YearLevelGenerationDiagnostics
                 ];
             }
 
+            // Online Split keeps both meetings but moves them online, so they
+            // need free section time and no room at all. Like Hybrid Split it
+            // changes delivery, so it is only ever the user's choice. The
+            // bottleneck's split courses already exclude field courses, so an
+            // empty field list keeps this check off the database.
+            if ($course !== null
+                && in_array($courseId, $splitIds, true)
+                && ! in_array($courseId, $hybridIds, true)
+                && $mode !== 'online'
+                && SchedulingPolicy::allowsOnlineRoomFallback($course, null, null, [])) {
+                $recommendations[] = [
+                    'id' => 'recommend-online-split-'.$sectionId.'-'.$courseId,
+                    'title' => 'Online Split',
+                    'detected_cause' => $splitCause,
+                    'suggested_adjustment' => sprintf('Hold both meetings of %s in %s online. They need free class time, not a room.', $courseCode, $sectionName),
+                    'section_id' => $sectionId,
+                    'section_name' => $sectionName,
+                    'course_id' => $courseId,
+                    'course_code' => $courseCode,
+                    'impact' => 'medium',
+                    'adjustments' => [[
+                        'type' => 'set_delivery_mode',
+                        'section_id' => $sectionId,
+                        'course_id' => $courseId,
+                        'value' => 'online',
+                        'section_name' => $sectionName,
+                        'course_code' => $courseCode,
+                    ]],
+                    'status' => 'active',
+                    'resolved' => false,
+                ];
+            }
+
             // The retry ladder may already offer this exact change as a
             // strategy; listing it twice would read as two different fixes.
             if (! $this->offersAdjustment($recommendations, 'disable_minor_split', $sectionId, $courseId)) {
                 $recommendations[] = [
                     'id' => 'recommend-regular-meeting-'.$sectionId.'-'.$courseId,
-                    'title' => 'Recommend Regular Meeting',
-                    'detected_cause' => sprintf('%s cannot be accommodated as a two-meeting Split schedule.', $courseCode),
-                    'suggested_adjustment' => sprintf('Let %s use one full-duration meeting instead of a two-meeting Split Session.', $courseCode),
+                    'title' => 'Regular Meeting',
+                    'detected_cause' => $splitCause,
+                    'suggested_adjustment' => sprintf('Meet once a week for the full length of %s instead of twice.', $courseCode),
                     'section_id' => $sectionId,
                     'section_name' => $sectionName,
                     'course_id' => $courseId,
@@ -341,8 +382,10 @@ class YearLevelGenerationDiagnostics
             self::TYPE_LIMITED_ROOMS,
             self::TYPE_SEARCH_EXHAUSTED,
         ], true)) {
-            return $recommendations;
+            return [...$recommendations, ...$preferredDay];
         }
+
+        $recommendations = [...$recommendations, ...$preferredDay];
 
         $recommendations[] = [
             'id' => 'advisory-resources',
@@ -364,6 +407,54 @@ class YearLevelGenerationDiagnostics
         return $recommendations;
     }
 
+    /**
+     * Preferred Days are the user's call, so widening them is only ever a
+     * recommendation: the retry ladder never adds a day on its own. They are
+     * one choice for the whole year level, so this is one recommendation
+     * carrying the change for every section. After a timetable that fits it
+     * is a low-impact suggestion to spread classes, not a fix.
+     *
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @return list<array<string, mixed>>
+     */
+    public function preferredDayRecommendation(?string $day, array $configsBySectionId, bool $timetableFits = false): array
+    {
+        if ($day === null || $day === '' || $configsBySectionId === []) {
+            return [];
+        }
+
+        $allowedDays = SchedulingPolicy::normalizeAllowedDays(
+            $configsBySectionId[array_key_first($configsBySectionId)]['allowed_days'] ?? null,
+        ) ?? [];
+
+        return [[
+            'id' => 'add-preferred-day-'.strtolower($day),
+            'title' => sprintf('Add %s to the Preferred Days', $day),
+            'detected_cause' => $timetableFits
+                ? sprintf('The timetable fits, but only on %s, so room-time on other days goes unused.', implode(', ', $allowedDays))
+                : sprintf('The Preferred Days limit every section to %s, and the timetable does not fit in them.', implode(', ', $allowedDays)),
+            'suggested_adjustment' => sprintf(
+                'Open %s as well. It is the least booked day the Preferred Days leave out, so it adds the most free room-time.',
+                $day,
+            ),
+            'section_id' => null,
+            'section_name' => null,
+            'course_id' => null,
+            'course_code' => null,
+            'impact' => $timetableFits ? 'low' : 'medium',
+            'adjustments' => array_map(static fn (int|string $sectionId): array => [
+                'type' => 'add_preferred_day',
+                'section_id' => (int) $sectionId,
+                'course_id' => 0,
+                'value' => $day,
+                'section_name' => '',
+                'course_code' => '',
+            ], array_keys($configsBySectionId)),
+            'status' => 'active',
+            'resolved' => false,
+        ]];
+    }
+
     /** @param  list<array<string, mixed>>  $recommendations */
     private function offersAdjustment(array $recommendations, string $type, int $sectionId, int $courseId): bool
     {
@@ -378,6 +469,41 @@ class YearLevelGenerationDiagnostics
         }
 
         return false;
+    }
+
+    /**
+     * The bottleneck type and focus for the course the solver stalled on,
+     * judged by that course's own settings in the usual order of how tightly
+     * each one constrains a placement.
+     *
+     * @param  array<string, mixed>  $failure
+     * @return array{0: string, 1: array<string, mixed>}|null
+     */
+    private function observedBlocker(array $failure): ?array
+    {
+        $courseId = (int) ($failure['blocking_course']['course_id'] ?? 0);
+        if ($courseId <= 0) {
+            return null;
+        }
+
+        $courseCount = (int) ($failure['course_count'] ?? 0);
+        $allForced = $courseCount > 0 && count((array) ($failure['forced_on_site_courses'] ?? [])) >= $courseCount;
+
+        foreach ([
+            'pattern_courses' => self::TYPE_FIXED_PATTERN,
+            'split_courses' => self::TYPE_LECTURE_LAB_SPLIT,
+            'balanced_split_courses' => self::TYPE_BALANCED_SPLIT,
+            'laboratory_courses' => self::TYPE_LABORATORY_ROOM,
+            'forced_on_site_courses' => $allForced ? self::TYPE_FORCED_ON_SITE : self::TYPE_LIMITED_ROOMS,
+        ] as $key => $type) {
+            foreach ((array) ($failure[$key] ?? []) as $course) {
+                if ((int) ($course['course_id'] ?? 0) === $courseId) {
+                    return [$type, $course];
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

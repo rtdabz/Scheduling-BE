@@ -39,15 +39,16 @@ class RoleCapabilityDefaultsTest extends TestCase
 
     /**
      * Secretaries and program heads build timetables with the same capabilities;
-     * the differences are curriculum authoring and deciding on requests for the
-     * department's rooms, which only the secretary holds.
+     * the differences are curriculum authoring, deciding on requests for the
+     * department's rooms and dividing those rooms between programs, which only
+     * the secretary holds.
      */
     public function test_secretaries_and_program_heads_share_one_set_of_capabilities(): void
     {
         $defaults = app(CapabilityRegistry::class)->roleDefaults();
 
         $this->assertEqualsCanonicalizing(
-            array_values(array_diff($defaults['secretary'], ['curriculum.manage', 'room.review_requests'])),
+            array_values(array_diff($defaults['secretary'], ['curriculum.manage', 'room.review_requests', 'room.assign_program'])),
             $defaults['program_head'],
         );
         $this->assertContains('curriculum.manage', $defaults['secretary']);

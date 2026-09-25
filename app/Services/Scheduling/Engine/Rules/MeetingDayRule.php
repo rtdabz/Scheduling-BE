@@ -41,7 +41,9 @@ final class MeetingDayRule
     /** @return array<string, mixed>|null */
     public static function preferredPattern(string $day, ?string $preferredPattern): ?array
     {
-        if (empty($preferredPattern)) {
+        // A Consecutive Days run may start on any day; MeetingGroupRule judges
+        // its days together.
+        if (empty($preferredPattern) || SchedulingPolicy::consecutiveDayCount($preferredPattern) !== null) {
             return null;
         }
 

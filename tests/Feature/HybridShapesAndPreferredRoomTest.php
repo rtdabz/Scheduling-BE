@@ -238,6 +238,33 @@ class HybridShapesAndPreferredRoomTest extends TestCase
         }
     }
 
+    public function test_online_split_session_is_two_online_meetings_at_one_time(): void
+    {
+        // Online used to be checked before the split, so a Split Session set to
+        // Online came back as one three-hour online meeting.
+        $course = $this->course('GEC 1', lecture: 3, laboratory: 0, units: 3, category: 'minor');
+        $this->room('LEC 1', 'lecture');
+
+        foreach ([null, 'TTh'] as $pattern) {
+            $rows = $this->generate($course, ['split' => true, 'pattern' => $pattern], options: [
+                'delivery_modes_by_course_id' => [(int) $course->id => 'online'],
+            ]);
+            $label = $pattern ?? 'automatic days';
+
+            $this->assertCount(2, $rows, $label);
+            $this->assertSame(['online', 'online'], array_column($rows, 'mode'), $label);
+            $this->assertSame([null, null], array_map(static fn (array $row): mixed => $row['room_id'] ?? null, $rows), $label);
+            $this->assertNotSame($rows[0]['day'], $rows[1]['day'], $label);
+            $this->assertSame($rows[0]['start_time'], $rows[1]['start_time'], $label);
+            $this->assertSame([90, 90], array_map(fn (array $row): int => $this->minutes($row), $rows), $label);
+            if ($pattern !== null) {
+                $this->assertEqualsCanonicalizing(['Tuesday', 'Thursday'], array_column($rows, 'day'));
+            }
+            $this->assertSame([], app(RuleEngine::class)->validateConfiguredMeetingGroups($rows), $label);
+            $this->assertSaveAccepts($course, array_map(static fn (array $row): array => [...$row, 'is_hybrid' => false], $rows));
+        }
+    }
+
     public function test_hybrid_split_never_puts_a_minor_in_a_laboratory_or_room_tba(): void
     {
         // Only the lecture room is legal for a minor's face-to-face meeting:
@@ -519,7 +546,7 @@ class HybridShapesAndPreferredRoomTest extends TestCase
     }
 
     /**
-     * @param  array{hybrid_split?: bool, integrated_hybrid?: bool, pattern?: string}  $shape
+     * @param  array{hybrid_split?: bool, split?: bool, integrated_hybrid?: bool, pattern?: string|null}  $shape
      * @param  array<string, mixed>  $options
      * @return list<array<string, mixed>>
      */
@@ -527,7 +554,8 @@ class HybridShapesAndPreferredRoomTest extends TestCase
     {
         $id = (int) $course->id;
         $integrated = (bool) ($shape['integrated_hybrid'] ?? false);
-        $split = (bool) ($shape['hybrid_split'] ?? false);
+        $hybridSplit = (bool) ($shape['hybrid_split'] ?? false);
+        $split = $hybridSplit || (bool) ($shape['split'] ?? false);
         $options += ['selected_split_session_course_ids' => $integrated ? [$id] : []];
 
         $solutions = app(CspSolver::class)->solveRanked(
@@ -537,7 +565,7 @@ class HybridShapesAndPreferredRoomTest extends TestCase
             preferredPatternsByCourseId: isset($shape['pattern']) ? [$id => $shape['pattern']] : [],
             selectedLectureLabCourseIds: $integrated ? [$id] : [],
             balancedSplitCourseIds: $split ? [$id] : [],
-            hybridSplitCourseIds: $split ? [$id] : [],
+            hybridSplitCourseIds: $hybridSplit ? [$id] : [],
             deliveryModesByCourseId: $options['delivery_modes_by_course_id'] ?? [],
             requirementsByCourseId: app(ScheduleRequirementBuilderResolver::class)->build($this->section, [$id], $options),
             maxSolutions: 1,

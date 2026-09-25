@@ -81,6 +81,61 @@ class YearLevelSplitSessionRecommendationTest extends TestCase
         $this->assertSame('disable_minor_split', $regular['adjustments'][0]['type']);
     }
 
+    public function test_online_split_is_offered_beside_hybrid_split_and_one_meeting(): void
+    {
+        $recommendations = (new YearLevelGenerationDiagnostics)->searchRecommendations(
+            $this->bottleneck(),
+            [],
+            $this->courses(),
+            $this->configs(),
+        );
+
+        // Alternatives for the same stuck Split Session, least disruptive first.
+        $this->assertSame(
+            ['recommend-hybrid-split-10-100', 'recommend-online-split-10-100', 'recommend-regular-meeting-10-100'],
+            array_column($recommendations, 'id'),
+        );
+        $online = $recommendations[1];
+        $this->assertSame([[
+            'type' => 'set_delivery_mode',
+            'section_id' => self::SECTION_ID,
+            'course_id' => self::COURSE_ID,
+            'value' => 'online',
+            'section_name' => 'BSIT 1-A',
+            'course_code' => 'GEC 101',
+        ]], $online['adjustments']);
+    }
+
+    public function test_online_split_is_not_offered_when_it_cannot_apply(): void
+    {
+        $idsFor = fn (array $overrides, ?Collection $courses = null): array => array_column(
+            (new YearLevelGenerationDiagnostics)->searchRecommendations(
+                $this->bottleneck(),
+                [],
+                $courses ?? $this->courses(),
+                [self::SECTION_ID => [...$this->configs()[self::SECTION_ID], ...$overrides]],
+            ),
+            'id',
+        );
+
+        // Already online.
+        $this->assertNotContains('recommend-online-split-10-100', $idsFor(['delivery_modes_by_course_id' => [self::COURSE_ID => 'online']]));
+        // A Hybrid Split is the user's own online choice already.
+        $this->assertNotContains('recommend-online-split-10-100', $idsFor(['hybrid_split_course_ids' => [self::COURSE_ID]]));
+        // A laboratory never meets online.
+        $laboratory = collect([self::COURSE_ID => (new Course)->forceFill([
+            'id' => self::COURSE_ID,
+            'course_code' => 'GEC 101',
+            'units' => 3,
+            'lecture_hours' => 2,
+            'lab_hours' => 1,
+            'room_type_required' => 'laboratory',
+        ])]);
+        $this->assertNotContains('recommend-online-split-10-100', $idsFor([], $laboratory));
+        // Only a course set to Split Session.
+        $this->assertNotContains('recommend-online-split-10-100', $idsFor(['balanced_split_course_ids' => []]));
+    }
+
     public function test_room_bottlenecks_still_get_room_time_advice(): void
     {
         $recommendations = (new YearLevelGenerationDiagnostics)->searchRecommendations(
@@ -118,6 +173,70 @@ class YearLevelSplitSessionRecommendationTest extends TestCase
         // Department data (course units, Required Days) is advice, never an automatic change.
         $this->assertSame([], $recommendations[1]['adjustments']);
         $this->assertSame([], $recommendations[2]['adjustments']);
+    }
+
+    public function test_friday_saturday_pairing_is_tried_before_dropping_the_split(): void
+    {
+        $keys = array_column((new YearLevelRetryStrategyPlanner)->plan(
+            [$this->section()],
+            $this->configs(),
+            $this->courses(),
+            $this->bottleneck(),
+        ), 'key');
+
+        $this->assertLessThan(
+            array_search('clear_bottleneck_balanced_split', $keys, true),
+            array_search('allow_friday_saturday_split', $keys, true),
+        );
+    }
+
+    public function test_friday_saturday_pairing_is_not_offered_when_it_cannot_help(): void
+    {
+        $planner = new YearLevelRetryStrategyPlanner;
+        $keysFor = fn (array $overrides): array => array_column($planner->plan(
+            [$this->section()],
+            [self::SECTION_ID => [...$this->configs()[self::SECTION_ID], ...$overrides]],
+            $this->courses(),
+            $this->bottleneck(),
+        ), 'key');
+
+        // Already on.
+        $this->assertNotContains('allow_friday_saturday_split', $keysFor(['allow_friday_saturday_split' => true]));
+        // Friday is not a Preferred Day, so the pair can never be used.
+        $this->assertNotContains('allow_friday_saturday_split', $keysFor(['allowed_days' => ['Monday', 'Wednesday', 'Saturday']]));
+        // A fixed MW pattern never lands on Friday + Saturday.
+        $this->assertNotContains('allow_friday_saturday_split', $keysFor(['preferred_patterns' => [self::COURSE_ID => 'MW']]));
+    }
+
+    public function test_a_preferred_day_is_recommended_but_never_part_of_the_retry_ladder(): void
+    {
+        $configs = [self::SECTION_ID => [...$this->configs()[self::SECTION_ID], 'allowed_days' => ['Monday', 'Wednesday']]];
+
+        $strategies = (new YearLevelRetryStrategyPlanner)->plan([$this->section()], $configs, $this->courses(), $this->bottleneck());
+        $this->assertNotContains('add_preferred_day', array_merge(...array_map(
+            static fn (array $strategy): array => array_column($strategy['adjustments'], 'type'),
+            $strategies,
+        )));
+
+        $recommendations = collect((new YearLevelGenerationDiagnostics)->searchRecommendations(
+            $this->bottleneck(),
+            $strategies,
+            $this->courses(),
+            $configs,
+            'Tuesday',
+        ))->keyBy('id');
+
+        $recommendation = $recommendations->get('add-preferred-day-tuesday');
+        $this->assertNotNull($recommendation);
+        $this->assertSame('Add Tuesday to the Preferred Days', $recommendation['title']);
+        $this->assertSame(
+            [['type' => 'add_preferred_day', 'section_id' => self::SECTION_ID, 'value' => 'Tuesday']],
+            array_map(static fn (array $a): array => ['type' => $a['type'], 'section_id' => $a['section_id'], 'value' => $a['value']], $recommendation['adjustments']),
+        );
+
+        // No suggestion when the caller found no day to add.
+        $this->assertFalse(collect((new YearLevelGenerationDiagnostics)->searchRecommendations(null, [], null, $configs))
+            ->contains(static fn (array $r): bool => str_starts_with($r['id'], 'add-preferred-day')));
     }
 
     private function section(): Sections

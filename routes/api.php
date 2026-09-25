@@ -17,6 +17,7 @@ use App\Http\Controllers\InitialDataController;
 use App\Http\Controllers\InstitutionSettingsController;
 use App\Http\Controllers\InstructorAssignmentController;
 use App\Http\Controllers\RealtimeConfigController;
+use App\Http\Controllers\ProgramRoomController;
 use App\Http\Controllers\ReportsController;
 use App\Http\Controllers\RoomRequestController;
 use App\Http\Controllers\RoomsController;
@@ -27,6 +28,7 @@ use App\Http\Controllers\ScheduleRecommendationController;
 use App\Http\Controllers\ScheduleSplitController;
 use App\Http\Controllers\SchedulingSettingsController;
 use App\Http\Controllers\SectionsController;
+use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\SystemNotificationController;
 use App\Http\Controllers\SemesterController;
 use App\Http\Controllers\TimeslotController;
@@ -45,6 +47,9 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     // Logout and user info routes
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
+    // The signed-in account's own name, photo and teaching load.
+    Route::get('/profile', [ProfileController::class, 'show']);
+    Route::patch('/profile', [ProfileController::class, 'update'])->middleware('throttle:20,1');
     Route::get('/initial-data', InitialDataController::class);
     Route::get('/institution-settings', [InstitutionSettingsController::class, 'show']);
     Route::get('/notifications', [SystemNotificationController::class, 'index']);
@@ -152,6 +157,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('faculties', [FacultyController::class, 'index']);
         Route::get('faculties/{faculty}', [FacultyController::class, 'show']);
         Route::get('faculties/{faculty}/availabilities', [FacultyAvailabilityController::class, 'index']);
+        Route::get('faculties/{faculty}/teaching-history', [FacultyController::class, 'teachingHistory']);
     });
 
     // Schedule mutation routes are separated by capability so a user can be
@@ -217,6 +223,12 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('room-requests/{roomRequest}/reject', [RoomRequestController::class, 'reject'])->whereNumber('roomRequest');
         Route::post('room-requests/{roomRequest}/revoke', [RoomRequestController::class, 'revoke'])->whereNumber('roomRequest');
     });
+
+    // Program rooms: which program each of the department's rooms belongs to,
+    // and how the department's programs share them. Everyone who schedules
+    // reads it; only the secretary changes it.
+    Route::middleware('capability:schedule.view')->get('program-rooms', [ProgramRoomController::class, 'show']);
+    Route::middleware('capability:room.assign_program')->put('program-rooms', [ProgramRoomController::class, 'update']);
 
     // The three timeslot reads describe the grid every scheduling screen draws
     // against; none of them writes. Authorization is capability-based, so new

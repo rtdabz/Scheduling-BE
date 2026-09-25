@@ -12,6 +12,10 @@ use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Engine\RuleEngine;
+use App\Exceptions\YearLevelGenerationException;
+use App\Jobs\GenerateYearLevelSchedulePreview;
+use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -122,7 +126,12 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             ->assertJsonPath('applied_adjustments.0.course_id', (int) $course->id)
             ->assertJsonPath('applied_adjustments.0.section_id', (int) $section->id)
             ->assertJsonPath('generation_changes.0.kind', 'preference_relaxed')
-            ->assertJsonPath('generation_changes.0.items.0.course_code', 'GEC 101');
+            ->assertJsonPath('generation_changes.0.items.0.course_code', 'GEC 101')
+            ->assertJsonPath('generation_changes.0.items.0.adjustment_type', 'set_pattern')
+            ->assertJsonPath('generation_changes.0.items.0.adjustment_value', 'TTh')
+            ->assertJsonPath('generation_changes.0.detected_issue.type', 'fixed_pattern')
+            ->assertJsonPath('generation_changes.0.detected_issue.course_code', 'GEC 101')
+            ->assertJsonPath('generation_changes.0.failed_attempts', 1);
 
         $outcomes = collect($response->json('generation_attempts'))->pluck('outcome', 'strategy')->all();
         $this->assertSame('failed', $outcomes['preflight_pattern'] ?? null);
@@ -175,6 +184,201 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
         $this->assertSame(0, Schedule::query()->count());
     }
 
+    public function test_the_bottleneck_is_the_course_the_solver_stalled_on(): void
+    {
+        ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $patterned] = $this->patternFixture();
+        $split = Course::create([
+            'course_code' => 'GEC 102',
+            'course_name' => 'Readings in Philippine History',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'course_category' => 'minor',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => null,
+            'status' => 'active',
+        ]);
+        Curriculum::query()->firstOrFail()->courses()->attach($split->id, ['year_level' => 1, 'semester' => 1]);
+
+        // GEC 101's fixed pattern is the section's most restrictive setting,
+        // but every search stalls on the GEC 102 Split Session.
+        $this->app->instance(CspSolver::class, new class([(int) $patterned->id => 1, (int) $split->id => 5]) extends CspSolver
+        {
+            public function __construct(private readonly array $deadEnds) {}
+
+            public function solveRankedFromSchema(array $input): array
+            {
+                return [];
+            }
+
+            public function deadEndsByCourseId(): array
+            {
+                return $this->deadEnds;
+            }
+
+            public function iterationsUsed(): int
+            {
+                return 0;
+            }
+
+            public function searchLimitReached(): bool
+            {
+                return false;
+            }
+
+            public function departmentRoomFairness(): array
+            {
+                return [];
+            }
+
+            public function generationForcedDaysByCourseId(): array
+            {
+                return [];
+            }
+        });
+
+        $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
+            'semester_id' => $semester->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'section_configs' => [[
+                'section_id' => $section->id,
+                'course_ids' => [(int) $patterned->id, (int) $split->id],
+                'selected_gec_course_ids' => [(int) $patterned->id, (int) $split->id],
+                'preferred_patterns' => [(int) $patterned->id => 'MW'],
+            ]],
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('bottleneck.type', 'balanced_split')
+            ->assertJsonPath('bottleneck.course_id', (int) $split->id)
+            ->assertJsonPath('bottleneck.course_code', 'GEC 102');
+    }
+
+    public function test_a_slow_failing_run_publishes_a_provisional_report_before_it_finishes(): void
+    {
+        ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
+        $this->app->instance(CspSolver::class, $this->patternGatedSolver('unreachable', (int) $course->id, $section, (int) $department->id));
+
+        // Resolve the configuration exactly as a queued run would receive it.
+        Queue::fake();
+        $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview/queue', [
+            'semester_id' => $semester->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'section_configs' => [[
+                'section_id' => $section->id,
+                'course_ids' => [(int) $course->id],
+                'selected_gec_course_ids' => [(int) $course->id],
+                'preferred_patterns' => [(int) $course->id => 'MW'],
+            ]],
+        ])->assertStatus(202);
+        $job = null;
+        Queue::assertPushed(GenerateYearLevelSchedulePreview::class, function (GenerateYearLevelSchedulePreview $pushed) use (&$job): bool {
+            $job = $pushed;
+
+            return true;
+        });
+
+        $reports = [];
+        $final = null;
+        try {
+            // Due at once, so the first checkpoint publishes it.
+            app(YearLevelScheduleGenerationService::class)->preview(
+                [Sections::query()->with('department')->findOrFail($section->id)],
+                $job->configsBySectionId,
+                null,
+                function (array $report) use (&$reports): void {
+                    $reports[] = $report;
+                },
+                0.0,
+            );
+        } catch (YearLevelGenerationException $exception) {
+            $final = $exception->payload();
+        }
+
+        // Published once, then the search carried on to its own final report.
+        $this->assertCount(1, $reports);
+        $this->assertNotNull($final);
+        $this->assertTrue($reports[0]['provisional']);
+        $this->assertSame('year_level_generation_failed', $reports[0]['error_code']);
+        $this->assertSame('fixed_pattern', $reports[0]['bottleneck']['type']);
+        $this->assertNotEmpty(array_filter(
+            $reports[0]['recommendations'],
+            static fn (array $recommendation): bool => $recommendation['adjustments'] !== [],
+        ));
+        $this->assertArrayNotHasKey('provisional', $final);
+    }
+
+    public function test_a_long_solver_call_is_cut_short_so_the_report_is_not_held_back(): void
+    {
+        ['section' => $section, 'course' => $course, 'department' => $department] = $this->patternFixture();
+        $gated = $this->patternGatedSolver('MW', (int) $course->id, $section, (int) $department->id);
+
+        // The first call blocks for as long as it is allowed, up to 3 seconds;
+        // every later one solves. Unclipped, the report could not arrive
+        // before that first call returned.
+        $slowFirst = new class($gated) extends CspSolver
+        {
+            private bool $called = false;
+
+            public function __construct(private readonly CspSolver $inner) {}
+
+            public function solveRankedFromSchema(array $input): array
+            {
+                if (! $this->called) {
+                    $this->called = true;
+                    usleep((int) (min(3.0, (float) $input['timeout_seconds']) * 1_000_000));
+
+                    return [];
+                }
+
+                return $this->inner->solveRankedFromSchema([...$input, 'preferred_patterns' => [$input['section_id'] => 'MW']]);
+            }
+        };
+        $this->app->instance(CspSolver::class, $slowFirst);
+
+        $startedAt = microtime(true);
+        $reportedAfter = null;
+        app(YearLevelScheduleGenerationService::class)->preview(
+            [Sections::query()->with('department')->findOrFail($section->id)],
+            [(int) $section->id => [
+                'course_ids' => [(int) $course->id],
+                'balanced_split_course_ids' => [(int) $course->id],
+                'preferred_patterns' => [(int) $course->id => 'MW'],
+            ]],
+            null,
+            function () use (&$reportedAfter, $startedAt): void {
+                $reportedAfter = microtime(true) - $startedAt;
+            },
+            0.5,
+        );
+
+        $this->assertNotNull($reportedAfter);
+        $this->assertLessThan(2.0, $reportedAfter);
+    }
+
+    public function test_a_run_without_a_listener_publishes_no_provisional_report(): void
+    {
+        ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
+        $this->app->instance(CspSolver::class, $this->patternGatedSolver('MW', (int) $course->id, $section, (int) $department->id));
+
+        // The synchronous endpoint has nobody polling, so it must behave as before.
+        $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
+            'semester_id' => $semester->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'section_configs' => [[
+                'section_id' => $section->id,
+                'course_ids' => [(int) $course->id],
+                'selected_gec_course_ids' => [(int) $course->id],
+                'preferred_patterns' => [(int) $course->id => 'MW'],
+            ]],
+        ])->assertOk()->assertJsonMissingPath('provisional');
+    }
+
     public function test_successful_baseline_generation_reports_no_applied_adjustment(): void
     {
         ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
@@ -196,6 +400,46 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             ->assertJsonPath('generation_attempts.0.outcome', 'succeeded')
             ->assertJsonPath('generation_changes', []);
         $this->assertSame(0, Schedule::query()->count());
+    }
+
+    public function test_a_timetable_on_limited_preferred_days_suggests_one_day_for_the_year_level(): void
+    {
+        ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
+        $second = Sections::create([
+            'section_name' => 'IT 1B',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'program_id' => $section->program_id,
+            'semester_id' => $semester->id,
+            'status' => 'active',
+        ]);
+        $config = fn (Sections $target): array => [
+            'section_id' => $target->id,
+            'course_ids' => [(int) $course->id],
+            'allowed_days' => ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+        ];
+
+        $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
+            'semester_id' => $semester->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'section_configs' => [$config($section), $config($second)],
+        ]);
+
+        // Preferred Days are one choice for the year level: one suggestion,
+        // naming the day to add, carrying the change for both sections. It
+        // used to be one advisory notice per section with nothing to apply.
+        $response->assertOk();
+        $recommendations = $response->json('recommendations');
+        $this->assertCount(1, $recommendations);
+        $this->assertSame('add-preferred-day-saturday', $recommendations[0]['id']);
+        $this->assertSame('low', $recommendations[0]['impact']);
+        $this->assertEqualsCanonicalizing(
+            [(int) $section->id, (int) $second->id],
+            array_column($recommendations[0]['adjustments'], 'section_id'),
+        );
+        $this->assertSame(['add_preferred_day'], array_values(array_unique(array_column($recommendations[0]['adjustments'], 'type'))));
     }
 
     public function test_unsplit_laboratory_courses_are_generated_into_laboratory_rooms(): void

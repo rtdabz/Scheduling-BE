@@ -14,7 +14,8 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
 /**
  * Rules judged on linked meetings rather than one row: hybrid_component_count,
  * hybrid_components, minor_split_component_count, minor_split_eligibility,
- * minor_split_pattern, minor_split_duration, split_group_same_time,
+ * minor_split_pattern, minor_split_duration, consecutive_day_count,
+ * consecutive_days, consecutive_mode, split_group_same_time,
  * split_group_day_separation.
  * Kernel counterpart of Rules\MeetingGroupRule, whose static groupMismatches()
  * makes the decision; this side supplies the group's rows and snapshot settings.
@@ -35,8 +36,11 @@ final class MeetingGroupConstraints
             'meeting_type' => $row->meetingType,
         ], $group->rows);
 
-        $kind = match ($group->type) {
-            'hybrid', 'minor_split' => $group->type,
+        $rawPattern = $group->rows[0]->preferredPattern ?? null;
+        $isConsecutive = SchedulingPolicy::consecutiveDayCount($rawPattern) !== null;
+        $kind = match (true) {
+            $isConsecutive => 'consecutive',
+            in_array($group->type, ['hybrid', 'minor_split'], true) => $group->type,
             default => 'linked',
         };
 
@@ -44,7 +48,7 @@ final class MeetingGroupConstraints
             $kind,
             $course,
             $rows,
-            SchedulingPolicy::normalizePreferredPattern($group->rows[0]->preferredPattern ?? null),
+            $isConsecutive ? $rawPattern : SchedulingPolicy::normalizePreferredPattern($rawPattern),
             $snapshot->departmentSettings,
         );
 

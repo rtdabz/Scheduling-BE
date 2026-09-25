@@ -252,6 +252,106 @@ class SchedulingSettingsControllerTest extends TestCase
             ->assertOk();
     }
 
+    public function test_consecutive_day_rules_are_saved_per_course_and_per_section(): void
+    {
+        [$user, $department] = $this->laboratoryDepartment();
+        [$course, $section] = $this->clinicalCourseAndSection($department);
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
+            ['course_id' => $course->id, 'section_id' => null, 'day_count' => 2, 'preferred_start_day' => null],
+            ['course_id' => $course->id, 'section_id' => $section->id, 'day_count' => 3, 'preferred_start_day' => 'Thursday'],
+        ]])->assertOk()
+            ->assertJsonPath('consecutive_day_rules.0.section_id', null)
+            ->assertJsonPath('consecutive_day_rules.1.day_count', 3)
+            ->assertJsonPath('consecutive_day_rules.1.preferred_start_day', 'Thursday');
+
+        $this->assertSame(
+            [$course->id => ['day_count' => 3, 'preferred_start_day' => 'Thursday']],
+            \App\Services\Scheduling\Support\SchedulingPolicy::consecutiveDayRuleMap($department->id, $section->id),
+        );
+
+        // Sending an empty list clears them.
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => []])
+            ->assertOk()
+            ->assertJsonPath('consecutive_day_rules', []);
+    }
+
+    public function test_a_consecutive_run_must_fit_the_teaching_week(): void
+    {
+        [$user, $department] = $this->laboratoryDepartment();
+        [$course] = $this->clinicalCourseAndSection($department);
+        $fromFriday = ['consecutive_day_rules' => [
+            ['course_id' => $course->id, 'day_count' => 3, 'preferred_start_day' => 'Friday'],
+        ]];
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', $fromFriday)
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'CLIN 101: 3 consecutive days starting Friday run past the end of the Monday-Saturday teaching week. Choose an earlier starting day or fewer days.');
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
+            ['course_id' => $course->id, 'day_count' => 7],
+        ]])->assertStatus(422);
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', [...$fromFriday, 'sunday_classes_enabled' => true])
+            ->assertOk();
+    }
+
+    public function test_a_course_cannot_have_both_a_required_day_and_consecutive_days(): void
+    {
+        [$user, $department] = $this->laboratoryDepartment();
+        [$course] = $this->clinicalCourseAndSection($department);
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
+            'forced_day_rules' => [['course_id' => $course->id, 'day' => 'Thursday']],
+        ])->assertOk();
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
+            ['course_id' => $course->id, 'day_count' => 3],
+        ]])->assertStatus(422)
+            ->assertJsonPath('message', 'CLIN 101 has a Required Day of Thursday, so it cannot also meet on consecutive days. Clear its Required Day, or tick its meeting days instead.');
+
+        // Clearing the Required Day in the same save lets it through.
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
+            'forced_day_rules' => [],
+            'consecutive_day_rules' => [['course_id' => $course->id, 'day_count' => 3, 'preferred_start_day' => 'Thursday']],
+        ])->assertOk();
+    }
+
+    public function test_consecutive_days_are_only_set_for_the_departments_own_sections(): void
+    {
+        [$user, $department] = $this->laboratoryDepartment();
+        [$course] = $this->clinicalCourseAndSection($department);
+        $otherDepartment = Departments::create(['department_name' => 'Nursing', 'department_code' => 'NUR']);
+        [, $foreignSection] = $this->clinicalCourseAndSection($otherDepartment, 'CLIN 201');
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
+            ['course_id' => $course->id, 'section_id' => $foreignSection->id, 'day_count' => 3],
+        ]])->assertStatus(422);
+    }
+
+    /** @return array{0: Course, 1: Sections} */
+    private function clinicalCourseAndSection(Departments $department, string $code = 'CLIN 101'): array
+    {
+        $semester = Semester::query()->first()
+            ?? Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
+        $program = \App\Models\Program::query()->where('department_id', $department->id)->first()
+            ?? \App\Models\Program::create(['department_id' => $department->id, 'code' => $department->department_code.'P', 'name' => $department->department_name]);
+        $course = Course::create(['course_code' => $code, 'course_name' => 'Clinical Duty', 'lecture_hours' => 0, 'lab_hours' => 4, 'units' => 4, 'course_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'status' => 'active']);
+        // Rules are set for the active curriculum's courses, like Required Days.
+        $curriculum = Curriculum::create(['name' => $code.' Curriculum', 'department_id' => $department->id, 'code' => $code.'-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);
+        $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
+        $section = Sections::create([
+            'section_name' => $department->department_code.' 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'program_id' => $program->id,
+            'semester_id' => $semester->id,
+            'status' => 'active',
+        ]);
+
+        return [$course, $section];
+    }
+
     private function laboratoryDepartment(bool $splitEnabled = true): array
     {
         $department = Departments::create([

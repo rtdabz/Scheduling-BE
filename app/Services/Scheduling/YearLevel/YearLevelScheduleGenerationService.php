@@ -66,14 +66,27 @@ class YearLevelScheduleGenerationService
      * ladder starts. Grinding the same over-constrained ordering for the whole
      * budget is what the retry ladder exists to replace, so the remainder is
      * reserved for strategies that change the shape of the search.
+     *
+     * About 47 seconds. Recorded runs that fit as configured almost all
+     * finished within 30; a run still searching past this point is far more
+     * likely to need a retry, and every second kept here is one the retry
+     * ladder (starting with a plain reordering) no longer has.
      */
-    private const BASELINE_BUDGET_SHARE = 0.6;
+    private const BASELINE_BUDGET_SHARE = 0.35;
 
     /** Wall-clock wording for the hard teaching windows, for failure messages. */
     /** A retry below this is not worth starting. */
     private const MIN_RETRY_SECONDS = 8.0;
 
     private const MAX_RETRY_STRATEGIES = 4;
+
+    /**
+     * Seconds after the run starts at which a still-unsolved run publishes a
+     * provisional failure report. The search keeps going; the report lets the
+     * user see recommendations within 30 seconds of clicking Generate, with
+     * room left for the queue pickup, the report write and the next poll.
+     */
+    private const INTERIM_REPORT_AFTER_SECONDS = 20.0;
 
     /**
      * Courses in the current run, kept so the deep recursion can name the
@@ -105,6 +118,36 @@ class YearLevelScheduleGenerationService
     /** Cooperative cancellation for the run in progress. */
     private GenerationCancellationToken $cancellation;
 
+    /** @var (callable(array<string, mixed>): void)|null receives the provisional failure report once */
+    private $interimReporter = null;
+
+    private float $interimReportAt = INF;
+
+    private float $interimReportAfterSeconds = self::INTERIM_REPORT_AFTER_SECONDS;
+
+    /**
+     * What the provisional report is built from: the user's own configuration
+     * (never a retry's relaxed copy), the failures seen so far, and the section
+     * being solved when the report came due.
+     *
+     * @var array{sections: list<Sections>, configs: array<int, array<string, mixed>>, courses: Collection<int, Course>}|null
+     */
+    private ?array $interimContext = null;
+
+    /** @var list<array<string, mixed>> */
+    private array $observedFailures = [];
+
+    /** @var array{0: Sections, 1: array<string, mixed>}|null */
+    private ?array $sectionInProgress = null;
+
+    /**
+     * Solver dead ends, per course, over every solve of the section being
+     * placed. A failed section names the course its searches stalled on most.
+     *
+     * @var array<int, int>
+     */
+    private array $sectionDeadEnds = [];
+
     public function __construct(
         private readonly YearLevelSchedulingSolver $solver,
         private readonly ScheduleQualityEvaluator $evaluator,
@@ -131,9 +174,17 @@ class YearLevelScheduleGenerationService
         array $sections,
         array $configsBySectionId,
         ?GenerationCancellationToken $cancellation = null,
+        ?callable $onInterimFailure = null,
+        float $interimReportAfterSeconds = self::INTERIM_REPORT_AFTER_SECONDS,
     ): array {
         $this->resetMetrics();
         $this->cancellation = $cancellation ?? GenerationCancellationToken::none();
+        $this->interimReporter = $onInterimFailure;
+        $this->interimReportAt = $onInterimFailure === null ? INF : microtime(true) + $interimReportAfterSeconds;
+        $this->interimReportAfterSeconds = $interimReportAfterSeconds;
+        $this->interimContext = null;
+        $this->observedFailures = [];
+        $this->sectionInProgress = null;
 
         if ($sections === []) {
             throw new RuntimeException('No active sections were found for the selected year level.');
@@ -188,9 +239,11 @@ class YearLevelScheduleGenerationService
 
         $attempts = [];
         $failures = [];
+        $this->interimContext = ['sections' => $sections, 'configs' => $configsBySectionId, 'courses' => $courses];
 
         $patternFailure = $this->preflightPatternFeasibility($sections, $configsBySectionId, $courses);
         if ($patternFailure !== null) {
+            $this->observedFailures[] = $patternFailure;
             // A fixed pattern with no section-level candidate at all: skip the
             // baseline search and go straight to the retry ladder, which is
             // where alternative patterns live.
@@ -231,7 +284,7 @@ class YearLevelScheduleGenerationService
         $pending = count($strategies);
 
         foreach ($strategies as $strategy) {
-            $this->cancellation->abortIfCancelled();
+            $this->checkpoint();
             $pending--;
             $key = (string) ($strategy['key'] ?? 'retry');
             $label = (string) ($strategy['label'] ?? 'Retry');
@@ -278,7 +331,7 @@ class YearLevelScheduleGenerationService
             );
 
             if ($candidate !== null) {
-                return $this->decorateResult($candidate, $strategy, $attempts, $configsBySectionId, $sections);
+                return $this->decorateResult($candidate, $strategy, $attempts, $configsBySectionId, $sections, $bottleneck);
             }
 
             $failures = [...$failures, ...$retryFailures];
@@ -290,6 +343,7 @@ class YearLevelScheduleGenerationService
             $strategies,
             $courses,
             $configsBySectionId,
+            $this->suggestedPreferredDay($configsBySectionId),
         );
 
         throw new YearLevelGenerationException(
@@ -319,7 +373,7 @@ class YearLevelScheduleGenerationService
         array &$failures,
     ): ?array {
         foreach ($this->candidateOrders($sections, $configsBySectionId, $orderOffset) as $order) {
-            $this->cancellation->abortIfCancelled();
+            $this->checkpoint();
             if (microtime(true) >= $deadline) {
                 break;
             }
@@ -340,6 +394,7 @@ class YearLevelScheduleGenerationService
 
             if ($failure !== null) {
                 $failures[] = $failure;
+                $this->observedFailures[] = $failure;
             }
         }
 
@@ -352,6 +407,7 @@ class YearLevelScheduleGenerationService
      * @param  list<array<string, mixed>>  $attempts
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  list<Sections>  $sections
+     * @param  array<string, mixed>|null  $bottleneck  what blocked the original configuration, when a retry was needed
      * @return array<string, mixed>
      */
     private function decorateResult(
@@ -360,6 +416,7 @@ class YearLevelScheduleGenerationService
         array $attempts,
         array $configsBySectionId,
         array $sections,
+        ?array $bottleneck = null,
     ): array {
         $splitFallbacks = $this->detectSplitSessionFallbacks(
             $candidate['schedules'] ?? [],
@@ -385,11 +442,10 @@ class YearLevelScheduleGenerationService
             $candidate['schedules'] ?? [],
             collect($sections)->mapWithKeys(static fn (Sections $section): array => [(int) $section->id => (string) $section->section_name])->all(),
             $this->loadedCourses->mapWithKeys(static fn ($course): array => [(int) $course->id => (string) $course->course_code])->all(),
+            $bottleneck,
+            $attempts,
         );
-        $candidate['recommendations'] = $this->generationRecommendations(
-            $configsBySectionId,
-            $sections,
-        );
+        $candidate['recommendations'] = $this->generationRecommendations($configsBySectionId);
         $candidate['generation_metrics'] = $this->reportedMetrics($attempts);
 
         return $candidate;
@@ -443,50 +499,153 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * Advisory observations for a valid timetable. These are deliberately
-     * separate from applied adjustments: a successful preview must never
-     * mutate the selected Preferred Days automatically.
+     * Suggestions for a valid timetable. These are deliberately separate from
+     * applied adjustments: a successful preview must never mutate the
+     * selected Preferred Days automatically, only offer to.
+     *
+     * Preferred Days are one choice for the whole year level, so a restriction
+     * is one suggestion naming the day to add, not one notice per section.
      *
      * @param array<int, array<string, mixed>> $configsBySectionId
-     * @param list<Sections> $sections
      * @return list<array<string, mixed>>
      */
-    private function generationRecommendations(
-        array $configsBySectionId,
-        array $sections,
-    ): array {
-        $recommendations = [];
-        $sectionNames = collect($sections)->mapWithKeys(
-            static fn (Sections $section): array => [(int) $section->id => (string) $section->section_name],
-        )->all();
-        $physicalRoomCount = count(array_filter(
+    private function generationRecommendations(array $configsBySectionId): array
+    {
+        $hasPhysicalRoom = array_filter(
             $this->generationSnapshot?->roomsById ?? [],
             static fn (array $room): bool => ! in_array((string) ($room['room_type'] ?? ''), ['online', 'field'], true),
-        ));
+        ) !== [];
+        if (! $hasPhysicalRoom) {
+            return [];
+        }
 
-        $teachingDays = $this->teachingDays();
-        foreach ($configsBySectionId as $sectionId => $config) {
-            $sectionName = $sectionNames[(int) $sectionId] ?? 'the section';
-            $allowedDays = SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null);
-            if ($allowedDays !== null && count(array_intersect($allowedDays, $teachingDays)) < count($teachingDays) && $physicalRoomCount > 0) {
-                $recommendations[] = [
-                    'id' => 'preferred-days-add-day-'.$sectionId,
-                    'title' => 'Recommend adding another day',
-                    'detected_cause' => sprintf('%s is restricted to %s, leaving other room-time capacity unused.', $sectionName, implode(', ', $allowedDays)),
-                    'suggested_adjustment' => 'Add another Preferred Day so available rooms and scheduling capacity can be used more evenly.',
-                    'section_id' => (int) $sectionId,
-                    'section_name' => $sectionName,
-                    'course_id' => null,
-                    'course_code' => null,
-                    'impact' => 'low',
-                    'adjustments' => [],
-                    'status' => 'active',
-                    'resolved' => false,
-                ];
+        return $this->diagnostics()->preferredDayRecommendation(
+            $this->suggestedPreferredDay($configsBySectionId),
+            $configsBySectionId,
+            timetableFits: true,
+        );
+    }
+
+    /** Cancellation, plus the interim report once it is due. */
+    private function checkpoint(): void
+    {
+        $this->cancellation->abortIfCancelled();
+
+        if ($this->interimReporter === null || microtime(true) < $this->interimReportAt) {
+            return;
+        }
+
+        $reporter = $this->interimReporter;
+        $this->interimReporter = null;
+        $this->interimReportAt = INF;
+
+        try {
+            $report = $this->interimReport();
+            if ($report !== null) {
+                $reporter($report);
+            }
+        } catch (\Throwable $exception) {
+            // The report is a courtesy; the search it describes must not fail
+            // because of it.
+            report($exception);
+        }
+    }
+
+    /** A timeout no later than the interim report, while one is still due. */
+    private function untilInterimReport(float $timeout): float
+    {
+        if ($this->interimReporter === null) {
+            return $timeout;
+        }
+
+        return min($timeout, max(0.3, $this->interimReportAt - microtime(true)));
+    }
+
+    /**
+     * The failure report the run would give if it stopped now. The bottleneck
+     * is read from the failures seen so far, or failing that from the section
+     * the search is stuck on.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function interimReport(): ?array
+    {
+        if ($this->interimContext === null) {
+            return null;
+        }
+
+        ['sections' => $sections, 'configs' => $configs, 'courses' => $courses] = $this->interimContext;
+        $failures = $this->observedFailures;
+        if ($failures === [] && $this->sectionInProgress !== null) {
+            [$section, $config] = $this->sectionInProgress;
+            $failures[] = $this->sectionFailure($section, $config, $courses);
+        }
+
+        $bottleneck = $this->diagnostics()->detectBottleneck($failures, $courses);
+        $strategies = array_slice(
+            $this->planner()->plan($sections, $configs, $courses, $bottleneck),
+            0,
+            self::MAX_RETRY_STRATEGIES,
+        );
+        $elapsed = (int) round($this->interimReportAfterSeconds);
+
+        return [
+            'error_code' => 'year_level_generation_failed',
+            'provisional' => true,
+            'message' => $bottleneck === null
+                ? sprintf('No timetable yet after %d seconds. The generator is still searching.', $elapsed)
+                : sprintf(
+                    'No timetable yet after %d seconds; the generator is still searching. %s looks like the blocking section: %s',
+                    $elapsed,
+                    $bottleneck['section_name'] !== '' ? $bottleneck['section_name'] : 'One section',
+                    $bottleneck['detected_cause'],
+                ),
+            'stage' => 'search',
+            'blocking_constraints' => [],
+            'bottleneck' => $bottleneck,
+            'attempts' => [],
+            'recommendations' => $this->diagnostics()->searchRecommendations(
+                $bottleneck,
+                $strategies,
+                $courses,
+                $configs,
+                $this->suggestedPreferredDay($configs),
+            ),
+        ];
+    }
+
+    /**
+     * The day to suggest adding when Preferred Days leave teaching days out:
+     * the one existing schedules book least, so the new room-time is the
+     * emptiest the department has. Ties go to the earlier day in the week.
+     *
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     */
+    private function suggestedPreferredDay(array $configsBySectionId): ?string
+    {
+        $first = $configsBySectionId[array_key_first($configsBySectionId)] ?? [];
+        $allowedDays = SchedulingPolicy::normalizeAllowedDays($first['allowed_days'] ?? null);
+        if ($allowedDays === null) {
+            return null;
+        }
+
+        $candidates = array_values(array_diff($this->teachingDays(), $allowedDays));
+        if ($candidates === []) {
+            return null;
+        }
+
+        $load = array_fill_keys($candidates, 0);
+        foreach ($this->generationSnapshot?->persistedSchedules ?? [] as $row) {
+            $day = (string) ($row['day'] ?? '');
+            if (isset($load[$day])) {
+                $load[$day]++;
             }
         }
 
-        return $recommendations;
+        // asort keeps the calendar order of equal counts.
+        asort($load);
+
+        return (string) array_key_first($load);
     }
 
     /**
@@ -618,7 +777,7 @@ class YearLevelScheduleGenerationService
             $sectionId = (int) ($adjustment['section_id'] ?? 0);
             $courseId = (int) ($adjustment['course_id'] ?? 0);
             $type = (string) ($adjustment['type'] ?? '');
-            $sectionLevelAdjustment = $type === 'disable_section_hybrid';
+            $sectionLevelAdjustment = in_array($type, ['disable_section_hybrid', 'enable_friday_saturday_split', 'add_preferred_day'], true);
             if ((! $sectionLevelAdjustment && $courseId <= 0) || ! isset($next[$sectionId])) {
                 continue;
             }
@@ -713,6 +872,24 @@ class YearLevelScheduleGenerationService
                     [$courseId],
                 ));
                 unset($config['preferred_patterns'][$courseId]);
+
+                return $config;
+
+            case 'enable_friday_saturday_split':
+                if ((bool) ($config['allow_friday_saturday_split'] ?? false)) {
+                    return null;
+                }
+                $config['allow_friday_saturday_split'] = true;
+
+                return $config;
+
+            case 'add_preferred_day':
+                $allowedDays = SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null);
+                $day = (string) ($value ?? '');
+                if ($allowedDays === null || in_array($day, $allowedDays, true) || ! in_array($day, $this->teachingDays(), true)) {
+                    return null;
+                }
+                $config['allowed_days'] = SchedulingPolicy::normalizeAllowedDays([...$allowedDays, $day]);
 
                 return $config;
 
@@ -914,10 +1091,10 @@ class YearLevelScheduleGenerationService
             return;
         }
 
-        $this->cancellation->abortIfCancelled();
-
         $section = $sections[$index];
         $config = $configsBySectionId[(int) $section->id];
+        $this->sectionInProgress = [$section, $config];
+        $this->checkpoint();
         $remainingSections = max(1, count($sections) - $index);
         $remainingSeconds = max(1.0, $deadline - microtime(true));
         $reservedForLaterSections = max(0, $remainingSections - 1)
@@ -1082,8 +1259,33 @@ class YearLevelScheduleGenerationService
             'hybrid_split_slot_available' => $hybridSplitSlotAvailable,
             'laboratory_courses' => $laboratoryCourses,
             'forced_on_site_courses' => $forcedOnSiteCourses,
+            'blocking_course' => $this->blockingCourse($courses),
             'iterations' => $this->solver->iterationsUsed(),
             'search_limit_reached' => $this->solver->searchLimitReached(),
+        ];
+    }
+
+    /**
+     * The course the section's searches stalled on most: every candidate it
+     * had clashed with what was already placed. Ties keep the course the
+     * search reached first.
+     *
+     * @param  Collection<int, Course>  $courses
+     * @return array{course_id: int, course_code: string, dead_ends: int}|null
+     */
+    private function blockingCourse(Collection $courses): ?array
+    {
+        if ($this->sectionDeadEnds === []) {
+            return null;
+        }
+
+        $deadEnds = max($this->sectionDeadEnds);
+        $courseId = (int) array_search($deadEnds, $this->sectionDeadEnds, true);
+
+        return [
+            'course_id' => $courseId,
+            'course_code' => $this->courseCode($courses, $courseId),
+            'dead_ends' => $deadEnds,
         ];
     }
 
@@ -1178,6 +1380,9 @@ class YearLevelScheduleGenerationService
                 continue;
             }
 
+            $this->sectionInProgress = [$section, $config];
+            $this->sectionDeadEnds = [];
+            $this->checkpoint();
             $splitCount = count($config['selected_split_session_course_ids'] ?? [])
                 + count($config['balanced_split_course_ids'] ?? []);
             $this->solver->setInputSnapshot($this->generationSnapshot);
@@ -1189,7 +1394,10 @@ class YearLevelScheduleGenerationService
                 'throw_on_empty_domain' => false,
                 'max_solutions' => 1,
                 'max_iterations' => $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 120000 : 60000,
-                'timeout_seconds' => $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 8 : 4,
+                // Clipped at the interim report so it is not held up behind a
+                // pre-check. A clipped probe used iterations, so it is never
+                // mistaken for the zero-candidate conflict tested below.
+                'timeout_seconds' => $this->untilInterimReport($splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 8.0 : 4.0),
                 'seed' => (int) ($config['seed'] ?? 1),
             ]));
             $this->recordSolverMetrics();
@@ -1217,6 +1425,7 @@ class YearLevelScheduleGenerationService
         bool $allowRoomTbaFallback = true,
         ?float $maxAttemptSeconds = null,
     ): array {
+        $this->sectionDeadEnds = [];
         $baseSeed = isset($config['seed']) ? (int) $config['seed'] : random_int(1, 1000000);
         $baseSeed += $seedOffset;
         $splitCount = count($config['selected_split_session_course_ids'] ?? [])
@@ -1241,10 +1450,17 @@ class YearLevelScheduleGenerationService
             $limitReached = false;
 
             for ($restart = 0; ; $restart++) {
+                $this->checkpoint();
                 $restartTimeout = $attemptDeadline - microtime(true);
                 if ($restart > 0 && $restartTimeout < 0.3) {
                     break;
                 }
+                // A solve that would run past the interim report is cut there
+                // and resumed as the next restart, so one long solve cannot
+                // hold the report back.
+                $clippedTimeout = $this->untilInterimReport($restartTimeout);
+                $clipped = $clippedTimeout < $restartTimeout;
+                $restartTimeout = $clippedTimeout;
 
                 $this->solver->setInputSnapshot($this->generationSnapshot);
                 $solutions = $this->solver->solveRankedFromSchema(array_merge($config, [
@@ -1271,6 +1487,12 @@ class YearLevelScheduleGenerationService
                         $solutions,
                         fn (array $solution): bool => ! $this->scheduleRowsContainRoomTba($solution['schedules'] ?? []),
                     ));
+                }
+
+                // Cut for the interim report, not exhausted: carry on without
+                // counting it as a failed restart.
+                if ($clipped && $solutions === [] && $iterationBudget > 0) {
+                    continue;
                 }
 
                 // A search that ended before its limit tried every candidate:
@@ -1331,6 +1553,9 @@ class YearLevelScheduleGenerationService
         }
         foreach ($metrics->fallbackUsage as $fallback => $count) {
             $this->aggregateFallbackUsage[$fallback] = ($this->aggregateFallbackUsage[$fallback] ?? 0) + $count;
+        }
+        foreach ($this->solver->deadEndsByCourseId() as $courseId => $count) {
+            $this->sectionDeadEnds[$courseId] = ($this->sectionDeadEnds[$courseId] ?? 0) + $count;
         }
     }
 
@@ -1451,15 +1676,14 @@ class YearLevelScheduleGenerationService
     {
         $courseCount = count(array_unique(array_map('intval', $config['course_ids'] ?? [])));
         $splitLabCount = count(array_unique(array_map('intval', $config['selected_split_session_course_ids'] ?? [])));
-        $gecSplitCount = count(array_unique(array_map('intval', $config['balanced_split_course_ids'] ?? [])));
-        $forcedOnSiteCount = count(array_filter(
-            $config['delivery_modes_by_course_id'] ?? [],
-            static fn (mixed $mode): bool => $mode === 'on-site',
+        $modes = $config['delivery_modes_by_course_id'] ?? [];
+        // An Online Split Session's second meeting takes no room either.
+        $gecSplitCount = count(array_filter(
+            array_unique(array_map('intval', $config['balanced_split_course_ids'] ?? [])),
+            static fn (int $courseId): bool => ($modes[$courseId] ?? null) !== 'online',
         ));
-        $forcedOnlineCount = count(array_filter(
-            $config['delivery_modes_by_course_id'] ?? [],
-            static fn (mixed $mode): bool => $mode === 'online',
-        ));
+        $forcedOnSiteCount = count(array_filter($modes, static fn (mixed $mode): bool => $mode === 'on-site'));
+        $forcedOnlineCount = count(array_filter($modes, static fn (mixed $mode): bool => $mode === 'online'));
 
         return max(0, $courseCount + $splitLabCount + $gecSplitCount + $forcedOnSiteCount - $forcedOnlineCount);
     }

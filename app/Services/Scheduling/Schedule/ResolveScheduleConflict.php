@@ -105,8 +105,17 @@ final class ResolveScheduleConflict
                 : collect([$target]);
             $assignmentGroupIds = $assignmentGroup->pluck('id')->map(static fn ($id): int => (int) $id)->all();
 
+            $partners = $instructorOnly
+                ? collect()
+                : $this->sameTimePartners->partnersFor($target, $changes);
+            // A Consecutive Days run moves together, so the moved day is not
+            // checked against the days that move with it.
+            $runPartnerIds = $this->sameTimePartners->runPartnerIds($target, $partners);
+
             $attempt = array_merge($target->toArray(), $changes, [
-                'ignore_schedule_id' => $instructorOnly ? $assignmentGroupIds : (int) $target->id,
+                'ignore_schedule_id' => $instructorOnly
+                    ? $assignmentGroupIds
+                    : ($runPartnerIds === [] ? (int) $target->id : [(int) $target->id, ...$runPartnerIds]),
             ]);
 
             $violations = $instructorOnly
@@ -120,9 +129,6 @@ final class ResolveScheduleConflict
                 );
             }
 
-            $partners = $instructorOnly
-                ? collect()
-                : $this->sameTimePartners->partnersFor($target, $changes);
             $beforeRows = $this->snapshotRows([
                 ...$assignmentGroupIds,
                 ...$partners->pluck('id')->map(static fn ($id): int => (int) $id)->all(),

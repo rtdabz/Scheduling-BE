@@ -125,6 +125,16 @@ return [
             // The VPAA is kept informed of borrowing but no longer approves it.
             'allowed_roles' => ['vpaa'],
         ],
+        'room.assign_program' => [
+            'requires' => ['schedule.view'],
+            'module' => 'room_requests',
+            'requires_program' => true,
+            'title' => 'Assign Program Rooms',
+            'description' => "Choose which program each of the department's rooms belongs to and how programs share them.",
+            // Like lending a room to another department, dividing the rooms
+            // between the department's own programs is the secretary's call.
+            'allowed_roles' => ['secretary'],
+        ],
         'curriculum.manage' => [
             'requires' => ['schedule.view'],
             'module' => 'curriculum',
@@ -178,7 +188,8 @@ return [
      * Secretaries and program heads build their department's timetable end to
      * end; approvals and designations stay with the dean and VPAA. The
      * secretary alone also decides on requests to borrow their department's
-     * rooms and authors the curriculum.
+     * rooms, divides those rooms between the department's programs and
+     * authors the curriculum.
      *
      * The VPAA holds every capability except `curriculum.manage` and
      * `room.review_requests`: the curriculum is authored by the department
@@ -199,7 +210,7 @@ return [
             'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
             'schedule.generate', 'schedule.submit', 'schedule.withdraw',
             'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
-            'room.request', 'room.review_requests', 'curriculum.manage',
+            'room.request', 'room.review_requests', 'room.assign_program', 'curriculum.manage',
         ],
         'program_head' => [
             'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',

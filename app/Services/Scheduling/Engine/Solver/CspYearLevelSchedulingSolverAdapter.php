@@ -37,6 +37,11 @@ final class CspYearLevelSchedulingSolverAdapter implements YearLevelSchedulingSo
         return $this->solver->searchLimitReached();
     }
 
+    public function deadEndsByCourseId(): array
+    {
+        return $this->solver->deadEndsByCourseId();
+    }
+
     public function generationMetrics(): SchedulingGenerationMetrics
     {
         return $this->solver->generationMetrics();

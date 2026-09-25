@@ -17,9 +17,9 @@ use Tests\TestCase;
 /**
  * Basic Load used to be a wall in Auto-Assign and nothing at all on the
  * assignment page, so an overload was either impossible or invisible — never a
- * decision anyone made. It is now a threshold the user crosses deliberately:
- * assignment continues into the overload allowance and then pro bono, and every
- * assignment that *causes* an overload is confirmed first.
+ * decision anyone made. Assignment now continues into the overload allowance
+ * without a prompt, then into pro bono, and every assignment that *causes* a
+ * pro bono load is confirmed first.
  *
  * Basic Load is `max_units - deload_units`, so an instructor with a 21-unit
  * maximum and 6 units of deload has 15 units of Basic Load. The fixture below
@@ -31,9 +31,9 @@ class FacultyOverloadConfirmationTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const CONFIRM_MESSAGE = 'This instructor will have an overload. Do you want to proceed?';
+    private const CONFIRM_MESSAGE = 'This instructor will have a pro bono load. Do you want to proceed?';
 
-    private const CONFIRM_MESSAGE_PLURAL = 'These instructors will have an overload. Do you want to proceed?';
+    private const CONFIRM_MESSAGE_PLURAL = 'These instructors will have a pro bono load. Do you want to proceed?';
 
     /** Distinct day/hour per generated row, so nothing collides on time. */
     private int $slot = 0;
@@ -56,10 +56,27 @@ class FacultyOverloadConfirmationTest extends TestCase
         $this->assertSame($fixture['faculty']->id, $target->refresh()->faculty_id);
     }
 
-    public function test_crossing_the_basic_load_asks_before_writing(): void
+    public function test_going_into_the_overload_allowance_saves_without_a_prompt(): void
     {
         $fixture = $this->fixture();
         $this->carryLoad($fixture, 15);
+        $target = $this->assignable($fixture, 3);
+
+        $this->actingAs($fixture['user'])
+            ->patchJson("/api/instructor-assignments/{$target->id}", [
+                'faculty_id' => $fixture['faculty']->id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('load.tier', 'overload')
+            ->assertJsonPath('load.projected_units', 18);
+
+        $this->assertSame($fixture['faculty']->id, $target->refresh()->faculty_id);
+    }
+
+    public function test_crossing_into_pro_bono_asks_before_writing(): void
+    {
+        $fixture = $this->fixture();
+        $this->carryLoad($fixture, 18);
         $target = $this->assignable($fixture, 3);
 
         $this->actingAs($fixture['user'])
@@ -70,12 +87,12 @@ class FacultyOverloadConfirmationTest extends TestCase
             ->assertJsonPath('message', self::CONFIRM_MESSAGE)
             ->assertJsonCount(1, 'overload_confirmation.instructors')
             ->assertJsonPath('overload_confirmation.instructors.0.faculty_id', $fixture['faculty']->id)
-            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'overload')
-            ->assertJsonPath('overload_confirmation.instructors.0.tier_label', 'Overload')
+            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'probono')
+            ->assertJsonPath('overload_confirmation.instructors.0.tier_label', 'Pro-bono')
             ->assertJsonPath('overload_confirmation.instructors.0.basic_load', 15)
-            ->assertJsonPath('overload_confirmation.instructors.0.current_units', 15)
+            ->assertJsonPath('overload_confirmation.instructors.0.current_units', 18)
             ->assertJsonPath('overload_confirmation.instructors.0.added_units', 3)
-            ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 18)
+            ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 21)
             ->assertJsonPath('overload_confirmation.instructors.0.unit_ceiling', 21)
             ->assertJsonPath(
                 'overload_confirmation.instructors.0.assignment_label',
@@ -87,10 +104,10 @@ class FacultyOverloadConfirmationTest extends TestCase
         $this->assertNull($target->refresh()->faculty_id);
     }
 
-    public function test_confirming_commits_the_overload(): void
+    public function test_confirming_commits_the_pro_bono_load(): void
     {
         $fixture = $this->fixture();
-        $this->carryLoad($fixture, 15);
+        $this->carryLoad($fixture, 18);
         $target = $this->assignable($fixture, 3);
 
         $this->actingAs($fixture['user'])
@@ -99,8 +116,8 @@ class FacultyOverloadConfirmationTest extends TestCase
                 'confirm_overload' => true,
             ])
             ->assertOk()
-            ->assertJsonPath('load.tier', 'overload')
-            ->assertJsonPath('load.projected_units', 18)
+            ->assertJsonPath('load.tier', 'probono')
+            ->assertJsonPath('load.projected_units', 21)
             // Still inside the ceiling, so the soft ceiling warning stays quiet.
             ->assertJsonPath('warnings', []);
 
@@ -156,27 +173,38 @@ class FacultyOverloadConfirmationTest extends TestCase
     public function test_re_saving_the_instructor_who_already_holds_the_class_does_not_prompt(): void
     {
         $fixture = $this->fixture();
-        $this->carryLoad($fixture, 15);
+        $this->carryLoad($fixture, 18);
         $target = $this->assignable($fixture, 3);
         $target->update(['faculty_id' => $fixture['faculty']->id]);
 
-        // Already over Basic Load, but this assignment adds nothing, so it does
-        // not *cause* an overload and there is nothing to ask about.
+        // Already in pro bono, but this assignment adds nothing, so it does not
+        // *cause* a pro bono load and there is nothing to ask about.
         $this->actingAs($fixture['user'])
             ->patchJson("/api/instructor-assignments/{$target->id}", [
                 'faculty_id' => $fixture['faculty']->id,
             ])
             ->assertOk()
             ->assertJsonPath('load.added_units', 0)
-            ->assertJsonPath('load.projected_units', 18)
-            ->assertJsonPath('load.tier', 'overload');
+            ->assertJsonPath('load.projected_units', 21)
+            ->assertJsonPath('load.tier', 'probono');
     }
 
-    public function test_an_overload_only_instructor_is_prompted_for_their_first_units(): void
+    public function test_an_overload_only_instructor_is_prompted_past_their_allowance(): void
     {
         // A Basic Load of 0 with overload granted is a part-timer carrying only
-        // overload, not an unconfigured record: every unit is overload.
+        // overload, not an unconfigured record: units inside the allowance save
+        // freely, and the first unit past it is pro bono.
         $fixture = $this->fixture(['max_units' => 0, 'deload_units' => 0, 'overload_units' => 15, 'probono_units' => 0]);
+        $first = $this->assignable($fixture, 3);
+
+        $this->actingAs($fixture['user'])
+            ->patchJson("/api/instructor-assignments/{$first->id}", [
+                'faculty_id' => $fixture['faculty']->id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('load.tier', 'overload');
+
+        $this->carryLoad($fixture, 12);
         $target = $this->assignable($fixture, 3);
 
         $this->actingAs($fixture['user'])
@@ -184,7 +212,7 @@ class FacultyOverloadConfirmationTest extends TestCase
                 'faculty_id' => $fixture['faculty']->id,
             ])
             ->assertStatus(409)
-            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'overload')
+            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'probono')
             ->assertJsonPath('overload_confirmation.instructors.0.basic_load', 0);
 
         $this->assertNull($target->refresh()->faculty_id);
@@ -211,7 +239,7 @@ class FacultyOverloadConfirmationTest extends TestCase
     public function test_the_timetable_route_asks_for_the_same_confirmation(): void
     {
         $fixture = $this->fixture();
-        $this->carryLoad($fixture, 15);
+        $this->carryLoad($fixture, 18);
         $target = $this->assignable($fixture, 3);
 
         // The slot popup and the inline picker both assign through this route.
@@ -219,7 +247,7 @@ class FacultyOverloadConfirmationTest extends TestCase
             ->putJson("/api/schedules/{$target->id}", ['faculty_id' => $fixture['faculty']->id])
             ->assertStatus(409)
             ->assertJsonPath('message', self::CONFIRM_MESSAGE)
-            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'overload');
+            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'probono');
 
         $this->assertNull($target->refresh()->faculty_id);
 
@@ -248,13 +276,13 @@ class FacultyOverloadConfirmationTest extends TestCase
         $this->assertNull($target->refresh()->faculty_id);
     }
 
-    public function test_bulk_assignment_asks_once_for_every_overloading_instructor(): void
+    public function test_bulk_assignment_asks_once_for_every_pro_bono_instructor(): void
     {
         $fixture = $this->fixture();
         $second = $this->instructor($fixture, 'Second');
 
-        $this->carryLoad($fixture, 15);
-        $this->carryLoad($fixture, 15, $second);
+        $this->carryLoad($fixture, 18);
+        $this->carryLoad($fixture, 18, $second);
 
         $first = $this->assignable($fixture, 3);
         $other = $this->assignable($fixture, 3);
@@ -275,7 +303,7 @@ class FacultyOverloadConfirmationTest extends TestCase
             [(int) $fixture['faculty']->id, (int) $second->id],
             $reported->pluck('faculty_id')->all(),
         );
-        $this->assertSame(['overload', 'overload'], $reported->pluck('tier')->all());
+        $this->assertSame(['probono', 'probono'], $reported->pluck('tier')->all());
 
         $this->assertNull($first->refresh()->faculty_id);
         $this->assertNull($other->refresh()->faculty_id);
@@ -296,9 +324,9 @@ class FacultyOverloadConfirmationTest extends TestCase
     public function test_bulk_assignment_projects_the_whole_batch_onto_one_instructor(): void
     {
         $fixture = $this->fixture();
-        // Each class alone stays inside Basic Load; together they cross it, which a
-        // per-class check would miss.
-        $this->carryLoad($fixture, 12);
+        // Each class alone stays inside the overload allowance; together they cross
+        // into pro bono, which a per-class check would miss.
+        $this->carryLoad($fixture, 15);
         $first = $this->assignable($fixture, 3);
         $other = $this->assignable($fixture, 3);
 
@@ -312,7 +340,7 @@ class FacultyOverloadConfirmationTest extends TestCase
             ->assertStatus(409)
             ->assertJsonPath('message', self::CONFIRM_MESSAGE)
             ->assertJsonPath('overload_confirmation.instructors.0.added_units', 6)
-            ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 18)
+            ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 21)
             ->assertJsonPath('overload_confirmation.instructors.0.assignment_label', '2 classes');
     }
 

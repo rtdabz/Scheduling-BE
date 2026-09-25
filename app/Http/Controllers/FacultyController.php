@@ -151,6 +151,71 @@ class FacultyController extends Controller
         return response()->json($this->present($faculty));
     }
 
+    /**
+     * Every semester the instructor has taught, newest first, with the courses
+     * and sections they carried. Counted the way the live load is: only
+     * approved assignments, and a class met across several meetings counts
+     * its units once.
+     */
+    public function teachingHistory(Request $request, Faculty $faculty)
+    {
+        if ($response = $this->guardDepartment($request, $faculty)) {
+            return $response;
+        }
+
+        $rows = DB::table('schedules')
+            ->join('semesters', 'schedules.semester_id', '=', 'semesters.id')
+            ->join('courses', 'schedules.course_id', '=', 'courses.id')
+            ->join('sections', 'schedules.section_id', '=', 'sections.id')
+            ->where('schedules.faculty_id', $faculty->id)
+            ->whereIn('schedules.status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
+            ->whereNull('schedules.deleted_at')
+            ->whereNull('semesters.deleted_at')
+            ->select([
+                'semesters.id as semester_id',
+                'semesters.academic_year',
+                'semesters.semester',
+                'semesters.is_active',
+                'schedules.course_id',
+                'schedules.section_id',
+                'courses.course_code',
+                'courses.course_name',
+                'courses.units',
+                'sections.section_name',
+            ])
+            ->distinct()
+            ->orderByDesc('semesters.academic_year')
+            ->orderByDesc('semesters.semester')
+            ->orderBy('courses.course_code')
+            ->orderBy('sections.section_name')
+            ->get();
+
+        $semesters = $rows->groupBy('semester_id')->map(function ($semesterRows) {
+            $first = $semesterRows->first();
+
+            return [
+                'semester_id' => (int) $first->semester_id,
+                'academic_year' => $first->academic_year,
+                'semester' => $first->semester,
+                'is_active' => (bool) $first->is_active,
+                'total_units' => (int) $semesterRows->sum('units'),
+                'section_count' => $semesterRows->unique('section_id')->count(),
+                'courses' => $semesterRows->groupBy('course_id')->map(fn ($courseRows) => [
+                    'course_id' => (int) $courseRows->first()->course_id,
+                    'course_code' => $courseRows->first()->course_code,
+                    'course_name' => $courseRows->first()->course_name,
+                    'units' => (int) $courseRows->first()->units,
+                    'sections' => $courseRows->pluck('section_name')->values(),
+                ])->values(),
+            ];
+        })->values();
+
+        return response()->json([
+            'faculty_id' => $faculty->id,
+            'semesters' => $semesters,
+        ]);
+    }
+
     public function update(Request $request, Faculty $faculty)
     {
         if ($response = $this->guardDepartment($request, $faculty)) {

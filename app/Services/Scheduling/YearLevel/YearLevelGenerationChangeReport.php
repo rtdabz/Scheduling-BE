@@ -30,6 +30,8 @@ class YearLevelGenerationChangeReport
      * @param  list<array<string, mixed>>  $schedules
      * @param  array<int, string>  $sectionNames
      * @param  array<int, string>  $courseCodes
+     * @param  array<string, mixed>|null  $bottleneck  what blocked the original configuration
+     * @param  list<array<string, mixed>>  $attempts  every attempt the run made, in order
      * @return list<array<string, mixed>>
      */
     public function build(
@@ -38,6 +40,8 @@ class YearLevelGenerationChangeReport
         array $schedules,
         array $sectionNames,
         array $courseCodes,
+        ?array $bottleneck = null,
+        array $attempts = [],
     ): array {
         $changes = [];
 
@@ -45,21 +49,39 @@ class YearLevelGenerationChangeReport
         // scheduler configured, so it is not reported as a change.
         $relaxations = array_values((array) ($strategy['adjustments'] ?? []));
         if ($strategy !== null && $relaxations !== []) {
-            $changes[] = $this->change(
-                self::KIND_PREFERENCE_RELAXED,
-                'warning',
-                (string) ($strategy['label'] ?? 'Preference adjusted on retry'),
-                (string) ($strategy['description'] ?? 'The configuration as entered found no timetable, so the generator relaxed a preference and tried again.'),
-                array_map(
-                    fn (array $adjustment): array => $this->item(
-                        $adjustment,
-                        $sectionNames,
-                        $courseCodes,
-                        $this->describeRelaxation($adjustment),
+            $changes[] = [
+                ...$this->change(
+                    self::KIND_PREFERENCE_RELAXED,
+                    'warning',
+                    (string) ($strategy['label'] ?? 'Preference adjusted on retry'),
+                    (string) ($strategy['description'] ?? 'The configuration as entered found no timetable, so the generator relaxed a preference and tried again.'),
+                    array_map(
+                        fn (array $adjustment): array => [
+                            ...$this->item(
+                                $adjustment,
+                                $sectionNames,
+                                $courseCodes,
+                                $this->describeRelaxation($adjustment),
+                            ),
+                            'adjustment_type' => (string) ($adjustment['type'] ?? ''),
+                            'adjustment_value' => $adjustment['value'] ?? null,
+                        ],
+                        $relaxations,
                     ),
-                    $relaxations,
                 ),
-            );
+                // Why the retry was needed, so the change can be explained by
+                // what the generator detected rather than by the fix alone.
+                'detected_issue' => $bottleneck === null ? null : [
+                    'type' => (string) ($bottleneck['type'] ?? ''),
+                    'section_name' => (string) ($bottleneck['section_name'] ?? ''),
+                    'course_code' => (string) ($bottleneck['course_code'] ?? ''),
+                    'detected_cause' => (string) ($bottleneck['detected_cause'] ?? ''),
+                ],
+                'failed_attempts' => count(array_filter(
+                    $attempts,
+                    static fn (array $attempt): bool => ($attempt['outcome'] ?? '') === 'failed',
+                )),
+            ];
         }
 
         if ($splitFallbacks !== []) {
@@ -161,6 +183,8 @@ class YearLevelGenerationChangeReport
             'clear_pattern' => 'Meeting pattern set to Automatic',
             'disable_lecture_lab_split' => 'Lecture/lab split turned off',
             'disable_minor_split' => 'Split Session turned off; scheduled as one meeting',
+            'enable_friday_saturday_split' => 'Friday + Saturday allowed as paired days',
+            'add_preferred_day' => "{$value} added to the Preferred Days",
             'set_delivery_mode' => $value === 'automatic' ? 'Delivery mode set to Automatic' : "Delivery mode set to {$value}",
             'disable_section_hybrid' => 'Hybrid delivery turned off for the section',
             default => 'Configuration adjusted',

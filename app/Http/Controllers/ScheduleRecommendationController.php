@@ -344,6 +344,7 @@ class ScheduleRecommendationController extends Controller
             'excluded_days' => 'sometimes|array',
             'excluded_days.*' => SchedulingPolicy::allowedDaysRule('required'),
             'search_from_day' => SchedulingPolicy::allowedDaysRule('sometimes'),
+            'consecutive_days' => 'sometimes|nullable|integer|min:'.SchedulingPolicy::MIN_CONSECUTIVE_DAYS.'|max:'.count(SchedulingPolicy::DAYS),
             'ignore_schedule_ids' => 'sometimes|array',
             'ignore_schedule_ids.*' => 'integer',
             'tentative_schedules' => 'sometimes|array',
@@ -385,6 +386,7 @@ class ScheduleRecommendationController extends Controller
             meetingType: $validated['meeting_type'] ?? null,
             excludedDays: $validated['excluded_days'] ?? [],
             searchFromDay: $validated['search_from_day'] ?? null,
+            consecutiveDays: isset($validated['consecutive_days']) ? (int) $validated['consecutive_days'] : null,
         );
 
         return response()->json($result);

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Domain;
 
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use DateTimeImmutable;
 use InvalidArgumentException;
 
@@ -33,6 +34,7 @@ final readonly class SchedulingSnapshot implements SchedulingContract
      * @param  array<string, mixed>  $departmentSettings
      * @param  array<string, mixed>  $semester
      * @param  array<string, mixed>  $metadata
+     * @param  list<array{course_id: int, section_id: int|null, day_count: int, preferred_start_day: string|null}>  $consecutiveDayRules
      */
     public function __construct(
         public string $fingerprint,
@@ -54,6 +56,9 @@ final readonly class SchedulingSnapshot implements SchedulingContract
         public array $semester = [],
         public array $metadata = [],
         public int $schemaVersion = self::SCHEMA_VERSION,
+        // Consecutive Days rules as saved: course-wide (section_id null) and
+        // per section. consecutiveDayRulesFor() resolves them for a section.
+        public array $consecutiveDayRules = [],
     ) {
         if ($this->fingerprint === '' || $this->semesterId <= 0 || $this->departmentId <= 0) {
             throw new InvalidArgumentException('Scheduling snapshot identity is incomplete.');
@@ -85,6 +90,7 @@ final readonly class SchedulingSnapshot implements SchedulingContract
             semester: is_array($payload['semester'] ?? null) ? $payload['semester'] : [],
             metadata: is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [],
             schemaVersion: (int) ($payload['schema_version'] ?? self::SCHEMA_VERSION),
+            consecutiveDayRules: array_values(is_array($payload['consecutive_day_rules'] ?? null) ? $payload['consecutive_day_rules'] : []),
         );
     }
 
@@ -110,7 +116,19 @@ final readonly class SchedulingSnapshot implements SchedulingContract
             'department_settings' => $this->departmentSettings,
             'semester' => $this->semester,
             'metadata' => $this->metadata,
+            'consecutive_day_rules' => $this->consecutiveDayRules,
         ];
+    }
+
+    /**
+     * The Consecutive Days rule each course follows in this section, as
+     * course id => {day_count, preferred_start_day}.
+     *
+     * @return array<int, array{day_count: int, preferred_start_day: string|null}>
+     */
+    public function consecutiveDayRulesFor(int $sectionId): array
+    {
+        return SchedulingPolicy::resolveConsecutiveDayRules($this->consecutiveDayRules, $sectionId);
     }
 
     public function jsonSerialize(): array

@@ -258,6 +258,21 @@ final class ValidateGenerationConfiguration
                 );
             }
 
+            // Consecutive Days is a shape of its own, so the run cannot also
+            // split the course or pin it to a two-day pattern.
+            $consecutiveRule = $snapshot->consecutiveDayRulesFor((int) ($section['id'] ?? 0))[$courseId] ?? null;
+            if ($consecutiveRule !== null
+                && ($isLectureLabSplit || $isMinorSplit || $isHybridSplit || ! empty($configuration->preferredPatternsByCourseId[$courseId]))) {
+                $violations[] = $this->violation(
+                    'consecutive_days_shape',
+                    sprintf(
+                        'This course is set to meet on %d consecutive days, so it cannot also be a Split Session, Hybrid Split, Integrated class or fixed day pattern. Choose one class configuration in Setup Courses.',
+                        $consecutiveRule['day_count'],
+                    ),
+                    $this->courseContext($course),
+                );
+            }
+
             // A course cannot be two kinds of split at once. The lecture-only
             // restriction on a major's balanced split already makes this
             // unreachable, so reaching it means one of the two eligibility gates

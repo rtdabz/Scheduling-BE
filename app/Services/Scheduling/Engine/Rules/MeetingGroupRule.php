@@ -4,17 +4,19 @@ namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Models\Course;
 use App\Models\Departments;
+use App\Models\Schedule;
 use App\Models\Sections;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 /**
  * hybrid_component_count, hybrid_components, minor_split_component_count,
  * minor_split_eligibility, minor_split_pattern, minor_split_duration,
+ * consecutive_day_count, consecutive_days, consecutive_mode,
  * split_group_same_time, split_group_day_separation.
  *
  * Linked meetings (one split_group_id) that cannot be judged one row at a time.
- * The shape rules cover the explicit Generator configurations -- Hybrid and
- * Split Session; day separation applies to every linked group.
+ * The shape rules cover the explicit Generator configurations -- Hybrid, Split
+ * Session and Consecutive Days; day separation applies to every linked group.
  */
 final class MeetingGroupRule
 {
@@ -39,16 +41,23 @@ final class MeetingGroupRule
             }
 
             $isHybrid = collect($rows)->contains(static fn (array $row): bool => (bool) ($row['is_hybrid'] ?? false));
-            $pattern = SchedulingPolicy::normalizePreferredPattern($first['preferred_pattern'] ?? null);
+            $isConsecutive = SchedulingPolicy::consecutiveDayCount($first['preferred_pattern'] ?? null) !== null;
+            $pattern = $isConsecutive
+                ? (string) $first['preferred_pattern']
+                : SchedulingPolicy::normalizePreferredPattern($first['preferred_pattern'] ?? null);
             $kind = match (true) {
+                $isConsecutive => 'consecutive',
                 $isHybrid => 'hybrid',
                 SchedulingPolicy::isFixedMeetingPattern($pattern) => 'minor_split',
                 default => 'linked',
             };
+            if ($kind === 'consecutive') {
+                $rows = $this->withPersistedPartners((string) $groupId, $rows);
+            }
 
             $course = null;
             $splitSettings = null;
-            if ($kind !== 'linked') {
+            if ($kind === 'hybrid' || $kind === 'minor_split') {
                 $courseId = RuleSupport::courseId($first);
                 $course = $courseId > 0 ? $this->lookups->remember('course:'.$courseId, fn () => Course::find($courseId)) : null;
                 if ($course === null) {
@@ -72,12 +81,48 @@ final class MeetingGroupRule
     }
 
     /**
+     * A batch may edit one day of a saved Consecutive Days run (its room, say)
+     * without resending the others. The run is judged as it will stand after
+     * the batch, so the saved meetings the batch does not touch are added.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>>
+     */
+    private function withPersistedPartners(string $groupId, array $rows): array
+    {
+        $batchIds = array_values(array_filter(array_map(
+            static fn (array $row): int => (int) ($row['id'] ?? 0),
+            $rows,
+        )));
+        if ($batchIds === []) {
+            return $rows;
+        }
+
+        $partners = Schedule::query()
+            ->whereNotIn('id', $batchIds)
+            ->whereHas('split', static fn ($query) => $query->where('split_group_id', $groupId))
+            ->get(['id', 'day', 'start_time', 'end_time', 'mode'])
+            ->map(static fn (Schedule $schedule): array => [
+                'id' => (int) $schedule->id,
+                'day' => (string) $schedule->day,
+                'start_time' => (string) $schedule->start_time,
+                'end_time' => (string) $schedule->end_time,
+                'mode' => (string) $schedule->mode,
+            ])
+            ->all();
+
+        return [...$rows, ...$partners];
+    }
+
+    /**
      * The meeting-group decision for one linked group. The one implementation;
      * the constraint kernel calls it too with snapshot rows and settings.
      *
-     * $kind is 'hybrid', 'minor_split' or 'linked' (any other linked group,
+     * $kind is 'hybrid', 'minor_split', 'consecutive' (a Consecutive Days run,
+     * whose $pattern is `consecutive:N`) or 'linked' (any other linked group,
      * which is only held to day separation). $rows need day, start_time,
-     * end_time, mode and meeting_type. A course is required unless 'linked'.
+     * end_time, mode and meeting_type. A course is required for 'hybrid' and
+     * 'minor_split'.
      *
      * @param  Course|array<string, mixed>|null  $course
      * @param  list<array<string, mixed>>  $rows
@@ -139,12 +184,39 @@ final class MeetingGroupRule
             }
         }
 
-        // Hybrid Split and Split Session are one class met on two days, so both
-        // meetings keep one time slot. Only Integrated Hybrid's lecture and
-        // laboratory have lengths -- and so times -- of their own.
-        $sameTimeShape = $course !== null && $count === 2 && match ($kind) {
-            'minor_split' => true,
-            'hybrid' => (int) (is_array($course) ? ($course['lab_hours'] ?? 0) : ($course->lab_hours ?? 0)) === 0,
+        if ($kind === 'consecutive') {
+            $dayCount = SchedulingPolicy::consecutiveDayCount($pattern) ?? 0;
+            $days = array_map('strval', $column('day'));
+            if ($count !== $dayCount) {
+                $mismatches[] = ['rule' => 'consecutive_day_count', 'message' => sprintf(
+                    'A %d-day Consecutive Days class needs all %d of its meetings; %d %s linked.',
+                    $dayCount,
+                    $dayCount,
+                    $count,
+                    $count === 1 ? 'is' : 'are',
+                )];
+            } elseif (count(array_unique($days)) === $count && ! SchedulingPolicy::isConsecutiveDaySet($days)) {
+                // Repeated days are split_group_day_separation's to report.
+                $mismatches[] = ['rule' => 'consecutive_days', 'message' => sprintf(
+                    'Consecutive Days meetings must fall on %d back-to-back days (for example Thursday, Friday and Saturday), not %s.',
+                    $dayCount,
+                    implode(', ', self::inWeekOrder($days)),
+                )];
+            }
+            if (count(array_unique($column('mode'))) > 1) {
+                $mismatches[] = ['rule' => 'consecutive_mode', 'message' => 'Every meeting of a Consecutive Days class must use the same delivery mode.'];
+            }
+        }
+
+        // Hybrid Split, Split Session and Consecutive Days are one class met on
+        // several days, so every meeting keeps one time slot. Only Integrated
+        // Hybrid's lecture and laboratory have lengths -- and so times -- of
+        // their own.
+        $sameTimeShape = $count > 1 && match ($kind) {
+            'consecutive' => true,
+            'minor_split' => $course !== null && $count === 2,
+            'hybrid' => $course !== null && $count === 2
+                && (int) (is_array($course) ? ($course['lab_hours'] ?? 0) : ($course->lab_hours ?? 0)) === 0,
             default => false,
         };
         if ($sameTimeShape) {
@@ -154,7 +226,9 @@ final class MeetingGroupRule
                 $rows,
             ));
             if (count($slots) > 1) {
-                $mismatches[] = ['rule' => 'split_group_same_time', 'message' => 'Both meetings of a Split Session or Hybrid Split must use the same start and end time.'];
+                $mismatches[] = ['rule' => 'split_group_same_time', 'message' => $kind === 'consecutive'
+                    ? 'Every meeting of a Consecutive Days class must use the same start and end time.'
+                    : 'Both meetings of a Split Session or Hybrid Split must use the same start and end time.'];
             }
         }
 
@@ -163,5 +237,16 @@ final class MeetingGroupRule
         }
 
         return $mismatches;
+    }
+
+    /**
+     * @param  list<string>  $days
+     * @return list<string>
+     */
+    private static function inWeekOrder(array $days): array
+    {
+        usort($days, static fn (string $left, string $right): int => SchedulingPolicy::dayIndex($left) <=> SchedulingPolicy::dayIndex($right));
+
+        return $days;
     }
 }

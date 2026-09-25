@@ -124,13 +124,15 @@ class FacultyLoadService
             'unit_ceiling' => SchedulingPolicy::facultyUnitCeiling($faculty),
             'tier' => $tier,
             'tier_label' => SchedulingPolicy::loadTierLabel($tier),
-            // Only an assignment that *adds* units can cause an overload: a
-            // re-save of the instructor who already holds the class must not
-            // prompt. An instructor with no allowance configured at all has no
-            // threshold to cross, so there is nothing to confirm. A Basic Load
-            // of 0 with overload granted (a part-timer carrying only overload)
-            // is configured: every unit they take is overload.
-            'requires_confirmation' => SchedulingPolicy::facultyUnitCeiling($faculty) > 0 && $added > 0 && $projected > $basic,
+            // Only an assignment that lands in pro bono is confirmed: going into
+            // the overload allowance is paid load and saves without a prompt.
+            // Only an assignment that *adds* units can cause it: a re-save of
+            // the instructor who already holds the class must not prompt. An
+            // instructor with no allowance configured at all has no threshold
+            // to cross, so there is nothing to confirm.
+            'requires_confirmation' => SchedulingPolicy::facultyUnitCeiling($faculty) > 0
+                && $added > 0
+                && $tier === SchedulingPolicy::LOAD_TIER_PROBONO,
         ];
     }
 

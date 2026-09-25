@@ -127,7 +127,7 @@ class ScheduleController extends Controller
             'end_time' => 'required|date_format:H:i|after:start_time',
             'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'is_hybrid' => 'sometimes|boolean',
-            'preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
+            'preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidRowPattern($value) ? null : $fail('The preferred pattern is not supported.')],
             'split_group_id' => 'nullable|string|max:36',
             'meeting_type' => 'nullable|in:lecture,laboratory',
             'meeting_index' => 'nullable|integer|min:1',
@@ -224,7 +224,7 @@ class ScheduleController extends Controller
             'operations.*.end_time' => 'sometimes|date_format:H:i|after:operations.*.start_time',
             'operations.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'operations.*.is_hybrid' => 'sometimes|boolean',
-            'operations.*.preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
+            'operations.*.preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidRowPattern($value) ? null : $fail('The preferred pattern is not supported.')],
             'operations.*.split_group_id' => 'nullable|string|max:36',
             'operations.*.meeting_type' => 'nullable|in:lecture,laboratory',
             'operations.*.meeting_index' => 'nullable|integer|min:1',
@@ -718,9 +718,12 @@ class ScheduleController extends Controller
             // Determine whether the violation is a time-based conflict that a
             // slot-shift can fix (section, room, or faculty conflict).
             $timeConflictRules = ['section_conflict', 'subject_section_time_conflict', 'room_conflict', 'faculty_conflict', 'split_group_day_separation'];
-            $hasTimeConflict = collect($violations)->contains(
-                fn ($v) => in_array($v['rule'] ?? '', $timeConflictRules, true)
-            );
+            // A Consecutive Days meeting cannot be shifted or day-swapped on its
+            // own without breaking its run, so its conflict is reported as is.
+            $hasTimeConflict = SchedulingPolicy::consecutiveDayCount($op['preferred_pattern'] ?? null) === null
+                && collect($violations)->contains(
+                    fn ($v) => in_array($v['rule'] ?? '', $timeConflictRules, true)
+                );
 
             if (! $hasTimeConflict) {
                 // Non-time violations — check if it's a room type mismatch that
@@ -1253,7 +1256,7 @@ class ScheduleController extends Controller
             'end_time' => 'sometimes|required|date_format:H:i|after:start_time',
             'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'is_hybrid' => 'sometimes|boolean',
-            'preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
+            'preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidRowPattern($value) ? null : $fail('The preferred pattern is not supported.')],
             'split_group_id' => 'nullable|string|max:36',
             'meeting_type' => 'nullable|in:lecture,laboratory',
             'meeting_index' => 'nullable|integer|min:1',
@@ -1380,6 +1383,12 @@ class ScheduleController extends Controller
 
         // A relocation is judged with the rest of its linked meetings too.
         $groupPartners = $this->sameTimePartners->partnersFor($schedule, $validated);
+        // A Consecutive Days run moves together, so the moved day is not
+        // checked against the days that move with it.
+        $runPartnerIds = $this->sameTimePartners->runPartnerIds($schedule, $groupPartners);
+        if ($runPartnerIds !== []) {
+            $attemptData['ignore_schedule_id'] = [...(array) $attemptData['ignore_schedule_id'], ...$runPartnerIds];
+        }
 
         // A change of instructor on a class that is not moving answers only to
         // the instructor's rules; a placement setting changed since the class
