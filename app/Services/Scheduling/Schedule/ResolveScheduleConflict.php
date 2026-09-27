@@ -154,6 +154,9 @@ final class ResolveScheduleConflict
                 'action' => $name,
                 'schedule_id' => (int) $target->id,
                 'changes' => $changes,
+                // Whether the fix was a ranked recommendation applied as offered
+                // or a change the user entered; the Resolved list shows which.
+                'source' => ($action['source'] ?? null) === 'recommendation' ? 'recommendation' : 'manual',
             ], $reason, $actorUserId, 'conflict_resolved');
         });
     }
@@ -295,6 +298,15 @@ final class ResolveScheduleConflict
                 'That change would create a new conflict, so nothing was saved.',
             );
         }
+
+        $summary = [
+            ...$summary,
+            'conflict_message' => $case->message(),
+            'conflict_day' => $case->day,
+            'conflict_overlap_start' => $case->overlapStart,
+            'conflict_overlap_end' => $case->overlapEnd,
+            ...$case->owners(),
+        ];
 
         $afterRows = Schedule::query()->whereIn('id', $affectedIds)->orderBy('id')->get();
         $first = $afterRows->first();

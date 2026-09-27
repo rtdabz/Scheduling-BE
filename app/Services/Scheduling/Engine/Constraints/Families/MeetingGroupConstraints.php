@@ -15,7 +15,7 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
  * Rules judged on linked meetings rather than one row: hybrid_component_count,
  * hybrid_components, minor_split_component_count, minor_split_eligibility,
  * minor_split_pattern, minor_split_duration, consecutive_day_count,
- * consecutive_days, consecutive_mode, split_group_same_time,
+ * consecutive_mode, split_group_same_time,
  * split_group_day_separation.
  * Kernel counterpart of Rules\MeetingGroupRule, whose static groupMismatches()
  * makes the decision; this side supplies the group's rows and snapshot settings.

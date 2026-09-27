@@ -266,8 +266,10 @@ final class ValidateGenerationConfiguration
                 $violations[] = $this->violation(
                     'consecutive_days_shape',
                     sprintf(
-                        'This course is set to meet on %d consecutive days, so it cannot also be a Split Session, Hybrid Split, Integrated class or fixed day pattern. Choose one class configuration in Setup Courses.',
-                        $consecutiveRule['day_count'],
+                        'This course is set to meet on %s, so it cannot also be a Split Session, Hybrid Split, Integrated class or fixed day pattern. Choose one class configuration in Setup Courses.',
+                        ($consecutiveRule['meeting_days'] ?? null) !== null
+                            ? implode(', ', $consecutiveRule['meeting_days'])
+                            : $consecutiveRule['day_count'].' consecutive days',
                     ),
                     $this->courseContext($course),
                 );
@@ -467,9 +469,11 @@ final class ValidateGenerationConfiguration
 
             $singleMeetingIds = [];
             foreach ($courseIds as $courseId) {
-                $hasMultipleMeetings = array_key_exists($courseId, $configuration->preferredPatternsByCourseId)
+                // A null pattern is "let the Generator choose", not a second day.
+                $hasMultipleMeetings = ! empty($configuration->preferredPatternsByCourseId[$courseId])
                     || in_array($courseId, $configuration->selectedSplitSessionCourseIds, true)
-                    || in_array($courseId, $configuration->balancedSplitCourseIds, true);
+                    || in_array($courseId, $configuration->balancedSplitCourseIds, true)
+                    || in_array($courseId, $configuration->hybridSplitCourseIds, true);
                 if ($hasMultipleMeetings) {
                     $course = $snapshot->coursesById[$courseId] ?? [];
                     $violations[] = $this->violation(

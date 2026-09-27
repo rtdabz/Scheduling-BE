@@ -117,6 +117,23 @@ final readonly class ScheduleConflictCase
         return [$this->scheduleId, $this->otherScheduleId];
     }
 
+    /**
+     * The departments and sections on either side, recorded with a resolution
+     * so the Resolved list can be scoped the way the open list is: a room
+     * clash with another college belongs to both.
+     *
+     * @return array{department_ids: list<int>, section_ids: list<int>}
+     */
+    public function owners(): array
+    {
+        $ids = fn (string $key): array => array_values(array_unique(array_filter([
+            (int) ($this->schedule[$key] ?? 0),
+            (int) ($this->otherSchedule[$key] ?? 0),
+        ])));
+
+        return ['department_ids' => $ids('department_id'), 'section_ids' => $ids('section_id')];
+    }
+
     public function involves(int $scheduleId): bool
     {
         return $scheduleId === $this->scheduleId || $scheduleId === $this->otherScheduleId;

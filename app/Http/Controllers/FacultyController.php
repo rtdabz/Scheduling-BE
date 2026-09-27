@@ -19,19 +19,21 @@ class FacultyController extends Controller
 {
     /**
      * The teaching load allowances. The VPAA owns the roster; the secretary owns
-     * these four numbers, so a secretary update is narrowed to exactly this set
-     * and may not reach an instructor's identity, department or program.
+     * these three numbers, so a secretary update is narrowed to exactly this set
+     * and may not reach an instructor's identity, department or program. Pro
+     * bono is not among them: it is whatever passes Basic Load and Overload,
+     * not an allowance anyone grants.
      */
-    private const LOAD_FIELDS = ['max_units', 'deload_units', 'overload_units', 'probono_units'];
+    private const LOAD_FIELDS = ['max_units', 'deload_units', 'overload_units'];
 
     /**
      * The allowances the Secretary alone maintains. The two units the roster
      * editor enters — the contract ceiling (`max_units`) and the overload
      * granted on top of it — are set with the rest of the roster record, since
-     * the Add Instructor form asks for one of them by load type. Deload and pro
-     * bono remain the Secretary's to grant.
+     * the Add Instructor form asks for one of them by load type. Deload remains
+     * the Secretary's to grant.
      */
-    private const SECRETARY_ONLY_LOAD_FIELDS = ['deload_units', 'probono_units'];
+    private const SECRETARY_ONLY_LOAD_FIELDS = ['deload_units'];
 
     /** Fallback ceiling when the roster editor submits no load. */
     private const DEFAULT_MAX_UNITS = 21;
@@ -85,12 +87,11 @@ class FacultyController extends Controller
             'employment_type' => 'required|in:full-time,part-time',
             // The units come from the roster editor, so a part-time instructor
             // is not created carrying a full-time load. Which of the two the
-            // form fills depends on the load type it was given. Deload and pro
-            // bono are maintained by the Secretary.
+            // form fills depends on the load type it was given. Deload is
+            // maintained by the Secretary.
             'max_units' => 'sometimes|integer|min:0',
             'overload_units' => 'nullable|integer|min:0',
             'deload_units' => 'nullable|integer|min:0',
-            'probono_units' => 'nullable|integer|min:0',
             'department_id' => 'required|exists:departments,id',
             'program_id' => $this->programRule($departmentId ?? $request->input('department_id')),
             'status' => 'nullable|in:active,inactive',
@@ -109,7 +110,7 @@ class FacultyController extends Controller
         // so passing the raw request through let a caller forge an
         // administrative badge or claim another user's profile.
         $payload = $validator->validated();
-        unset($payload['deload_units'], $payload['probono_units']);
+        unset($payload['deload_units']);
         // `overload_units` is nullable in the request but NOT NULL in the
         // table, so an explicit null has to fall through to the default below
         // rather than be inserted.
@@ -251,7 +252,6 @@ class FacultyController extends Controller
             'max_units' => 'sometimes|required|integer|min:0',
             'overload_units' => 'sometimes|nullable|integer|min:0',
             'deload_units' => 'sometimes|nullable|integer|min:0',
-            'probono_units' => 'sometimes|nullable|integer|min:0',
         ];
 
         if ($loadOnly) {

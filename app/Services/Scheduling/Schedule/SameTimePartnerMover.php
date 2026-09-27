@@ -19,7 +19,7 @@ use Illuminate\Support\Collection;
  *
  * A Consecutive Days run moves as a whole: the other days take the new time
  * and shift by the same number of days, so Thursday-Saturday dragged a day
- * later is Friday-Sunday.
+ * later is Friday-Sunday. A run with ticked meeting days stays on them.
  *
  * Extracted from ScheduleController so the drag-relocate path and the conflict
  * resolution path move a pair the same way. A second implementation of this
@@ -149,7 +149,7 @@ final class SameTimePartnerMover
         $previousDay = (string) (Schedule::query()->whereKey((int) ($attemptData['id'] ?? 0))->value('day') ?? $attemptData['day']);
         $shift = SchedulingPolicy::dayIndex((string) $attemptData['day']) - SchedulingPolicy::dayIndex($previousDay);
 
-        return array_map(static function (array $row) use ($shift, $time, $attemptData): array {
+        $shifted = array_map(static function (array $row) use ($shift, $time, $attemptData): array {
             $index = SchedulingPolicy::dayIndex((string) $row['day']) + $shift;
             if (! isset(SchedulingPolicy::DAYS[$index])) {
                 throw new ScheduleConflictException([[
@@ -164,5 +164,45 @@ final class SameTimePartnerMover
 
             return [...$row, ...$time, 'day' => SchedulingPolicy::DAYS[$index]];
         }, $partnerRows);
+
+        if ($shift !== 0) {
+            $this->assertOnTickedDays($attemptData, [(string) $attemptData['day'], ...array_column($shifted, 'day')]);
+        }
+
+        return $shifted;
+    }
+
+    /**
+     * A run whose rule has ticked meeting days (Setup Courses) keeps to them,
+     * the way a Required Day holds a single meeting: it may change time or
+     * room, not days.
+     *
+     * @param  array<string, mixed>  $attemptData
+     * @param  list<string>  $days
+     *
+     * @throws ScheduleConflictException
+     */
+    private function assertOnTickedDays(array $attemptData, array $days): void
+    {
+        $courseId = (int) ($attemptData['course_id'] ?? 0);
+        $departmentId = (int) ($attemptData['department_id'] ?? 0);
+        if ($courseId <= 0 || $departmentId <= 0) {
+            return;
+        }
+
+        $sectionId = isset($attemptData['section_id']) ? (int) $attemptData['section_id'] : null;
+        $ticked = SchedulingPolicy::consecutiveDayRuleMap($departmentId, $sectionId, [$courseId])[$courseId]['meeting_days'] ?? null;
+        if ($ticked === null || (array_diff($days, $ticked) === [] && array_diff($ticked, $days) === [])) {
+            return;
+        }
+
+        throw new ScheduleConflictException([[
+            'rule' => 'consecutive_days',
+            'message' => sprintf(
+                'This class is set to meet on %s in Setup Courses, so its run cannot move to %s. Change its time or room instead, or tick other meeting days in Setup Courses.',
+                implode(', ', $ticked),
+                implode(', ', SchedulingPolicy::parseMeetingDays($days) ?? $days),
+            ),
+        ]], 'Schedule update breaks its linked meetings.');
     }
 }

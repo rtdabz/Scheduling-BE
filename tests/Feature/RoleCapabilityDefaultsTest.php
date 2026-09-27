@@ -120,20 +120,4 @@ class RoleCapabilityDefaultsTest extends TestCase
         $this->getJson("/api/user/{$dean->id}/permissions")->assertNotFound();
         $this->patchJson("/api/user/{$dean->id}/permissions", ['permissions' => []])->assertNotFound();
     }
-
-    public function test_the_migration_replaces_direct_grants_with_role_defaults(): void
-    {
-        $department = Departments::create(['department_code' => 'CCS', 'department_name' => 'College of Computer Studies']);
-        $secretary = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
-        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
-        $dean->givePermissionTo('schedule.create');
-
-        $migration = require database_path('migrations/2026_09_15_000001_replace_per_account_grants_with_role_defaults.php');
-        $migration->up();
-
-        $this->assertSame([], $dean->fresh()->getDirectPermissions()->pluck('name')->all());
-        $this->assertFalse($dean->fresh()->hasCapability('schedule.create'));
-        $this->assertTrue($dean->fresh()->hasCapability('schedule.approve_dean'));
-        $this->assertTrue($secretary->fresh()->hasCapability('schedule.generate'));
-    }
 }

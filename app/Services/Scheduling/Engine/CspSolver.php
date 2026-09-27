@@ -159,7 +159,7 @@ class CspSolver
      * Course id => the Consecutive Days rule this section follows
      * ({day_count, preferred_start_day}), from the snapshot.
      *
-     * @var array<int, array{day_count: int, preferred_start_day: string|null}>
+     * @var array<int, array{day_count: int, preferred_start_day: string|null, meeting_days?: list<string>|null}>
      */
     private array $consecutiveRulesByCourseId = [];
 
@@ -1827,7 +1827,7 @@ class CspSolver
             // class's full length (an 8-unit course, 8 hours every day).
             $consecutiveDayCount = $consecutiveRule['day_count'] ?? 0;
             if ($throwOnEmptyDomain && $consecutiveRule !== null) {
-                $this->assertConsecutiveDaysPlaceable($course, $sectionId, $consecutiveDayCount, $consecutiveRule['preferred_start_day'] ?? null, $forcedDay);
+                $this->assertConsecutiveDaysPlaceable($course, $sectionId, $consecutiveRule, $forcedDay);
             }
 
             $domainCacheKey = $this->domainCacheKey(
@@ -1851,6 +1851,7 @@ class CspSolver
                     $anchoredSchedulesByCourseId[(int) $course->id] ?? null,
                     $consecutiveDayCount,
                     $consecutiveRule['preferred_start_day'] ?? '',
+                    $consecutiveRule['meeting_days'] ?? null,
                 ],
             );
 
@@ -1869,7 +1870,7 @@ class CspSolver
                     meetingSlots: $durationSlots,
                     dayCount: $consecutiveDayCount,
                     deliveryMode: $courseDeliveryMode,
-                    startDay: $consecutiveRule['preferred_start_day'] ?? null,
+                    runs: SchedulingPolicy::consecutiveRuleRuns($consecutiveRule, $this->sundayClassesEnabled, $this->allowedDays),
                 ),
                 // Lecture and laboratory are always two separate meetings of
                 // their own lengths. A preferred pattern used to send this
@@ -2112,10 +2113,15 @@ class CspSolver
      * Refuse, with the setting to change, a Consecutive Days course that can
      * never be placed: it also has a Required Day, its ticked days fall
      * outside the days this run may use, or those days have no N back-to-back.
+     *
+     * @param  array{day_count: int, preferred_start_day: string|null, meeting_days?: list<string>|null}  $rule
      */
-    private function assertConsecutiveDaysPlaceable(Course $course, int $sectionId, int $dayCount, ?string $startDay, ?string $forcedDay): void
+    private function assertConsecutiveDaysPlaceable(Course $course, int $sectionId, array $rule, ?string $forcedDay): void
     {
         $label = $this->sectionLabel($sectionId).' / '.(string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id));
+        $dayCount = (int) $rule['day_count'];
+        $startDay = $rule['preferred_start_day'] ?? null;
+        $meetingDays = $rule['meeting_days'] ?? null;
 
         if ($forcedDay !== null) {
             throw new RuntimeException(sprintf(
@@ -2127,6 +2133,21 @@ class CspSolver
         }
 
         $runs = SchedulingPolicy::consecutiveDayRuns($dayCount, $this->sundayClassesEnabled, $this->allowedDays);
+        if ($meetingDays !== null && SchedulingPolicy::consecutiveRuleRuns($rule, $this->sundayClassesEnabled, $this->allowedDays) === []) {
+            throw new RuntimeException(sprintf(
+                '%s is set to meet %s, but %s. Tick other meeting days in Setup Courses%s.',
+                $label,
+                implode(', ', $meetingDays),
+                in_array('Sunday', $meetingDays, true) && ! $this->sundayClassesEnabled
+                    ? 'Sunday classes are not enabled for this department'
+                    : sprintf('the Preferred Days (%s) leave out some of those days', implode(', ', $this->allowedDays ?? [])),
+                $this->allowedDays !== null ? ', or add those days to the Preferred Days' : '',
+            ));
+        }
+        if ($meetingDays !== null) {
+            return;
+        }
+
         if ($startDay !== null && ! in_array($startDay, array_column($runs, 0), true)) {
             $ticked = SchedulingPolicy::consecutiveDayRuns($dayCount, true)[SchedulingPolicy::dayIndex($startDay)] ?? [$startDay];
             throw new RuntimeException(sprintf(
@@ -2158,10 +2179,11 @@ class CspSolver
     }
 
     /**
-     * Consecutive Days: a Regular class met on $dayCount calendar-consecutive
-     * days, for its full length, at one start time and in one room every day.
-     * With $startDay -- the first of the days ticked in Setup Courses -- the
-     * class meets on exactly those days; without it, on any run that fits.
+     * Consecutive Days: a Regular class met on $dayCount days, for its full
+     * length, at one start time and in one room every day. $runs are the day
+     * sets it may take (SchedulingPolicy::consecutiveRuleRuns): the days
+     * ticked in Setup Courses, back-to-back or not (Monday, Wednesday,
+     * Friday), or for an older rule any calendar-consecutive run that fits.
      *
      * Built from the single-meeting candidates of that length, so the
      * room types, delivery modes, field window and Room TBA / online fallbacks
@@ -2178,7 +2200,7 @@ class CspSolver
         int $meetingSlots,
         int $dayCount,
         string $deliveryMode,
-        ?string $startDay = null,
+        array $runs,
     ): array {
         $placements = [];
         foreach ($this->buildSingleDayDomain($course, $matchingRooms, $meetingSlots, $deliveryMode, false) as $single) {
@@ -2197,10 +2219,7 @@ class CspSolver
 
         $pattern = SchedulingPolicy::consecutivePattern($dayCount);
         $domain = [];
-        foreach (SchedulingPolicy::consecutiveDayRuns($dayCount, $this->sundayClassesEnabled, $this->allowedDays) as $run) {
-            if ($startDay !== null && $run[0] !== $startDay) {
-                continue;
-            }
+        foreach ($runs as $run) {
             foreach ($placements as $placement) {
                 $blocks = [];
                 foreach ($run as $day) {

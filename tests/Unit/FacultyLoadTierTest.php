@@ -20,7 +20,8 @@ class FacultyLoadTierTest extends TestCase
     public function test_basic_load_is_the_maximum_less_the_deload(): void
     {
         $this->assertSame(15, SchedulingPolicy::facultyBasicLoad($this->instructor()));
-        $this->assertSame(21, SchedulingPolicy::facultyUnitCeiling($this->instructor()));
+        // Basic Load plus Overload; a stored pro bono value no longer raises it.
+        $this->assertSame(18, SchedulingPolicy::facultyUnitCeiling($this->instructor()));
     }
 
     public function test_a_load_up_to_the_basic_load_is_basic(): void

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Faculty;
@@ -125,13 +126,7 @@ class InstructorAssignmentIgnoresPlacementDriftTest extends TestCase
     /** @param array<string, mixed> $fixture */
     private function requireDay(array $fixture, string $day): void
     {
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $fixture['department']->id,
-            'course_id' => $fixture['course']->id,
-            'day' => $day,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $fixture['department']->id, (int) $fixture['course']->id, null, ['forced_day' => $day]);
     }
 
     /**

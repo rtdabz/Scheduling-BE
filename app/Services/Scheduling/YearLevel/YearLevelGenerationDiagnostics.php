@@ -180,15 +180,61 @@ class YearLevelGenerationDiagnostics
     }
 
     /**
+     * A bottleneck found by a search that stopped at its time or step limit.
+     * The course it names is where the search spent its time, not a proven
+     * conflict, so the cause says that instead of "no free slot remains".
+     *
+     * @param  array<string, mixed>|null  $bottleneck
+     * @return array<string, mixed>|null
+     */
+    public function markSearchIncomplete(?array $bottleneck): ?array
+    {
+        if ($bottleneck === null) {
+            return null;
+        }
+
+        $courseCode = (string) ($bottleneck['course_code'] ?? '');
+
+        return [
+            ...$bottleneck,
+            'search_limit_reached' => true,
+            'search_incomplete' => true,
+            'detected_cause' => $courseCode !== ''
+                ? sprintf(
+                    'The search ran out of time while placing %s, before it could tell whether it fits. That is where the search got stuck, not a proven conflict.',
+                    $courseCode,
+                )
+                : 'The search ran out of time before it could tell whether a timetable fits. That is where the search got stuck, not a proven conflict.',
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>|null  $bottleneck
      * @param  list<array<string, mixed>>  $attempts
      */
-    public function searchMessage(?array $bottleneck, array $attempts): string
+    public function searchMessage(?array $bottleneck, array $attempts, bool $searchIncomplete = false): string
     {
         $triedCount = max(1, count(array_filter(
             $attempts,
             static fn (array $attempt): bool => ($attempt['outcome'] ?? '') === 'failed',
         )));
+
+        if ($searchIncomplete) {
+            $courseCode = (string) ($bottleneck['course_code'] ?? '');
+            $sectionName = (string) ($bottleneck['section_name'] ?? '');
+            $stuckOn = match (true) {
+                $courseCode !== '' && $sectionName !== '' => sprintf(' The search got stuck on %s in %s.', $courseCode, $sectionName),
+                $sectionName !== '' => sprintf(' The search got stuck on %s.', $sectionName),
+                default => '',
+            };
+
+            return sprintf(
+                'The generator ran out of search time after %d attempt%s, before it could check every arrangement, so a timetable may still fit. Generate again with the same settings before changing any.%s',
+                $triedCount,
+                $triedCount === 1 ? '' : 's',
+                $stuckOn,
+            );
+        }
 
         if ($bottleneck === null) {
             return sprintf(
@@ -218,6 +264,7 @@ class YearLevelGenerationDiagnostics
         ?Collection $courses = null,
         array $configsBySectionId = [],
         ?string $suggestedPreferredDay = null,
+        bool $searchIncomplete = false,
     ): array
     {
         $preferredDay = $this->preferredDayRecommendation($suggestedPreferredDay, $configsBySectionId);
@@ -375,8 +422,9 @@ class YearLevelGenerationDiagnostics
 
         // Room-time advice only helps when rooms are what ran out. A pattern
         // or split bottleneck is a meeting-shape problem that more rooms
-        // would not have changed.
-        if (! in_array($bottleneck['type'] ?? null, [
+        // would not have changed, and a search cut short never showed that
+        // rooms ran out at all.
+        if ($searchIncomplete || ! in_array($bottleneck['type'] ?? null, [
             self::TYPE_LABORATORY_ROOM,
             self::TYPE_FORCED_ON_SITE,
             self::TYPE_LIMITED_ROOMS,

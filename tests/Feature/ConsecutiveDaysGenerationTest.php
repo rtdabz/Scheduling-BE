@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -47,6 +48,32 @@ class ConsecutiveDaysGenerationTest extends TestCase
             $this->assertSame(180, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']), 'a 3-unit class meets 3 hours every day');
         }
         $this->assertSame([], app(RuleEngine::class)->validateConfiguredMeetingGroups($rows));
+    }
+
+    public function test_ticked_days_need_not_be_back_to_back(): void
+    {
+        $context = $this->scaffold();
+        $clinical = $this->clinicalCourse($context);
+        $this->rule($context, $clinical, days: 3, startDay: 'Monday', meetingDays: ['Monday', 'Wednesday', 'Friday']);
+
+        $rows = $this->generate($context, [$clinical]);
+
+        $this->assertSame(['Monday', 'Wednesday', 'Friday'], $this->days($rows));
+        $this->assertCount(1, array_unique(array_column($rows, 'start_time')), 'every day keeps one start time');
+        $this->assertCount(1, array_unique(array_column($rows, 'split_group_id')));
+        $this->assertSame([], app(RuleEngine::class)->validateConfiguredMeetingGroups($rows));
+    }
+
+    public function test_ticked_days_outside_the_preferred_days_are_named_even_when_apart(): void
+    {
+        $context = $this->scaffold();
+        $clinical = $this->clinicalCourse($context);
+        $this->rule($context, $clinical, days: 3, startDay: 'Monday', meetingDays: ['Monday', 'Wednesday', 'Friday']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('NUR 1A / CLIN 101 is set to meet Monday, Wednesday, Friday, but the Preferred Days (Monday, Tuesday, Thursday, Friday, Saturday) leave out some of those days.');
+
+        $this->generate($context, [$clinical], allowedDays: ['Monday', 'Tuesday', 'Thursday', 'Friday', 'Saturday']);
     }
 
     public function test_the_ticked_days_are_kept_even_when_their_room_is_taken(): void
@@ -128,13 +155,7 @@ class ConsecutiveDaysGenerationTest extends TestCase
         $context = $this->scaffold();
         $clinical = $this->clinicalCourse($context);
         $this->rule($context, $clinical, days: 3);
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $context['department']->id,
-            'course_id' => $clinical->id,
-            'day' => 'Monday',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $context['department']->id, (int) $clinical->id, null, ['forced_day' => 'Monday']);
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('NUR 1A / CLIN 101 has a Required Day of Monday and is also set to meet on 3 consecutive days.');
@@ -215,14 +236,16 @@ class ConsecutiveDaysGenerationTest extends TestCase
         return $course;
     }
 
-    private function rule(array $context, Course $course, int $days, ?string $startDay = null, ?int $sectionId = null): void
+    /** @param  list<string>|null  $meetingDays */
+    private function rule(array $context, Course $course, int $days, ?string $startDay = null, ?int $sectionId = null, ?array $meetingDays = null): void
     {
-        DB::table('course_consecutive_day_rules')->insert([
+        DB::table('department_course_rules')->insert([
             'department_id' => $context['department']->id,
             'course_id' => $course->id,
             'section_id' => $sectionId,
-            'day_count' => $days,
+            'consecutive_day_count' => $days,
             'preferred_start_day' => $startDay,
+            'meeting_days' => $meetingDays === null ? null : implode(',', $meetingDays),
             'created_at' => now(),
             'updated_at' => now(),
         ]);

@@ -33,8 +33,9 @@ class Course extends Model
     protected static function booted(): void
     {
         static::updated(function (self $course): void {
+            // Field settings follow the course id; only the cached codes go stale.
             if ($course->wasChanged('course_code')) {
-                $course->renameFieldCourseSettings((string) $course->getOriginal('course_code'));
+                SchedulingPolicy::clearFieldCourseCache();
             }
         });
     }
@@ -91,49 +92,6 @@ class Course extends Model
         }
     }
 
-    /**
-     * field_course_settings refers to courses by code, so a renamed code would
-     * silently switch its field setting off. Carry the setting over to the new
-     * code, for the owning department only, or, for a shared course, for every
-     * department that does not own a course of its own under the old code.
-     */
-    private function renameFieldCourseSettings(string $oldCode): void
-    {
-        $oldCode = SchedulingPolicy::normalizeCourseCode($oldCode);
-        $newCode = SchedulingPolicy::normalizeCourseCode((string) $this->course_code);
-        if ($oldCode === $newCode) {
-            return;
-        }
-
-        $rows = DB::table('field_course_settings')
-            ->where('course_code', $oldCode)
-            ->when(
-                $this->department_id !== null,
-                fn ($query) => $query->where('department_id', $this->department_id),
-                fn ($query) => $query->where(fn ($scope) => $scope
-                    ->whereNull('department_id')
-                    ->orWhereNotIn('department_id', static::query()
-                        ->where('course_code', $oldCode)
-                        ->whereNotNull('department_id')
-                        ->select('department_id'))),
-            )
-            ->get(['id', 'department_id']);
-
-        foreach ($rows as $row) {
-            $alreadySet = DB::table('field_course_settings')
-                ->where('course_code', $newCode)
-                ->where('department_id', $row->department_id)
-                ->exists();
-
-            $alreadySet
-                ? DB::table('field_course_settings')->where('id', $row->id)->delete()
-                : DB::table('field_course_settings')->where('id', $row->id)->update(['course_code' => $newCode, 'updated_at' => now()]);
-        }
-
-        if ($rows->isNotEmpty()) {
-            SchedulingPolicy::clearFieldCourseCache();
-        }
-    }
 
     public function department()
     {

@@ -172,41 +172,32 @@ final class SchedulingSnapshotRepository
             ? Faculty::query()->with('availabilities')->orderBy('id')->get()
             : collect();
 
-        $forcedDays = DB::table('department_forced_course_days')
-            ->where('department_id', $departmentId)
+        $forcedDays = DepartmentCourseRules::query($departmentId)
+            ->whereNotNull('forced_day')
             ->when($courseIds !== [], fn ($query) => $query->whereIn('course_id', $courseIds))
             ->orderBy('course_id')
-            ->pluck('day', 'course_id')
+            ->pluck('forced_day', 'course_id')
             ->mapWithKeys(static fn (string $day, int|string $courseId): array => [(int) $courseId => $day])
             ->all();
 
         // Every saved rule for the run's courses, course-wide and per section;
         // SchedulingSnapshot::consecutiveDayRulesFor() resolves a section's.
-        $consecutiveDayRules = DB::table('course_consecutive_day_rules')
-            ->where('department_id', $departmentId)
+        $consecutiveDayRules = DepartmentCourseRules::query($departmentId)
+            ->whereNotNull('consecutive_day_count')
             ->when($courseIds !== [], fn ($query) => $query->whereIn('course_id', $courseIds))
             ->orderBy('course_id')
             ->orderBy('section_id')
-            ->get(['course_id', 'section_id', 'day_count', 'preferred_start_day'])
+            ->get(['course_id', 'section_id', 'consecutive_day_count', 'preferred_start_day', 'meeting_days'])
             ->map(static fn ($rule): array => [
                 'course_id' => (int) $rule->course_id,
                 'section_id' => $rule->section_id === null ? null : (int) $rule->section_id,
-                'day_count' => (int) $rule->day_count,
+                'day_count' => (int) $rule->consecutive_day_count,
                 'preferred_start_day' => $rule->preferred_start_day === null ? null : (string) $rule->preferred_start_day,
+                'meeting_days' => SchedulingPolicy::parseMeetingDays($rule->meeting_days),
             ])
             ->all();
 
-        $fieldCourseCodes = DB::table('field_course_settings')
-            ->whereNotNull('course_code')
-            ->where(function ($query) use ($departmentId): void {
-                $query->whereNull('department_id')->orWhere('department_id', $departmentId);
-            })
-            ->orderBy('course_code')
-            ->pluck('course_code')
-            ->map(static fn (string $code): string => strtoupper(trim($code)))
-            ->unique()
-            ->values()
-            ->all();
+        $fieldCourseCodes = DepartmentCourseRules::fieldCourseCodes($departmentId);
 
         $roomRecords = $this->withVirtualRooms($this->roomRecords($rooms, $grantWindows));
         // Which program owns each divided room per day, on the room records like

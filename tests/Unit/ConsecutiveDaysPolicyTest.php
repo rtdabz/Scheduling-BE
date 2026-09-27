@@ -71,13 +71,39 @@ class ConsecutiveDaysPolicyTest extends TestCase
         ];
 
         $this->assertSame(
-            [7 => ['day_count' => 3, 'preferred_start_day' => 'Thursday']],
+            [7 => ['day_count' => 3, 'preferred_start_day' => 'Thursday', 'meeting_days' => null]],
             SchedulingPolicy::resolveConsecutiveDayRules($rules, 11),
         );
         $this->assertSame(
-            [7 => ['day_count' => 2, 'preferred_start_day' => null]],
+            [7 => ['day_count' => 2, 'preferred_start_day' => null, 'meeting_days' => null]],
             SchedulingPolicy::resolveConsecutiveDayRules($rules, 99),
             'another section only gets the course-wide rule',
+        );
+    }
+
+    public function test_ticked_meeting_days_are_the_one_run_whether_or_not_back_to_back(): void
+    {
+        $this->assertSame(['Monday', 'Wednesday', 'Friday'], SchedulingPolicy::parseMeetingDays('Friday,Monday,Wednesday'));
+        $this->assertNull(SchedulingPolicy::parseMeetingDays('Monday'), 'one day is not a run');
+        $this->assertNull(SchedulingPolicy::parseMeetingDays(null));
+
+        $rule = ['day_count' => 3, 'preferred_start_day' => 'Monday', 'meeting_days' => ['Monday', 'Wednesday', 'Friday']];
+        $this->assertSame([['Monday', 'Wednesday', 'Friday']], SchedulingPolicy::consecutiveRuleRuns($rule, false));
+        $this->assertSame(
+            [],
+            SchedulingPolicy::consecutiveRuleRuns($rule, false, ['Monday', 'Tuesday', 'Wednesday', 'Thursday']),
+            'a ticked day outside the Preferred Days leaves no run',
+        );
+        $this->assertSame(
+            [],
+            SchedulingPolicy::consecutiveRuleRuns(['day_count' => 2, 'meeting_days' => ['Saturday', 'Sunday']], false),
+            'Sunday is closed',
+        );
+
+        // An older rule without ticked days keeps its back-to-back runs.
+        $this->assertSame(
+            [['Thursday', 'Friday', 'Saturday']],
+            SchedulingPolicy::consecutiveRuleRuns(['day_count' => 3, 'preferred_start_day' => 'Thursday', 'meeting_days' => null], false),
         );
     }
 
@@ -95,10 +121,13 @@ class ConsecutiveDaysPolicyTest extends TestCase
         ]));
     }
 
-    public function test_days_with_a_gap_are_refused(): void
+    public function test_days_apart_pass_but_a_repeated_day_is_refused(): void
     {
-        $this->assertSame(['consecutive_days'], $this->mismatches([
-            $this->row('Monday'), $this->row('Wednesday'), $this->row('Thursday'),
+        $this->assertSame([], $this->mismatches([
+            $this->row('Monday'), $this->row('Wednesday'), $this->row('Friday'),
+        ]));
+        $this->assertSame(['split_group_day_separation'], $this->mismatches([
+            $this->row('Monday'), $this->row('Monday'), $this->row('Friday'),
         ]));
     }
 

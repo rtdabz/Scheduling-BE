@@ -266,7 +266,7 @@ class SchedulingSettingsControllerTest extends TestCase
             ->assertJsonPath('consecutive_day_rules.1.preferred_start_day', 'Thursday');
 
         $this->assertSame(
-            [$course->id => ['day_count' => 3, 'preferred_start_day' => 'Thursday']],
+            [$course->id => ['day_count' => 3, 'preferred_start_day' => 'Thursday', 'meeting_days' => null]],
             \App\Services\Scheduling\Support\SchedulingPolicy::consecutiveDayRuleMap($department->id, $section->id),
         );
 
@@ -274,6 +274,44 @@ class SchedulingSettingsControllerTest extends TestCase
         $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => []])
             ->assertOk()
             ->assertJsonPath('consecutive_day_rules', []);
+    }
+
+    public function test_ticked_meeting_days_set_the_count_and_start_and_need_not_be_back_to_back(): void
+    {
+        [$user, $department] = $this->laboratoryDepartment();
+        [$course] = $this->clinicalCourseAndSection($department);
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
+            ['course_id' => $course->id, 'day_count' => 2, 'meeting_days' => ['Friday', 'Monday', 'Wednesday']],
+        ]])->assertOk()
+            ->assertJsonPath('consecutive_day_rules.0.day_count', 3)
+            ->assertJsonPath('consecutive_day_rules.0.preferred_start_day', 'Monday')
+            ->assertJsonPath('consecutive_day_rules.0.meeting_days', ['Monday', 'Wednesday', 'Friday']);
+
+        // Sunday is closed for this department.
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
+            ['course_id' => $course->id, 'day_count' => 2, 'meeting_days' => ['Friday', 'Sunday']],
+        ]])->assertStatus(422)
+            ->assertJsonPath('message', 'CLIN 101: Sunday is not in the Monday-Saturday teaching week. Untick it, or ask the department secretary to enable Sunday classes.');
+
+        // A repeated day would otherwise collapse into a back-to-back rule.
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
+            ['course_id' => $course->id, 'day_count' => 3, 'meeting_days' => ['Monday', 'Monday']],
+        ]])->assertStatus(422)
+            ->assertJsonPath('message', 'CLIN 101: tick each meeting day only once.');
+    }
+
+    public function test_rules_may_share_meeting_days(): void
+    {
+        [$user, $department] = $this->laboratoryDepartment();
+        [$course, $section] = $this->clinicalCourseAndSection($department);
+        $week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
+            ['course_id' => $course->id, 'section_id' => null, 'day_count' => 5, 'meeting_days' => $week],
+            ['course_id' => $course->id, 'section_id' => $section->id, 'day_count' => 5, 'meeting_days' => $week],
+        ]])->assertOk()
+            ->assertJsonPath('consecutive_day_rules.1.meeting_days', $week);
     }
 
     public function test_a_consecutive_run_must_fit_the_teaching_week(): void

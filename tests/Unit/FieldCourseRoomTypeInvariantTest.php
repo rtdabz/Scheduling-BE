@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -66,13 +67,7 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
             'semester' => '1st',
             'status' => 'active',
         ]);
-        DB::table('field_course_settings')->insert([
-            'department_id' => $department->id,
-            'enabled' => true,
-            'course_code' => 'PATH FIT 1',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['is_field' => true]);
         SchedulingPolicy::clearFieldCourseCache();
 
         $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
@@ -115,13 +110,7 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
             'semester' => '1st',
             'status' => 'active',
         ]);
-        DB::table('field_course_settings')->insert([
-            'department_id' => $department->id,
-            'enabled' => true,
-            'course_code' => 'PATH FIT 1',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['is_field' => true]);
         SchedulingPolicy::clearFieldCourseCache();
 
         $result = app(YearLevelFeasibilityService::class)->check(

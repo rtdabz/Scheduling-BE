@@ -93,7 +93,7 @@ class FacultyOverloadConfirmationTest extends TestCase
             ->assertJsonPath('overload_confirmation.instructors.0.current_units', 18)
             ->assertJsonPath('overload_confirmation.instructors.0.added_units', 3)
             ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 21)
-            ->assertJsonPath('overload_confirmation.instructors.0.unit_ceiling', 21)
+            ->assertJsonPath('overload_confirmation.instructors.0.unit_ceiling', 18)
             ->assertJsonPath(
                 'overload_confirmation.instructors.0.assignment_label',
                 "{$target->course->course_code} — {$target->section->section_name}",
@@ -357,7 +357,7 @@ class FacultyOverloadConfirmationTest extends TestCase
             ->assertOk()
             ->assertJsonPath('faculties.0.assigned_units', 15)
             ->assertJsonPath('faculties.0.required_units', 15)
-            ->assertJsonPath('faculties.0.unit_ceiling', 21);
+            ->assertJsonPath('faculties.0.unit_ceiling', 18);
     }
 
     /**

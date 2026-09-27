@@ -42,6 +42,15 @@ class ScheduleController extends Controller
 
     private const PLOTTING_EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
 
+    /**
+     * Rows outside every live approval stage. A submitted, approved or
+     * finalized row belongs to a submission or an instructor's load; deleting
+     * it from a stale screen left the submission pointing at missing meetings.
+     */
+    private const DELETABLE_STATUSES = ['draft', 'completed', 'revision', 'rejected', 'rejected_by_dean'];
+
+    private const LOCKED_DELETE_MESSAGE = 'This class is locked at its current approval stage and cannot be deleted. Recall it first, then refresh and try again.';
+
     protected RuleEngine $ruleEngine;
 
     public function __construct(
@@ -70,7 +79,22 @@ class ScheduleController extends Controller
         ]);
 
         if ($request->has('semester_id') && $request->semester_id) {
-            $query->where('semester_id', $request->semester_id);
+            // `active` saves a per-room or per-instructor view from resolving
+            // the active semester itself before it can ask for its meetings.
+            $semesterId = $request->semester_id === 'active'
+                ? Semester::where('is_active', true)->value('id')
+                : $request->semester_id;
+            $query->where('semester_id', $semesterId);
+        }
+
+        // One room's or one instructor's week. Those views used to read the
+        // capped campus-wide list and filter it in the browser, so the oldest
+        // meetings silently fell off once the semester outgrew the cap.
+        if ($request->filled('room_id')) {
+            $query->where('room_id', (int) $request->query('room_id'));
+        }
+        if ($request->filled('faculty_id')) {
+            $query->where('faculty_id', (int) $request->query('faculty_id'));
         }
 
         if ($this->authorization->rejectsRequestedDepartment($request, $request->query('department_id'))) {
@@ -284,12 +308,29 @@ class ScheduleController extends Controller
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
             }
 
+            // A generated timetable replaces only the courses it generated in
+            // each section. Replacing the whole section deleted classes of
+            // courses left out of generation -- which generation had kept as
+            // occupied -- and recalled rows of courses nobody regenerated.
+            // A section with no new rows (Reset) is still cleared outright.
+            $generatedCourseIdsBySection = collect($validated['operations'])
+                ->filter(static fn (array $operation): bool => ! isset($operation['id']) && isset($operation['section_id'], $operation['course_id']))
+                ->groupBy(static fn (array $operation): int => (int) $operation['section_id'])
+                ->map(static fn ($operations): array => $operations->pluck('course_id')->map('intval')->unique()->values()->all());
+
             $replaceScheduleIds = Schedule::query()
                 ->where('semester_id', $replaceSemesterId)
                 ->whereIn('section_id', $replaceSectionIds)
                 ->whereIn('status', self::REPLACEABLE_BATCH_STATUSES)
+                ->get(['id', 'section_id', 'course_id'])
+                ->filter(static function (Schedule $schedule) use ($generatedCourseIdsBySection): bool {
+                    $courseIds = $generatedCourseIdsBySection->get((int) $schedule->section_id);
+
+                    return $courseIds === null || in_array((int) $schedule->course_id, $courseIds, true);
+                })
                 ->pluck('id')
                 ->map('intval')
+                ->values()
                 ->all();
 
             $deleteIds = array_values(array_unique(array_merge(array_map('intval', $deleteIds), $replaceScheduleIds)));
@@ -379,8 +420,12 @@ class ScheduleController extends Controller
                 continue;
             }
             $providedFields = $providedOperationFields[(int) $operation['id']] ?? array_keys($operation);
+            // Finalize and Reassignment carry their own checks in batchStatus,
+            // so only the plotting moves (Done, Edit, unlock) are taken here.
             $statusOnlyUpdate = array_key_exists('status', $operation)
                 && $operation['status'] !== $existing->status
+                && ! in_array($operation['status'], ['finalized', 'reassignment'], true)
+                && SchedulingPolicy::allowsManualStatusChange($existing->status, $operation['status'])
                 && collect($providedFields)
                     ->reject(static fn (string $field): bool => in_array($field, ['id', 'status'], true))
                     ->isEmpty();
@@ -402,6 +447,9 @@ class ScheduleController extends Controller
         if (! empty($deleteIds)) {
             if (! $this->authorization->scheduleIdsBelongToDepartment($request, $deleteIds)) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+            }
+            if (Schedule::query()->whereIn('id', $deleteIds)->whereNotIn('status', self::DELETABLE_STATUSES)->exists()) {
+                return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
             }
         }
 
@@ -1515,11 +1563,17 @@ class ScheduleController extends Controller
             if (! $this->authorization->scheduleIdsBelongToDepartment($request, $schedules->pluck('id')->all())) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
             }
+            if ($schedules->contains(static fn (Schedule $s): bool => ! in_array($s->status, self::DELETABLE_STATUSES, true))) {
+                return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
+            }
 
             foreach ($schedules as $s) {
                 $s->delete();
             }
         } else {
+            if (! in_array($schedule->status, self::DELETABLE_STATUSES, true)) {
+                return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
+            }
             $schedule->delete();
         }
 
@@ -2103,6 +2157,17 @@ class ScheduleController extends Controller
             ->exists()) {
             return response()->json([
                 'message' => 'Finalized timetable rows cannot be reopened for plotting. Use Reassignment instead.',
+            ], 422);
+        }
+
+        $blockedSchedules = $targetSchedules->reject(
+            fn (Schedule $schedule): bool => SchedulingPolicy::allowsManualStatusChange($schedule->status, $validated['status'])
+        );
+        if ($blockedSchedules->isNotEmpty()) {
+            return response()->json([
+                'message' => 'Some selected classes are at a stage that cannot move to '.str_replace('_', ' ', $validated['status'])
+                    .' here. Submit, approve, return or recall them through the approval workflow, then refresh and try again.',
+                'blocked_schedule_ids' => $blockedSchedules->modelKeys(),
             ], 422);
         }
 

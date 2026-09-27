@@ -12,6 +12,8 @@ class ScheduleSubmission extends Model
         'parent_submission_id',
         'revision_number',
         'status',
+        'section_count',
+        'subject_count',
         'submitted_by',
         'submitted_at',
         'dean_reviewed_by',
@@ -31,6 +33,8 @@ class ScheduleSubmission extends Model
         'vpaa_reviewed_at' => 'datetime',
         'withdrawn_at' => 'datetime',
         'approval_override' => 'boolean',
+        'section_count' => 'integer',
+        'subject_count' => 'integer',
     ];
 
     public function department()

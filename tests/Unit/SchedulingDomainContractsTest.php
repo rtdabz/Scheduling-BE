@@ -118,6 +118,32 @@ class SchedulingDomainContractsTest extends TestCase
         $this->assertContains('split_group_day_separation', array_map(static fn ($violation): string => $violation->ruleId, $violations));
     }
 
+    public function test_a_required_day_refuses_a_hybrid_split_but_not_an_unset_pattern(): void
+    {
+        $snapshot = new SchedulingSnapshot(
+            fingerprint: str_repeat('a', 64),
+            capturedAt: new \DateTimeImmutable,
+            semesterId: 2,
+            departmentId: 5,
+            sectionsById: [3 => ['id' => 3, 'semester_id' => 2, 'department_id' => 5, 'status' => 'active']],
+            coursesById: [4 => ['id' => 4, 'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3, 'status' => 'active']],
+            semester: ['id' => 2],
+            forcedDaysByCourseId: [4 => 'Monday'],
+        );
+        $conflictRules = static fn (array $payload): array => array_values(array_filter(
+            array_map(
+                static fn ($violation): string => $violation->ruleId,
+                app(\App\Services\Scheduling\Generation\ValidateGenerationConfiguration::class)
+                    ->validateSnapshot(GenerationConfiguration::fromArray(['section_id' => 3, 'course_ids' => [4], ...$payload]), $snapshot)
+                    ->violations,
+            ),
+            static fn (string $rule): bool => $rule === 'forced_day_multi_meeting_conflict',
+        ));
+
+        $this->assertSame(['forced_day_multi_meeting_conflict'], $conflictRules(['hybrid_split_course_ids' => [4]]));
+        $this->assertSame([], $conflictRules(['preferred_patterns' => [4 => null]]));
+    }
+
     public function test_candidate_preserves_quality_metadata_and_detects_room_tba(): void
     {
         $candidate = ScheduleCandidate::fromArray([

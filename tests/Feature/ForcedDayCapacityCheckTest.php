@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -133,21 +134,11 @@ class ForcedDayCapacityCheckTest extends TestCase
             'department_id' => null, 'status' => 'active',
         ]);
         $curriculum->courses()->attach($course->id, ['year_level' => 1, 'semester' => 1]);
-        DB::table('field_course_settings')->insert([
-            'department_id' => $department->id,
-            'enabled' => true,
-            'course_code' => 'NSTP 1',
-            'created_at' => now(), 'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['is_field' => true]);
         SchedulingPolicy::clearFieldCourseCache();
 
         if ($forcedDay !== null) {
-            DB::table('department_forced_course_days')->insert([
-                'department_id' => $department->id,
-                'course_id' => $course->id,
-                'day' => $forcedDay,
-                'created_at' => now(), 'updated_at' => now(),
-            ]);
+            DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['forced_day' => $forcedDay]);
         }
 
         $splitCourseId = null;

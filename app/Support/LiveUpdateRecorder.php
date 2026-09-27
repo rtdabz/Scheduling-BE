@@ -14,7 +14,6 @@ use App\Models\RoomRequest;
 use App\Models\RoomRequestWindow;
 use App\Models\Rooms;
 use App\Models\Schedule;
-use App\Models\ScheduleSetting;
 use App\Models\ScheduleSplit;
 use App\Models\ScheduleSubmission;
 use App\Models\ScheduleSubmissionSection;
@@ -57,7 +56,6 @@ final class LiveUpdateRecorder
         Program::class => ['departments'],
         User::class => ['users'],
         InstitutionSetting::class => ['settings'],
-        ScheduleSetting::class => ['settings'],
         TimeslotOverride::class => ['settings'],
         Semester::class => ['settings'],
     ];

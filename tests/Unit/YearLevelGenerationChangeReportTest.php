@@ -35,6 +35,27 @@ class YearLevelGenerationChangeReportTest extends TestCase
         $this->assertSame([], $changes);
     }
 
+    public function test_a_relaxation_after_a_timed_out_search_says_the_original_was_not_proven_impossible(): void
+    {
+        $strategy = [
+            'key' => 'clear_bottleneck_split',
+            'label' => 'Schedule IT 101 as one block',
+            'description' => 'Turned off the lecture/laboratory split.',
+            'adjustments' => [['type' => 'disable_split', 'section_id' => 10, 'course_id' => 200, 'value' => null]],
+        ];
+        $build = fn (array $bottleneck): array => (new YearLevelGenerationChangeReport)->build(
+            $strategy,
+            [],
+            [$this->row(10, 200, 'Monday', ['room_id' => 5])],
+            self::SECTIONS,
+            self::COURSES,
+            ['type' => 'lecture_lab_split', 'section_name' => 'BSIT 1-A', 'course_code' => 'IT 101', 'detected_cause' => 'x', ...$bottleneck],
+        );
+
+        $this->assertStringContainsString('not proven impossible', $build(['search_incomplete' => true])[0]['description']);
+        $this->assertSame('Turned off the lecture/laboratory split.', $build([])[0]['description']);
+    }
+
     public function test_a_relaxed_preference_is_reported_with_resolved_names(): void
     {
         $changes = (new YearLevelGenerationChangeReport)->build(

@@ -2,6 +2,7 @@
 
 namespace App\Services\Scheduling\Engine\Rules;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -75,10 +76,10 @@ final class MeetingDayRule
 
         $forcedDay = $this->lookups->remember(
             "forcedDay:{$departmentId}:{$courseId}",
-            fn () => DB::table('department_forced_course_days')
-                ->where('department_id', $departmentId)
+            fn () => DepartmentCourseRules::query($departmentId)
                 ->where('course_id', $courseId)
-                ->value('day'),
+                ->whereNull('section_id')
+                ->value('forced_day'),
         );
 
         return self::forcedDayMismatch(is_string($forcedDay) ? $forcedDay : null, $day);

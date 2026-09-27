@@ -38,6 +38,34 @@ class YearLevelBottleneckDetectionTest extends TestCase
         $this->assertSame(1, $bottleneck['course_id']);
     }
 
+    public function test_a_search_cut_short_is_reported_as_unproven_not_as_a_conflict(): void
+    {
+        $diagnostics = new YearLevelGenerationDiagnostics;
+        $bottleneck = $diagnostics->markSearchIncomplete($diagnostics->detectBottleneck(
+            [[...$this->failure(null), 'split_courses' => [], 'balanced_split_courses' => []]],
+            collect(),
+        ));
+        $attempts = [['strategy' => 'baseline', 'outcome' => 'failed']];
+
+        $this->assertSame('laboratory_room', $bottleneck['type']);
+        $this->assertTrue($bottleneck['search_incomplete']);
+        $this->assertTrue($bottleneck['search_limit_reached']);
+        $this->assertStringContainsString('ran out of time while placing IT 101', $bottleneck['detected_cause']);
+        $this->assertStringNotContainsString('could not claim', $bottleneck['detected_cause']);
+
+        $message = $diagnostics->searchMessage($bottleneck, $attempts, true);
+        $this->assertStringContainsString('a timetable may still fit', $message);
+        $this->assertStringContainsString('stuck on IT 101 in BSIT 3E', $message);
+
+        // Rooms were never shown to run out, so no room-time advice.
+        $ids = array_column($diagnostics->searchRecommendations($bottleneck, [], collect(), [], null, true), 'id');
+        $this->assertNotContains('advisory-resources', $ids);
+        $this->assertContains(
+            'advisory-resources',
+            array_column($diagnostics->searchRecommendations($bottleneck, [], collect()), 'id'),
+        );
+    }
+
     /**
      * BSIT 3E with a lecture/lab split (IT 101) placed first and a Split
      * Session (GEC 5) after it; IT 109 is a plain lecture.

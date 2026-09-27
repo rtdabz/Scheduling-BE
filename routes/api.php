@@ -16,8 +16,9 @@ use App\Http\Controllers\FacultyController;
 use App\Http\Controllers\InitialDataController;
 use App\Http\Controllers\InstitutionSettingsController;
 use App\Http\Controllers\InstructorAssignmentController;
-use App\Http\Controllers\RealtimeConfigController;
+use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ProgramRoomController;
+use App\Http\Controllers\RealtimeConfigController;
 use App\Http\Controllers\ReportsController;
 use App\Http\Controllers\RoomRequestController;
 use App\Http\Controllers\RoomsController;
@@ -28,9 +29,8 @@ use App\Http\Controllers\ScheduleRecommendationController;
 use App\Http\Controllers\ScheduleSplitController;
 use App\Http\Controllers\SchedulingSettingsController;
 use App\Http\Controllers\SectionsController;
-use App\Http\Controllers\ProfileController;
-use App\Http\Controllers\SystemNotificationController;
 use App\Http\Controllers\SemesterController;
+use App\Http\Controllers\SystemNotificationController;
 use App\Http\Controllers\TimeslotController;
 use App\Http\Controllers\VpaaDashboardController;
 use Illuminate\Support\Facades\Route;
@@ -241,6 +241,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     // permission.
     Route::middleware('capability:schedule.view')->group(function () {
         Route::get('conflicts', [ScheduleConflictController::class, 'index']);
+        Route::get('conflicts/resolved', [ScheduleConflictController::class, 'resolved']);
+        Route::get('conflicts/{conflict}/recommendations', [ScheduleConflictController::class, 'recommendations']);
         Route::post('conflicts/{conflict}/resolve', [ScheduleConflictController::class, 'resolve']);
         Route::post('conflicts/{conflict}/override', [ScheduleConflictController::class, 'override']);
     });

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Rooms;
@@ -149,13 +150,7 @@ class PreferredDaysTest extends TestCase
     public function test_a_required_day_outside_the_preferred_days_is_refused_up_front(): void
     {
         $course = $this->course('IT 101', lecture: 3, laboratory: 0, category: 'major');
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $this->department->id,
-            'course_id' => $course->id,
-            'day' => 'Saturday',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $this->department->id, (int) $course->id, null, ['forced_day' => 'Saturday']);
 
         $this->expectException(ValidationException::class);
 

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -183,20 +184,10 @@ class RealisticDepartmentLoadTest extends TestCase
         // Live quirk: the field-course settings are scoped to the department
         // while the courses themselves have a NULL department_id.
         foreach ($fieldCodes as $code => $field) {
-            DB::table('field_course_settings')->insert([
-                'department_id' => $department->id,
-                'enabled' => true,
-                'course_code' => $code,
-                'created_at' => now(), 'updated_at' => now(),
-            ]);
+            DepartmentCourseRules::put((int) $department->id, (int) $field['id'], null, ['is_field' => true]);
 
             if ($field['forced']) {
-                DB::table('department_forced_course_days')->insert([
-                    'department_id' => $department->id,
-                    'course_id' => $field['id'],
-                    'day' => 'Saturday',
-                    'created_at' => now(), 'updated_at' => now(),
-                ]);
+                DepartmentCourseRules::put((int) $department->id, (int) $field['id'], null, ['forced_day' => 'Saturday']);
             }
         }
 

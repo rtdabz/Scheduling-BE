@@ -12,6 +12,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
@@ -428,7 +429,241 @@ class ScheduleConflictResolutionTest extends TestCase
             ->assertStatus(404);
     }
 
+    public function test_a_room_conflict_recommends_another_room_first_and_it_resolves(): void
+    {
+        $fixture = $this->fixture();
+        $left = $this->schedule($fixture);
+        $right = $this->schedule($fixture, [
+            'section_id' => $fixture['otherSection']->id,
+            'course_id' => $fixture['otherCourse']->id,
+        ]);
+        $conflictId = "room_conflict:{$left->id}:{$right->id}";
+
+        $response = $this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations")
+            ->assertOk()
+            ->assertJsonPath('conflict.id', $conflictId);
+
+        $options = $response->json('options');
+        $this->assertGreaterThanOrEqual(3, count($options), 'A wide-open week offers several fixes.');
+        $this->assertLessThanOrEqual(5, count($options));
+        $this->assertSame('change_room', $options[0]['action'], 'Same time in another room disturbs the least.');
+        $this->assertSame(1, $options[0]['rank']);
+
+        $this->actingAs($fixture['user'])
+            ->postJson("/api/conflicts/{$conflictId}/resolve", $options[0]['payload'])
+            ->assertOk()
+            ->assertJsonPath('status', 'resolved');
+    }
+
+    public function test_every_recommended_fix_for_a_section_conflict_resolves_it(): void
+    {
+        $fixture = $this->fixture();
+        $left = $this->schedule($fixture, ['faculty_id' => $fixture['faculty']->id]);
+        $right = $this->schedule($fixture, [
+            'course_id' => $fixture['otherCourse']->id,
+            'room_id' => $fixture['otherRoom']->id,
+        ]);
+        // The instructor is busy at 09:00, so a move of the left class there
+        // looks free to the room grid but is not.
+        $this->schedule($fixture, [
+            'section_id' => $fixture['otherSection']->id,
+            'course_id' => $fixture['thirdCourse']->id,
+            'room_id' => $fixture['thirdRoom']->id,
+            'faculty_id' => $fixture['faculty']->id,
+            'start_time' => '09:00',
+            'end_time' => '10:00',
+        ]);
+        $conflictId = "section_conflict:{$left->id}:{$right->id}";
+
+        $options = $this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations")
+            ->assertOk()
+            ->json('options');
+
+        $this->assertNotEmpty($options);
+        foreach ($options as $option) {
+            $this->assertNotContains($option['action'], ['change_room', 'reassign_instructor'], 'Neither clears a section clash.');
+            $this->assertFalse(
+                $option['schedule_id'] === $left->id && $option['day'] === 'Monday' && $option['start_time'] === '09:00',
+                'The instructor already teaches at that hour.',
+            );
+        }
+
+        foreach ($options as $option) {
+            DB::beginTransaction();
+            $this->actingAs($fixture['user'])
+                ->postJson("/api/conflicts/{$conflictId}/resolve", $option['payload'])
+                ->assertOk();
+            DB::rollBack();
+        }
+    }
+
+    public function test_a_faculty_conflict_recommends_a_free_instructor(): void
+    {
+        $fixture = $this->fixture();
+        $left = $this->schedule($fixture, ['faculty_id' => $fixture['faculty']->id]);
+        $right = $this->schedule($fixture, [
+            'section_id' => $fixture['otherSection']->id,
+            'course_id' => $fixture['otherCourse']->id,
+            'room_id' => $fixture['otherRoom']->id,
+            'faculty_id' => $fixture['faculty']->id,
+        ]);
+        $conflictId = "faculty_conflict:{$left->id}:{$right->id}";
+
+        $options = collect($this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations")
+            ->assertOk()
+            ->json('options'));
+
+        $reassign = $options->firstWhere('action', 'reassign_instructor');
+        $this->assertNotNull($reassign, 'Another instructor in the department is free.');
+        $this->assertSame($fixture['otherFaculty']->id, $reassign['faculty_id']);
+
+        $this->actingAs($fixture['user'])
+            ->postJson("/api/conflicts/{$conflictId}/resolve", $reassign['payload'])
+            ->assertOk()
+            ->assertJsonPath('status', 'resolved');
+    }
+
+    public function test_recommendations_for_a_resolved_or_unknown_conflict_are_a_404(): void
+    {
+        $fixture = $this->fixture();
+        $left = $this->schedule($fixture);
+        $right = $this->schedule($fixture, [
+            'course_id' => $fixture['otherCourse']->id,
+            'room_id' => $fixture['otherRoom']->id,
+            'start_time' => '10:00',
+            'end_time' => '11:00',
+        ]);
+
+        $this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/section_conflict:{$left->id}:{$right->id}/recommendations")
+            ->assertNotFound();
+        $this->actingAs($fixture['user'])
+            ->getJson('/api/conflicts/not-a-conflict/recommendations')
+            ->assertNotFound();
+    }
+
     /** @return array<string, mixed> */
+    public function test_the_resolved_list_names_a_recommended_fix_and_who_applied_it(): void
+    {
+        $fixture = $this->fixture();
+        $left = $this->schedule($fixture);
+        $right = $this->schedule($fixture, [
+            'section_id' => $fixture['otherSection']->id,
+            'course_id' => $fixture['otherCourse']->id,
+        ]);
+        $conflictId = "room_conflict:{$left->id}:{$right->id}";
+
+        $option = $this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations")
+            ->json('options.0');
+
+        $this->actingAs($fixture['user'])
+            ->postJson("/api/conflicts/{$conflictId}/resolve", [...$option['payload'], 'source' => 'recommendation'])
+            ->assertOk();
+
+        $this->actingAs($fixture['user'])
+            ->getJson('/api/conflicts/resolved')
+            ->assertOk()
+            ->assertJsonCount(1, 'resolutions')
+            ->assertJsonPath('resolutions.0.conflict_id', $conflictId)
+            ->assertJsonPath('resolutions.0.rule', 'room_conflict')
+            ->assertJsonPath('resolutions.0.method', 'recommended')
+            ->assertJsonPath('resolutions.0.source', 'conflict_inbox')
+            ->assertJsonPath('resolutions.0.status', 'resolved')
+            ->assertJsonPath('resolutions.0.resolved_by', $fixture['user']->name)
+            ->assertJsonPath('resolutions.0.day', 'Monday');
+    }
+
+    public function test_a_manual_fix_that_is_undone_shows_as_reopened(): void
+    {
+        $fixture = $this->fixture();
+        $left = $this->schedule($fixture);
+        $right = $this->schedule($fixture, [
+            'section_id' => $fixture['otherSection']->id,
+            'course_id' => $fixture['otherCourse']->id,
+        ]);
+        $conflictId = "room_conflict:{$left->id}:{$right->id}";
+
+        $this->actingAs($fixture['user'])
+            ->postJson("/api/conflicts/{$conflictId}/resolve", [
+                'action' => 'change_room',
+                'schedule_id' => $right->id,
+                'room_id' => $fixture['otherRoom']->id,
+                'reason' => 'Swapped rooms with the other section.',
+            ])
+            ->assertOk();
+
+        $this->actingAs($fixture['user'])
+            ->getJson('/api/conflicts/resolved')
+            ->assertJsonPath('resolutions.0.method', 'manual')
+            ->assertJsonPath('resolutions.0.status', 'resolved')
+            ->assertJsonPath('resolutions.0.reason', 'Swapped rooms with the other section.');
+
+        // A later edit puts the class straight back into the clash.
+        $right->refresh()->update(['room_id' => $fixture['room']->id]);
+
+        $this->actingAs($fixture['user'])
+            ->getJson('/api/conflicts/resolved')
+            ->assertJsonPath('resolutions.0.conflict_id', $conflictId)
+            ->assertJsonPath('resolutions.0.status', 'reopened');
+    }
+
+    public function test_an_override_is_listed_as_allowed_not_resolved(): void
+    {
+        $fixture = $this->fixture();
+        $left = $this->schedule($fixture, ['faculty_id' => $fixture['faculty']->id]);
+        $right = $this->schedule($fixture, [
+            'section_id' => $fixture['otherSection']->id,
+            'course_id' => $fixture['otherCourse']->id,
+            'room_id' => $fixture['otherRoom']->id,
+            'faculty_id' => $fixture['faculty']->id,
+        ]);
+
+        $this->actingAs($fixture['user'])
+            ->postJson("/api/conflicts/faculty_conflict:{$left->id}:{$right->id}/override", [
+                'confirm' => true,
+                'reason' => 'Department head approved the double booking.',
+            ])
+            ->assertOk();
+
+        $this->actingAs($fixture['user'])
+            ->getJson('/api/conflicts/resolved')
+            ->assertJsonPath('resolutions.0.method', 'overridden')
+            ->assertJsonPath('resolutions.0.status', 'overridden')
+            ->assertJsonPath('resolutions.0.reason', 'Department head approved the double booking.');
+    }
+
+    public function test_the_resolved_list_is_scoped_to_the_callers_department(): void
+    {
+        $fixture = $this->fixture();
+        $left = $this->schedule($fixture);
+        $right = $this->schedule($fixture, [
+            'section_id' => $fixture['otherSection']->id,
+            'course_id' => $fixture['otherCourse']->id,
+        ]);
+
+        $this->actingAs($fixture['user'])
+            ->postJson("/api/conflicts/room_conflict:{$left->id}:{$right->id}/resolve", [
+                'action' => 'change_room',
+                'schedule_id' => $right->id,
+                'room_id' => $fixture['otherRoom']->id,
+            ])
+            ->assertOk();
+
+        $elsewhere = Departments::create(['department_name' => 'Elsewhere', 'department_code' => 'ELS']);
+        $outsider = $this->grantCapabilities(
+            User::factory()->create(['role' => 'secretary', 'department_id' => $elsewhere->id]),
+        );
+
+        $this->actingAs($outsider)
+            ->getJson('/api/conflicts/resolved')
+            ->assertOk()
+            ->assertJsonCount(0, 'resolutions');
+    }
+
     private function fixture(): array
     {
         $department = Departments::create(['department_name' => 'Conflict Dept', 'department_code' => 'CFL']);

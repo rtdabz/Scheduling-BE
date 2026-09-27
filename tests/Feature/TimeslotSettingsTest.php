@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Models\ScheduleSetting;
+use App\Models\InstitutionSetting;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -29,7 +29,7 @@ class TimeslotSettingsTest extends TestCase
             ->assertJsonPath('settings.closing_time', '8:00 PM')
             ->assertJsonPath('settings.slot_interval', 30);
 
-        $this->assertDatabaseHas('schedule_settings', [
+        $this->assertDatabaseHas('institution_settings', [
             'opening_time' => '07:00:00',
             'closing_time' => '20:00:00',
             'slot_interval' => 30,
@@ -39,7 +39,7 @@ class TimeslotSettingsTest extends TestCase
 
     public function test_department_secretary_cannot_change_institutional_operating_hours(): void
     {
-        ScheduleSetting::query()->create([
+        InstitutionSetting::current()->update([
             'opening_time' => '07:00:00',
             'closing_time' => '19:00:00',
             'slot_interval' => 30,
@@ -52,8 +52,32 @@ class TimeslotSettingsTest extends TestCase
             'slot_interval' => 30,
         ])->assertForbidden();
 
-        $this->assertDatabaseHas('schedule_settings', [
+        $this->assertDatabaseHas('institution_settings', [
             'closing_time' => '19:00:00',
         ]);
+    }
+
+    public function test_operating_hours_share_the_row_with_the_signatory(): void
+    {
+        InstitutionSetting::current()->update(['president_name' => 'Dr. Jane Doe']);
+        $user = User::factory()->create(['role' => 'vpaa']);
+
+        $this->actingAs($user)->patchJson('/api/timeslots/settings', [
+            'opening_time' => '7:30 AM',
+            'closing_time' => '6:00 PM',
+            'slot_interval' => 30,
+        ])->assertOk();
+
+        $this->assertSame(1, InstitutionSetting::query()->count());
+        $this->assertDatabaseHas('institution_settings', [
+            'president_name' => 'Dr. Jane Doe',
+            'opening_time' => '07:30:00',
+            'closing_time' => '18:00:00',
+        ]);
+        // The signatory endpoint still returns only the signatory.
+        $this->actingAs($user)->getJson('/api/institution-settings')
+            ->assertOk()
+            ->assertJsonPath('president_name', 'Dr. Jane Doe')
+            ->assertJsonMissingPath('opening_time');
     }
 }

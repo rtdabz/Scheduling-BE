@@ -49,12 +49,19 @@ class YearLevelGenerationChangeReport
         // scheduler configured, so it is not reported as a change.
         $relaxations = array_values((array) ($strategy['adjustments'] ?? []));
         if ($strategy !== null && $relaxations !== []) {
+            $description = (string) ($strategy['description'] ?? 'The configuration as entered found no timetable, so the generator relaxed a preference and tried again.');
+            // The original settings only ran out of search time. Say so, or
+            // the change reads as required when it may not have been.
+            if ((bool) ($bottleneck['search_incomplete'] ?? false)) {
+                $description .= ' Your original settings were not proven impossible: their search ran out of time. Generate again to try them once more.';
+            }
+
             $changes[] = [
                 ...$this->change(
                     self::KIND_PREFERENCE_RELAXED,
                     'warning',
                     (string) ($strategy['label'] ?? 'Preference adjusted on retry'),
-                    (string) ($strategy['description'] ?? 'The configuration as entered found no timetable, so the generator relaxed a preference and tried again.'),
+                    $description,
                     array_map(
                         fn (array $adjustment): array => [
                             ...$this->item(

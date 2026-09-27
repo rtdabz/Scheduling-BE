@@ -129,11 +129,11 @@ class ConsecutiveDaysYearLevelGenerationTest extends TestCase
         foreach ($sections as $index => $section) {
             Rooms::create(['room_code' => 'NUR 10'.($index + 1), 'building' => 'Health', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
         }
-        DB::table('course_consecutive_day_rules')->insert([
+        DB::table('department_course_rules')->insert([
             'department_id' => $department->id,
             'course_id' => $clinical->id,
             'section_id' => null,
-            'day_count' => 3,
+            'consecutive_day_count' => 3,
             'preferred_start_day' => 'Monday',
             'created_at' => now(),
             'updated_at' => now(),

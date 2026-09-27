@@ -113,6 +113,12 @@ class YearLevelScheduleGenerationService
     /** The physical-only search stopped before proving infeasibility. */
     private bool $physicalSearchIncomplete = false;
 
+    /**
+     * The current attempt stopped at a time or step limit somewhere, so its
+     * failure is inconclusive: a timetable may still exist.
+     */
+    private bool $searchCutShort = false;
+
     private ?SchedulingSnapshot $generationSnapshot = null;
 
     /** Cooperative cancellation for the run in progress. */
@@ -239,6 +245,9 @@ class YearLevelScheduleGenerationService
 
         $attempts = [];
         $failures = [];
+        // The configuration as entered failed only because a search stopped at
+        // its time or step limit, not because nothing fits.
+        $searchIncomplete = false;
         $this->interimContext = ['sections' => $sections, 'configs' => $configsBySectionId, 'courses' => $courses];
 
         $patternFailure = $this->preflightPatternFeasibility($sections, $configsBySectionId, $courses);
@@ -258,12 +267,14 @@ class YearLevelScheduleGenerationService
         } else {
             $baselineFailures = [];
             $candidate = $this->generateBestCandidate($sections, $configsBySectionId, $baselineDeadline, 0, 0, $baselineFailures);
+            $searchIncomplete = $candidate === null && $this->searchCutShort;
             $attempts[] = $this->attemptRecord(
                 'baseline',
                 'Original configuration',
                 $candidate !== null ? 'succeeded' : 'failed',
                 $baselineFailures[0] ?? null,
                 'Generate with exactly the configuration you selected.',
+                $searchIncomplete,
             );
 
             if ($candidate !== null) {
@@ -274,6 +285,9 @@ class YearLevelScheduleGenerationService
         }
 
         $bottleneck = $this->diagnostics()->detectBottleneck($failures, $courses);
+        if ($searchIncomplete) {
+            $bottleneck = $this->diagnostics()->markSearchIncomplete($bottleneck);
+        }
 
         $strategies = array_slice(
             $this->planner()->plan($sections, $configsBySectionId, $courses, $bottleneck),
@@ -322,12 +336,19 @@ class YearLevelScheduleGenerationService
                 (int) ($strategy['seed_offset'] ?? 0),
                 $retryFailures,
             );
+            $cutShort = $candidate === null && $this->searchCutShort;
+            // A retry that only re-orders the search runs the configuration as
+            // entered, so its being cut short also leaves that one unproven.
+            if ($cutShort && ($strategy['adjustments'] ?? []) === []) {
+                $searchIncomplete = true;
+            }
             $attempts[] = $this->attemptRecord(
                 $key,
                 $label,
                 $candidate !== null ? 'succeeded' : 'failed',
                 $retryFailures[0] ?? null,
                 $description,
+                $cutShort,
             );
 
             if ($candidate !== null) {
@@ -338,21 +359,26 @@ class YearLevelScheduleGenerationService
         }
 
         $bottleneck = $this->diagnostics()->detectBottleneck($failures, $courses) ?? $bottleneck;
+        if ($searchIncomplete) {
+            $bottleneck = $this->diagnostics()->markSearchIncomplete($bottleneck);
+        }
         $recommendations = $this->diagnostics()->searchRecommendations(
             $bottleneck,
             $strategies,
             $courses,
             $configsBySectionId,
             $this->suggestedPreferredDay($configsBySectionId),
+            $searchIncomplete,
         );
 
         throw new YearLevelGenerationException(
-            $this->diagnostics()->searchMessage($bottleneck, $attempts),
+            $this->diagnostics()->searchMessage($bottleneck, $attempts, $searchIncomplete),
             YearLevelGenerationException::STAGE_SEARCH,
             bottleneck: $bottleneck,
             attempts: $attempts,
             recommendations: $recommendations,
             generationMetrics: $this->reportedMetrics($attempts),
+            searchIncomplete: $searchIncomplete,
         );
     }
 
@@ -372,9 +398,11 @@ class YearLevelScheduleGenerationService
         int $seedOffset,
         array &$failures,
     ): ?array {
+        $this->searchCutShort = false;
         foreach ($this->candidateOrders($sections, $configsBySectionId, $orderOffset) as $order) {
             $this->checkpoint();
             if (microtime(true) >= $deadline) {
+                $this->searchCutShort = true;
                 break;
             }
 
@@ -652,8 +680,14 @@ class YearLevelScheduleGenerationService
      * @param  array<string, mixed>|null  $failure
      * @return array<string, mixed>
      */
-    private function attemptRecord(string $key, string $label, string $outcome, ?array $failure, string $description): array
-    {
+    private function attemptRecord(
+        string $key,
+        string $label,
+        string $outcome,
+        ?array $failure,
+        string $description,
+        bool $cutShort = false,
+    ): array {
         return [
             'strategy' => $key,
             'label' => $label,
@@ -662,7 +696,7 @@ class YearLevelScheduleGenerationService
             'section_id' => isset($failure['section_id']) ? (int) $failure['section_id'] : null,
             'section_name' => isset($failure['section_name']) ? (string) $failure['section_name'] : null,
             'iterations' => (int) ($failure['iterations'] ?? 0),
-            'search_limit_reached' => (bool) ($failure['search_limit_reached'] ?? false),
+            'search_limit_reached' => $cutShort || (bool) ($failure['search_limit_reached'] ?? false),
         ];
     }
 
@@ -1084,10 +1118,12 @@ class YearLevelScheduleGenerationService
             return;
         }
 
-        if (
-            microtime(true) >= $deadline
-            || count($completeCandidates) >= self::MAX_COMPLETE_CANDIDATES_PER_ORDER
-        ) {
+        if (count($completeCandidates) >= self::MAX_COMPLETE_CANDIDATES_PER_ORDER) {
+            return;
+        }
+        if (microtime(true) >= $deadline) {
+            $this->searchCutShort = true;
+
             return;
         }
 
@@ -1158,10 +1194,12 @@ class YearLevelScheduleGenerationService
                 alternativesRemain: $rank < count($ranked) - 1,
             );
 
-            if (
-                microtime(true) >= $deadline
-                || count($completeCandidates) >= self::MAX_COMPLETE_CANDIDATES_PER_ORDER
-            ) {
+            if (count($completeCandidates) >= self::MAX_COMPLETE_CANDIDATES_PER_ORDER) {
+                return;
+            }
+            if (microtime(true) >= $deadline) {
+                $this->searchCutShort = true;
+
                 return;
             }
         }
@@ -1433,10 +1471,15 @@ class YearLevelScheduleGenerationService
         $isSplitHeavy = $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD;
         $attempts = $isSplitHeavy ? self::SPLIT_HEAVY_SECTION_ATTEMPTS : self::SECTION_ATTEMPTS;
         $deadline = microtime(true) + max(1.0, $timeBudget);
+        // Whether the section's search ended without covering every candidate:
+        // the last attempt stopped at its limit, or time ran out before the
+        // remaining attempts ran.
+        $cutShort = false;
 
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
             $remainingSeconds = $deadline - microtime(true);
             if ($remainingSeconds < 0.5) {
+                $cutShort = true;
                 break;
             }
 
@@ -1515,6 +1558,11 @@ class YearLevelScheduleGenerationService
             if ($solutions !== []) {
                 return $solutions;
             }
+            $cutShort = $limitReached;
+        }
+
+        if ($cutShort) {
+            $this->searchCutShort = true;
         }
 
         return [];

@@ -37,17 +37,44 @@ class ConsecutiveDaysManualSchedulingTest extends TestCase
         $this->assertSame(['consecutive:3'], $rows->pluck('preferred_pattern')->unique()->values()->all());
     }
 
-    public function test_a_run_with_a_gap_is_refused(): void
+    public function test_a_run_on_days_apart_is_saved(): void
     {
         $context = $this->scaffold();
 
         $response = $this->actingAs($context['user'])->postJson('/api/schedules/batch', [
-            'operations' => $this->runOperations($context, ['Monday', 'Wednesday', 'Thursday']),
+            'operations' => $this->runOperations($context, ['Monday', 'Wednesday', 'Friday']),
         ]);
 
-        $response->assertStatus(422);
-        $this->assertContains('consecutive_days', array_column($response->json('violations') ?? [], 'rule'));
-        $this->assertSame(0, Schedule::query()->where('course_id', $context['course']->id)->count());
+        $response->assertOk();
+        $this->assertEqualsCanonicalizing(
+            ['Monday', 'Wednesday', 'Friday'],
+            Schedule::query()->where('course_id', $context['course']->id)->pluck('day')->all(),
+        );
+    }
+
+    public function test_available_slots_offer_only_the_ticked_days(): void
+    {
+        $context = $this->scaffold();
+        \Illuminate\Support\Facades\DB::table('department_course_rules')->insert([
+            'department_id' => $context['department']->id,
+            'course_id' => $context['course']->id,
+            'section_id' => null,
+            'consecutive_day_count' => 3,
+            'preferred_start_day' => 'Monday',
+            'meeting_days' => 'Monday,Wednesday,Friday',
+        ]);
+
+        $response = $this->actingAs($context['user'])->postJson('/api/schedule-recommendations/available-slots', [
+            'section_id' => $context['section']->id,
+            'course_id' => $context['course']->id,
+            'duration_slots' => 2,
+            'modes' => ['on-site'],
+            'consecutive_days' => 3,
+        ]);
+
+        $response->assertOk();
+        $runs = array_unique(array_map(static fn (array $slot): string => implode(',', $slot['run_days']), $response->json('slots')));
+        $this->assertSame(['Monday,Wednesday,Friday'], array_values($runs));
     }
 
     public function test_each_day_of_a_run_may_take_the_full_class_length(): void
@@ -111,6 +138,36 @@ class ConsecutiveDaysManualSchedulingTest extends TestCase
         $this->assertContains('consecutive_days', array_column($response->json('violations') ?? [], 'rule'));
         $this->assertSame('Friday', $friday->refresh()->day);
         $this->assertSame('Sunday', $sunday->refresh()->day);
+    }
+
+    public function test_a_run_with_ticked_days_keeps_them_when_moved(): void
+    {
+        $context = $this->scaffold();
+        \Illuminate\Support\Facades\DB::table('department_course_rules')->insert([
+            'department_id' => $context['department']->id,
+            'course_id' => $context['course']->id,
+            'section_id' => null,
+            'consecutive_day_count' => 3,
+            'preferred_start_day' => 'Monday',
+            'meeting_days' => 'Monday,Wednesday,Friday',
+        ]);
+        [$monday, , $friday] = $this->savedRun($context, ['Monday', 'Wednesday', 'Friday']);
+
+        $this->actingAs($context['user'])->putJson("/api/schedules/{$monday->id}", [
+            'day' => 'Tuesday',
+            'start_time' => '07:00',
+            'end_time' => '08:00',
+        ])->assertStatus(422);
+        $this->assertSame('Monday', $monday->refresh()->day);
+        $this->assertSame('Friday', $friday->refresh()->day);
+
+        // A new time on the same days is fine.
+        $this->actingAs($context['user'])->putJson("/api/schedules/{$monday->id}", [
+            'day' => 'Monday',
+            'start_time' => '09:00',
+            'end_time' => '10:00',
+        ])->assertOk();
+        $this->assertSame('09:00', substr((string) $friday->refresh()->start_time, 0, 5));
     }
 
     public function test_available_slots_offer_only_whole_runs(): void

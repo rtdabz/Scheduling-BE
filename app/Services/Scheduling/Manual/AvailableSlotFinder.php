@@ -53,7 +53,9 @@ final class AvailableSlotFinder
      * @param  list<int>  $ignoreScheduleIds  rows being replaced by this placement
      * @param  string|null  $searchFromDay  the day listed first; the other weekdays follow, the weekend last
      * @param  int|null  $consecutiveDays  a Consecutive Days run: only a start and room free on every day of
-     *                                     a run of this many back-to-back days is listed, on the run's first day
+     *                                     a run of this many days is listed, on the run's first day. The
+     *                                     run is the section's ticked meeting days when its rule has them,
+     *                                     else any run of this many back-to-back days
      * @return array{
      *     slots: list<array<string, mixed>>,
      *     rooms: list<array{room_id: int|null, room_code: string, room_type: string, mode: string, slot_count: int}>,
@@ -188,7 +190,14 @@ final class AvailableSlotFinder
         }
 
         if ($isRun) {
-            [$slots, $truncated] = $this->runSlots($snapshot, $freeByPlacement, $starts, $consecutiveDays, $countsByRoom);
+            $rule = $snapshot->consecutiveDayRulesFor($sectionId)[$courseId] ?? null;
+            $runs = ($rule['meeting_days'] ?? null) !== null && count($rule['meeting_days']) === $consecutiveDays
+                ? [$rule['meeting_days']]
+                : SchedulingPolicy::consecutiveDayRuns(
+                    $consecutiveDays,
+                    (bool) ($snapshot->departmentSettings['sunday_classes_enabled'] ?? false),
+                );
+            [$slots, $truncated] = $this->runSlots($freeByPlacement, $starts, $runs, $countsByRoom);
         }
 
         // Days are listed from the day the placement collided on, so the other
@@ -222,19 +231,16 @@ final class AvailableSlotFinder
      *
      * @param  array<string, array<string, true>>  $freeByPlacement  "roomKey@startSlot" => free days
      * @param  list<array{start_slot: int, end_slot: int, start_time: string, end_time: string}>  $starts
+     * @param  list<list<string>>  $runs  the day sets the run may take
      * @param  array<string, array{room_id: int|null, room_code: string, room_type: string, mode: string, slot_count: int}>  $countsByRoom
      * @return array{0: list<array<string, mixed>>, 1: bool}
      */
-    private function runSlots(SchedulingSnapshot $snapshot, array $freeByPlacement, array $starts, int $dayCount, array &$countsByRoom): array
+    private function runSlots(array $freeByPlacement, array $starts, array $runs, array &$countsByRoom): array
     {
         $startsBySlot = [];
         foreach ($starts as $start) {
             $startsBySlot[$start['start_slot']] = $start;
         }
-        $runs = SchedulingPolicy::consecutiveDayRuns(
-            $dayCount,
-            (bool) ($snapshot->departmentSettings['sunday_classes_enabled'] ?? false),
-        );
 
         $slots = [];
         $truncated = false;

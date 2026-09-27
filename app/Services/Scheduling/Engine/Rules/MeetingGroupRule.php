@@ -184,9 +184,11 @@ final class MeetingGroupRule
             }
         }
 
+        // The days themselves are the rule's (Setup Courses ticks them, and
+        // they need not be back-to-back); repeated days are
+        // split_group_day_separation's to report.
         if ($kind === 'consecutive') {
             $dayCount = SchedulingPolicy::consecutiveDayCount($pattern) ?? 0;
-            $days = array_map('strval', $column('day'));
             if ($count !== $dayCount) {
                 $mismatches[] = ['rule' => 'consecutive_day_count', 'message' => sprintf(
                     'A %d-day Consecutive Days class needs all %d of its meetings; %d %s linked.',
@@ -194,13 +196,6 @@ final class MeetingGroupRule
                     $dayCount,
                     $count,
                     $count === 1 ? 'is' : 'are',
-                )];
-            } elseif (count(array_unique($days)) === $count && ! SchedulingPolicy::isConsecutiveDaySet($days)) {
-                // Repeated days are split_group_day_separation's to report.
-                $mismatches[] = ['rule' => 'consecutive_days', 'message' => sprintf(
-                    'Consecutive Days meetings must fall on %d back-to-back days (for example Thursday, Friday and Saturday), not %s.',
-                    $dayCount,
-                    implode(', ', self::inWeekOrder($days)),
                 )];
             }
             if (count(array_unique($column('mode'))) > 1) {
@@ -237,16 +232,5 @@ final class MeetingGroupRule
         }
 
         return $mismatches;
-    }
-
-    /**
-     * @param  list<string>  $days
-     * @return list<string>
-     */
-    private static function inWeekOrder(array $days): array
-    {
-        usort($days, static fn (string $left, string $right): int => SchedulingPolicy::dayIndex($left) <=> SchedulingPolicy::dayIndex($right));
-
-        return $days;
     }
 }

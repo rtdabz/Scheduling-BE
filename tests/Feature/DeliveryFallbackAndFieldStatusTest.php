@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -46,13 +47,7 @@ class DeliveryFallbackAndFieldStatusTest extends TestCase
             ['Monday', '11:00:00', '13:00:00'],
             ['Monday', '14:00:00', '20:30:00'],
         ]);
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $context['department']->id,
-            'course_id' => $short->id,
-            'day' => 'Monday',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $context['department']->id, (int) $short->id, null, ['forced_day' => 'Monday']);
 
         $plans = app(GenerateSchedulePlan::class)->generate(
             semesterId: (int) $context['semester']->id,
@@ -135,7 +130,7 @@ class DeliveryFallbackAndFieldStatusTest extends TestCase
         $this->assertTrue(SchedulingPolicy::isFieldCourse($course, (int) $context['department']->id));
 
         // Removed by another process: this process's cache is not told.
-        DB::table('field_course_settings')->delete();
+        DB::table(DepartmentCourseRules::TABLE)->delete();
 
         $solutions = app(CspSolver::class)->solveRanked(
             sectionId: (int) $context['section']->id,
@@ -157,7 +152,7 @@ class DeliveryFallbackAndFieldStatusTest extends TestCase
 
         $this->configureFieldCode($context, 'PE 1');
         $this->assertTrue(SchedulingPolicy::isFieldCourse($course, (int) $context['department']->id));
-        DB::table('field_course_settings')->delete();
+        DB::table(DepartmentCourseRules::TABLE)->delete();
 
         Event::dispatch(new JobProcessing('database', $this->createMock(Job::class)));
 
@@ -253,13 +248,7 @@ class DeliveryFallbackAndFieldStatusTest extends TestCase
     private function configureFieldCode(array $context, string $code): void
     {
         SchedulingPolicy::clearFieldCourseCache();
-        DB::table('field_course_settings')->insert([
-            'department_id' => $context['department']->id,
-            'course_code' => $code,
-            'enabled' => true,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $context['department']->id, (int) Course::query()->where('course_code', $code)->value('id'), null, ['is_field' => true]);
     }
 
     /**

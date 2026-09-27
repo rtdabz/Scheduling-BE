@@ -21,11 +21,21 @@ class SectionsController extends Controller
     public function __construct(private readonly ScheduleAuthorizationService $authorization) {}
 
     // Get all sections
-    public function index()
+    public function index(Request $request)
     {
-        $sections = Cache::remember(ApiCache::key('sections.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'academicSemester', 'curriculum'])
-            ->latest()
-            ->get());
+        // A department user only ever works with their own sections; sending
+        // every department's (and every semester's) to be filtered in the
+        // browser grew the payload each term. The nested department omits its
+        // base64 logo, which was repeated on every row.
+        $departmentId = $this->authorization->departmentScope($request);
+        $sections = Cache::remember(
+            ApiCache::key('sections.index', ['department_id' => $departmentId]),
+            ApiCache::LOOKUP_TTL_SECONDS,
+            fn () => Sections::with(['department:id,department_name,department_code', 'program', 'academicSemester', 'curriculum'])
+                ->when($departmentId !== null, fn ($query) => $query->where('department_id', $departmentId))
+                ->latest()
+                ->get(),
+        );
 
         return response()->json($sections);
     }

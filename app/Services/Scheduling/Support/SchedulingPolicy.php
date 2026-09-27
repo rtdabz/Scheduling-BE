@@ -17,7 +17,7 @@ final class SchedulingPolicy
 {
     public const SLOT_MINUTES = 30;
 
-    /** Field end time used until the VPAA sets one (schedule_settings.field_end_time). */
+    /** Field end time used until the VPAA sets one (institution_settings.field_end_time). */
     public const DEFAULT_FIELD_DAY_END_TIME = '17:00:00';
 
     private static ?string $cachedOpeningTime = null;
@@ -102,6 +102,32 @@ final class SchedulingPolicy
         'revision',
         'conditionally_approved',
     ];
+
+    /**
+     * Status changes a department makes by hand: Done, Edit, unlocking a
+     * returned schedule, Finalize and Reassignment. Every move into or out of
+     * an approval stage belongs to the submit, review and recall endpoints,
+     * which keep the submission record and the instructors in step with the
+     * meetings. A direct status change used to pull submitted rows out of a
+     * pending submission, or approve a draft outright.
+     */
+    public const MANUAL_STATUS_TRANSITIONS = [
+        'draft' => ['completed'],
+        'revision' => ['completed'],
+        'completed' => ['draft'],
+        'rejected_by_dean' => ['revision'],
+        'rejected' => ['revision'],
+        'approved' => ['finalized'],
+        'faculty_assignment' => ['finalized'],
+        'reassignment' => ['finalized'],
+        'finalized' => ['reassignment'],
+    ];
+
+    /** Staying at the same status is a no-op, not a transition. */
+    public static function allowsManualStatusChange(string $from, string $to): bool
+    {
+        return $from === $to || in_array($to, self::MANUAL_STATUS_TRANSITIONS[$from] ?? [], true);
+    }
 
     /**
      * Statuses at which a schedule may be given an instructor. Instructor
@@ -725,8 +751,8 @@ final class SchedulingPolicy
         'consecutive_days' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
-            'description' => 'A Consecutive Days class meets on N calendar-consecutive days, without gaps and without wrapping into the next week.',
-            'enforced_by' => ['rule_engine', 'csp'],
+            'description' => 'A Consecutive Days class meets on the days ticked in Setup Courses (back-to-back or not); moved as a whole, it never wraps into the next week.',
+            'enforced_by' => ['csp', 'manual_move'],
         ],
         'consecutive_mode' => [
             'severity' => 'hard',
@@ -930,15 +956,16 @@ final class SchedulingPolicy
 
     /**
      * The highest load an instructor may carry before the assignment counts as
-     * over-ceiling: the required load plus the overload and pro bono units that
-     * were explicitly granted to them. Kept soft on purpose — a chair may still
-     * need to overload someone, so the assignment warns instead of refusing.
+     * over-ceiling: the required load plus the overload granted to them. Pro
+     * bono is not an allowance anyone grants -- it is whatever passes this
+     * ceiling -- so a leftover `probono_units` value no longer raises it. Kept
+     * soft on purpose: a chair may still need to overload someone, so the
+     * assignment warns instead of refusing.
      */
     public static function facultyUnitCeiling(mixed $faculty): int
     {
         return self::facultyRequiredUnits($faculty)
-            + (int) ($faculty->overload_units ?? 0)
-            + (int) ($faculty->probono_units ?? 0);
+            + (int) ($faculty->overload_units ?? 0);
     }
 
     /**
@@ -1299,12 +1326,55 @@ final class SchedulingPolicy
     }
 
     /**
-     * The Consecutive Days rule in force for a section's courses, as
-     * course id => {day_count, preferred_start_day}. A section's own rule
-     * overrides the course-wide one (`section_id` null).
+     * A rule's ticked meeting days -- a comma list as stored, or a list -- as
+     * distinct known days in week order; null when fewer than two remain.
      *
-     * @param  iterable<array<string, mixed>|object>  $rules  rows of course_consecutive_day_rules
-     * @return array<int, array{day_count: int, preferred_start_day: string|null}>
+     * @return list<string>|null
+     */
+    public static function parseMeetingDays(mixed $value): ?array
+    {
+        $days = is_array($value) ? $value : (is_string($value) && $value !== '' ? explode(',', $value) : []);
+        $days = array_values(array_intersect(self::DAYS, array_map(static fn ($day): string => trim((string) $day), $days)));
+
+        return count($days) >= self::MIN_CONSECUTIVE_DAYS ? $days : null;
+    }
+
+    /**
+     * The runs a resolved Consecutive Days rule may take. Ticked meeting days
+     * are the one run, whether or not they are back-to-back, while every one
+     * of them is open (Sunday classes, Step 1's Preferred Days). An older rule
+     * without them keeps its calendar-consecutive runs, from its start day
+     * when it has one.
+     *
+     * @param  array{day_count: int, preferred_start_day?: string|null, meeting_days?: list<string>|null}  $rule
+     * @param  list<string>|null  $allowedDays
+     * @return list<list<string>>
+     */
+    public static function consecutiveRuleRuns(array $rule, bool $sundayClassesEnabled, ?array $allowedDays = null): array
+    {
+        $meetingDays = $rule['meeting_days'] ?? null;
+        if ($meetingDays !== null) {
+            $open = array_diff($meetingDays, self::teachingDays($sundayClassesEnabled)) === []
+                && ($allowedDays === null || array_diff($meetingDays, $allowedDays) === []);
+
+            return $open ? [$meetingDays] : [];
+        }
+
+        $startDay = $rule['preferred_start_day'] ?? null;
+
+        return array_values(array_filter(
+            self::consecutiveDayRuns((int) $rule['day_count'], $sundayClassesEnabled, $allowedDays),
+            static fn (array $run): bool => $startDay === null || $run[0] === $startDay,
+        ));
+    }
+
+    /**
+     * The Consecutive Days rule in force for a section's courses, as
+     * course id => {day_count, preferred_start_day, meeting_days}. A
+     * section's own rule overrides the course-wide one (`section_id` null).
+     *
+     * @param  iterable<array<string, mixed>|object>  $rules  {course_id, section_id, day_count, preferred_start_day, meeting_days}
+     * @return array<int, array{day_count: int, preferred_start_day: string|null, meeting_days: list<string>|null}>
      */
     public static function resolveConsecutiveDayRules(iterable $rules, ?int $sectionId): array
     {
@@ -1323,6 +1393,7 @@ final class SchedulingPolicy
                 'preferred_start_day' => isset($rule['preferred_start_day']) && $rule['preferred_start_day'] !== ''
                     ? (string) $rule['preferred_start_day']
                     : null,
+                'meeting_days' => self::parseMeetingDays($rule['meeting_days'] ?? null),
             ];
             if ($ruleSectionId === null) {
                 $courseWide[$courseId] = $resolved;
@@ -1336,14 +1407,14 @@ final class SchedulingPolicy
 
     /**
      * @param  list<int>  $courseIds  Optional filter; every course when empty.
-     * @return array<int, array{day_count: int, preferred_start_day: string|null}>
+     * @return array<int, array{day_count: int, preferred_start_day: string|null, meeting_days: list<string>|null}>
      */
     public static function consecutiveDayRuleMap(int $departmentId, ?int $sectionId, array $courseIds = []): array
     {
-        $rules = DB::table('course_consecutive_day_rules')
-            ->where('department_id', $departmentId)
+        $rules = DepartmentCourseRules::query($departmentId)
+            ->whereNotNull('consecutive_day_count')
             ->when($courseIds !== [], fn ($query) => $query->whereIn('course_id', array_map('intval', $courseIds)))
-            ->get(['course_id', 'section_id', 'day_count', 'preferred_start_day']);
+            ->get(['course_id', 'section_id', 'consecutive_day_count as day_count', 'preferred_start_day', 'meeting_days']);
 
         return self::resolveConsecutiveDayRules($rules, $sectionId);
     }
@@ -1425,8 +1496,8 @@ final class SchedulingPolicy
         // A course's name never makes it a field course: NSTP/ROTC/CWTS used
         // to be field by keyword, with no way to turn it off. Field is the
         // department's choice, made by giving the course a field room.
-        // Configured field-course codes are per department. A course with no
-        // owning department is a shared minor, whose field-ness is global.
+        // Configured field-course codes are per department, shared minors
+        // included: each department that schedules one sets it for itself.
         $code = self::normalizeCourseCode((string) (self::courseAttribute($course, 'course_code', 'subject_code') ?? ''));
 
         if ($fieldCourseCodes !== null) {
@@ -1889,8 +1960,7 @@ final class SchedulingPolicy
     }
 
     /**
-     * Configured field-course codes for a department, merged with the codes that
-     * apply institution-wide (rows with no department, i.e. shared minors).
+     * Configured field-course codes for a department; none without one.
      *
      * @return array<string, true>
      */
@@ -1902,23 +1972,13 @@ final class SchedulingPolicy
             return self::$cachedFieldCourseCodeMap[$bucket];
         }
 
-        if (! self::fieldCourseSettingsTableExists()) {
+        if (! self::courseRulesTableExists()) {
             return self::$cachedFieldCourseCodeMap[$bucket] = [];
         }
 
-        return self::$cachedFieldCourseCodeMap[$bucket] = DB::table('field_course_settings')
-            ->whereNotNull('course_code')
-            ->where(function ($query) use ($departmentId) {
-                $query->whereNull('department_id');
-                if ($departmentId !== null) {
-                    $query->orWhere('department_id', $departmentId);
-                }
-            })
-            ->pluck('course_code')
-            ->map(static fn ($code): string => self::normalizeCourseCode((string) $code))
-            ->filter()
-            ->mapWithKeys(static fn (string $code): array => [$code => true])
-            ->all();
+        return self::$cachedFieldCourseCodeMap[$bucket] = $departmentId === null
+            ? []
+            : array_fill_keys(DepartmentCourseRules::fieldCourseCodes($departmentId), true);
     }
 
     /**
@@ -1933,14 +1993,14 @@ final class SchedulingPolicy
      */
     public static function forcedCourseDayMap(int $departmentId, array $courseIds = []): array
     {
-        $query = DB::table('department_forced_course_days')
-            ->where('department_id', $departmentId);
+        $query = DepartmentCourseRules::query($departmentId)
+            ->whereNotNull('forced_day');
 
         if ($courseIds !== []) {
             $query->whereIn('course_id', array_map('intval', $courseIds));
         }
 
-        return $query->pluck('day', 'course_id')
+        return $query->pluck('forced_day', 'course_id')
             ->mapWithKeys(static fn ($day, $courseId): array => [(int) $courseId => (string) $day])
             ->all();
     }
@@ -1955,10 +2015,10 @@ final class SchedulingPolicy
         self::$cachedFieldCourseCodeMap = [];
     }
 
-    private static function fieldCourseSettingsTableExists(): bool
+    private static function courseRulesTableExists(): bool
     {
         try {
-            return DB::getSchemaBuilder()->hasTable('field_course_settings');
+            return DB::getSchemaBuilder()->hasTable(DepartmentCourseRules::TABLE);
         } catch (\Throwable) {
             return false;
         }

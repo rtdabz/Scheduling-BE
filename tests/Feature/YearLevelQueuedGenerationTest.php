@@ -9,11 +9,13 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Rooms;
+use App\Models\Schedule;
 use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Support\GenerationCancellationToken;
+use App\Services\Scheduling\YearLevel\YearLevelGenerationEligibilityService;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -63,6 +65,72 @@ class YearLevelQueuedGenerationTest extends TestCase
             ->assertOk()
             ->assertJsonPath('status', 'completed')
             ->assertJsonPath('result.schedules', []);
+    }
+
+    public function test_a_new_section_can_be_generated_alone_beside_a_submitted_one(): void
+    {
+        Queue::fake();
+
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
+        Schedule::create([
+            'semester_id' => $semester->id,
+            'section_id' => $section->id,
+            'course_id' => $course->id,
+            'room_id' => Rooms::query()->value('id'),
+            'department_id' => $department->id,
+            'day' => 'Monday',
+            'start_time' => '08:00',
+            'end_time' => '11:00',
+            'mode' => 'on-site',
+            'status' => 'submitted',
+        ]);
+        $newSection = Sections::create([
+            'section_name' => 'IT 1B',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $department->id,
+            'program_id' => $section->program_id,
+            'semester_id' => $semester->id,
+            'status' => 'active',
+        ]);
+        $payload = [
+            'semester_id' => $semester->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'section_configs' => [[
+                'section_id' => $newSection->id,
+                'course_ids' => [$course->id],
+            ]],
+        ];
+
+        // The whole year level is locked by the submitted section...
+        $this->actingAs($user)
+            ->postJson('/api/schedule-recommendations/year-level-preview/queue', $payload)
+            ->assertStatus(422);
+
+        // ...but the new section alone can still be generated.
+        $this->actingAs($user)
+            ->postJson('/api/schedule-recommendations/year-level-preview/queue', $payload + ['section_ids' => [$newSection->id]])
+            ->assertAccepted();
+
+        Queue::assertPushed(
+            GenerateYearLevelSchedulePreview::class,
+            fn (GenerateYearLevelSchedulePreview $job): bool => $job->sectionIds === [(int) $newSection->id]
+                && array_keys($job->configsBySectionId) === [(int) $newSection->id],
+        );
+
+        // A locked section cannot be slipped into the selection.
+        $this->actingAs($user)
+            ->postJson('/api/schedule-recommendations/year-level-preview/queue', [
+                ...$payload,
+                'section_ids' => [$section->id, $newSection->id],
+                'section_configs' => [
+                    ['section_id' => $section->id, 'course_ids' => [$course->id]],
+                    ['section_id' => $newSection->id, 'course_ids' => [$course->id]],
+                ],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('message', YearLevelGenerationEligibilityService::SECTIONS_BLOCKED_MESSAGE);
     }
 
     public function test_queued_generation_persists_structured_failure_without_retrying_domain_failure(): void

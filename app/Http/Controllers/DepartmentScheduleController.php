@@ -130,6 +130,7 @@ class DepartmentScheduleController extends Controller
                 'semester_id' => $semesterId,
                 'revision_number' => $revisionNumber,
                 'status' => $legacyStatus,
+                'section_count' => $sectionIds->count(),
                 'submitted_at' => now(),
             ]);
             $submission->sections()->attach($sectionIds->all(), ['state' => 'included']);
@@ -550,6 +551,14 @@ class DepartmentScheduleController extends Controller
                 'parent_submission_id' => $parentSubmission?->id,
                 'revision_number' => $revisionNumber,
                 'status' => 'pending_dean',
+                // Kept as sent, so the history does not read 0 once these
+                // sections' meetings are later regenerated or deleted.
+                'section_count' => count($sectionIds),
+                'subject_count' => Schedule::whereIn('section_id', $sectionIds)
+                    ->where('semester_id', $activeSemesterId)
+                    ->whereIn('status', ['completed', 'rejected', 'rejected_by_dean'])
+                    ->distinct()
+                    ->count('course_id'),
                 'submitted_by' => $user->id,
                 'submitted_at' => now(),
             ]);
