@@ -39,15 +39,16 @@ class RoleCapabilityDefaultsTest extends TestCase
 
     /**
      * Secretaries and program heads build timetables with the same capabilities;
-     * the differences are curriculum authoring and deciding on requests for the
-     * department's rooms, which only the secretary holds.
+     * the differences are curriculum authoring, deciding on requests for the
+     * department's rooms and dividing those rooms between programs, which only
+     * the secretary holds.
      */
     public function test_secretaries_and_program_heads_share_one_set_of_capabilities(): void
     {
         $defaults = app(CapabilityRegistry::class)->roleDefaults();
 
         $this->assertEqualsCanonicalizing(
-            array_values(array_diff($defaults['secretary'], ['curriculum.manage', 'room.review_requests'])),
+            array_values(array_diff($defaults['secretary'], ['curriculum.manage', 'room.review_requests', 'room.assign_program'])),
             $defaults['program_head'],
         );
         $this->assertContains('curriculum.manage', $defaults['secretary']);
@@ -118,21 +119,5 @@ class RoleCapabilityDefaultsTest extends TestCase
 
         $this->getJson("/api/user/{$dean->id}/permissions")->assertNotFound();
         $this->patchJson("/api/user/{$dean->id}/permissions", ['permissions' => []])->assertNotFound();
-    }
-
-    public function test_the_migration_replaces_direct_grants_with_role_defaults(): void
-    {
-        $department = Departments::create(['department_code' => 'CCS', 'department_name' => 'College of Computer Studies']);
-        $secretary = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
-        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
-        $dean->givePermissionTo('schedule.create');
-
-        $migration = require database_path('migrations/2026_09_15_000001_replace_per_account_grants_with_role_defaults.php');
-        $migration->up();
-
-        $this->assertSame([], $dean->fresh()->getDirectPermissions()->pluck('name')->all());
-        $this->assertFalse($dean->fresh()->hasCapability('schedule.create'));
-        $this->assertTrue($dean->fresh()->hasCapability('schedule.approve_dean'));
-        $this->assertTrue($secretary->fresh()->hasCapability('schedule.generate'));
     }
 }

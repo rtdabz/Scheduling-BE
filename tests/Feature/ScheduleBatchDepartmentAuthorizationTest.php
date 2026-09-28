@@ -367,11 +367,11 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
 
         $response = $this->actingAs($vpaa)->patchJson('/api/schedules/batch-status', [
             'ids' => [$foreignSchedule->id],
-            'status' => 'submitted',
+            'status' => 'completed',
         ]);
 
         $response->assertOk();
-        $this->assertSame('submitted', $foreignSchedule->refresh()->status);
+        $this->assertSame('completed', $foreignSchedule->refresh()->status);
     }
 
     public function test_batch_rejects_unknown_references_with_field_keyed_errors(): void

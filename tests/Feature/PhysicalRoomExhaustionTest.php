@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -223,13 +224,7 @@ class PhysicalRoomExhaustionTest extends TestCase
         // IT 101 is forced onto Monday and is the short course, so the variable
         // ordering places it first. Its greedy choice is the 08:00 window that
         // IT 102 needs in full.
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $department->id,
-            'course_id' => $context['courses'][0]->id,
-            'day' => 'Monday',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $department->id, (int) $context['courses'][0]->id, null, ['forced_day' => 'Monday']);
 
         $plan = $this->generate($context);
 

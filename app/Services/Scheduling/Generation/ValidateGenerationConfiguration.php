@@ -258,6 +258,23 @@ final class ValidateGenerationConfiguration
                 );
             }
 
+            // Consecutive Days is a shape of its own, so the run cannot also
+            // split the course or pin it to a two-day pattern.
+            $consecutiveRule = $snapshot->consecutiveDayRulesFor((int) ($section['id'] ?? 0))[$courseId] ?? null;
+            if ($consecutiveRule !== null
+                && ($isLectureLabSplit || $isMinorSplit || $isHybridSplit || ! empty($configuration->preferredPatternsByCourseId[$courseId]))) {
+                $violations[] = $this->violation(
+                    'consecutive_days_shape',
+                    sprintf(
+                        'This course is set to meet on %s, so it cannot also be a Split Session, Hybrid Split, Integrated class or fixed day pattern. Choose one class configuration in Setup Courses.',
+                        ($consecutiveRule['meeting_days'] ?? null) !== null
+                            ? implode(', ', $consecutiveRule['meeting_days'])
+                            : $consecutiveRule['day_count'].' consecutive days',
+                    ),
+                    $this->courseContext($course),
+                );
+            }
+
             // A course cannot be two kinds of split at once. The lecture-only
             // restriction on a major's balanced split already makes this
             // unreachable, so reaching it means one of the two eligibility gates
@@ -380,7 +397,20 @@ final class ValidateGenerationConfiguration
                     'No eligible lecture room is available for an on-site course.',
                     $this->courseContext($course),
                 );
-                $recommendations[] = $this->deliveryModeRecommendation($configuration, $course, 'online');
+                // Online only clears this when the course may meet online;
+                // otherwise it would trade this violation for room_type_match.
+                $recommendations[] = SchedulingConstraintPredicates::allowsOnline($course, $snapshot->fieldCourseCodes)
+                    ? $this->deliveryModeRecommendation($configuration, $course, 'online')
+                    : $this->recommendation(
+                        id: "lecture-room-{$courseId}",
+                        title: 'Provide lecture room capacity',
+                        cause: 'The course must meet on-site but no eligible lecture room is available.',
+                        adjustment: 'Add or re-enable a lecture room for the department before generating.',
+                        impact: 'high',
+                        configuration: $configuration,
+                        courseId: $courseId,
+                        course: $course,
+                    );
             }
 
             if (($isLaboratory || $isLectureLabSplit) && ! $hasLaboratoryRoom) {
@@ -430,7 +460,7 @@ final class ValidateGenerationConfiguration
             if (count($courseIds) >= 2) {
                 $violations[] = $this->violation(
                     'same_day_concentration',
-                    sprintf('All %d Required Day courses are assigned to %s. The schedule may be too concentrated and should be reviewed.', count($courseIds), $day),
+                    sprintf('%d Required Day courses are assigned to %s. The schedule may be too concentrated and should be reviewed.', count($courseIds), $day),
                     ['day' => $day, 'course_ids' => $courseIds, 'course_count' => count($courseIds)],
                     'warning',
                 );
@@ -439,9 +469,11 @@ final class ValidateGenerationConfiguration
 
             $singleMeetingIds = [];
             foreach ($courseIds as $courseId) {
-                $hasMultipleMeetings = array_key_exists($courseId, $configuration->preferredPatternsByCourseId)
+                // A null pattern is "let the Generator choose", not a second day.
+                $hasMultipleMeetings = ! empty($configuration->preferredPatternsByCourseId[$courseId])
                     || in_array($courseId, $configuration->selectedSplitSessionCourseIds, true)
-                    || in_array($courseId, $configuration->balancedSplitCourseIds, true);
+                    || in_array($courseId, $configuration->balancedSplitCourseIds, true)
+                    || in_array($courseId, $configuration->hybridSplitCourseIds, true);
                 if ($hasMultipleMeetings) {
                     $course = $snapshot->coursesById[$courseId] ?? [];
                     $violations[] = $this->violation(

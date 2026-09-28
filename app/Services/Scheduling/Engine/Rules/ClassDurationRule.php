@@ -48,9 +48,10 @@ final class ClassDurationRule
         $course = $records->course;
         $meetingType = isset($attempt['meeting_type']) ? (string) $attempt['meeting_type'] : null;
         $isIntegratedSession = SchedulingPolicy::isIntegratedSession($course, $meetingType, $attempt['split_group_id'] ?? null);
+        // A Consecutive Days run meets for the class's full length every day.
         $allowedMinutes = $isIntegratedSession
             ? SchedulingPolicy::integratedSessionCeilingMinutes()
-            : $this->allowedWeeklyMinutes($records);
+            : $this->allowedWeeklyMinutes($records) * SchedulingPolicy::weeklyCeilingMeetings($attempt['preferred_pattern'] ?? null);
         if ($allowedMinutes <= 0) {
             return null;
         }

@@ -35,6 +35,27 @@ class YearLevelGenerationChangeReportTest extends TestCase
         $this->assertSame([], $changes);
     }
 
+    public function test_a_relaxation_after_a_timed_out_search_says_the_original_was_not_proven_impossible(): void
+    {
+        $strategy = [
+            'key' => 'clear_bottleneck_split',
+            'label' => 'Schedule IT 101 as one block',
+            'description' => 'Turned off the lecture/laboratory split.',
+            'adjustments' => [['type' => 'disable_split', 'section_id' => 10, 'course_id' => 200, 'value' => null]],
+        ];
+        $build = fn (array $bottleneck): array => (new YearLevelGenerationChangeReport)->build(
+            $strategy,
+            [],
+            [$this->row(10, 200, 'Monday', ['room_id' => 5])],
+            self::SECTIONS,
+            self::COURSES,
+            ['type' => 'lecture_lab_split', 'section_name' => 'BSIT 1-A', 'course_code' => 'IT 101', 'detected_cause' => 'x', ...$bottleneck],
+        );
+
+        $this->assertStringContainsString('not proven impossible', $build(['search_incomplete' => true])[0]['description']);
+        $this->assertSame('Turned off the lecture/laboratory split.', $build([])[0]['description']);
+    }
+
     public function test_a_relaxed_preference_is_reported_with_resolved_names(): void
     {
         $changes = (new YearLevelGenerationChangeReport)->build(
@@ -48,6 +69,17 @@ class YearLevelGenerationChangeReportTest extends TestCase
             [$this->row(10, 100, 'Tuesday', ['room_id' => 5])],
             self::SECTIONS,
             self::COURSES,
+            [
+                'type' => 'fixed_pattern',
+                'section_name' => 'BSIT 1-A',
+                'course_code' => 'GEC 101',
+                'detected_cause' => 'The fixed MW pattern on GEC 101 has no valid placement.',
+            ],
+            [
+                ['strategy' => 'baseline', 'outcome' => 'failed'],
+                ['strategy' => 'alternate_ordering', 'outcome' => 'failed'],
+                ['strategy' => 'alternate_pattern', 'outcome' => 'succeeded'],
+            ],
         );
 
         $this->assertCount(1, $changes);
@@ -58,7 +90,12 @@ class YearLevelGenerationChangeReportTest extends TestCase
             'course_id' => 100,
             'course_code' => 'GEC 101',
             'detail' => 'Meeting pattern changed to TTh',
+            'adjustment_type' => 'set_pattern',
+            'adjustment_value' => 'TTh',
         ], $changes[0]['items'][0]);
+        $this->assertSame('fixed_pattern', $changes[0]['detected_issue']['type']);
+        $this->assertSame('GEC 101', $changes[0]['detected_issue']['course_code']);
+        $this->assertSame(2, $changes[0]['failed_attempts']);
     }
 
     public function test_online_fallback_and_room_tba_are_reported_once_per_class(): void

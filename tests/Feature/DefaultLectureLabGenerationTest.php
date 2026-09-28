@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -64,13 +65,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'department_id' => null,
         ]);
 
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $department->id,
-            'course_id' => $course->id,
-            'day' => 'Saturday',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['forced_day' => 'Saturday']);
 
         $solutions = app(CspSolver::class)->solveRanked(
             sectionId: $section->id,
@@ -123,13 +118,7 @@ class DefaultLectureLabGenerationTest extends TestCase
             'status' => 'available',
             'department_id' => $department->id,
         ]);
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $department->id,
-            'course_id' => $course->id,
-            'day' => 'Saturday',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['forced_day' => 'Saturday']);
 
         $solutions = app(CspSolver::class)->solveRanked(
             sectionId: $section->id,
@@ -186,13 +175,7 @@ class DefaultLectureLabGenerationTest extends TestCase
                 'status' => 'active',
             ]);
             $courseIds[] = (int) $course->id;
-            DB::table('department_forced_course_days')->insert([
-                'department_id' => $department->id,
-                'course_id' => $course->id,
-                'day' => 'Monday',
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+            DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['forced_day' => 'Monday']);
         }
 
         $solutions = app(CspSolver::class)->solveRanked(

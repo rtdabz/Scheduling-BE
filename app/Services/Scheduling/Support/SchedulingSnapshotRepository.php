@@ -172,27 +172,41 @@ final class SchedulingSnapshotRepository
             ? Faculty::query()->with('availabilities')->orderBy('id')->get()
             : collect();
 
-        $forcedDays = DB::table('department_forced_course_days')
-            ->where('department_id', $departmentId)
+        $forcedDays = DepartmentCourseRules::query($departmentId)
+            ->whereNotNull('forced_day')
             ->when($courseIds !== [], fn ($query) => $query->whereIn('course_id', $courseIds))
             ->orderBy('course_id')
-            ->pluck('day', 'course_id')
+            ->pluck('forced_day', 'course_id')
             ->mapWithKeys(static fn (string $day, int|string $courseId): array => [(int) $courseId => $day])
             ->all();
 
-        $fieldCourseCodes = DB::table('field_course_settings')
-            ->whereNotNull('course_code')
-            ->where(function ($query) use ($departmentId): void {
-                $query->whereNull('department_id')->orWhere('department_id', $departmentId);
-            })
-            ->orderBy('course_code')
-            ->pluck('course_code')
-            ->map(static fn (string $code): string => strtoupper(trim($code)))
-            ->unique()
-            ->values()
+        // Every saved rule for the run's courses, course-wide and per section;
+        // SchedulingSnapshot::consecutiveDayRulesFor() resolves a section's.
+        $consecutiveDayRules = DepartmentCourseRules::query($departmentId)
+            ->whereNotNull('consecutive_day_count')
+            ->when($courseIds !== [], fn ($query) => $query->whereIn('course_id', $courseIds))
+            ->orderBy('course_id')
+            ->orderBy('section_id')
+            ->get(['course_id', 'section_id', 'consecutive_day_count', 'preferred_start_day', 'meeting_days'])
+            ->map(static fn ($rule): array => [
+                'course_id' => (int) $rule->course_id,
+                'section_id' => $rule->section_id === null ? null : (int) $rule->section_id,
+                'day_count' => (int) $rule->consecutive_day_count,
+                'preferred_start_day' => $rule->preferred_start_day === null ? null : (string) $rule->preferred_start_day,
+                'meeting_days' => SchedulingPolicy::parseMeetingDays($rule->meeting_days),
+            ])
             ->all();
 
+        $fieldCourseCodes = DepartmentCourseRules::fieldCourseCodes($departmentId);
+
         $roomRecords = $this->withVirtualRooms($this->roomRecords($rooms, $grantWindows));
+        // Which program owns each divided room per day, on the room records like
+        // the grant windows, so a change to the division changes the fingerprint.
+        foreach (app(ProgramRoomShares::class)->forDepartment($departmentId, $semesterId) as $roomId => $days) {
+            if (isset($roomRecords[$roomId])) {
+                $roomRecords[$roomId]['program_days'] = $days;
+            }
+        }
 
         $payload = [
             'schema_version' => SchedulingSnapshot::SCHEMA_VERSION,
@@ -204,6 +218,7 @@ final class SchedulingSnapshotRepository
             'persisted_schedules' => $this->scheduleRecords($schedules),
             'faculties' => $this->facultyRecords($faculties),
             'forced_days_by_course_id' => $forcedDays,
+            'consecutive_day_rules' => $consecutiveDayRules,
             'field_course_codes' => $fieldCourseCodes,
             'curriculum_periods_by_course_id' => $this->curriculumPeriodRecords($curriculumPeriods),
             'curriculum_periods_by_curriculum_course' => $this->scopedCurriculumPeriodRecords($scopedPeriods),
@@ -266,6 +281,7 @@ final class SchedulingSnapshotRepository
             departmentSettings: $payload['department_settings'],
             semester: $payload['semester'],
             metadata: $payload['metadata'],
+            consecutiveDayRules: $payload['consecutive_day_rules'],
         );
     }
 
@@ -289,6 +305,7 @@ final class SchedulingSnapshotRepository
             'department_id' => (int) $section->department_id,
             'semester_id' => (int) $section->semester_id,
             'curriculum_id' => $section->curriculum_id === null ? null : (int) $section->curriculum_id,
+            'program_id' => $section->program_id === null ? null : (int) $section->program_id,
             'status' => (string) $section->status,
         ]])->all();
     }

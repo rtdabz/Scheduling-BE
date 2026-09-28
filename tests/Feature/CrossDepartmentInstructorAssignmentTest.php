@@ -407,14 +407,14 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         );
     }
 
-    public function test_an_overload_is_still_confirmed_before_the_batch_is_written(): void
+    public function test_a_pro_bono_load_is_still_confirmed_before_the_batch_is_written(): void
     {
         $fixture = $this->fixture();
         $blocks = $this->meetingBlocks($fixture);
 
-        // 15 units of Basic Load already carried (21 maximum less 6 deload), so the
-        // 3-unit class crosses it.
-        $this->carriedLoad($fixture, 15);
+        // Basic Load (21 maximum less 6 deload) plus the 3-unit overload allowance
+        // already carried, so the 3-unit class lands in pro bono.
+        $this->carriedLoad($fixture, 18);
 
         $assignment = [[
             'schedule_ids' => $blocks->pluck('id')->all(),
@@ -425,11 +425,11 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->patchJson('/api/schedules/batch-faculty', ['assignments' => $assignment])
             ->assertStatus(409)
             ->assertJsonPath('overload_confirmation.instructors.0.faculty_id', $fixture['casInstructor']->id)
-            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'overload')
+            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'probono')
             // Three meeting blocks are one class, so the load rises by the course's
             // units once rather than three times.
             ->assertJsonPath('overload_confirmation.instructors.0.added_units', 3)
-            ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 18)
+            ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 21)
             ->assertJsonPath('overload_confirmation.instructors.0.assignment_label', 'GEC 101 — BSIT 1A');
 
         $this->assertSame([], $this->daysTaughtBy($fixture, $fixture['casInstructor']));

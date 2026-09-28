@@ -33,6 +33,7 @@ class YearLevelGenerationException extends RuntimeException
         private readonly array $attempts = [],
         private readonly array $recommendations = [],
         private readonly array $generationMetrics = [],
+        private readonly bool $searchIncomplete = false,
     ) {
         parent::__construct($message);
     }
@@ -78,6 +79,9 @@ class YearLevelGenerationException extends RuntimeException
             'attempts' => $this->attempts,
             'recommendations' => $this->recommendations,
             'generation_metrics' => $this->generationMetrics,
+            // The search stopped at a time or step limit: the failure is not
+            // proof that nothing fits, so running it again is worth trying.
+            'search_incomplete' => $this->searchIncomplete,
         ];
     }
 }

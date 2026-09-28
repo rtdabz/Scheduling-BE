@@ -28,9 +28,9 @@ use Illuminate\Http\JsonResponse;
  */
 trait ConfirmsFacultyOverload
 {
-    public const OVERLOAD_CONFIRMATION_MESSAGE = 'This instructor will have an overload. Do you want to proceed?';
+    public const OVERLOAD_CONFIRMATION_MESSAGE = 'This instructor will have a pro bono load. Do you want to proceed?';
 
-    public const OVERLOAD_CONFIRMATION_MESSAGE_PLURAL = 'These instructors will have an overload. Do you want to proceed?';
+    public const OVERLOAD_CONFIRMATION_MESSAGE_PLURAL = 'These instructors will have a pro bono load. Do you want to proceed?';
 
     /**
      * The semester the load is measured in. Load only counts the active semester, so a

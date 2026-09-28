@@ -19,7 +19,7 @@ class InstitutionSettingsController extends Controller
         $settings = Cache::remember(
             ApiCache::key('institution.settings'),
             ApiCache::LOOKUP_TTL_SECONDS,
-            fn () => InstitutionSetting::current(),
+            fn () => $this->signatory(InstitutionSetting::current()),
         );
 
         return response()->json($settings);
@@ -44,7 +44,13 @@ class InstitutionSettingsController extends Controller
 
         return response()->json([
             'message' => 'Signatory updated successfully.',
-            'settings' => $settings,
+            'settings' => $this->signatory($settings),
         ]);
+    }
+
+    /** The row also holds the operating hours, which TimeslotController serves. */
+    private function signatory(InstitutionSetting $settings): array
+    {
+        return $settings->only(['id', 'president_name', 'president_title', 'created_at', 'updated_at']);
     }
 }

@@ -105,6 +105,24 @@ class User extends Authenticatable
     }
 
     /**
+     * "First M. Last Jr." from the structured name fields, the form the
+     * account list and the profile header both show.
+     *
+     * @param  array{first_name: string, middle_initial?: ?string, last_name: string, suffix?: ?string}  $parts
+     */
+    public static function composeDisplayName(array $parts): string
+    {
+        $middle = trim((string) ($parts['middle_initial'] ?? ''));
+
+        return trim(implode(' ', array_filter([
+            trim($parts['first_name']),
+            $middle !== '' ? strtoupper($middle).'.' : null,
+            trim($parts['last_name']),
+            $parts['suffix'] ?? null,
+        ])));
+    }
+
+    /**
      * The attributes that should be hidden for serialization.
      *
      * @var list<string>

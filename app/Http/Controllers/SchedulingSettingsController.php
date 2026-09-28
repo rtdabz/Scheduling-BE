@@ -8,6 +8,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Sections;
 use App\Models\Semester;
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
@@ -48,6 +49,16 @@ class SchedulingSettingsController extends Controller
             'forced_day_rules' => 'sometimes|array',
             'forced_day_rules.*.course_id' => 'required|integer|exists:courses,id',
             'forced_day_rules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
+            'consecutive_day_rules' => 'sometimes|array',
+            'consecutive_day_rules.*.course_id' => 'required|integer|exists:courses,id',
+            'consecutive_day_rules.*.section_id' => 'nullable|integer|exists:sections,id',
+            'consecutive_day_rules.*.day_count' => 'required|integer|min:'.SchedulingPolicy::MIN_CONSECUTIVE_DAYS.'|max:'.count(SchedulingPolicy::DAYS),
+            'consecutive_day_rules.*.preferred_start_day' => SchedulingPolicy::allowedDaysRule('nullable'),
+            'consecutive_day_rules.*.meeting_days' => 'nullable|array|min:'.SchedulingPolicy::MIN_CONSECUTIVE_DAYS,
+            // No `distinct`: on a nested wildcard it compares across every
+            // rule, so two courses sharing a day failed. A day repeated
+            // within one rule is refused below.
+            'consecutive_day_rules.*.meeting_days.*' => SchedulingPolicy::allowedDaysRule('required'),
             'field_course_codes' => 'sometimes|array',
             'field_course_codes.*' => 'required|string|max:255',
         ]);
@@ -72,6 +83,11 @@ class SchedulingSettingsController extends Controller
             return response()->json([
                 'message' => 'Sunday classes are not enabled for this department, so no course can have Sunday as its Required Day.',
             ], 422);
+        }
+
+        $consecutiveError = $this->consecutiveDayRulesError($department, $section, $validated, $sundayClassesEnabled);
+        if ($consecutiveError !== null) {
+            return response()->json(['message' => $consecutiveError], 422);
         }
 
         $laboratorySettingKeys = [
@@ -183,6 +199,9 @@ class SchedulingSettingsController extends Controller
         if (array_key_exists('forced_day_rules', $validated)) {
             $this->syncForcedDayRules($department, $validated['forced_day_rules'], $section);
         }
+        if (array_key_exists('consecutive_day_rules', $validated)) {
+            $this->syncConsecutiveDayRules($department, $validated['consecutive_day_rules'], $section);
+        }
         if (array_key_exists('field_course_codes', $validated)) {
             $this->syncFieldCourseCodes($department, $validated['field_course_codes'], $section);
         }
@@ -249,6 +268,7 @@ class SchedulingSettingsController extends Controller
             ] : null,
             'forced_day_courses' => $courseOptions,
             'forced_day_rules' => $this->forcedDayRules($department, $section),
+            'consecutive_day_rules' => $this->consecutiveDayRules($department, $section),
             'field_course_assignment_enabled' => $this->fieldCourseAssignmentEnabled($department),
             'field_course_options' => $fieldCourseOptions,
             'field_course_codes' => $this->fieldCourseCodes($department, $section ? $fieldCourseOptions : null),
@@ -442,63 +462,48 @@ class SchedulingSettingsController extends Controller
 
     private function fieldCourseCodes(Departments $department, ?array $scopedOptions = null): array
     {
-        $query = DB::table('field_course_settings')
-            ->whereNotNull('course_code')
-            ->where(fn ($scope) => $scope
-                ->whereNull('department_id')
-                ->orWhere('department_id', $department->id))
-            ->orderBy('course_code');
+        $codes = DepartmentCourseRules::fieldCourseCodes((int) $department->id);
 
         if ($scopedOptions !== null) {
             $allowedCodes = collect($scopedOptions)
                 ->pluck('code')
                 ->map(static fn ($code): string => SchedulingPolicy::normalizeCourseCode((string) $code))
                 ->all();
-            $query->whereIn('course_code', $allowedCodes);
+            $codes = array_values(array_intersect($codes, $allowedCodes));
         }
 
-        return $query
-            ->pluck('course_code')
-            ->map(static fn ($courseCode): string => (string) $courseCode)
-            ->values()
-            ->all();
+        return $codes;
     }
 
     private function syncFieldCourseCodes(Departments $department, array $courseCodes, ?Sections $section = null): void
     {
-        $allowedCodes = collect($this->fieldCourseOptions($department, $section))
-            ->pluck('code')
-            ->map(static fn ($code): string => SchedulingPolicy::normalizeCourseCode((string) $code))
+        // Normalized code => the option's course id.
+        $allowedCodeMap = collect($this->fieldCourseOptions($department, $section))
+            ->mapWithKeys(static fn (array $option): array => [
+                SchedulingPolicy::normalizeCourseCode((string) $option['code']) => (int) $option['id'],
+            ])
             ->all();
-        $allowedCodeMap = array_fill_keys($allowedCodes, true);
 
         DB::transaction(function () use ($department, $courseCodes, $allowedCodeMap): void {
-            // Scoped to this department: the delete used to clear every
-            // department's row for the same code (audit finding #34).
-            DB::table('field_course_settings')
-                ->where('department_id', $department->id)
-                ->whereNotNull('course_code')
-                ->whereIn('course_code', array_keys($allowedCodeMap))
-                ->delete();
+            $departmentId = (int) $department->id;
 
-            $rows = [];
+            // Scoped to this department (audit finding #34), and to every
+            // course under an in-scope code, whichever course row holds it.
+            $inScopeCourseIds = DepartmentCourseRules::query($departmentId)
+                ->join('courses', 'courses.id', '=', DepartmentCourseRules::TABLE.'.course_id')
+                ->where(DepartmentCourseRules::TABLE.'.is_field', true)
+                ->get(['courses.id', 'courses.course_code'])
+                ->filter(static fn ($course): bool => isset($allowedCodeMap[SchedulingPolicy::normalizeCourseCode((string) $course->course_code)]))
+                ->pluck('id')
+                ->map(static fn ($id): int => (int) $id)
+                ->all();
+            DepartmentCourseRules::clear($departmentId, DepartmentCourseRules::RULE_FIELD, $inScopeCourseIds);
+
             foreach ($courseCodes as $courseCode) {
-                $courseCode = SchedulingPolicy::normalizeCourseCode((string) $courseCode);
-                if ($courseCode === '' || ! isset($allowedCodeMap[$courseCode])) {
-                    continue;
+                $courseId = $allowedCodeMap[SchedulingPolicy::normalizeCourseCode((string) $courseCode)] ?? null;
+                if ($courseId !== null) {
+                    DepartmentCourseRules::put($departmentId, $courseId, null, ['is_field' => true]);
                 }
-
-                $rows[$courseCode] = [
-                    'department_id' => $department->id,
-                    'enabled' => true,
-                    'course_code' => $courseCode,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ];
-            }
-
-            if ($rows !== []) {
-                DB::table('field_course_settings')->insert(array_values($rows));
             }
         });
 
@@ -507,8 +512,8 @@ class SchedulingSettingsController extends Controller
 
     private function forcedDayRules(Departments $department, ?Sections $section = null): array
     {
-        $query = DB::table('department_forced_course_days')
-            ->where('department_id', $department->id);
+        $query = DepartmentCourseRules::query((int) $department->id)
+            ->whereNotNull('forced_day');
 
         if ($section !== null) {
             $query->whereIn(
@@ -519,10 +524,10 @@ class SchedulingSettingsController extends Controller
 
         return $query
             ->orderBy('course_id')
-            ->get(['course_id', 'day'])
+            ->get(['course_id', 'forced_day'])
             ->map(static fn ($rule): array => [
                 'course_id' => (int) $rule->course_id,
-                'day' => (string) $rule->day,
+                'day' => (string) $rule->forced_day,
             ])
             ->values()
             ->all();
@@ -537,29 +542,217 @@ class SchedulingSettingsController extends Controller
         $allowedCourseIdMap = array_fill_keys($allowedCourseIds, true);
 
         DB::transaction(function () use ($department, $rules, $allowedCourseIdMap): void {
-            DB::table('department_forced_course_days')
-                ->where('department_id', $department->id)
-                ->whereIn('course_id', array_keys($allowedCourseIdMap))
-                ->delete();
+            $departmentId = (int) $department->id;
+            DepartmentCourseRules::clear($departmentId, DepartmentCourseRules::RULE_REQUIRED_DAY, array_keys($allowedCourseIdMap));
+
+            foreach ($rules as $rule) {
+                $courseId = (int) $rule['course_id'];
+                if (isset($allowedCourseIdMap[$courseId])) {
+                    DepartmentCourseRules::put($departmentId, $courseId, null, ['forced_day' => $rule['day']]);
+                }
+            }
+        });
+    }
+
+    /**
+     * Every Consecutive Days rule for the courses in scope: course-wide
+     * (section_id null) and per section.
+     *
+     * @return list<array{course_id: int, section_id: int|null, day_count: int, preferred_start_day: string|null, meeting_days: list<string>|null}>
+     */
+    private function consecutiveDayRules(Departments $department, ?Sections $section = null): array
+    {
+        return DepartmentCourseRules::query((int) $department->id)
+            ->whereNotNull('consecutive_day_count')
+            ->when($section !== null, fn ($query) => $query->whereIn(
+                'course_id',
+                collect($this->forcedDayCourses($department, $section))->pluck('id')->all(),
+            ))
+            ->orderBy('course_id')
+            ->orderBy('section_id')
+            ->get(['course_id', 'section_id', 'consecutive_day_count', 'preferred_start_day', 'meeting_days'])
+            ->map(static fn ($rule): array => [
+                'course_id' => (int) $rule->course_id,
+                'section_id' => $rule->section_id === null ? null : (int) $rule->section_id,
+                'day_count' => (int) $rule->consecutive_day_count,
+                'preferred_start_day' => $rule->preferred_start_day === null ? null : (string) $rule->preferred_start_day,
+                'meeting_days' => SchedulingPolicy::parseMeetingDays($rule->meeting_days),
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Why the requested Consecutive Days rules cannot be saved, or null.
+     *
+     * A run must fit the department's week (Sunday only when it is open), and
+     * a course cannot have both a Required Day and Consecutive Days: the
+     * Required Day holds every meeting to that one day.
+     *
+     * @param  array<string, mixed>  $validated
+     */
+    private function consecutiveDayRulesError(Departments $department, ?Sections $section, array $validated, bool $sundayClassesEnabled): ?string
+    {
+        $touchesRules = array_key_exists('consecutive_day_rules', $validated);
+        $touchesRequiredDays = array_key_exists('forced_day_rules', $validated);
+        if (! $touchesRules && ! $touchesRequiredDays) {
+            return null;
+        }
+
+        $rules = $validated['consecutive_day_rules'] ?? [];
+        $touchedCourseIds = array_values(array_unique(array_map(
+            static fn (array $rule): int => (int) $rule['course_id'],
+            [...$rules, ...($validated['forced_day_rules'] ?? [])],
+        )));
+        $codes = Course::query()->whereIn('id', $touchedCourseIds)->pluck('course_code', 'id');
+        $code = static fn (int $courseId): string => (string) ($codes[$courseId] ?? "Course {$courseId}");
+
+        $sectionIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $rule): int => (int) ($rule['section_id'] ?? 0),
+            $rules,
+        ))));
+        if ($sectionIds !== []
+            && Sections::query()->where('department_id', $department->id)->whereIn('id', $sectionIds)->count() !== count($sectionIds)) {
+            return 'Consecutive Days can only be set for this department\'s own sections.';
+        }
+
+        $teachingDays = SchedulingPolicy::teachingDays($sundayClassesEnabled);
+        $week = $sundayClassesEnabled ? 'Monday-Sunday' : 'Monday-Saturday';
+        foreach ($rules as $rule) {
+            $dayCount = (int) $rule['day_count'];
+            $startDay = $rule['preferred_start_day'] ?? null;
+            // Ticked meeting days are the run itself, back-to-back or not.
+            $sentDays = array_map('strval', (array) ($rule['meeting_days'] ?? []));
+            if (count($sentDays) !== count(array_unique($sentDays))) {
+                return sprintf('%s: tick each meeting day only once.', $code((int) $rule['course_id']));
+            }
+            $meetingDays = SchedulingPolicy::parseMeetingDays($rule['meeting_days'] ?? null);
+            if ($meetingDays !== null) {
+                $closed = array_values(array_diff($meetingDays, $teachingDays));
+                if ($closed !== []) {
+                    return sprintf(
+                        '%s: %s %s not in the %s teaching week. Untick %s, or ask the department secretary to enable Sunday classes.',
+                        $code((int) $rule['course_id']),
+                        implode(', ', $closed),
+                        count($closed) === 1 ? 'is' : 'are',
+                        $week,
+                        count($closed) === 1 ? 'it' : 'them',
+                    );
+                }
+
+                continue;
+            }
+            if ($dayCount > count($teachingDays)) {
+                return sprintf(
+                    '%s: %d consecutive days do not fit the %s teaching week.%s',
+                    $code((int) $rule['course_id']),
+                    $dayCount,
+                    $week,
+                    $sundayClassesEnabled ? '' : ' Choose fewer days, or ask the department secretary to enable Sunday classes.',
+                );
+            }
+            $startIndex = $startDay === null ? false : array_search($startDay, $teachingDays, true);
+            if ($startDay !== null && ($startIndex === false || $startIndex + $dayCount > count($teachingDays))) {
+                return sprintf(
+                    '%s: %d consecutive days starting %s run past the end of the %s teaching week. Choose an earlier starting day or fewer days.',
+                    $code((int) $rule['course_id']),
+                    $dayCount,
+                    $startDay,
+                    $week,
+                );
+            }
+        }
+
+        // The Required Days and Consecutive Days rules as they will stand after
+        // this save, the same way the two syncs replace the courses in scope.
+        $scopeCourseIds = $this->ruleScopeCourseIds($department, $section);
+        $inScope = static fn (int $courseId): bool => isset($scopeCourseIds[$courseId]);
+
+        $requiredDays = SchedulingPolicy::forcedCourseDayMap((int) $department->id);
+        if ($touchesRequiredDays) {
+            $requiredDays = array_filter($requiredDays, static fn (string $day, int $courseId): bool => ! $inScope($courseId), ARRAY_FILTER_USE_BOTH);
+            foreach ($validated['forced_day_rules'] as $rule) {
+                $requiredDays[(int) $rule['course_id']] = (string) $rule['day'];
+            }
+        }
+
+        $consecutiveCourseIds = DepartmentCourseRules::query((int) $department->id)
+            ->whereNotNull('consecutive_day_count')
+            ->pluck('course_id')
+            ->map(static fn ($courseId): int => (int) $courseId)
+            ->all();
+        if ($touchesRules) {
+            $consecutiveCourseIds = [
+                ...array_filter($consecutiveCourseIds, static fn (int $courseId): bool => ! $inScope($courseId)),
+                ...array_map(static fn (array $rule): int => (int) $rule['course_id'], $rules),
+            ];
+        }
+
+        // Only a course this request touches is checked, so an unrelated save
+        // is never refused over rules already stored.
+        foreach (array_unique($consecutiveCourseIds) as $courseId) {
+            if (isset($requiredDays[$courseId]) && $inScope($courseId) && in_array($courseId, $touchedCourseIds, true)) {
+                return sprintf(
+                    '%s has a Required Day of %s, so it cannot also meet on consecutive days. Clear its Required Day, or tick its meeting days instead.',
+                    $code($courseId),
+                    $requiredDays[$courseId],
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The courses a settings save may set rules for: the active curriculum's,
+     * narrowed to the section's year and semester when one is given. The same
+     * scope Required Day rules sync within.
+     *
+     * @return array<int, true>
+     */
+    private function ruleScopeCourseIds(Departments $department, ?Sections $section): array
+    {
+        return array_fill_keys(
+            array_map('intval', collect($this->forcedDayCourses($department, $section))->pluck('id')->all()),
+            true,
+        );
+    }
+
+    /**
+     * Replaces the rules of every course in scope with the ones sent, the way
+     * Required Day rules are synced. One rule per course and section: a later
+     * duplicate wins.
+     *
+     * @param  list<array<string, mixed>>  $rules
+     */
+    private function syncConsecutiveDayRules(Departments $department, array $rules, ?Sections $section = null): void
+    {
+        $scopeCourseIds = $this->ruleScopeCourseIds($department, $section);
+
+        DB::transaction(function () use ($department, $rules, $scopeCourseIds): void {
+            $departmentId = (int) $department->id;
+            DepartmentCourseRules::clear($departmentId, DepartmentCourseRules::RULE_CONSECUTIVE, array_keys($scopeCourseIds));
 
             $rows = [];
             foreach ($rules as $rule) {
                 $courseId = (int) $rule['course_id'];
-                if (! isset($allowedCourseIdMap[$courseId])) {
+                if (! isset($scopeCourseIds[$courseId])) {
                     continue;
                 }
 
-                $rows[$courseId] = [
-                    'department_id' => $department->id,
-                    'course_id' => $courseId,
-                    'day' => $rule['day'],
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ];
+                $sectionId = isset($rule['section_id']) ? (int) $rule['section_id'] : null;
+                // Ticked days decide the length and the first day, so the
+                // three columns can never disagree.
+                $meetingDays = SchedulingPolicy::parseMeetingDays($rule['meeting_days'] ?? null);
+                $rows[$courseId.':'.($sectionId ?? 'all')] = [$courseId, $sectionId, [
+                    'consecutive_day_count' => $meetingDays !== null ? count($meetingDays) : (int) $rule['day_count'],
+                    'preferred_start_day' => $meetingDays[0] ?? $rule['preferred_start_day'] ?? null,
+                    'meeting_days' => $meetingDays !== null ? implode(',', $meetingDays) : null,
+                ]];
             }
 
-            if ($rows !== []) {
-                DB::table('department_forced_course_days')->insert(array_values($rows));
+            foreach ($rows as [$courseId, $sectionId, $values]) {
+                DepartmentCourseRules::put($departmentId, $courseId, $sectionId, $values);
             }
         });
     }

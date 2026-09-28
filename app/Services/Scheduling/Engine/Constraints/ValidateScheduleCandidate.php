@@ -89,6 +89,10 @@ final class ValidateScheduleCandidate
     /** @param list<ScheduleRow> $rows */
     private function meetingGroupType(array $rows, GenerationConfiguration $configuration, int $courseId): string
     {
+        if (SchedulingPolicy::consecutiveDayCount($rows[0]->preferredPattern ?? null) !== null) {
+            return 'consecutive';
+        }
+
         if (in_array($courseId, $configuration->balancedSplitCourseIds, true)) {
             return 'minor_split';
         }

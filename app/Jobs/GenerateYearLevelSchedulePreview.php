@@ -98,6 +98,13 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
                     ->where('run_id', $this->runId)
                     ->where('status', 'cancelled')
                     ->exists()),
+                // A run still searching after the interim mark publishes what it
+                // would recommend so far. It stays "running": the final outcome
+                // overwrites this, and a cancelled run is never written to.
+                fn (array $report) => ScheduleGenerationRun::query()
+                    ->where('run_id', $this->runId)
+                    ->where('status', 'running')
+                    ->update(['result' => $report]),
             );
             $this->finalize([
                 'status' => 'completed',

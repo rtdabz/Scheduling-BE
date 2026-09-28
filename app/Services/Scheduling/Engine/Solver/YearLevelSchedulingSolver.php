@@ -20,6 +20,9 @@ interface YearLevelSchedulingSolver
 
     public function searchLimitReached(): bool;
 
+    /** @return array<int,int> how often the last search stalled on each course, keyed by course id */
+    public function deadEndsByCourseId(): array;
+
     public function generationMetrics(): SchedulingGenerationMetrics;
 
     /** @return array<string,mixed> */

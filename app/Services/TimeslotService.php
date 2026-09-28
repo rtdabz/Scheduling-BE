@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use App\Models\ScheduleSetting;
+use App\Models\InstitutionSetting;
 use App\Models\TimeslotOverride;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -43,14 +43,9 @@ class TimeslotService
         return $times;
     }
 
-    public function settings(): ScheduleSetting
+    public function settings(): InstitutionSetting
     {
-        return ScheduleSetting::query()->firstOrCreate([], [
-            'opening_time' => '07:00:00',
-            'closing_time' => '20:30:00',
-            'field_end_time' => '17:00:00',
-            'slot_interval' => 30,
-        ]);
+        return InstitutionSetting::current();
     }
 
     public function hasActiveOverridesForDuration(int $durationMinutes): bool

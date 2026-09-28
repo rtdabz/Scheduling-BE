@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -356,9 +357,7 @@ class EngineParityMatrixTest extends TestCase
     {
         $this->room('field');
         $pathfit = $this->course(['course_code' => 'PATHFIT 1', 'course_category' => 'minor', 'units' => 2, 'lecture_hours' => 2]);
-        DB::table('field_course_settings')->insert([
-            'course_code' => 'PATHFIT 1', 'department_id' => $this->department->id, 'created_at' => now(), 'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $this->department->id, (int) $pathfit->id, null, ['is_field' => true]);
         SchedulingPolicy::clearFieldCourseCache();
 
         $this->assertGeneratedPlanAccepted([$pathfit]);

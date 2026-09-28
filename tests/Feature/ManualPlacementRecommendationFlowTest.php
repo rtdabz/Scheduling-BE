@@ -8,6 +8,7 @@ use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
@@ -288,6 +289,47 @@ class ManualPlacementRecommendationFlowTest extends TestCase
         }
     }
 
+    public function test_preview_keeps_an_online_split_session_online(): void
+    {
+        [$semester, $department, $section, , $course] = $this->createScenario();
+
+        // What the placement dialog sends once Split Session's Delivery mode
+        // is Online: the course's delivery, the split, and its day pair.
+        $response = $this->actingAs($this->secretaryFor($department))
+            ->postJson('/api/schedule-recommendations/preview', [
+                'section_id' => $section->id,
+                'course_ids' => [$course->id],
+                'mode' => 'online',
+                'is_hybrid' => false,
+                'split_session_enabled' => false,
+                'selected_split_session_course_ids' => [],
+                'split_gec_enabled' => true,
+                'selected_gec_course_ids' => [$course->id],
+                'hybrid_split_course_ids' => [],
+                'preferred_patterns' => [$course->id => 'MW'],
+                'tentative_schedules' => [],
+                'max_solutions' => 3,
+                'timeout_seconds' => 5,
+                'seed' => 11,
+            ]);
+
+        $response->assertOk();
+        $recommendations = $response->json('recommendations');
+        $this->assertNotEmpty($recommendations);
+        $ruleEngine = app(RuleEngine::class);
+        foreach ($recommendations as $recommendation) {
+            $rows = $recommendation['schedules'];
+            $this->assertCount(2, $rows, 'An Online Split is still two meetings.');
+            $this->assertSame(['online', 'online'], array_column($rows, 'mode'));
+            $this->assertEqualsCanonicalizing(['Monday', 'Wednesday'], array_column($rows, 'day'));
+            $this->assertSame($rows[0]['start_time'], $rows[1]['start_time']);
+            foreach ($rows as $row) {
+                $violations = $ruleEngine->validate([...$row, 'semester_id' => $semester->id]);
+                $this->assertSame([], $violations, 'Every recommended row must pass the Rule Engine: '.json_encode($violations));
+            }
+        }
+    }
+
     /** @return list<array{day: string, start: string, end: string, room: int|null, mode: string}> */
     private function comparableRows(array $rows): array
     {
@@ -301,6 +343,104 @@ class ManualPlacementRecommendationFlowTest extends TestCase
         usort($normalized, static fn (array $a, array $b): int => [$a['day'], $a['start']] <=> [$b['day'], $b['start']]);
 
         return $normalized;
+    }
+
+    public function test_accepting_a_recommendation_reports_the_conflicts_it_cleared(): void
+    {
+        [$semester, $department, $section, $otherSection, $course, $room] = $this->createScenario();
+
+        $row = static fn (Sections $owner): array => [
+            'semester_id' => $semester->id,
+            'section_id' => $owner->id,
+            'course_id' => $course->id,
+            'room_id' => $room->id,
+            'department_id' => $department->id,
+            'day' => 'Monday',
+            'start_time' => '07:00:00',
+            'end_time' => '10:00:00',
+            'mode' => 'on-site',
+            'status' => 'draft',
+        ];
+        // Both sections sit in the only room at once: a room conflict on the
+        // timetable that accepting a fresh placement for BA 1A must clear.
+        $kept = Schedule::create($row($otherSection));
+        $replaced = Schedule::create($row($section));
+        $conflictId = "room_conflict:{$kept->id}:{$replaced->id}";
+
+        $user = $this->secretaryFor($department);
+        $this->actingAs($user)->getJson('/api/conflicts?semester_id='.$semester->id)
+            ->assertOk()
+            ->assertJsonFragment(['id' => $conflictId]);
+
+        $selected = $this->actingAs($user)->postJson('/api/schedule-recommendations/select', [
+            'section_id' => $section->id,
+            'course_ids' => [$course->id],
+            'mode' => 'on-site',
+            'is_hybrid' => false,
+            'split_session_enabled' => false,
+            'selected_split_session_course_ids' => [],
+            'split_gec_enabled' => false,
+            'selected_gec_course_ids' => [],
+            'preferred_patterns' => [],
+            'tentative_schedules' => [],
+            'max_solutions' => 3,
+            'timeout_seconds' => 5,
+            'seed' => 4242,
+            'selected_rank' => 1,
+        ]);
+        $selected->assertSuccessful();
+
+        $accepted = $this->actingAs($user)
+            ->postJson('/api/schedule-recommendations/'.$selected->json('recommendation.id').'/accept');
+        $accepted->assertSuccessful();
+
+        $resolved = $accepted->json('schedule_plan.metadata.resolved_conflicts');
+        $this->assertSame([$conflictId], array_column($resolved, 'id'));
+        $this->assertSame('room_conflict', $resolved[0]['rule']);
+
+        $audit = SchedulingAuditLog::query()->where('action', 'schedule_plan_committed')->latest('id')->firstOrFail();
+        $this->assertSame([$conflictId], array_column($audit->metadata['resolved_conflicts'], 'id'));
+
+        $this->actingAs($user)->getJson('/api/conflicts?semester_id='.$semester->id)
+            ->assertOk()
+            ->assertJsonMissing(['id' => $conflictId]);
+
+        $this->actingAs($user)->getJson('/api/conflicts/resolved?semester_id='.$semester->id)
+            ->assertOk()
+            ->assertJsonCount(1, 'resolutions')
+            ->assertJsonPath('resolutions.0.conflict_id', $conflictId)
+            ->assertJsonPath('resolutions.0.method', 'recommended')
+            ->assertJsonPath('resolutions.0.source', 'schedule_generator')
+            ->assertJsonPath('resolutions.0.status', 'resolved');
+    }
+
+    public function test_accepting_a_recommendation_without_prior_conflicts_reports_none(): void
+    {
+        [$semester, $department, $section, , $course] = $this->createScenario();
+        $user = $this->secretaryFor($department);
+
+        $selected = $this->actingAs($user)->postJson('/api/schedule-recommendations/select', [
+            'section_id' => $section->id,
+            'course_ids' => [$course->id],
+            'mode' => 'on-site',
+            'is_hybrid' => false,
+            'split_session_enabled' => false,
+            'selected_split_session_course_ids' => [],
+            'split_gec_enabled' => false,
+            'selected_gec_course_ids' => [],
+            'preferred_patterns' => [],
+            'tentative_schedules' => [],
+            'max_solutions' => 3,
+            'timeout_seconds' => 5,
+            'seed' => 4242,
+            'selected_rank' => 1,
+        ]);
+        $selected->assertSuccessful();
+
+        $this->actingAs($user)
+            ->postJson('/api/schedule-recommendations/'.$selected->json('recommendation.id').'/accept')
+            ->assertSuccessful()
+            ->assertJsonPath('schedule_plan.metadata.resolved_conflicts', []);
     }
 
     private function secretaryFor(Departments $department): User

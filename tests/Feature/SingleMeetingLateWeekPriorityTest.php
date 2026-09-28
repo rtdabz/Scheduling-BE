@@ -64,8 +64,89 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
         }
     }
 
+    public function test_saturday_is_used_before_monday_to_thursday_when_friday_is_full(): void
+    {
+        // Saturday used to sit in the weekend tier, which the search only
+        // reached after Monday-Thursday was used up.
+        $context = $this->scaffold(lectureRooms: 1);
+        $courses = $this->lectureCourses($context, ['IT 101', 'IT 102']);
+
+        $this->bookLectureRoomOn($context, ['Friday']);
+
+        $rows = $this->generate($context, $courses);
+
+        $this->assertCount(2, $rows);
+        foreach ($rows as $row) {
+            $this->assertSame('Saturday', $row['day'], 'Saturday was open, so Monday-Thursday should stay free for splits.');
+        }
+    }
+
+    public function test_split_session_claims_its_pair_before_a_single_meeting(): void
+    {
+        // The room is free only 07:00-09:00 on Monday and Wednesday. The split
+        // (two 1.5-hour meetings) and the single meeting (2 hours) cannot both
+        // have it: the split must keep MW, and the single meeting goes to a
+        // fallback instead of taking Monday and pushing the split out. The
+        // single meeting is a major and the split a minor, so the major would
+        // otherwise be placed first on scheduling priority.
+        $context = $this->scaffold(lectureRooms: 1);
+        [$single] = $this->lectureCourses($context, ['IT 101']);
+        $split = $this->course($context, 'GE 103', [
+            'course_category' => 'minor',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'room_type_required' => 'lecture',
+        ]);
+
+        $this->bookLectureRoom($context, [
+            'Monday' => ['09:00:00', '20:30:00'],
+            'Tuesday' => ['07:00:00', '20:30:00'],
+            'Wednesday' => ['09:00:00', '20:30:00'],
+            'Thursday' => ['07:00:00', '20:30:00'],
+            'Friday' => ['07:00:00', '20:30:00'],
+            'Saturday' => ['07:00:00', '20:30:00'],
+        ]);
+
+        $rows = $this->generate($context, [$single, $split], balancedSplitCourseIds: [(int) $split->id]);
+
+        $room = Rooms::where('room_type', 'lecture')->firstOrFail();
+        $splitRows = array_values(array_filter($rows, static fn (array $row): bool => $row['course_id'] === (int) $split->id));
+
+        $this->assertCount(2, $splitRows);
+        $this->assertEqualsCanonicalizing(['Monday', 'Wednesday'], array_column($splitRows, 'day'));
+        foreach ($splitRows as $row) {
+            $this->assertSame((int) $room->id, $row['room_id'], 'The split lost its room to a single meeting.');
+            $this->assertSame('on-site', $row['mode']);
+        }
+    }
+
+    public function test_single_meeting_forced_onto_monday_to_thursday_takes_a_slot_no_split_can_use(): void
+    {
+        // Friday, Saturday and Thursday are booked, so Tuesday cannot hold a
+        // TTh split any more. The single meetings belong there, leaving Monday
+        // and Wednesday free together for an MW split.
+        $context = $this->scaffold(lectureRooms: 1);
+        $courses = $this->lectureCourses($context, ['IT 101', 'IT 102']);
+
+        $this->bookLectureRoomOn($context, ['Thursday', 'Friday', 'Saturday']);
+
+        $rows = $this->generate($context, $courses);
+
+        $this->assertCount(2, $rows);
+        foreach ($rows as $row) {
+            $this->assertSame('Tuesday', $row['day'], "A single meeting on {$row['day']} broke up a free MW pair.");
+        }
+    }
+
     /** @param list<string> $days */
     private function bookLectureRoomOn(array $context, array $days): void
+    {
+        $this->bookLectureRoom($context, array_fill_keys($days, ['07:00:00', '20:30:00']));
+    }
+
+    /** @param array<string, array{0: string, 1: string}> $windows day => [start, end] */
+    private function bookLectureRoom(array $context, array $windows): void
     {
         $blocker = Sections::create([
             'section_name' => 'IT 1B',
@@ -85,7 +166,7 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
 
         $room = Rooms::where('room_type', 'lecture')->firstOrFail();
 
-        foreach ($days as $day) {
+        foreach ($windows as $day => [$start, $end]) {
             \App\Models\Schedule::create([
                 'semester_id' => $context['semester']->id,
                 'section_id' => $blocker->id,
@@ -93,8 +174,8 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
                 'room_id' => $room->id,
                 'department_id' => $context['department']->id,
                 'day' => $day,
-                'start_time' => '07:00:00',
-                'end_time' => '20:30:00',
+                'start_time' => $start,
+                'end_time' => $end,
                 'mode' => 'on-site',
                 'status' => 'finalized',
             ]);
@@ -227,12 +308,13 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
      * @param  list<Course>  $courses
      * @return list<array<string, mixed>>
      */
-    private function generate(array $context, array $courses): array
+    private function generate(array $context, array $courses, array $balancedSplitCourseIds = []): array
     {
         $solutions = app(CspSolver::class)->solveRanked(
             sectionId: (int) $context['section']->id,
             courseIds: array_map(static fn (Course $course): int => (int) $course->id, $courses),
             maxSolutions: 1,
+            balancedSplitCourseIds: $balancedSplitCourseIds,
             seed: 1234,
         );
 

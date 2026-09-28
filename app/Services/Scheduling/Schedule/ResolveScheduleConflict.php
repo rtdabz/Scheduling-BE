@@ -105,8 +105,17 @@ final class ResolveScheduleConflict
                 : collect([$target]);
             $assignmentGroupIds = $assignmentGroup->pluck('id')->map(static fn ($id): int => (int) $id)->all();
 
+            $partners = $instructorOnly
+                ? collect()
+                : $this->sameTimePartners->partnersFor($target, $changes);
+            // A Consecutive Days run moves together, so the moved day is not
+            // checked against the days that move with it.
+            $runPartnerIds = $this->sameTimePartners->runPartnerIds($target, $partners);
+
             $attempt = array_merge($target->toArray(), $changes, [
-                'ignore_schedule_id' => $instructorOnly ? $assignmentGroupIds : (int) $target->id,
+                'ignore_schedule_id' => $instructorOnly
+                    ? $assignmentGroupIds
+                    : ($runPartnerIds === [] ? (int) $target->id : [(int) $target->id, ...$runPartnerIds]),
             ]);
 
             $violations = $instructorOnly
@@ -120,9 +129,6 @@ final class ResolveScheduleConflict
                 );
             }
 
-            $partners = $instructorOnly
-                ? collect()
-                : $this->sameTimePartners->partnersFor($target, $changes);
             $beforeRows = $this->snapshotRows([
                 ...$assignmentGroupIds,
                 ...$partners->pluck('id')->map(static fn ($id): int => (int) $id)->all(),
@@ -148,6 +154,9 @@ final class ResolveScheduleConflict
                 'action' => $name,
                 'schedule_id' => (int) $target->id,
                 'changes' => $changes,
+                // Whether the fix was a ranked recommendation applied as offered
+                // or a change the user entered; the Resolved list shows which.
+                'source' => ($action['source'] ?? null) === 'recommendation' ? 'recommendation' : 'manual',
             ], $reason, $actorUserId, 'conflict_resolved');
         });
     }
@@ -289,6 +298,15 @@ final class ResolveScheduleConflict
                 'That change would create a new conflict, so nothing was saved.',
             );
         }
+
+        $summary = [
+            ...$summary,
+            'conflict_message' => $case->message(),
+            'conflict_day' => $case->day,
+            'conflict_overlap_start' => $case->overlapStart,
+            'conflict_overlap_end' => $case->overlapEnd,
+            ...$case->owners(),
+        ];
 
         $afterRows = Schedule::query()->whereIn('id', $affectedIds)->orderBy('id')->get();
         $first = $afterRows->first();

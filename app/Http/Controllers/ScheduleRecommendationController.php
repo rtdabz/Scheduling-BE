@@ -344,6 +344,7 @@ class ScheduleRecommendationController extends Controller
             'excluded_days' => 'sometimes|array',
             'excluded_days.*' => SchedulingPolicy::allowedDaysRule('required'),
             'search_from_day' => SchedulingPolicy::allowedDaysRule('sometimes'),
+            'consecutive_days' => 'sometimes|nullable|integer|min:'.SchedulingPolicy::MIN_CONSECUTIVE_DAYS.'|max:'.count(SchedulingPolicy::DAYS),
             'ignore_schedule_ids' => 'sometimes|array',
             'ignore_schedule_ids.*' => 'integer',
             'tentative_schedules' => 'sometimes|array',
@@ -385,6 +386,7 @@ class ScheduleRecommendationController extends Controller
             meetingType: $validated['meeting_type'] ?? null,
             excludedDays: $validated['excluded_days'] ?? [],
             searchFromDay: $validated['search_from_day'] ?? null,
+            consecutiveDays: isset($validated['consecutive_days']) ? (int) $validated['consecutive_days'] : null,
         );
 
         return response()->json($result);
@@ -792,6 +794,11 @@ class ScheduleRecommendationController extends Controller
             'semester_id' => 'required|integer|exists:semesters,id',
             'department_id' => 'required|integer|exists:departments,id',
             'year_level' => 'required|integer|min:1|max:4',
+            // Per-section generation: only these sections of the year level are
+            // scheduled. The rest keep their classes, which the snapshot treats
+            // as fixed room, faculty and time occupancy. Omitted: every section.
+            'section_ids' => 'sometimes|array|min:1',
+            'section_ids.*' => 'integer|distinct',
             'section_configs' => 'required|array|min:1',
             'section_configs.*.section_id' => 'required|integer|distinct|exists:sections,id',
             // What the client believed the section follows. Asserted, not
@@ -829,16 +836,24 @@ class ScheduleRecommendationController extends Controller
         if (! $semester->is_active) {
             return response()->json(['message' => 'Schedule generation is only available for the active academic semester.'], 422);
         }
+        $requestedSectionIds = array_map('intval', $validated['section_ids'] ?? []);
         $sections = Sections::query()->with('department')->where('semester_id', $validated['semester_id'])
             ->where('department_id', $validated['department_id'])
             ->where('year_level', (string) $validated['year_level'])
             ->where('semester', (string) $semester->semester)
-            ->where('status', 'active')->orderBy('section_name')->get();
+            ->where('status', 'active')
+            ->when($requestedSectionIds !== [], fn ($query) => $query->whereIn('id', $requestedSectionIds))
+            ->orderBy('section_name')->get();
         if ($sections->isEmpty()) {
             return response()->json(['message' => 'No active sections were found for the selected year level.'], 422);
         }
+        if ($requestedSectionIds !== [] && $sections->count() !== count($requestedSectionIds)) {
+            return response()->json(['message' => 'Every selected section must be an active section of the selected year level.'], 422);
+        }
         if (! $this->yearLevelEligibility->canGenerate($sections, (int) $validated['semester_id'])) {
-            return response()->json(['message' => YearLevelGenerationEligibilityService::BLOCKED_MESSAGE], 422);
+            return response()->json(['message' => $requestedSectionIds !== []
+                ? YearLevelGenerationEligibilityService::SECTIONS_BLOCKED_MESSAGE
+                : YearLevelGenerationEligibilityService::BLOCKED_MESSAGE], 422);
         }
         $configs = collect($validated['section_configs'])->keyBy(fn (array $config): int => (int) $config['section_id']);
         if (($stale = $this->rejectStaleCurriculumSelection($sections, $configs)) !== null) {

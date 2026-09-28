@@ -6,6 +6,7 @@ use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Schedule;
+use App\Models\ScheduleSubmission;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
@@ -51,6 +52,24 @@ class SubmitRequiresDepartmentDeanTest extends TestCase
 
         $this->assertNotSame(422, $response->status(), 'An assigned Dean must clear the gate.');
         $this->assertNotSame(self::MESSAGE, $response->json('message'));
+    }
+
+    public function test_the_submission_keeps_what_was_sent_after_its_meetings_are_deleted(): void
+    {
+        $context = $this->scaffold();
+        $this->dean($context['department']);
+
+        $this->actingAs($context['secretary'])
+            ->postJson("/api/departments/{$context['department']->id}/submit-schedules")
+            ->assertOk();
+
+        // Regenerating a recalled section deletes its meetings; the history
+        // must still show what the Dean was sent.
+        Schedule::query()->delete();
+
+        $submission = ScheduleSubmission::query()->sole();
+        $this->assertSame(1, $submission->section_count);
+        $this->assertSame(1, $submission->subject_count);
     }
 
     public function test_an_inactive_dean_does_not_count(): void

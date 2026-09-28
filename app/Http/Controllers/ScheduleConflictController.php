@@ -12,6 +12,8 @@ use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
 use App\Models\Semester;
 use App\Services\FacultyLoadService;
+use App\Services\Scheduling\Schedule\ConflictRecommender;
+use App\Services\Scheduling\Schedule\ConflictResolutionLog;
 use App\Services\Scheduling\Schedule\FacultyConflictOverride;
 use App\Services\Scheduling\Schedule\ResolveScheduleConflict;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
@@ -45,6 +47,8 @@ class ScheduleConflictController extends Controller
         private readonly ResolveScheduleConflict $resolver,
         private readonly ScheduleAuthorizationService $authorization,
         private readonly FacultyLoadService $facultyLoad,
+        private readonly ConflictRecommender $recommender,
+        private readonly ConflictResolutionLog $resolutionLog,
     ) {}
 
     /**
@@ -86,6 +90,95 @@ class ScheduleConflictController extends Controller
     }
 
     /**
+     * GET /api/conflicts/{conflict}/recommendations — ranked fixes that clear it.
+     *
+     * Each option's `payload` is the body for the resolve endpoint. Options the
+     * caller may not apply are left out, so every one listed is one click.
+     */
+    public function recommendations(Request $request, string $conflict): JsonResponse
+    {
+        $validated = $request->validate([
+            'limit' => 'sometimes|integer|min:1|max:10',
+        ]);
+
+        $parsed = ScheduleConflictCase::parseId($conflict);
+        if ($parsed === null) {
+            return response()->json(['message' => 'That is not a conflict identifier.'], 404);
+        }
+
+        $ids = [$parsed['schedule_id'], $parsed['other_schedule_id']];
+        if (! $this->authorization->scheduleIdsBelongToDepartment($request, [$ids[0]])
+            && ! $this->authorization->scheduleIdsBelongToDepartment($request, [$ids[1]])) {
+            return $this->forbidden();
+        }
+
+        $semesterId = (int) Schedule::query()->whereIn('id', $ids)->value('semester_id');
+        $case = null;
+        foreach ($this->scanner->scan($semesterId, onlyScheduleIds: $ids) as $open) {
+            if ($open->id() === $conflict) {
+                $case = $open;
+                break;
+            }
+        }
+
+        if ($case === null) {
+            return response()->json(['message' => 'This conflict is already resolved.'], 404);
+        }
+
+        $options = array_values(array_filter(
+            $this->recommender->recommend($case, (int) ($validated['limit'] ?? ConflictRecommender::DEFAULT_LIMIT) + 5),
+            fn (array $option): bool => $this->authorizeAction($request, (int) $option['schedule_id'], (string) $option['action']) === null,
+        ));
+        $options = array_slice($options, 0, (int) ($validated['limit'] ?? ConflictRecommender::DEFAULT_LIMIT));
+
+        return response()->json([
+            'conflict' => $case->toArray(),
+            'options' => array_map(
+                static fn (array $option, int $index): array => [...$option, 'rank' => $index + 1],
+                $options,
+                array_keys($options),
+            ),
+        ]);
+    }
+
+    /**
+     * GET /api/conflicts/resolved — how conflicts in the caller's scope ended,
+     * newest first, read back from the audit trail (see ConflictResolutionLog).
+     */
+    public function resolved(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'semester_id' => 'nullable|integer|exists:semesters,id',
+            'department_id' => 'nullable|integer|exists:departments,id',
+            'section_id' => 'nullable|integer|exists:sections,id',
+        ]);
+
+        if ($this->authorization->rejectsRequestedDepartment($request, $validated['department_id'] ?? null)) {
+            return $this->forbidden();
+        }
+
+        $semesterId = (int) ($validated['semester_id'] ?? Semester::query()->where('is_active', true)->value('id'));
+        if ($semesterId <= 0) {
+            return response()->json(['semester_id' => null, 'resolutions' => []]);
+        }
+
+        $departmentId = $this->authorization->requestedDepartment($request, $validated['department_id'] ?? null);
+        $sectionId = isset($validated['section_id']) ? (int) $validated['section_id'] : null;
+
+        // Scanned so an entry whose conflict has come back says so.
+        $openIds = array_map(
+            static fn (ScheduleConflictCase $case): string => $case->id(),
+            $this->scanner->scan($semesterId, $departmentId, $sectionId),
+        );
+
+        return response()->json([
+            'semester_id' => $semesterId,
+            'department_id' => $departmentId,
+            'resolutions' => $this->resolutionLog->entries($semesterId, $departmentId, $sectionId, $openIds),
+        ]);
+    }
+
+    /**
      * POST /api/conflicts/{conflict}/resolve — apply a manual fix, then prove it worked.
      */
     public function resolve(Request $request, string $conflict): JsonResponse
@@ -100,6 +193,7 @@ class ScheduleConflictController extends Controller
             'faculty_id' => 'sometimes|nullable|integer|exists:faculties,id',
             'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
             'reason' => 'nullable|string|max:2000',
+            'source' => 'sometimes|in:manual,recommendation',
         ]);
 
         $scheduleId = (int) $validated['schedule_id'];

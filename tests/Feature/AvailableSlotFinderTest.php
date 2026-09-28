@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -117,13 +118,7 @@ class AvailableSlotFinderTest extends TestCase
             'department_id' => null,
             'max_concurrent_classes' => 5,
         ]);
-        DB::table('field_course_settings')->insert([
-            'department_id' => $context['department']->id,
-            'course_code' => 'PATH FIT 1',
-            'enabled' => true,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $context['department']->id, (int) $course->id, null, ['is_field' => true]);
         SchedulingPolicy::clearFieldCourseCache();
         $this->enableSundayClasses($context);
 

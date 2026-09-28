@@ -65,9 +65,10 @@ class AuditDatabaseIntegrityCommand extends Command
                 ->get()->map(fn ($r) => (array) $r)->values()->all(),
 
             // Links held as text or copies that can drift from their source.
-            'field_course_settings_without_course' => DB::table('field_course_settings AS settings')
-                ->whereNotExists(fn ($q) => $q->from('courses')->whereColumn('courses.course_code', 'settings.course_code')->whereNull('courses.deleted_at'))
-                ->pluck('settings.course_code')->all(),
+            'course_rules_on_archived_course' => DB::table('department_course_rules AS rules')
+                ->join('courses', 'courses.id', '=', 'rules.course_id')
+                ->whereNotNull('courses.deleted_at')
+                ->pluck('rules.id')->all(),
             'live_schedules_without_curriculum' => DB::table('schedules')->whereNull('deleted_at')->whereNull('curriculum_id')->count(),
             // courses.year_level/semester mirrors the newest active curriculum.
             'course_placement_differs_from_curriculum' => (function (): array {
@@ -93,10 +94,11 @@ class AuditDatabaseIntegrityCommand extends Command
                 ->whereNotNull('faculties.administrative_role')
                 ->whereColumn('faculties.administrative_role', '!=', 'users.role')
                 ->pluck('faculties.id')->all(),
-            'non_canonical_days' => collect(['schedules', 'department_forced_course_days', 'room_request_windows'])
-                ->mapWithKeys(fn (string $table) => [$table => DB::table($table)
-                    ->whereNotIn('day', ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])
-                    ->distinct()->pluck('day')->all()])
+            'non_canonical_days' => collect(['schedules' => 'day', 'department_course_rules' => 'forced_day', 'room_request_windows' => 'day'])
+                ->mapWithKeys(fn (string $column, string $table) => [$table => DB::table($table)
+                    ->whereNotNull($column)
+                    ->whereNotIn($column, ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])
+                    ->distinct()->pluck($column)->all()])
                 ->filter()->all(),
         ];
 

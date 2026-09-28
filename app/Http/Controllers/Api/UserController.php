@@ -330,13 +330,6 @@ class UserController extends Controller
 
     private function displayName(array $validated): string
     {
-        return trim(implode(' ', array_filter([
-            trim($validated['first_name']),
-            isset($validated['middle_initial']) && trim($validated['middle_initial']) !== ''
-                ? strtoupper(trim($validated['middle_initial'])).'.'
-                : null,
-            trim($validated['last_name']),
-            $validated['suffix'] ?? null,
-        ])));
+        return User::composeDisplayName($validated);
     }
 }

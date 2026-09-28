@@ -10,6 +10,8 @@ final class YearLevelGenerationEligibilityService
 {
     public const BLOCKED_MESSAGE = 'Schedules for this year level have already been plotted. Generation is unavailable unless the entire year level is recalled.';
 
+    public const SECTIONS_BLOCKED_MESSAGE = 'Schedules for the selected sections have already moved past plotting. Generation is unavailable unless those sections are recalled.';
+
     private const PLOTTING_STATUSES = ['draft', 'completed'];
 
     /**

@@ -13,6 +13,7 @@ use App\Models\Semester;
 use App\Models\User;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
@@ -212,15 +213,7 @@ class InitialDataController extends Controller
             $activeSemesterCourseIds = $pivotData->pluck('course_id')->map('intval')->unique()->values();
             $configuredFieldCodes = $departmentId === null
                 ? []
-                : DB::table('field_course_settings')
-                    ->where('department_id', $departmentId)
-                    ->whereNotNull('course_code')
-                    ->pluck('course_code')
-                    ->map(static fn ($code): string => SchedulingPolicy::normalizeCourseCode((string) $code))
-                    ->filter()
-                    ->unique()
-                    ->values()
-                    ->all();
+                : DepartmentCourseRules::fieldCourseCodes((int) $departmentId);
 
             $courses = Course::with($courseRelations)
                 // Everything this department teaches, in two disjoint halves.
@@ -455,7 +448,7 @@ class InitialDataController extends Controller
 
         $payload = [
             'active_semester' => $activeSemester,
-            // The grid window is a stored setting (schedule_settings, PATCH
+            // The grid window is a stored setting (institution_settings, PATCH
             // /timeslots/settings). The client used to hardcode 07:00-19:00 in ~40
             // places, so changing it desynchronised the whole builder (audit #33).
             'time_grid' => [

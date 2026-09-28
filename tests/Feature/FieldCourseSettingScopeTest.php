@@ -9,6 +9,7 @@ use App\Models\Program;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -17,8 +18,8 @@ use Tests\TestCase;
 /**
  * Guards the fixes for audit findings #34 and #35.
  *
- * `field_course_settings` had no `department_id` and a unique index on
- * `course_code`, so one department's save deleted another's selection for the same
+ * The field-course table (now `department_course_rules.is_field`) had no
+ * `department_id` and a unique index on `course_code`, so one department's save deleted another's selection for the same
  * code, and a single marker row enabled the feature institution-wide. The
  * "enabled" flag was also write-once: nothing ever set it back to false.
  */
@@ -47,17 +48,19 @@ class FieldCourseSettingScopeTest extends TestCase
             'field_course_codes' => ['PATHFIT 1'],
         ])->assertOk();
 
-        // Both departments keep their own row.
-        $this->assertDatabaseHas('field_course_settings', ['department_id' => $deptA->id, 'course_code' => 'PATHFIT 1']);
-        $this->assertDatabaseHas('field_course_settings', ['department_id' => $deptB->id, 'course_code' => 'PATHFIT 1']);
+        // Both departments keep their own setting.
+        $this->assertSame(['PATHFIT 1'], DepartmentCourseRules::fieldCourseCodes((int) $deptA->id));
+        $this->assertSame(['PATHFIT 1'], DepartmentCourseRules::fieldCourseCodes((int) $deptB->id));
 
         // And department B clearing its list leaves department A's intact.
         $this->actingAs($userB)->patchJson('/api/scheduling-settings', [
             'field_course_codes' => [],
         ])->assertOk();
 
-        $this->assertDatabaseHas('field_course_settings', ['department_id' => $deptA->id, 'course_code' => 'PATHFIT 1']);
-        $this->assertDatabaseMissing('field_course_settings', ['department_id' => $deptB->id, 'course_code' => 'PATHFIT 1']);
+        $this->assertSame(['PATHFIT 1'], DepartmentCourseRules::fieldCourseCodes((int) $deptA->id));
+        $this->assertSame([], DepartmentCourseRules::fieldCourseCodes((int) $deptB->id));
+        // The emptied row is removed, not left behind.
+        $this->assertDatabaseMissing(DepartmentCourseRules::TABLE, ['department_id' => $deptB->id]);
     }
 
     public function test_configured_codes_do_not_leak_across_departments(): void
@@ -120,9 +123,10 @@ class FieldCourseSettingScopeTest extends TestCase
         );
     }
 
-    public function test_a_shared_course_with_no_department_still_applies_institution_wide(): void
+    public function test_a_shared_course_is_a_field_course_only_where_a_department_set_it(): void
     {
         [$deptA] = $this->department('AAA');
+        [$deptB] = $this->department('BBB');
         $shared = Course::create([
             'course_code' => 'NSTP-SHARED',
             'course_name' => 'Shared Field Course',
@@ -132,38 +136,34 @@ class FieldCourseSettingScopeTest extends TestCase
             'department_id' => null, 'status' => 'active',
         ]);
 
-        DB::table('field_course_settings')->insert([
-            'department_id' => null,
-            'course_code' => 'NSTP-SHARED',
-            'enabled' => true,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $deptA->id, (int) $shared->id, null, ['is_field' => true]);
 
         SchedulingPolicy::clearFieldCourseCache();
-        $this->assertTrue(SchedulingPolicy::isFieldCourse($shared->fresh()));
+        $this->assertTrue(SchedulingPolicy::isFieldCourse($shared->fresh(), (int) $deptA->id));
+        $this->assertFalse(SchedulingPolicy::isFieldCourse($shared->fresh(), (int) $deptB->id));
         $this->assertTrue(SchedulingPolicy::fieldCourseSettingEnabled((int) $deptA->id));
+        $this->assertFalse(SchedulingPolicy::fieldCourseSettingEnabled((int) $deptB->id));
     }
 
-    /** @return array{0: Departments, 1: User} */
     public function test_renaming_a_course_code_carries_its_field_setting_over(): void
     {
         [$deptA] = $this->department('AAA');
         [$deptB] = $this->department('BBB');
         $courseA = $this->course('PATHFIT 1', $deptA);
-        $this->course('PATHFIT 1', $deptB);
-        foreach ([$deptA, $deptB] as $dept) {
-            DB::table('field_course_settings')->insert(['department_id' => $dept->id, 'enabled' => true, 'course_code' => 'PATHFIT 1']);
-        }
+        $courseB = $this->course('PATHFIT 1', $deptB);
+        DepartmentCourseRules::put((int) $deptA->id, (int) $courseA->id, null, ['is_field' => true]);
+        DepartmentCourseRules::put((int) $deptB->id, (int) $courseB->id, null, ['is_field' => true]);
+        SchedulingPolicy::fieldCourseCodeMap((int) $deptA->id); // warm the cache
 
         $courseA->update(['course_code' => 'PE 101']);
 
-        $this->assertDatabaseHas('field_course_settings', ['department_id' => $deptA->id, 'course_code' => 'PE 101']);
-        $this->assertDatabaseMissing('field_course_settings', ['department_id' => $deptA->id, 'course_code' => 'PATHFIT 1']);
+        $this->assertSame(['PE 101'], DepartmentCourseRules::fieldCourseCodes((int) $deptA->id));
+        $this->assertSame(['PE 101' => true], SchedulingPolicy::fieldCourseCodeMap((int) $deptA->id));
         // Another department's course under the old code keeps its setting.
-        $this->assertDatabaseHas('field_course_settings', ['department_id' => $deptB->id, 'course_code' => 'PATHFIT 1']);
+        $this->assertSame(['PATHFIT 1'], DepartmentCourseRules::fieldCourseCodes((int) $deptB->id));
     }
 
+    /** @return array{0: Departments, 1: User} */
     private function department(string $code): array
     {
         $semester = Semester::firstOrCreate(

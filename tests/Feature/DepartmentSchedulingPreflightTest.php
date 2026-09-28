@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -224,13 +225,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
         // whose candidates never fall on Sunday.
         $department->forceFill(['sunday_classes_enabled' => true])->save();
         $this->attachCourse($department, $course, $section);
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $department->id,
-            'course_id' => $course->id,
-            'day' => 'Sunday',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['forced_day' => 'Sunday']);
         $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
 
         $this->expectException(\RuntimeException::class);
@@ -251,13 +246,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
     {
         [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
         $this->attachCourse($department, $course, $section);
-        DB::table('department_forced_course_days')->insert([
-            'department_id' => $department->id,
-            'course_id' => $course->id,
-            'day' => 'Sunday',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['forced_day' => 'Sunday']);
         $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
 
         $this->expectException(\RuntimeException::class);
