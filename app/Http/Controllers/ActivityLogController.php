@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\AuthenticationAuditLog;
 use App\Models\SchedulingAuditLog;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -18,7 +19,7 @@ class ActivityLogController extends Controller
             'per_page' => ['sometimes', 'integer', 'min:10', 'max:100'],
             'from' => ['nullable', 'date'],
             'to' => ['nullable', 'date', 'after_or_equal:from'],
-            'category' => ['nullable', 'in:authentication,user_management,scheduling,schedule_workflow,faculty_assignment'],
+            'category' => ['nullable', 'in:account_access,institutional_setup,academic_setup,scheduling,approval,instructor_assignment,room_request,reports,authentication,schedule_management,conflict_detection,recommendation,review_approval,user_management,schedule_workflow,faculty_assignment'],
             'event' => ['nullable', 'string', 'max:80'],
             'actor_id' => ['nullable', 'integer', 'exists:users,id'],
             'department_id' => ['nullable', 'integer', 'exists:departments,id'],
@@ -32,6 +33,7 @@ class ActivityLogController extends Controller
         $from = isset($validated['from']) ? Carbon::parse($validated['from'])->startOfDay() : null;
         $to = isset($validated['to']) ? Carbon::parse($validated['to'])->endOfDay() : null;
         $category = $validated['category'] ?? null;
+        $event = $validated['event'] ?? null;
         $search = isset($validated['search']) ? mb_strtolower(trim($validated['search'])) : null;
 
         // Keep the merge bounded. The two audit tables are intentionally kept
@@ -41,43 +43,13 @@ class ActivityLogController extends Controller
 
         $scheduling = SchedulingAuditLog::query()
             ->with(['user:id,name,username,role', 'recommendation:id,department_id,semester_id,section_id'])
-            ->when(in_array($category, ['authentication', 'user_management'], true), fn ($q) => $q->whereRaw('1 = 0'))
+            ->when(in_array($category, ['account_access', 'authentication'], true), fn ($q) => $q->whereRaw('1 = 0'))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))
             ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('user_id', $id))
             ->when($validated['department_id'] ?? null, fn ($q, $id) => $q->where('department_id', $id))
             ->when($validated['semester_id'] ?? null, fn ($q, $id) => $q->where('semester_id', $id))
-            ->when($validated['event'] ?? null, fn ($q, $event) => $q->where('action', $event))
-            ->when(in_array($category, ['scheduling', 'schedule_workflow', 'faculty_assignment'], true), function ($q) use ($category) {
-                if ($category === 'scheduling') {
-                    return $q->where(function ($sub) {
-                        $sub->where('action', 'like', 'recommendation_%')
-                            ->orWhere('action', 'like', 'conflict_%')
-                            ->orWhere('action', 'like', 'schedule_auto_%')
-                            ->orWhereIn('action', ['conflict_detected', 'recommendation_applied', 'recommendation_rejected', 'schedule_auto_generated']);
-                    });
-                }
-                if ($category === 'faculty_assignment') {
-                    return $q->where(function ($sub) {
-                        $sub->where('action', 'like', 'instructor_%')
-                            ->orWhere('action', 'like', 'cross_department_%')
-                            ->orWhere('action', 'like', 'designation_%')
-                            ->orWhere('action', 'like', 'max_units_%')
-                            ->orWhereIn('action', ['instructor_assigned', 'cross_department_assigned', 'designation_updated', 'max_units_overridden']);
-                    });
-                }
-                return $q->where('action', 'not like', 'recommendation_%')
-                    ->where('action', 'not like', 'conflict_%')
-                    ->where('action', 'not like', 'schedule_auto_%')
-                    ->where('action', 'not like', 'instructor_%')
-                    ->where('action', 'not like', 'cross_department_%')
-                    ->where('action', 'not like', 'designation_%')
-                    ->where('action', 'not like', 'max_units_%')
-                    ->whereNotIn('action', [
-                        'conflict_detected', 'recommendation_applied', 'recommendation_rejected', 'schedule_auto_generated',
-                        'instructor_assigned', 'cross_department_assigned', 'designation_updated', 'max_units_overridden',
-                    ]);
-            })
+            ->when($event, fn ($q, $ev) => $this->applyEventFilter($q, $ev, 'action'))
             ->latest('created_at')->latest('id')
             ->limit($candidateLimit)
             ->get()
@@ -85,17 +57,21 @@ class ActivityLogController extends Controller
 
         $authentication = AuthenticationAuditLog::query()
             ->with(['actor:id,name,username,role,department_id', 'subject:id,name,username,role,department_id'])
-            ->when(in_array($category, ['scheduling', 'schedule_workflow', 'faculty_assignment'], true), fn ($q) => $q->whereRaw('1 = 0'))
+            ->when(in_array($category, ['academic_setup', 'scheduling', 'approval', 'instructor_assignment', 'room_request', 'reports', 'schedule_management', 'conflict_detection', 'recommendation', 'review_approval', 'schedule_workflow', 'faculty_assignment'], true), fn ($q) => $q->whereRaw('1 = 0'))
             ->when(($validated['semester_id'] ?? null) !== null, fn ($q) => $q->whereRaw('1 = 0'))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))
             ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('actor_user_id', $id))
-            ->when($validated['event'] ?? null, fn ($q, $event) => $q->where('event', $event))
-            ->when(in_array($category, ['authentication', 'user_management'], true), function ($q) use ($category) {
-                $userMgmtEvents = ['user_created', 'user_updated', 'user_deactivated', 'user_deleted', 'department_created'];
-                return $category === 'user_management'
-                    ? $q->whereIn('event', $userMgmtEvents)
-                    : $q->whereNotIn('event', $userMgmtEvents);
+            ->when($event, fn ($q, $ev) => $this->applyEventFilter($q, $ev, 'event'))
+            ->when(in_array($category, ['account_access', 'institutional_setup', 'authentication', 'user_management'], true), function ($q) use ($category) {
+                $institutionalEvents = ['department_created', 'department_updated', 'program_created', 'program_updated', 'room_created', 'room_updated', 'instructor_created', 'instructor_updated', 'designation_updated'];
+                if ($category === 'account_access' || $category === 'authentication') {
+                    return $q->whereNotIn('event', $institutionalEvents);
+                }
+                if ($category === 'institutional_setup') {
+                    return $q->whereIn('event', $institutionalEvents);
+                }
+                return $q;
             })
             ->latest('created_at')->latest('id')
             ->limit($candidateLimit)
@@ -105,7 +81,8 @@ class ActivityLogController extends Controller
         $departmentId = $validated['department_id'] ?? null;
         $semesterId = $validated['semester_id'] ?? null;
         $entries = $scheduling->concat($authentication)
-            ->filter(fn (array $entry) => (! $category || $entry['category'] === $category)
+            ->filter(fn (array $entry) => (! $category || $entry['category'] === $category || $this->categoryMatchesAlias($category, $entry['category'], $entry['event']))
+                && (! $event || $entry['event'] === $event || $this->eventMatchesAlias($event, $entry['event']))
                 && (! $departmentId || (int) $entry['department_id'] === (int) $departmentId)
                 && (! $semesterId || (int) $entry['semester_id'] === (int) $semesterId)
                 && (! $search || str_contains(mb_strtolower(json_encode($entry)), $search)))
@@ -176,13 +153,19 @@ class ActivityLogController extends Controller
     {
         $metadata = $log->metadata ?? [];
         $subjectSnapshot = $metadata['_subject'] ?? null;
-        $isUserManagement = in_array($log->event, ['user_created', 'user_updated', 'user_deactivated', 'user_deleted', 'department_created'], true);
-        $actor = $log->actor ?? ($isUserManagement ? null : $log->subject);
+        $isUserManagement = in_array($log->event, ['user_created', 'user_updated', 'user_deactivated', 'user_deleted'], true);
+        $isInstitutional = in_array($log->event, ['department_created', 'department_updated', 'program_created', 'program_updated', 'room_created', 'room_updated', 'instructor_created', 'instructor_updated', 'designation_updated'], true);
+        $actor = $log->actor ?? (($isUserManagement || $isInstitutional) ? null : $log->subject);
+
+        $category = 'account_access';
+        if ($isInstitutional) {
+            $category = 'institutional_setup';
+        }
 
         return [
             'id' => 'authentication:'.$log->id,
             'source' => 'authentication',
-            'category' => $isUserManagement ? 'user_management' : 'authentication',
+            'category' => $category,
             'event' => $log->event,
             'occurred_at' => $log->created_at,
             'actor' => $this->user($actor),
@@ -200,21 +183,145 @@ class ActivityLogController extends Controller
 
     private function schedulingCategory(string $action): string
     {
-        if (in_array($action, ['conflict_detected', 'recommendation_applied', 'recommendation_rejected', 'schedule_auto_generated'], true)
-            || str_starts_with($action, 'recommendation_')
-            || str_starts_with($action, 'conflict_')
-            || str_starts_with($action, 'schedule_auto_')) {
-            return 'scheduling';
+        if (in_array($action, [
+            'instructor_assigned',
+            'instructor_reassigned',
+            'cross_department_assigned',
+            'pro_bono_overridden',
+            'instructor_assignment_released',
+        ], true)) {
+            return 'instructor_assignment';
         }
 
-        if (in_array($action, ['instructor_assigned', 'cross_department_assigned', 'designation_updated', 'max_units_overridden'], true)
-            || str_starts_with($action, 'instructor_')
-            || str_starts_with($action, 'cross_department_')
-            || str_starts_with($action, 'designation_')
-            || str_starts_with($action, 'max_units_')) {
-            return 'faculty_assignment';
+        if (in_array($action, [
+            'room_requested',
+            'room_request_approved',
+            'room_request_rejected',
+        ], true)) {
+            return 'room_request';
         }
 
-        return 'schedule_workflow';
+        if (in_array($action, [
+            'schedule_submitted',
+            'schedule_reviewed',
+            'schedule_returned',
+            'schedule_returned_by_dean',
+            'schedule_returned_by_vpaa',
+            'schedule_approved',
+            'schedule_approved_by_dean',
+            'schedule_approved_by_vpaa',
+            'schedule_rejected',
+            'schedule_unlocked',
+            'schedule_withdrawn',
+        ], true)) {
+            return 'approval';
+        }
+
+        if (str_ends_with($action, '_report_generated') || str_starts_with($action, 'report_') || str_contains($action, '_report_')) {
+            return 'reports';
+        }
+
+        if (in_array($action, [
+            'curriculum_created',
+            'curriculum_updated',
+            'course_created',
+            'course_updated',
+            'section_created',
+            'section_updated',
+            'semester_created',
+            'semester_updated',
+            'settings_updated',
+        ], true)) {
+            return 'academic_setup';
+        }
+
+        if (in_array($action, [
+            'department_created',
+            'department_updated',
+            'program_created',
+            'program_updated',
+            'room_created',
+            'room_updated',
+            'instructor_created',
+            'instructor_updated',
+            'designation_updated',
+            'faculty_created',
+            'faculty_updated',
+        ], true)) {
+            return 'institutional_setup';
+        }
+
+        return 'scheduling';
+    }
+
+    private function categoryMatchesAlias(?string $requestedCategory, string $entryCategory, ?string $entryEvent = null): bool
+    {
+        if (! $requestedCategory) {
+            return true;
+        }
+        if ($requestedCategory === $entryCategory) {
+            return true;
+        }
+
+        $legacyToNew = [
+            'authentication' => ['account_access'],
+            'user_management' => ['account_access', 'institutional_setup'],
+            'schedule_management' => ['scheduling', 'academic_setup'],
+            'conflict_detection' => ['scheduling'],
+            'recommendation' => ['scheduling'],
+            'review_approval' => ['approval'],
+            'schedule_workflow' => ['approval'],
+            'faculty_assignment' => ['instructor_assignment'],
+            // Reversed mapping:
+            'account_access' => ['authentication', 'user_management'],
+            'institutional_setup' => ['user_management'],
+            'academic_setup' => ['schedule_management'],
+            'scheduling' => ['schedule_management', 'conflict_detection', 'recommendation'],
+            'approval' => ['review_approval', 'schedule_workflow'],
+            'instructor_assignment' => ['faculty_assignment'],
+        ];
+
+        return in_array($entryCategory, $legacyToNew[$requestedCategory] ?? [], true);
+    }
+
+    private function applyEventFilter(Builder $query, string $event, string $column = 'action'): Builder
+    {
+        $aliases = [
+            'schedule_deleted' => ['schedule_deleted', 'schedule_batch_deleted'],
+            'recommendation_generated' => ['recommendation_generated', 'schedule_auto_generated'],
+            'conflict_recommendation_viewed' => ['conflict_recommendation_viewed', 'recommendation_reviewed'],
+            'recommendation_accepted' => ['recommendation_accepted', 'recommendation_applied'],
+            'schedule_returned' => ['schedule_returned', 'schedule_returned_by_dean', 'schedule_returned_by_vpaa'],
+            'schedule_approved' => ['schedule_approved', 'schedule_approved_by_dean', 'schedule_approved_by_vpaa'],
+            'schedule_override' => ['schedule_override', 'max_units_overridden'],
+        ];
+
+        if (isset($aliases[$event])) {
+            return $query->whereIn($column, $aliases[$event]);
+        }
+
+        return $query->where($column, $event);
+    }
+
+    private function eventMatchesAlias(?string $filterEvent, string $entryEvent): bool
+    {
+        if (! $filterEvent) {
+            return true;
+        }
+        if ($filterEvent === $entryEvent) {
+            return true;
+        }
+
+        $aliases = [
+            'schedule_deleted' => ['schedule_deleted', 'schedule_batch_deleted'],
+            'recommendation_generated' => ['recommendation_generated', 'schedule_auto_generated'],
+            'conflict_recommendation_viewed' => ['conflict_recommendation_viewed', 'recommendation_reviewed'],
+            'recommendation_accepted' => ['recommendation_accepted', 'recommendation_applied'],
+            'schedule_returned' => ['schedule_returned', 'schedule_returned_by_dean', 'schedule_returned_by_vpaa'],
+            'schedule_approved' => ['schedule_approved', 'schedule_approved_by_dean', 'schedule_approved_by_vpaa'],
+            'schedule_override' => ['schedule_override', 'max_units_overridden'],
+        ];
+
+        return in_array($entryEvent, $aliases[$filterEvent] ?? [], true);
     }
 }

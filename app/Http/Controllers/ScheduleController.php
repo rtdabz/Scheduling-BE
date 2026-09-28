@@ -171,6 +171,21 @@ class ScheduleController extends Controller
         $schedule = Schedule::create($validated);
         $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'program']);
         $this->notifyScheduleSaved($request, $schedule, 'created');
+        SchedulingAuditLog::create([
+            'user_id' => $request->user()?->id,
+            'semester_id' => $schedule->semester_id,
+            'section_id' => $schedule->section_id,
+            'department_id' => $schedule->department_id,
+            'action' => 'schedule_created',
+            'metadata' => [
+                'schedule_id' => (int) $schedule->id,
+                'course_id' => $schedule->course_id,
+                'day' => $schedule->day,
+                'start_time' => $schedule->start_time,
+                'end_time' => $schedule->end_time,
+            ],
+            'created_at' => now(),
+        ]);
         ApiCache::forgetGroups(['faculty.index', 'initial.data']);
 
         return response()->json($schedule, 201);
@@ -536,6 +551,39 @@ class ScheduleController extends Controller
                         ->sortBy(static fn (Schedule $schedule): int => array_search((int) $schedule->id, $savedIds, true))
                         ->values()
                         ->all();
+
+                    $createdBatchIds = array_values(array_diff($savedIds, $updateIds));
+                    if ($createdBatchIds !== []) {
+                        $firstCreated = collect($savedSchedules)->first(fn ($s) => in_array((int) $s->id, $createdBatchIds, true));
+                        SchedulingAuditLog::create([
+                            'user_id' => request()->user()?->id,
+                            'semester_id' => $firstCreated?->semester_id,
+                            'department_id' => $firstCreated?->department_id,
+                            'action' => 'schedule_created',
+                            'metadata' => [
+                                'schedule_ids' => $createdBatchIds,
+                                'count' => count($createdBatchIds),
+                                'batch' => true,
+                            ],
+                            'created_at' => now(),
+                        ]);
+                    }
+
+                    if ($updateIds !== []) {
+                        $firstUpdated = collect($savedSchedules)->first(fn ($s) => in_array((int) $s->id, $updateIds, true));
+                        SchedulingAuditLog::create([
+                            'user_id' => request()->user()?->id,
+                            'semester_id' => $firstUpdated?->semester_id,
+                            'department_id' => $firstUpdated?->department_id,
+                            'action' => 'schedule_updated',
+                            'metadata' => [
+                                'schedule_ids' => $updateIds,
+                                'count' => count($updateIds),
+                                'batch' => true,
+                            ],
+                            'created_at' => now(),
+                        ]);
+                    }
 
                     if ($deletedBefore->isNotEmpty()) {
                         $version = $this->historyRecorder->record(
@@ -1449,6 +1497,21 @@ class ScheduleController extends Controller
 
         $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department']);
         $this->notifyScheduleSaved($request, $schedule, 'updated');
+        SchedulingAuditLog::create([
+            'user_id' => $request->user()?->id,
+            'semester_id' => $schedule->semester_id,
+            'section_id' => $schedule->section_id,
+            'department_id' => $schedule->department_id,
+            'action' => 'schedule_updated',
+            'metadata' => [
+                'schedule_id' => (int) $schedule->id,
+                'course_id' => $schedule->course_id,
+                'day' => $schedule->day,
+                'start_time' => $schedule->start_time,
+                'end_time' => $schedule->end_time,
+            ],
+            'created_at' => now(),
+        ]);
         ApiCache::forgetGroups(['faculty.index', 'initial.data']);
 
         if (array_key_exists('faculty_id', $validated)) {
@@ -1515,6 +1578,18 @@ class ScheduleController extends Controller
         }
 
         $this->notifyScheduleSaved($request, $deletedSchedule, 'deleted');
+        SchedulingAuditLog::create([
+            'user_id' => $request->user()?->id,
+            'semester_id' => $deletedSchedule->semester_id,
+            'section_id' => $deletedSchedule->section_id,
+            'department_id' => $deletedSchedule->department_id,
+            'action' => 'schedule_deleted',
+            'metadata' => [
+                'schedule_id' => (int) $deletedSchedule->id,
+                'course_id' => $deletedSchedule->course_id,
+            ],
+            'created_at' => now(),
+        ]);
         ApiCache::forgetGroups(['faculty.index', 'initial.data']);
 
         return response()->json(['message' => 'Schedule archived successfully']);

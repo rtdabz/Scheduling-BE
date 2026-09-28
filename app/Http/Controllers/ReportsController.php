@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Departments;
 use App\Models\Faculty;
 use App\Models\Schedule;
+use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
@@ -169,6 +170,18 @@ class ReportsController extends Controller
                 ->orWhere('program_id', $programId)))
             ->get(['id', 'name', 'role', 'department_id']);
 
+        SchedulingAuditLog::create([
+            'user_id' => $user->id,
+            'semester_id' => $semester?->id,
+            'department_id' => $department,
+            'action' => 'schedule_report_generated',
+            'metadata' => [
+                'department_code' => $departmentRecord->department_code,
+                'program_id' => $programId,
+            ],
+            'created_at' => now(),
+        ]);
+
         return response()->json([
             'active_semester' => $semester,
             'time_grid' => [
@@ -185,6 +198,43 @@ class ReportsController extends Controller
             'departments' => $departments,
             'users' => $users,
         ]);
+    }
+
+    /**
+     * POST /api/reports/log-download
+     *
+     * Log when a user downloads or prints an official report.
+     */
+    public function logDownload(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'report_type' => 'required|string|in:schedule,load,conflict',
+            'department_id' => 'nullable|integer|exists:departments,id',
+            'semester_id' => 'nullable|integer|exists:semesters,id',
+            'program_id' => 'nullable|integer|exists:programs,id',
+            'format' => 'nullable|string|max:10',
+        ]);
+
+        $user = $request->user();
+        $action = match ($validated['report_type']) {
+            'conflict' => 'conflict_report_generated',
+            default => 'report_downloaded',
+        };
+
+        SchedulingAuditLog::create([
+            'user_id' => $user?->id,
+            'semester_id' => $validated['semester_id'] ?? $this->activeSemester()?->id,
+            'department_id' => $validated['department_id'] ?? $user?->department_id,
+            'action' => $action,
+            'metadata' => [
+                'report_type' => $validated['report_type'],
+                'program_id' => $validated['program_id'] ?? null,
+                'format' => $validated['format'] ?? 'pdf',
+            ],
+            'created_at' => now(),
+        ]);
+
+        return response()->json(['message' => 'Report download logged successfully.']);
     }
 
     private function activeSemester(): ?Semester

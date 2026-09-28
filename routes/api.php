@@ -89,6 +89,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/reports', [ReportsController::class, 'index']);
         Route::get('/reports/departments/{department}', [ReportsController::class, 'show'])
             ->whereNumber('department');
+        Route::post('/reports/log-download', [ReportsController::class, 'logDownload']);
     });
 
     // Common readable & scheduling administration routes across all roles.
@@ -229,6 +230,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     // permission.
     Route::middleware('capability:schedule.view')->group(function () {
         Route::get('conflicts', [ScheduleConflictController::class, 'index']);
+        Route::post('conflicts/{conflict}/review', [ScheduleConflictController::class, 'review']);
         Route::post('conflicts/{conflict}/resolve', [ScheduleConflictController::class, 'resolve']);
         Route::post('conflicts/{conflict}/override', [ScheduleConflictController::class, 'override']);
     });

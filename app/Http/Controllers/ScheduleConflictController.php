@@ -9,6 +9,7 @@ use App\Exceptions\ScheduleConflictException;
 use App\Http\Controllers\Concerns\ConfirmsFacultyOverload;
 use App\Models\Faculty;
 use App\Models\Schedule;
+use App\Models\SchedulingAuditLog;
 use App\Models\Semester;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Schedule\FacultyConflictOverride;
@@ -255,6 +256,34 @@ class ScheduleConflictController extends Controller
                 $this->assignmentLabelForSchedule($schedule),
             ),
         ]);
+    }
+
+    public function review(Request $request, string $conflict): JsonResponse
+    {
+        $parsed = ScheduleConflictCase::parseId($conflict);
+        if ($parsed === null) {
+            return response()->json(['message' => 'Invalid conflict id.'], 404);
+        }
+
+        $schedule = Schedule::query()->find($parsed['schedule_id']);
+        $user = $request->user();
+
+        SchedulingAuditLog::create([
+            'user_id' => $user?->id,
+            'semester_id' => $schedule?->semester_id,
+            'department_id' => $schedule?->department_id,
+            'section_id' => $schedule?->section_id,
+            'action' => 'conflict_reviewed',
+            'metadata' => [
+                'conflict_id' => $conflict,
+                'rule' => $parsed['rule'] ?? null,
+                'schedule_id' => $parsed['schedule_id'],
+                'other_schedule_id' => $parsed['other_schedule_id'],
+            ],
+            'created_at' => now(),
+        ]);
+
+        return response()->json(['message' => 'Conflict review logged successfully.']);
     }
 
     private function forbidden(): JsonResponse
