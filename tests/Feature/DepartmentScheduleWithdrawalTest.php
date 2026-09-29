@@ -14,6 +14,7 @@ use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Support\ApiCache;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -129,7 +130,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $this->assertSame('approved', $section['status']);
     }
 
-    public function test_withdrawal_releases_instructors_only_for_the_withdrawn_sections(): void
+    public function test_withdrawal_keeps_instructors_on_every_section(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
@@ -152,12 +153,11 @@ class DepartmentScheduleWithdrawalTest extends TestCase
                 'section_ids' => [$firstSection->id],
             ])
             ->assertOk()
-            ->assertJsonPath('instructors_released', 1);
+            ->assertJsonPath('instructors_released', 0);
 
-        // The section being revised loses its instructor: the schedule it was
-        // made against is about to change, and no UI can reach the assignment
-        // while the row sits outside the assignment statuses.
-        $this->assertNull($withdrawn->refresh()->faculty_id);
+        // The recalled section keeps its instructor; it is revalidated when
+        // the schedule changes.
+        $this->assertSame($instructor->id, $withdrawn->refresh()->faculty_id);
         $this->assertSame('revision', $withdrawn->status);
 
         // The unselected approval cohort remains completely intact.
@@ -282,39 +282,6 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'schedule_submitted']);
     }
 
-    public function test_released_instructors_are_recorded_in_the_audit_log(): void
-    {
-        [$department, $semester, $room, $course, $firstSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
-        $instructor = $this->instructor($department);
-
-        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, [
-            'status' => 'faculty_assignment',
-            'faculty_id' => $instructor->id,
-        ]);
-
-        $this->actingAs($secretary)
-            ->postJson("/api/departments/{$department->id}/withdraw-submission", [
-                'section_ids' => [$firstSection->id],
-            ])
-            ->assertOk();
-
-        $log = SchedulingAuditLog::query()
-            ->where('action', 'instructor_assignment_released')
-            ->where('section_id', $firstSection->id)
-            ->firstOrFail();
-
-        $this->assertSame($secretary->id, $log->user_id);
-        $this->assertSame($department->id, $log->department_id);
-        $this->assertSame('schedule_withdrawn', $log->metadata['reason']);
-        $this->assertSame(1, $log->metadata['released_count']);
-        $this->assertSame([$schedule->id], $log->metadata['schedule_ids']);
-        $this->assertSame(
-            $instructor->id,
-            $log->metadata['previous_faculty_ids'][(string) $schedule->id],
-        );
-    }
-
     public function test_withdrawal_without_instructors_reports_none_released(): void
     {
         [$department, $semester, $room, $course, $firstSection] = $this->fixture();
@@ -336,9 +303,8 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     }
 
     /**
-     * Reassignment no longer has to be emptied first: recalling releases the
-     * instructors itself, including one another college assigned to a delegated
-     * course, which the department could not have cleared.
+     * Reassignment no longer has to be emptied first: recalling keeps the
+     * instructors, including one another college assigned to a delegated course.
      */
     public function test_a_reassignment_section_with_instructors_can_be_recalled(): void
     {
@@ -356,12 +322,11 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $this->actingAs($secretary)
             ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
             ->assertOk()
-            ->assertJsonPath('instructors_released', 1)
             ->assertJsonPath('message', 'Selected section schedules recalled for revision.');
 
         $schedule->refresh();
         $this->assertSame('revision', $schedule->status);
-        $this->assertNull($schedule->faculty_id);
+        $this->assertSame($delegatedInstructor->id, $schedule->faculty_id);
         $this->assertFalse((bool) $schedule->faculty_assignment_done);
     }
 
@@ -397,6 +362,316 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             ->assertOk();
 
         $this->assertSame($instructor->id, (int) $sameHour->refresh()->faculty_id);
+    }
+
+    public function test_a_returned_version_survives_reset_and_resubmission_keeps_both_versions(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        // Submission refuses to skip a year-level section with nothing scheduled.
+        $secondSection->delete();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
+        $original = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/submit-schedules", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $first = ScheduleSubmission::query()->latest('id')->firstOrFail();
+        $this->assertNotNull($first->snapshot_version_id);
+
+        $this->actingAs($dean)
+            ->postJson("/api/departments/{$department->id}/return-by-dean", ['rejection_reason' => 'Move it.'])
+            ->assertOk();
+
+        // Reset clears only the working copy.
+        $this->actingAs($secretary)
+            ->postJson('/api/schedules/batch', ['operations' => [], 'delete_ids' => [$original->id]])
+            ->assertOk();
+        $this->assertNull(Schedule::find($original->id));
+
+        $this->actingAs($secretary)
+            ->getJson("/api/schedule-submissions/{$first->id}/snapshot")
+            ->assertOk()
+            ->assertJsonPath('data.available', true)
+            ->assertJsonPath('data.status', 'rejected_by_dean')
+            ->assertJsonPath('data.rejection_reason', 'Move it.')
+            ->assertJsonCount(1, 'data.schedules')
+            ->assertJsonPath('data.schedules.0.id', $original->id)
+            ->assertJsonPath('data.schedules.0.day', 'Monday')
+            ->assertJsonPath('data.schedules.0.course.course_code', 'IT 101')
+            ->assertJsonPath('data.schedules.0.room.room_code', 'CIT 101');
+
+        $revised = $this->schedule($department, $semester, $room, $course, $firstSection, [
+            'status' => 'completed',
+            'day' => 'Wednesday',
+        ]);
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/submit-schedules", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $second = ScheduleSubmission::query()->latest('id')->firstOrFail();
+
+        $this->assertSame($first->id, $second->parent_submission_id);
+        $this->assertSame($first->revision_number + 1, $second->revision_number);
+        $this->assertSame('rejected_by_dean', $first->refresh()->status);
+        $this->assertNotSame($first->snapshot_version_id, $second->snapshot_version_id);
+
+        $this->actingAs($secretary)
+            ->getJson("/api/schedule-submissions/{$first->id}/snapshot")
+            ->assertJsonCount(1, 'data.schedules')
+            ->assertJsonPath('data.schedules.0.day', 'Monday');
+        $this->actingAs($secretary)
+            ->getJson("/api/schedule-submissions/{$second->id}/snapshot")
+            ->assertJsonCount(1, 'data.schedules')
+            ->assertJsonPath('data.schedules.0.id', $revised->id)
+            ->assertJsonPath('data.schedules.0.day', 'Wednesday');
+    }
+
+    public function test_a_recalled_version_keeps_what_was_submitted_after_the_working_copy_is_edited(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        // Submission refuses to skip a year-level section with nothing scheduled.
+        $secondSection->delete();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
+        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/submit-schedules", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $submission = ScheduleSubmission::query()->latest('id')->firstOrFail();
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $schedule->refresh()->update(['day' => 'Friday']);
+
+        $this->actingAs($secretary)
+            ->getJson("/api/schedule-submissions/{$submission->id}/snapshot")
+            ->assertOk()
+            ->assertJsonPath('data.status', 'withdrawn')
+            ->assertJsonPath('data.schedules.0.day', 'Monday')
+            ->assertJsonPath('data.schedules.0.status', 'submitted');
+    }
+
+    public function test_submission_and_revision_status_follow_a_section_through_return_reset_and_resubmit(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $secondSection->delete();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
+        $original = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
+
+        $this->assertSectionStatus($secretary, $firstSection, 'draft', 'initial');
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/submit-schedules", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $this->assertSectionStatus($secretary, $firstSection, 'submitted', 'initial');
+
+        $this->actingAs($dean)
+            ->postJson("/api/departments/{$department->id}/return-by-dean", ['rejection_reason' => 'Move it.'])
+            ->assertOk();
+        $this->assertSectionStatus($secretary, $firstSection, 'rejected', 'initial');
+
+        // Editing the working copy marks it modified; the submission stays rejected.
+        $original->refresh()->update(['day' => 'Thursday']);
+        $this->editedDirectly();
+        $this->assertSectionStatus($secretary, $firstSection, 'rejected', 'modified');
+
+        // So does a Reset that leaves nothing.
+        $this->actingAs($secretary)
+            ->postJson('/api/schedules/batch', ['operations' => [], 'delete_ids' => [$original->id]])
+            ->assertOk();
+        $this->assertSectionStatus($secretary, $firstSection, 'rejected', 'modified');
+
+        $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed', 'day' => 'Wednesday']);
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/submit-schedules", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $this->assertSectionStatus($secretary, $firstSection, 'submitted', 'modified');
+
+        $submissions = collect($this->actingAs($secretary)->getJson('/api/initial-data')->json('schedule_submissions'))
+            ->keyBy('revision_number');
+        $this->assertSame('rejected_by_dean', $submissions[1]['status']);
+        $this->assertSame('initial', $submissions[1]['revision_status']);
+        $this->assertSame('pending_dean', $submissions[2]['status']);
+        $this->assertSame('modified', $submissions[2]['revision_status']);
+    }
+
+    public function test_a_recalled_section_reads_recalled_and_initial_until_it_is_changed(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $secondSection->delete();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
+        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/submit-schedules", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $this->assertSectionStatus($secretary, $firstSection, 'recalled', 'initial');
+
+        $schedule->refresh()->update(['start_time' => '10:00', 'end_time' => '11:00']);
+        $this->editedDirectly();
+        $this->assertSectionStatus($secretary, $firstSection, 'recalled', 'modified');
+    }
+
+    public function test_edits_removals_and_additions_to_a_returned_version_are_recorded_with_their_before_state(): void
+    {
+        [$department, $semester, $room, $course, $section, $secretary, $schedule, $submission] = $this->returnedVersion();
+
+        // Edit reopens a returned section for revision first; a status change alone is not a revision.
+        $this->actingAs($secretary)
+            ->patchJson('/api/schedules/batch-status', ['ids' => [$schedule->id], 'status' => 'revision'])
+            ->assertOk();
+        $this->actingAs($secretary)
+            ->patchJson("/api/schedules/{$schedule->id}", ['day' => 'Thursday'])
+            ->assertOk();
+        $secondCourse = $course->replicate()->fill(['course_code' => 'IT 102', 'course_name' => 'Databases']);
+        $secondCourse->save();
+        $added = $this->actingAs($secretary)
+            ->postJson('/api/schedules/batch', ['operations' => [[
+                'semester_id' => $semester->id,
+                'section_id' => $section->id,
+                'course_id' => $secondCourse->id,
+                'room_id' => $room->id,
+                'department_id' => $department->id,
+                'day' => 'Friday',
+                'start_time' => '13:00',
+                'end_time' => '14:00',
+                'mode' => 'on-site',
+            ]]])
+            ->assertOk()
+            ->json('schedules.0.id');
+        $this->actingAs($secretary)->deleteJson("/api/schedules/{$schedule->id}")->assertOk();
+
+        $entries = $this->actingAs($secretary)
+            ->getJson("/api/schedule-submissions/{$submission->id}/changes")
+            ->assertOk()
+            ->json('data');
+
+        $this->assertCount(3, $entries);
+        $this->assertSame(['update', 'batch', 'delete'], array_column($entries, 'operation'));
+        $this->assertSame('updated', $entries[0]['changes'][0]['change']);
+        $this->assertSame('Monday', $entries[0]['changes'][0]['before']['day']);
+        $this->assertSame('Thursday', $entries[0]['changes'][0]['after']['day']);
+        $this->assertSame('IT 101', $entries[0]['changes'][0]['before']['course']['course_code']);
+        $this->assertSame('added', $entries[1]['changes'][0]['change']);
+        $this->assertSame($added, $entries[1]['changes'][0]['schedule_id']);
+        $this->assertSame('removed', $entries[2]['changes'][0]['change']);
+        $this->assertSame('Thursday', $entries[2]['changes'][0]['before']['day']);
+        $this->assertNull($entries[2]['changes'][0]['after']);
+        $this->assertSame($secretary->id, $entries[0]['actor']['id']);
+    }
+
+    public function test_a_course_edit_is_recorded_and_the_submitted_version_keeps_its_old_details(): void
+    {
+        [, , , $course, , $secretary, , $submission] = $this->returnedVersion();
+
+        $this->actingAs($secretary)
+            ->patchJson("/api/courses/{$course->id}", ['course_name' => 'Advanced Programming', 'units' => 3, 'lecture_hours' => 3])
+            ->assertOk();
+
+        $this->actingAs($secretary)
+            ->getJson("/api/schedule-submissions/{$submission->id}/snapshot")
+            ->assertJsonPath('data.schedules.0.course.course_name', 'Programming')
+            ->assertJsonPath('data.schedules.0.course.units', 1);
+
+        $entry = $this->actingAs($secretary)
+            ->getJson("/api/schedule-submissions/{$submission->id}/changes")
+            ->assertJsonCount(1, 'data')
+            ->json('data.0');
+        $this->assertSame('revision_course_changed', $entry['action']);
+        $this->assertEquals(['before' => 'Programming', 'after' => 'Advanced Programming'], $entry['course_changes']['course_name']);
+        $this->assertEquals(['before' => 1, 'after' => 3], $entry['course_changes']['units']);
+        $this->assertSame('Programming', $entry['changes'][0]['before']['course']['course_name']);
+        $this->assertSame('Advanced Programming', $entry['changes'][0]['after']['course']['course_name']);
+    }
+
+    public function test_a_deleted_section_stays_in_the_submitted_version_and_its_history(): void
+    {
+        [, , , , $section, $secretary, $schedule, $submission] = $this->returnedVersion();
+
+        $this->actingAs($secretary)->deleteJson("/api/sections/{$section->id}")->assertOk();
+        $this->assertDatabaseMissing('sections', ['id' => $section->id]);
+
+        $this->actingAs($secretary)
+            ->getJson("/api/schedule-submissions/{$submission->id}/snapshot")
+            ->assertJsonCount(1, 'data.schedules')
+            ->assertJsonPath('data.schedules.0.id', $schedule->id)
+            ->assertJsonPath('data.schedules.0.section.section_name', 'BSIT 1A');
+
+        $entry = $this->actingAs($secretary)
+            ->getJson("/api/schedule-submissions/{$submission->id}/changes")
+            ->assertJsonCount(1, 'data')
+            ->json('data.0');
+        $this->assertSame('revision_section_deleted', $entry['action']);
+        $this->assertSame('BSIT 1A', $entry['section']['section_name']);
+        $this->assertSame('removed', $entry['changes'][0]['change']);
+        $this->assertSame('BSIT 1A', $entry['changes'][0]['before']['section']['section_name']);
+    }
+
+    public function test_drafting_a_never_submitted_section_records_no_revision_history(): void
+    {
+        [$department, $semester, $room, $course, $section, $secondSection] = $this->fixture();
+        $secondSection->delete();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $schedule = $this->schedule($department, $semester, $room, $course, $section, ['status' => 'draft']);
+
+        $this->actingAs($secretary)->patchJson("/api/schedules/{$schedule->id}", ['day' => 'Thursday'])->assertOk();
+
+        $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'revision_schedules_changed']);
+    }
+
+    /** A section submitted and returned by the Dean, with one class. */
+    private function returnedVersion(): array
+    {
+        [$department, $semester, $room, $course, $section, $secondSection] = $this->fixture();
+        $secondSection->delete();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
+        $schedule = $this->schedule($department, $semester, $room, $course, $section, ['status' => 'completed']);
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/submit-schedules", ['section_ids' => [$section->id]])
+            ->assertOk();
+        $this->actingAs($dean)
+            ->postJson("/api/departments/{$department->id}/return-by-dean", ['rejection_reason' => 'Move it.'])
+            ->assertOk();
+
+        return [$department, $semester, $room, $course, $section, $secretary, $schedule->refresh(), ScheduleSubmission::query()->latest('id')->firstOrFail()];
+    }
+
+    /** The schedule endpoints drop the cached /initial-data on every write; a direct model edit must too. */
+    private function editedDirectly(): void
+    {
+        ApiCache::forgetGroups(['initial.data']);
+    }
+
+    private function assertSectionStatus(User $user, Sections $section, string $submission, string $revision): void
+    {
+        $row = collect($this->actingAs($user)->getJson('/api/initial-data')->assertOk()->json('sections'))
+            ->firstWhere('id', $section->id);
+        $this->assertNotNull($row);
+        $this->assertSame(
+            [$submission, $revision],
+            [$row['submission_status'], $row['revision_status']],
+        );
+    }
+
+    public function test_another_department_cannot_read_a_submission_snapshot(): void
+    {
+        [$department, $semester, , , $firstSection] = $this->fixture();
+        $other = Departments::create(['department_name' => 'Nursing', 'department_code' => 'CON']);
+        Program::create(['department_id' => $other->id, 'code' => 'BSN', 'name' => 'Nursing']);
+        $outsider = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $other->id]));
+        $submission = $this->submission($department, $semester, [$firstSection], 'withdrawn');
+
+        $this->actingAs($outsider)
+            ->getJson("/api/schedule-submissions/{$submission->id}/snapshot")
+            ->assertForbidden();
     }
 
     private function instructor(Departments $department): Faculty

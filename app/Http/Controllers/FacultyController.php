@@ -8,6 +8,7 @@ use App\Services\FacultyDesignationService;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
+use App\Support\ProfilePicture;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -95,7 +96,7 @@ class FacultyController extends Controller
             'department_id' => 'required|exists:departments,id',
             'program_id' => $this->programRule($departmentId ?? $request->input('department_id')),
             'status' => 'nullable|in:active,inactive',
-            'profile_picture' => 'nullable|string',
+            'profile_picture' => ProfilePicture::rules(),
         ]);
 
         if ($validator->fails()) {
@@ -283,7 +284,7 @@ class FacultyController extends Controller
                         ?? $faculty->department_id
                 ),
                 'status' => 'sometimes|required|in:active,inactive',
-                'profile_picture' => 'sometimes|nullable|string',
+                'profile_picture' => ProfilePicture::rules(sometimes: true),
             ];
         }
 

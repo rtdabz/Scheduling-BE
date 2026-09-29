@@ -100,4 +100,14 @@ class Sections extends Model
     {
         return $this->hasMany(Schedule::class, 'section_id');
     }
+
+    /**
+     * Whether any live class of this section sits at an approval stage. Such a
+     * section belongs to a submission, so it cannot be deleted or restructured
+     * until that submission is recalled.
+     */
+    public function hasLockedSchedules(): bool
+    {
+        return $this->schedules()->whereNotIn('status', Schedule::UNLOCKED_STATUSES)->exists();
+    }
 }

@@ -24,6 +24,7 @@ class ActivityLogController extends Controller
             'actor_id' => ['nullable', 'integer', 'exists:users,id'],
             'department_id' => ['nullable', 'integer', 'exists:departments,id'],
             'semester_id' => ['nullable', 'integer', 'exists:semesters,id'],
+            'status' => ['nullable', 'in:completed,approved,returned,rejected,failed'],
             'search' => ['nullable', 'string', 'max:100'],
             'export' => ['nullable', 'in:csv'],
         ]);
@@ -34,6 +35,7 @@ class ActivityLogController extends Controller
         $to = isset($validated['to']) ? Carbon::parse($validated['to'])->endOfDay() : null;
         $category = $validated['category'] ?? null;
         $event = $validated['event'] ?? null;
+        $status = $validated['status'] ?? null;
         $search = isset($validated['search']) ? mb_strtolower(trim($validated['search'])) : null;
 
         // Keep the merge bounded. The two audit tables are intentionally kept
@@ -85,6 +87,7 @@ class ActivityLogController extends Controller
                 && (! $event || $entry['event'] === $event || $this->eventMatchesAlias($event, $entry['event']))
                 && (! $departmentId || (int) $entry['department_id'] === (int) $departmentId)
                 && (! $semesterId || (int) $entry['semester_id'] === (int) $semesterId)
+                && (! $status || $entry['status'] === $status)
                 && (! $search || str_contains(mb_strtolower(json_encode($entry)), $search)))
             ->sortByDesc(fn (array $entry) => $entry['occurred_at']->getTimestamp().'|'.$entry['id'])
             ->values();
@@ -95,12 +98,13 @@ class ActivityLogController extends Controller
             abort_if($total > 10000, 422, 'Narrow the filters before exporting more than 10,000 audit entries.');
             return response()->streamDownload(function () use ($entries) {
                 $output = fopen('php://output', 'w');
-                fputcsv($output, ['Timestamp', 'Category', 'Event', 'Actor', 'Role', 'Department ID', 'Semester ID', 'Target', 'Metadata']);
+                fputcsv($output, ['Timestamp', 'Category', 'Event', 'Status', 'Actor', 'Role', 'Department ID', 'Semester ID', 'Target', 'Metadata']);
                 foreach ($entries as $entry) {
                     fputcsv($output, [
                         $entry['occurred_at']->toISOString(),
                         $entry['category'],
                         $entry['event'],
+                        $entry['status'],
                         $entry['actor']['name'] ?? 'System',
                         $entry['actor']['role'] ?? 'system',
                         $entry['department_id'],
@@ -140,6 +144,7 @@ class ActivityLogController extends Controller
             'source' => 'scheduling',
             'category' => $this->schedulingCategory($log->action),
             'event' => $log->action,
+            'status' => $this->status($log->action),
             'occurred_at' => $log->created_at,
             'actor' => $this->user($log->user),
             'department_id' => $log->department_id,
@@ -167,6 +172,7 @@ class ActivityLogController extends Controller
             'source' => 'authentication',
             'category' => $category,
             'event' => $log->event,
+            'status' => $this->status($log->event),
             'occurred_at' => $log->created_at,
             'actor' => $this->user($actor),
             'department_id' => $log->subject?->department_id ?? $subjectSnapshot['department_id'] ?? null,
@@ -174,6 +180,17 @@ class ActivityLogController extends Controller
             'target' => ['type' => 'user', 'id' => $log->subject_user_id ?? $subjectSnapshot['id'] ?? null],
             'metadata' => array_filter(array_merge($metadata, ['ip_address' => $log->ip_address, 'user_agent' => $log->user_agent])),
         ];
+    }
+
+    private function status(string $event): string
+    {
+        return match (true) {
+            $event === 'login_failed' => 'failed',
+            $event === 'schedule_rejected' || $event === 'room_request_rejected' || $event === 'recommendation_rejected' => 'rejected',
+            str_starts_with($event, 'schedule_returned') => 'returned',
+            str_starts_with($event, 'schedule_approved') || $event === 'room_request_approved' => 'approved',
+            default => 'completed',
+        };
     }
 
     private function user($user): ?array
@@ -231,6 +248,8 @@ class ActivityLogController extends Controller
             'semester_created',
             'semester_updated',
             'settings_updated',
+            'semester_activated',
+            'schedule_semester_archived',
         ], true)) {
             return 'academic_setup';
         }

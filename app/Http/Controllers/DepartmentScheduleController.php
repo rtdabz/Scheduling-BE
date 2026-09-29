@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Schedule;
+use App\Models\ScheduleHistoryItem;
+use App\Models\ScheduleHistoryVersion;
 use App\Models\ScheduleSubmission;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
@@ -15,11 +17,14 @@ use App\Services\Scheduling\Department\DepartmentScheduleStatusDeriver;
 use App\Services\Scheduling\Department\ScheduleOverviewService;
 use App\Services\Scheduling\Schedule\ScheduleConflictCase;
 use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
+use App\Services\Scheduling\Submission\RevisionChangeRecorder;
+use App\Services\Scheduling\Submission\ScheduleDescriptors;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -28,6 +33,7 @@ class DepartmentScheduleController extends Controller
     public function __construct(
         private readonly SystemNotificationService $notifications,
         private readonly ScheduleHistoryRecorder $historyRecorder,
+        private readonly ScheduleDescriptors $descriptors,
         private readonly DepartmentScheduleStatusDeriver $statusDeriver,
         private readonly ScheduleOverviewService $scheduleOverviews,
         private readonly ScheduleConflictScanner $conflictScanner,
@@ -322,6 +328,175 @@ class DepartmentScheduleController extends Controller
             ->where('department_id', $departmentId)
             ->where('is_active', true)
             ->exists();
+    }
+
+    /**
+     * The meetings a submission sent, as they were at submit.
+     *
+     * A recalled or returned version stays readable after the department edits,
+     * resets or regenerates the working copy, and each resubmission keeps its
+     * own. `available` is false for submissions made before snapshots were
+     * linked; callers then fall back to the live meetings.
+     */
+    public function submissionSnapshot(Request $request, ScheduleSubmission $submission): JsonResponse
+    {
+        $user = $request->user();
+        if ($user->role !== 'vpaa' && (int) $user->department_id !== (int) $submission->department_id) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $version = $submission->snapshot_version_id === null
+            ? null
+            : ScheduleHistoryVersion::query()->find($submission->snapshot_version_id);
+        // The sections recorded with the snapshot, as well as the live links: a
+        // deleted section loses its link but not its place in what was sent.
+        $sectionIds = collect($version?->change_summary['selected_section_ids'] ?? [])
+            ->merge($submission->sections()->pluck('sections.id'))
+            ->map('intval')->unique()->values()->all();
+        $items = $version === null
+            ? collect()
+            : ScheduleHistoryItem::query()
+                ->where('history_version_id', $version->id)
+                ->orderBy('id')
+                ->get()
+                ->filter(static function (ScheduleHistoryItem $item) use ($sectionIds): bool {
+                    $row = $item->after_snapshot ?: $item->before_snapshot;
+
+                    return $row !== null && ($sectionIds === [] || in_array((int) ($row['section_id'] ?? 0), $sectionIds, true));
+                })
+                ->values();
+
+        return response()->json([
+            'data' => [
+                'submission_id' => $submission->id,
+                'revision_number' => $submission->revision_number,
+                'parent_submission_id' => $submission->parent_submission_id,
+                'status' => $submission->status,
+                'submitted_at' => $submission->submitted_at?->toISOString(),
+                'rejection_reason' => $submission->rejection_reason,
+                'available' => $version !== null,
+                'schedules' => $this->describedSnapshotRows($items, 'after'),
+            ],
+        ]);
+    }
+
+    /**
+     * What happened to a recalled or rejected version's working copy since:
+     * meetings added, removed or changed, sections deleted and course details
+     * edited, each with the state before and after.
+     */
+    public function submissionChanges(Request $request, ScheduleSubmission $submission): JsonResponse
+    {
+        $user = $request->user();
+        if ($user->role !== 'vpaa' && (int) $user->department_id !== (int) $submission->department_id) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $logs = SchedulingAuditLog::query()
+            ->with(['historyVersion.items', 'user:id,name,role'])
+            ->where('schedule_submission_id', $submission->id)
+            ->whereIn('action', [
+                RevisionChangeRecorder::SCHEDULES_CHANGED,
+                RevisionChangeRecorder::SECTION_DELETED,
+                RevisionChangeRecorder::COURSE_CHANGED,
+            ])
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get();
+
+        $data = $logs->map(function (SchedulingAuditLog $log): array {
+            $summary = $log->historyVersion?->change_summary ?? [];
+            $sectionIds = collect($log->metadata['section_ids'] ?? [])->map('intval')->all();
+            $items = ($log->historyVersion?->items ?? collect())->filter(static function (ScheduleHistoryItem $item) use ($sectionIds): bool {
+                $row = $item->before_snapshot ?: $item->after_snapshot;
+
+                return $sectionIds === [] || in_array((int) ($row['section_id'] ?? 0), $sectionIds, true);
+            })->values();
+            $before = $this->describedSnapshotRows($items, 'before')->keyBy('id');
+            $after = $this->describedSnapshotRows($items, 'after')->keyBy('id');
+            $added = array_map('intval', $summary['added_schedule_ids'] ?? []);
+            $removed = array_map('intval', $summary['removed_schedule_ids'] ?? []);
+
+            return [
+                'id' => $log->id,
+                'action' => $log->action,
+                'operation' => $summary['operation'] ?? null,
+                'created_at' => $log->created_at?->toISOString(),
+                'actor' => $log->user ? ['id' => $log->user->id, 'name' => $log->user->name, 'role' => $log->user->role] : null,
+                'section' => $summary['section'] ?? null,
+                'course_changes' => $summary['course_changes'] ?? null,
+                'changes' => $items->map(static function (ScheduleHistoryItem $item) use ($before, $after, $added, $removed): array {
+                    $id = (int) $item->original_schedule_id;
+
+                    return [
+                        'schedule_id' => $id,
+                        'change' => in_array($id, $added, true)
+                            ? 'added'
+                            : (in_array($id, $removed, true) || ! $after->has($id) ? 'removed' : 'updated'),
+                        'before' => $before->get($id),
+                        'after' => $after->get($id),
+                    ];
+                })->values(),
+            ];
+        })->values();
+
+        return response()->json(['data' => $data]);
+    }
+
+    /**
+     * Snapshot rows with the section, course, room and instructor they named
+     * when recorded. Snapshots from before those names were kept resolve them
+     * now instead, archived records included.
+     *
+     * @param  Collection<int, ScheduleHistoryItem>  $items
+     * @param  'before'|'after'  $side
+     * @return Collection<int, array>
+     */
+    private function describedSnapshotRows(Collection $items, string $side): Collection
+    {
+        $rows = $items->map(static function (ScheduleHistoryItem $item) use ($side): ?array {
+            $row = $side === 'before' ? $item->before_snapshot : $item->after_snapshot;
+            if (! $row) {
+                return null;
+            }
+            $metadata = $item->snapshot_metadata ?? [];
+
+            return [
+                'row' => $row,
+                'names' => $metadata[$side.'_names'] ?? (array_key_exists('course_code', $metadata) ? $metadata : null),
+            ];
+        })->filter()->values();
+
+        $missing = $rows->filter(static fn (array $entry): bool => $entry['names'] === null)->pluck('row');
+        $live = $missing->isEmpty() ? [] : $this->descriptors->for($missing);
+
+        return $rows->map(static function (array $entry) use ($live): array {
+            $row = $entry['row'];
+            $names = $entry['names'] ?? ($live[(int) ($row['id'] ?? 0)] ?? []);
+
+            return $row + [
+                'course' => ($names['course_code'] ?? null) === null ? null : [
+                    'id' => $row['course_id'] ?? null,
+                    'course_code' => $names['course_code'],
+                    'course_name' => $names['course_name'] ?? null,
+                    'course_category' => $names['course_category'] ?? null,
+                    'units' => $names['units'] ?? null,
+                    'lecture_hours' => $names['lecture_hours'] ?? null,
+                    'lab_hours' => $names['lab_hours'] ?? null,
+                ],
+                'room' => ($names['room_name'] ?? null) === null
+                    ? null
+                    : ['id' => $row['room_id'] ?? null, 'room_code' => $names['room_name']],
+                'faculty' => ($names['faculty_name'] ?? null) === null ? null : [
+                    'id' => $row['faculty_id'] ?? null,
+                    'first_name' => $names['faculty_name'],
+                    'last_name' => '',
+                ],
+                'section' => ($names['section_name'] ?? null) === null
+                    ? null
+                    : ['id' => $row['section_id'] ?? null, 'section_name' => $names['section_name']],
+            ];
+        })->values();
     }
 
     public function scheduleStatus(int $id): JsonResponse
@@ -621,10 +796,16 @@ class DepartmentScheduleController extends Controller
                     'updated_at' => now(),
                 ]);
             if ($updated > 0) {
-                $this->recordWorkflowAudit($request, 'schedule_submitted', $department->id, $activeSemesterId, [
+                // The snapshot is this version's frozen content: recall and
+                // return leave the meetings as the working copy, which the
+                // department may then edit, reset or regenerate.
+                $snapshotVersionId = $this->recordWorkflowAudit($request, 'schedule_submitted', $department->id, $activeSemesterId, [
                     'schedules_updated' => $updated,
                     'selected_section_ids' => $sectionIds,
+                    'revision_number' => $submission->revision_number,
+                    'parent_submission_id' => $submission->parent_submission_id,
                 ], $submission->id);
+                $submission->update(['snapshot_version_id' => $snapshotVersionId]);
             }
 
             return compact('updated', 'submission');
@@ -1012,31 +1193,10 @@ class DepartmentScheduleController extends Controller
 
         $semesterId = $this->activeSemesterId();
         $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses, $affectedSubmissions, $submissionSections, $user, $semesterId) {
-            // A withdrawn section's instructors are released. Its rows leave the
-            // assignment statuses -- off every assignment screen and out of the
-            // instructor's load -- but the faculty conflict rule counts any row
-            // that carries an instructor, so a kept instructor went on blocking
-            // that person from every other class at the same hour, through a
-            // class nobody could see or clear. The previous instructor of each
-            // meeting is recorded below, so the release can be traced.
-            $released = $this->departmentScheduleQuery($id)
-                ->whereIn('section_id', $sectionIds)
-                ->whereIn('status', $withdrawableStatuses)
-                ->whereNotNull('faculty_id')
-                ->get(['id', 'section_id', 'faculty_id']);
-
-            if ($released->isNotEmpty()) {
-                Schedule::query()
-                    ->whereIn('id', $released->pluck('id'))
-                    ->update([
-                        'faculty_id' => null,
-                        'faculty_conflict_override' => false,
-                        'updated_at' => now(),
-                    ]);
-            }
-
-            // Instructor assignment starts over once the revision is approved, so
-            // no recalled row may keep a "done" handoff from the last round.
+            // A recalled section keeps its instructors: the meetings come back
+            // for revision with their assignments intact and are revalidated
+            // when the schedule changes (see CommitSchedulePlan). Only the
+            // "done" handoff from the last round is reopened.
             $this->departmentScheduleQuery($id)
                 ->whereIn('section_id', $sectionIds)
                 ->whereIn('status', $withdrawableStatuses)
@@ -1076,30 +1236,10 @@ class DepartmentScheduleController extends Controller
                 ]);
             }
 
-            foreach ($released->groupBy('section_id') as $sectionId => $rows) {
-                SchedulingAuditLog::create([
-                    'user_id' => $user->id,
-                    'semester_id' => $semesterId,
-                    'section_id' => (int) $sectionId,
-                    'department_id' => $id,
-                    'action' => 'instructor_assignment_released',
-                    'metadata' => [
-                        'reason' => 'schedule_withdrawn',
-                        'released_count' => $rows->count(),
-                        'schedule_ids' => $rows->pluck('id')->map('intval')->values()->all(),
-                        'previous_faculty_ids' => $rows->mapWithKeys(
-                            static fn (Schedule $row): array => [(string) $row->id => (int) $row->faculty_id]
-                        )->all(),
-                        'faculty_ids' => $rows->pluck('faculty_id')->map('intval')->unique()->values()->all(),
-                    ],
-                    'created_at' => now(),
-                ]);
-            }
-
             return [
                 'completed' => $completed,
                 'revision' => $revision,
-                'instructors_released' => $released->count(),
+                'instructors_released' => 0,
                 'submission_ids' => $affectedSubmissions->pluck('id')->map('intval')->values()->all(),
             ];
         });
@@ -1340,7 +1480,7 @@ class DepartmentScheduleController extends Controller
         ?int $semesterId,
         array $metadata = [],
         ?int $submissionId = null,
-    ): void {
+    ): ?int {
         $historyGroupId = (string) Str::uuid();
         $metadata['history_group_id'] = $historyGroupId;
         $schedules = collect();
@@ -1385,6 +1525,9 @@ class DepartmentScheduleController extends Controller
                 'department_workflow',
                 null,
                 $metadata,
+                // The names as they were sent: a course edited or a section
+                // deleted later must not rewrite this version.
+                $this->descriptors->for($schedules),
             );
         }
 
@@ -1399,5 +1542,6 @@ class DepartmentScheduleController extends Controller
             'created_at' => now(),
         ]);
 
+        return $version?->id;
     }
 }

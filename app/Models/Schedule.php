@@ -2,25 +2,22 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Schedule extends Model
 {
-    use MassPrunable, SoftDeletes;
-
-    /**
-     * Archived rows are removed for good once past the retention period
-     * (model:prune, scheduled daily). History snapshots keep the record.
-     */
-    public function prunable(): Builder
-    {
-        return static::onlyTrashed()->where('deleted_at', '<', now()->subMonths((int) config('app.schedule_archive_retention_months', 12)));
-    }
+    use SoftDeletes;
 
     protected $table = 'schedules';
+
+    /**
+     * Rows outside every live approval stage. A submitted, approved or
+     * finalized row belongs to a submission or an instructor's load, so
+     * anything that would delete or restructure it -- the row itself, or the
+     * section it hangs from -- is refused until the submission is recalled.
+     */
+    public const UNLOCKED_STATUSES = ['draft', 'completed', 'revision', 'rejected', 'rejected_by_dean'];
 
     /**
      * Relations returned with any schedule response (batch save, listings, update,

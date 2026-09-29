@@ -552,6 +552,39 @@ class CurriculumController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
+        // A cohort following this curriculum that already has the course on its
+        // timetable would keep classes of a course its curriculum no longer
+        // lists. Same matching as rejectIfStillInUse(), narrowed to this course.
+        $sections = $curriculum->sections()
+            ->where('sections.status', 'active')
+            ->whereHas('schedules', function ($schedules) use ($course): void {
+                $schedules->where('schedules.course_id', $course->id)
+                    ->where(function ($scope): void {
+                        $scope->whereColumn('schedules.curriculum_id', 'sections.curriculum_id')
+                            ->orWhereNull('schedules.curriculum_id');
+                    });
+            })
+            ->orderBy('year_level')
+            ->orderBy('section_name')
+            ->get(['id', 'section_name', 'year_level']);
+
+        if ($sections->isNotEmpty()) {
+            $overflow = $sections->count() > 5 ? sprintf(' and %d more', $sections->count() - 5) : '';
+
+            return response()->json([
+                'message' => sprintf(
+                    'Cannot remove %s: %d active section%s already ha%s it scheduled (%s%s). Clear those classes first.',
+                    $course->course_code,
+                    $sections->count(),
+                    $sections->count() === 1 ? '' : 's',
+                    $sections->count() === 1 ? 's' : 've',
+                    $sections->pluck('section_name')->take(5)->implode(', '),
+                    $overflow,
+                ),
+                'blocking_sections' => $sections,
+            ], 422);
+        }
+
         $curriculum->courses()->detach($course->id);
 
         Course::syncPlacementFromCurricula([$course->id]);

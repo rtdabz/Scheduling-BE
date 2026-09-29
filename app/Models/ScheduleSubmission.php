@@ -14,6 +14,7 @@ class ScheduleSubmission extends Model
         'status',
         'section_count',
         'subject_count',
+        'snapshot_version_id',
         'submitted_by',
         'submitted_at',
         'dean_reviewed_by',
@@ -50,6 +51,12 @@ class ScheduleSubmission extends Model
     public function parent()
     {
         return $this->belongsTo(self::class, 'parent_submission_id');
+    }
+
+    /** The frozen copy of the meetings as they were sent, kept after recall or return. */
+    public function snapshotVersion()
+    {
+        return $this->belongsTo(ScheduleHistoryVersion::class, 'snapshot_version_id');
     }
 
     public function sections()

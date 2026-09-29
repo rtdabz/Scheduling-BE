@@ -20,6 +20,8 @@ class ScheduleHistoryRecorder
         ?string $source = null,
         ?string $reason = null,
         array $changeSummary = [],
+        /** Per schedule id; kept beside each snapshot, e.g. the names the ids resolved to then. */
+        array $itemMetadata = [],
     ): ScheduleHistoryVersion {
         $beforeRows = $this->keyById($before);
         $afterRows = $this->keyById($after);
@@ -67,7 +69,7 @@ class ScheduleHistoryRecorder
                 'original_schedule_id' => $id ?: null,
                 'before_snapshot' => $this->snapshot($beforeRow),
                 'after_snapshot' => $this->snapshot($afterRow),
-                'snapshot_metadata' => ['action' => $action, 'source' => $source],
+                'snapshot_metadata' => ($itemMetadata[$id] ?? []) + ['action' => $action, 'source' => $source],
             ]);
         }
 

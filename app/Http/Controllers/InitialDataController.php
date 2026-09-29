@@ -13,6 +13,7 @@ use App\Models\Semester;
 use App\Models\User;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
+use App\Services\Scheduling\Submission\SubmissionStatusResolver;
 use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -51,6 +52,7 @@ class InitialDataController extends Controller
     public function __construct(
         private readonly FacultyLoadService $facultyLoad,
         private readonly ScheduleAuthorizationService $authorization,
+        private readonly SubmissionStatusResolver $submissionStatuses,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -62,9 +64,15 @@ class InitialDataController extends Controller
         // `users`/`faculties`) no longer discards the cached payload of a page
         // that asked for none of it (`?include=rooms,departments,schedules`).
         // Writes that cannot be narrowed still bump `initial.data` itself.
+        $requestedGroups = $include ?? self::OPTIONAL_SECTIONS;
+        // Sections carry their submission and revision status, which move with
+        // every schedule edit and workflow transition.
+        if (in_array('sections', $requestedGroups, true)) {
+            $requestedGroups = array_values(array_unique([...$requestedGroups, 'schedules', 'schedule_submissions']));
+        }
         $sectionGroups = array_map(
             static fn (string $section): string => 'initial.data.'.$section,
-            $include ?? self::OPTIONAL_SECTIONS,
+            $requestedGroups,
         );
         $cacheKey = ApiCache::compositeKey('initial.data', $sectionGroups, [
             'include' => $include,
@@ -315,6 +323,18 @@ class InitialDataController extends Controller
                 }
             }))
             ->get();
+        if ($sections->isNotEmpty()) {
+            $sectionStatuses = $this->submissionStatuses->forSections(
+                $sections->pluck('id')->map('intval')->all(),
+                $activeSemesterId,
+            );
+            $sections->each(function (Sections $section) use ($sectionStatuses): void {
+                $status = $sectionStatuses[(int) $section->id] ?? null;
+                $section->setAttribute('submission_status', $status['submission_status'] ?? SubmissionStatusResolver::DRAFT);
+                $section->setAttribute('revision_status', $status['revision_status'] ?? SubmissionStatusResolver::INITIAL);
+                $section->setAttribute('submission_revision_number', $status['revision_number'] ?? null);
+            });
+        }
 
         // Every relation below is duplicated onto each of the (up to 2,000) schedule
         // rows, while the same records already ship normalised at the top level of
@@ -389,6 +409,11 @@ class InitialDataController extends Controller
             ->when($activeSemesterId !== null, fn (Builder $query) => $query->where('semester_id', $activeSemesterId))
             ->orderByDesc('revision_number')
             ->get();
+        $revisionStatuses = $this->submissionStatuses->forSubmissions($scheduleSubmissions);
+        $scheduleSubmissions->each(fn (ScheduleSubmission $submission) => $submission->setAttribute(
+            'revision_status',
+            $revisionStatuses[$submission->id] ?? SubmissionStatusResolver::INITIAL,
+        ));
         $latestSubmissionBySection = collect();
         foreach ($scheduleSubmissions as $submission) {
             foreach ($submission->sections as $submissionSection) {

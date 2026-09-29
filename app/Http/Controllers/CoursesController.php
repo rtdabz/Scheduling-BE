@@ -8,13 +8,17 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Schedule;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
+use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
 class CoursesController extends Controller
 {
-    public function __construct(private readonly ScheduleAuthorizationService $authorization) {}
+    public function __construct(
+        private readonly ScheduleAuthorizationService $authorization,
+        private readonly RevisionChangeRecorder $revisionChanges,
+    ) {}
 
     public function index(Request $request)
     {
@@ -210,7 +214,9 @@ class CoursesController extends Controller
             $validated['course_category'] ?? $course->course_category,
         );
 
+        $original = $course->getAttributes();
         $course->update($validated);
+        $this->revisionChanges->recordCourseChanged($original, $course, $request->user()?->id);
         ApiCache::forgetGroups(['courses.index', 'initial.data']);
 
         return response()->json($course->load(['department', 'program']));

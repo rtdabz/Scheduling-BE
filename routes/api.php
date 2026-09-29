@@ -77,8 +77,6 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
             ->whereNumber('id');
 
         Route::apiResource('departments', DepartmentsController::class)->except(['index', 'show']);
-        Route::get('/departments/trash', [DepartmentsController::class, 'trash'])->name('departments.trash');
-        Route::post('/departments/{id}/restore', [DepartmentsController::class, 'restore'])->name('departments.restore');
         Route::apiResource('semesters', SemesterController::class)->except(['index', 'show']);
         Route::patch('/institution-settings', [InstitutionSettingsController::class, 'update']);
         Route::patch('semesters/{id}/activate', [SemesterController::class, 'activate']);
@@ -113,6 +111,16 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
         // Department schedule-status is readable by all three operational roles.
         Route::get('departments/{id}/schedule-status', [DepartmentScheduleController::class, 'scheduleStatus']);
+
+        // The frozen copy of a submitted version; recalled and returned ones
+        // stay readable after the working copy is edited or reset.
+        Route::get('schedule-submissions/{submission}/snapshot', [DepartmentScheduleController::class, 'submissionSnapshot'])
+            ->whereNumber('submission');
+        // What the working copy went through after that version was recalled or
+        // rejected: meetings added, removed or changed, sections deleted, and
+        // course details edited, each with its state before and after.
+        Route::get('schedule-submissions/{submission}/changes', [DepartmentScheduleController::class, 'submissionChanges'])
+            ->whereNumber('submission');
 
         Route::get('rooms', [RoomsController::class, 'index']);
         Route::get('rooms/{room}', [RoomsController::class, 'show']);

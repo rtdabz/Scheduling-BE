@@ -938,7 +938,8 @@ class ScheduleRecommendationController extends Controller
                 // Keep schedule persistence and recommendation state changes in
                 // one database transaction. A committed schedule must never
                 // be visible while its recommendation remains pending.
-                [$committedPlan, $recommendation, $createdIds] = DB::transaction(function () use ($plan, $scheduleRecommendation, $user) {
+                $resetInstructors = $request->boolean('reset_instructors');
+                [$committedPlan, $recommendation, $createdIds] = DB::transaction(function () use ($plan, $scheduleRecommendation, $user, $resetInstructors) {
                     $recommendation = ScheduleRecommendation::query()
                         ->whereKey($scheduleRecommendation->id)
                         ->lockForUpdate()
@@ -947,7 +948,7 @@ class ScheduleRecommendationController extends Controller
                         throw new InvalidArgumentException('Only pending recommendations can be accepted.');
                     }
 
-                    [$committedPlan, $createdIds] = $this->commitAndAccept($recommendation, $plan, $user?->id);
+                    [$committedPlan, $createdIds] = $this->commitAndAccept($recommendation, $plan, $user?->id, $resetInstructors);
 
                     return [
                         $committedPlan,
@@ -1107,9 +1108,9 @@ class ScheduleRecommendationController extends Controller
      *
      * @return array{0: SchedulePlan, 1: list<int>}
      */
-    private function commitAndAccept(ScheduleRecommendation $recommendation, SchedulePlan $plan, ?int $userId): array
+    private function commitAndAccept(ScheduleRecommendation $recommendation, SchedulePlan $plan, ?int $userId, bool $resetInstructors = false): array
     {
-        $committedPlan = $this->planCommitter->commit($plan, $userId);
+        $committedPlan = $this->planCommitter->commit($plan, $userId, $resetInstructors);
         $createdIds = array_values(array_map('intval', $committedPlan->metadata['created_schedule_ids'] ?? []));
 
         $recommendation->update([

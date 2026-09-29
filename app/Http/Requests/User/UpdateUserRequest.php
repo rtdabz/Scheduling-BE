@@ -4,6 +4,7 @@ namespace App\Http\Requests\User;
 
 use App\Models\Faculty;
 use App\Models\User;
+use App\Support\ProfilePicture;
 use Illuminate\Auth\Access\Response;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -30,7 +31,7 @@ class UpdateUserRequest extends FormRequest
             'is_active' => 'required|boolean',
             'allow_google_login' => 'sometimes|boolean',
             'department_id' => 'required|exists:departments,id',
-            'profile_picture' => 'nullable|string',
+            'profile_picture' => ProfilePicture::rules(),
             'program_id' => [
                 'nullable',
                 Rule::requiredIf(fn () => $this->input('role') === 'program_head'),

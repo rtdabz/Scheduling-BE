@@ -57,6 +57,20 @@ class SystemNotificationService
             $remarks,
             $metadata,
         ): void {
+            // Bursts of the same event (one edit per schedule, one assignment per
+            // row, a completion reported by two paths) would otherwise stack up
+            // identical unread entries. Skip repeats within a short window.
+            $duplicate = SystemNotification::query()
+                ->where('user_id', $user->id)
+                ->where('type', $type)
+                ->where('message', $message)
+                ->whereNull('read_at')
+                ->where('created_at', '>=', now()->subMinutes(2))
+                ->exists();
+            if ($duplicate) {
+                return;
+            }
+
             SystemNotification::create([
                 'user_id' => $user->id,
                 'actor_id' => $actor?->id,

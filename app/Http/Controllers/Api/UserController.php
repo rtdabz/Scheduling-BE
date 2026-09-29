@@ -254,17 +254,12 @@ class UserController extends Controller
         }
 
         $role = $validated['role'];
-        $holder = User::query()
-            ->with(['department', 'program'])
-            ->where('role', $role)
-            ->where('is_active', true)
-            ->when($ignoreUserId !== null, fn ($query) => $query->whereKeyNot($ignoreUserId))
-            ->when(
-                $role === 'program_head',
-                fn ($query) => $query->where('program_id', $validated['program_id'] ?? null),
-                fn ($query) => $query->where('department_id', $validated['department_id']),
-            )
-            ->first();
+        $holder = User::activeRoleHolder(
+            $role,
+            (int) $validated['department_id'],
+            isset($validated['program_id']) ? (int) $validated['program_id'] : null,
+            $ignoreUserId,
+        );
 
         if ($holder === null) {
             return;

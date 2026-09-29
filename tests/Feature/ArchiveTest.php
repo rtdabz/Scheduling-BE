@@ -48,6 +48,35 @@ class ArchiveTest extends TestCase
         $this->assertDatabaseHas('rooms', ['id' => $room->id, 'deleted_at' => null]);
     }
 
+    public function test_restore_is_audited_and_archive_lists_a_count_for_every_type(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $room = Rooms::create(['room_code' => 'AUD-101', 'room_type' => 'lecture']);
+        $room->delete();
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->getJson('/api/archives')
+            ->assertOk()
+            ->assertJsonPath('counts.rooms', 1)
+            ->assertJsonPath('counts.schedules', 0);
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->postJson("/api/archives/rooms/{$room->id}/restore")
+            ->assertOk();
+
+        $this->assertDatabaseHas('scheduling_audit_logs', ['action' => 'record_restored', 'user_id' => $vpaa->id]);
+    }
+
+    public function test_an_archived_room_code_can_be_reused_by_a_new_room(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        Rooms::create(['room_code' => 'REUSE-1', 'room_type' => 'lecture'])->delete();
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->postJson('/api/rooms', ['room_code' => 'REUSE-1', 'room_type' => 'lecture'])
+            ->assertSuccessful();
+    }
+
     public function test_a_department_in_use_cannot_be_archived(): void
     {
         $vpaa = User::factory()->create(['role' => 'vpaa']);

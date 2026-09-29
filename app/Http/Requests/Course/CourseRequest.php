@@ -16,6 +16,14 @@ abstract class CourseRequest extends FormRequest
         }
     }
 
+    /** @return array<string, string> */
+    public function messages(): array
+    {
+        return [
+            'course_code.unique' => 'This course code belongs to an existing or archived course in your department. If it was archived, ask the VPAA to restore it from Archives.',
+        ];
+    }
+
     /**
      * A major's program decides which instructors may teach it, so the program has
      * to belong to the department that offers the course.

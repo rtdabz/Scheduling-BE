@@ -177,7 +177,6 @@ class SemesterController extends Controller
                     ->get();
                 $versions = $archiver->archive($schedules, (int) $actor->id, (int) $previous->id);
 
-                Schedule::query()->where('semester_id', $previous->id)->update(['deleted_at' => now()]);
                 $previous->is_active = false;
                 $previous->save();
 
@@ -185,7 +184,8 @@ class SemesterController extends Controller
                 // Remove both operational section cycles so changing semesters
                 // starts the newly active semester as a clean workspace and the
                 // ended semester cannot reappear with stale sections later.
-                Schedule::query()->where('semester_id', $semester->id)->update(['deleted_at' => now()]);
+                // Their classes go with them (the foreign key cascades); the
+                // approved ones were snapshotted into history above.
                 $resetSectionCount = Sections::query()
                     ->whereIn('semester_id', [$previous->id, $semester->id])
                     ->delete();

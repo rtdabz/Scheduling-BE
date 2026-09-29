@@ -7,14 +7,17 @@ namespace App\Services\Scheduling\Schedule;
 use App\Exceptions\ScheduleConflictException;
 use App\Exceptions\SchedulePlanCommitException;
 use App\Models\Schedule;
+use App\Models\ScheduleSplit;
 use App\Models\SchedulingAuditLog;
 use App\Services\ScheduleHistoryRecorder;
+use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleCandidate;
 use App\Services\Scheduling\Domain\SchedulePlan;
 use App\Services\Scheduling\Domain\SchedulePlanStatus;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
+use App\Services\Scheduling\Engine\Constraints\Families\InstructorAvailabilityConstraints;
 use App\Services\Scheduling\Engine\Constraints\ValidateScheduleCandidate;
 use App\Services\Scheduling\Generation\ValidateGenerationConfiguration;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
@@ -33,6 +36,7 @@ final class CommitSchedulePlan
         private readonly ValidateScheduleCandidate $candidateValidator,
         private readonly ScheduleHistoryRecorder $historyRecorder,
         private readonly ScheduleConflictScanner $conflicts,
+        private readonly RevisionChangeRecorder $revisionChanges,
     ) {}
 
     /**
@@ -40,13 +44,13 @@ final class CommitSchedulePlan
      *
      * Authorization remains the responsibility of the eventual HTTP adapter.
      */
-    public function commit(SchedulePlan $plan, ?int $actorUserId = null): SchedulePlan
+    public function commit(SchedulePlan $plan, ?int $actorUserId = null, bool $resetInstructors = false): SchedulePlan
     {
         [$semesterId, $departmentId] = $this->assertCommitEligible($plan);
 
         try {
-            $committed = $this->lock->execute([$semesterId], function () use ($plan, $actorUserId, $semesterId, $departmentId): SchedulePlan {
-                return DB::transaction(function () use ($plan, $actorUserId, $semesterId, $departmentId): SchedulePlan {
+            $committed = $this->lock->execute([$semesterId], function () use ($plan, $actorUserId, $semesterId, $departmentId, $resetInstructors): SchedulePlan {
+                return DB::transaction(function () use ($plan, $actorUserId, $semesterId, $departmentId, $resetInstructors): SchedulePlan {
                     $snapshot = $this->snapshots->captureForConfiguration(
                         $semesterId,
                         $departmentId,
@@ -120,8 +124,13 @@ final class CommitSchedulePlan
                         ? []
                         : $this->conflicts->scan($semesterId, onlyScheduleIds: $replacedIds);
 
-                    foreach ($before as $schedule) {
-                        $schedule->delete();
+                    // Drafts that never entered approval are replaced outright.
+                    // Archiving them filled the Archive page with rows that
+                    // could be restored on top of the new timetable; the history
+                    // snapshot below still records them.
+                    if ($replacedIds !== []) {
+                        ScheduleSplit::withTrashed()->whereIn('schedule_id', $replacedIds)->forceDelete();
+                        Schedule::withTrashed()->whereIn('id', $replacedIds)->forceDelete();
                     }
 
                     $createdIds = [];
@@ -129,6 +138,13 @@ final class CommitSchedulePlan
                         $schedule = Schedule::create($this->persistencePayload($row, $snapshot));
                         $createdIds[] = (int) $schedule->id;
                     }
+
+                    // Keep the instructors the replaced rows had unless the
+                    // caller asked for a reset; only a clash or an invalid
+                    // assignment sends a meeting back for reassignment.
+                    $needsReassignment = $resetInstructors
+                        ? []
+                        : $this->carryOverInstructors($before, $createdIds, $snapshot, $semesterId);
 
                     $created = Schedule::query()
                         ->whereIn('id', $createdIds)
@@ -145,6 +161,10 @@ final class CommitSchedulePlan
                                 $replacedIds,
                             ),
                         );
+
+                    // Regenerating a recalled or rejected section replaces its
+                    // working copy; that version's history keeps what it held.
+                    $this->revisionChanges->recordScheduleChanges($before, $created, $actorUserId, 'regenerate');
 
                     $version = $this->historyRecorder->record(
                         'schedule_plan_committed',
@@ -177,6 +197,8 @@ final class CommitSchedulePlan
                             'replaced_schedule_ids' => $replacedIds,
                             'created_schedule_ids' => $createdIds,
                             'resolved_conflicts' => $resolvedConflicts,
+                            'instructors_reset' => $resetInstructors,
+                            'instructors_needing_reassignment' => $needsReassignment,
                         ],
                         'created_at' => now(),
                     ]);
@@ -199,6 +221,8 @@ final class CommitSchedulePlan
                             'replaced_schedule_ids' => $replacedIds,
                             'created_schedule_ids' => $createdIds,
                             'resolved_conflicts' => $resolvedConflicts,
+                            'instructors_reset' => $resetInstructors,
+                            'instructors_needing_reassignment' => $needsReassignment,
                         ],
                         schemaVersion: $plan->schemaVersion,
                     );
@@ -217,6 +241,79 @@ final class CommitSchedulePlan
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         return $committed;
+    }
+
+    /**
+     * Re-attach each replaced meeting's instructor to the matching new meeting
+     * (same course, meeting type and index; falling back to the course's single
+     * instructor) and revalidate it against the new slot: instructor active,
+     * part-time availability, and no overlap with the instructor's other classes.
+     *
+     * @param  \Illuminate\Support\Collection<int, Schedule>  $before
+     * @param  list<int>  $createdIds
+     * @return list<array<string, mixed>> meetings left without an instructor because the old one no longer fits
+     */
+    private function carryOverInstructors($before, array $createdIds, SchedulingSnapshot $snapshot, int $semesterId): array
+    {
+        $byMeeting = [];
+        $byCourse = [];
+        foreach ($before as $old) {
+            if ($old->faculty_id === null) {
+                continue;
+            }
+            $byMeeting[$old->course_id.'|'.$old->meeting_type.'|'.$old->meeting_index] ??= (int) $old->faculty_id;
+            $byCourse[$old->course_id][(int) $old->faculty_id] = true;
+        }
+
+        if ($byMeeting === []) {
+            return [];
+        }
+
+        $availability = new InstructorAvailabilityConstraints();
+        $unassigned = [];
+
+        foreach (Schedule::query()->whereIn('id', $createdIds)->orderBy('id')->get() as $new) {
+            $facultyId = $byMeeting[$new->course_id.'|'.$new->meeting_type.'|'.$new->meeting_index]
+                ?? (count($byCourse[$new->course_id] ?? []) === 1 ? array_key_first($byCourse[$new->course_id]) : null);
+            if ($facultyId === null) {
+                continue;
+            }
+
+            $reasons = array_map(
+                static fn (ConstraintViolation $violation): string => $violation->ruleId,
+                $availability->forRow(ScheduleRow::fromArray([...$new->toArray(), 'faculty_id' => $facultyId]), $snapshot),
+            );
+            if (! isset($snapshot->facultiesById[$facultyId])) {
+                $reasons[] = 'faculty_missing';
+            }
+
+            $clash = Schedule::query()
+                ->where('semester_id', $semesterId)
+                ->where('faculty_id', $facultyId)
+                ->where('day', $new->day)
+                ->where('id', '!=', $new->id)
+                ->where('start_time', '<', $new->end_time)
+                ->where('end_time', '>', $new->start_time)
+                ->exists();
+            if ($clash) {
+                $reasons[] = 'instructor_conflict';
+            }
+
+            if ($reasons !== []) {
+                $unassigned[] = [
+                    'schedule_id' => (int) $new->id,
+                    'course_id' => (int) $new->course_id,
+                    'faculty_id' => $facultyId,
+                    'reasons' => $reasons,
+                ];
+
+                continue;
+            }
+
+            $new->update(['faculty_id' => $facultyId]);
+        }
+
+        return $unassigned;
     }
 
     /** @return array{int, int} */

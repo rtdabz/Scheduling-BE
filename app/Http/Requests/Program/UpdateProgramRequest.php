@@ -61,8 +61,8 @@ class UpdateProgramRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'code.unique' => 'This department already offers a program with that code and major.',
-            'major.unique' => 'This department already offers a program with that code and major.',
+            'code.unique' => 'This department already has an existing or archived program with that code and major. If it was archived, restore it from Archives instead.',
+            'major.unique' => 'This department already has an existing or archived program with that code and major. If it was archived, restore it from Archives instead.',
         ];
     }
 }

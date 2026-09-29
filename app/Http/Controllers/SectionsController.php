@@ -10,6 +10,7 @@ use App\Models\Program;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
+use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
@@ -18,7 +19,19 @@ use Illuminate\Support\Facades\DB;
 
 class SectionsController extends Controller
 {
-    public function __construct(private readonly ScheduleAuthorizationService $authorization) {}
+    private const LOCKED_SECTION_MESSAGE = 'This section has classes at an approval stage. Recall the submission first, then try again.';
+
+    /**
+     * Fields that decide which classes a section should have. Changing one under
+     * a submitted or approved timetable would leave those classes describing a
+     * cohort that no longer exists. The name is left editable: it is a label.
+     */
+    private const STRUCTURAL_FIELDS = ['year_level', 'semester_id', 'department_id', 'program_id', 'curriculum_id', 'status'];
+
+    public function __construct(
+        private readonly ScheduleAuthorizationService $authorization,
+        private readonly RevisionChangeRecorder $revisionChanges,
+    ) {}
 
     // Get all sections
     public function index(Request $request)
@@ -184,6 +197,23 @@ class SectionsController extends Controller
         // Access to the section's current department is checked in UpdateSectionRequest::authorize().
         $validated = $request->validated();
 
+        // The semester label follows the semester row. Accepting it on its own
+        // let a section claim "2nd" while still belonging to a 1st-semester row.
+        unset($validated['semester']);
+        if (isset($validated['semester_id'])) {
+            $validated['semester'] = Semester::query()->whereKey($validated['semester_id'])->value('semester');
+        }
+
+        // The edit form resends every field, so only a value that actually
+        // changes counts.
+        $changesStructure = collect(self::STRUCTURAL_FIELDS)->contains(
+            fn (string $field): bool => array_key_exists($field, $validated)
+                && (string) $validated[$field] !== (string) $section->getAttribute($field),
+        );
+        if ($changesStructure && $section->hasLockedSchedules()) {
+            return response()->json(['message' => self::LOCKED_SECTION_MESSAGE], 422);
+        }
+
         if (isset($validated['department_id']) && ! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only move sections within your department.'], 403);
         }
@@ -321,7 +351,21 @@ class SectionsController extends Controller
             return response()->json(['message' => 'You can only manage sections for your department.'], 403);
         }
 
-        $section->delete();
+        // Deleting a section removes its classes with it (the foreign key
+        // cascades), so a section holding submitted or approved classes would
+        // take them out of the submission. Deleting those classes one by one
+        // is already refused; the section must not be a way around that.
+        if ($section->hasLockedSchedules()) {
+            return response()->json(['message' => self::LOCKED_SECTION_MESSAGE], 422);
+        }
+
+        // The delete cascades to the section's meetings and to its links to the
+        // submissions that sent it; a version that went through approval keeps
+        // them in its history instead.
+        DB::transaction(function () use ($request, $section): void {
+            $this->revisionChanges->recordSectionDeleted($section, $request->user()?->id);
+            $section->delete();
+        });
         ApiCache::forgetGroups([
             'sections.index',
             'sections.by_semester',

@@ -105,6 +105,30 @@ class User extends Authenticatable
     }
 
     /**
+     * The active account already filling a role slot -- Dean and Secretary per
+     * department, Program Head per program -- or null when the slot is free.
+     * Every other role has no slot.
+     */
+    public static function activeRoleHolder(string $role, ?int $departmentId, ?int $programId, ?int $ignoreUserId = null): ?self
+    {
+        if (! in_array($role, ['dean', 'secretary', 'program_head'], true)) {
+            return null;
+        }
+
+        return self::query()
+            ->with(['department', 'program'])
+            ->where('role', $role)
+            ->where('is_active', true)
+            ->when($ignoreUserId !== null, fn ($query) => $query->whereKeyNot($ignoreUserId))
+            ->when(
+                $role === 'program_head',
+                fn ($query) => $query->where('program_id', $programId),
+                fn ($query) => $query->where('department_id', $departmentId),
+            )
+            ->first();
+    }
+
+    /**
      * "First M. Last Jr." from the structured name fields, the form the
      * account list and the profile header both show.
      *

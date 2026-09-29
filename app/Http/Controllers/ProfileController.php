@@ -10,6 +10,7 @@ use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\UserFacultyProfileService;
 use App\Support\ApiCache;
+use App\Support\ProfilePicture;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -22,8 +23,6 @@ use Illuminate\Validation\Rule;
  */
 class ProfileController extends Controller
 {
-    /** A 300px JPEG from the picker is ~30 KB; this leaves headroom for PNGs. */
-    private const MAX_PICTURE_LENGTH = 1_500_000;
 
     public function __construct(
         private readonly AuthenticationAuditService $audit,
@@ -44,13 +43,7 @@ class ProfileController extends Controller
             'middle_initial' => ['nullable', 'string', 'size:1', 'alpha'],
             'last_name' => 'required|string|max:100',
             'suffix' => ['nullable', Rule::in(Faculty::NAME_SUFFIXES)],
-            'profile_picture' => [
-                'sometimes',
-                'nullable',
-                'string',
-                'max:'.self::MAX_PICTURE_LENGTH,
-                'regex:/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+\/=]+$/',
-            ],
+            'profile_picture' => ProfilePicture::rules(sometimes: true),
         ]);
 
         DB::transaction(function () use ($request, $user, $validated) {

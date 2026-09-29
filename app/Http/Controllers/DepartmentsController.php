@@ -98,8 +98,8 @@ class DepartmentsController extends Controller
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
-                ->where('role', 'dean')
-                ->select('id', 'name', 'department_id'),
+                ->whereIn('role', ['dean', 'secretary', 'program_head'])
+                ->select('id', 'name', 'role', 'department_id'),
         ]));
     }
 
@@ -122,28 +122,6 @@ class DepartmentsController extends Controller
         ApiCache::forgetGroups(['departments.index', 'initial.data']);
 
         return response()->json(['message' => 'Department archived successfully']);
-    }
-
-    /**
-     * Display soft-deleted departments (trash).
-     */
-    public function trash()
-    {
-        $departments = Departments::onlyTrashed()->latest()->paginate(10);
-
-        return view('departments.trash', compact('departments'));
-    }
-
-    /**
-     * Restore a soft-deleted department.
-     */
-    public function restore($id)
-    {
-        $department = Departments::onlyTrashed()->findOrFail($id);
-        $department->restore();
-
-        return redirect()->route('departments.trash')
-            ->with('success', 'Department restored successfully.');
     }
 
     /**

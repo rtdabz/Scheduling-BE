@@ -14,6 +14,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
+use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Schedule\BatchConflict;
 use App\Services\Scheduling\Schedule\BatchConflictValidator;
 use App\Services\Scheduling\Schedule\FacultyConflictOverride;
@@ -49,7 +50,7 @@ class ScheduleController extends Controller
      * finalized row belongs to a submission or an instructor's load; deleting
      * it from a stale screen left the submission pointing at missing meetings.
      */
-    private const DELETABLE_STATUSES = ['draft', 'completed', 'revision', 'rejected', 'rejected_by_dean'];
+    private const DELETABLE_STATUSES = Schedule::UNLOCKED_STATUSES;
 
     private const LOCKED_DELETE_MESSAGE = 'This class is locked at its current approval stage and cannot be deleted. Recall it first, then refresh and try again.';
 
@@ -67,6 +68,7 @@ class ScheduleController extends Controller
         private readonly SchedulingScopeLock $scheduleWriteLock,
         private readonly SameTimePartnerMover $sameTimePartners,
         private readonly ScheduleConflictScanner $conflictScanner,
+        private readonly RevisionChangeRecorder $revisionChanges,
     ) {
         $this->ruleEngine = $ruleEngine;
     }
@@ -575,6 +577,12 @@ class ScheduleController extends Controller
                     $existing = $updateIds === []
                         ? collect()
                         : Schedule::query()->whereIn('id', $updateIds)->get()->keyBy('id');
+                    // Read before the loop rewrites these models, so a recalled
+                    // or rejected version's history keeps the state it left.
+                    $revisionBefore = $existing
+                        ->map(static fn (Schedule $schedule): array => $schedule->getAttributes())
+                        ->values()
+                        ->merge($deletedBefore->map(static fn (Schedule $schedule): array => $schedule->getAttributes()));
 
                     foreach ($validated['operations'] as $op) {
                         if (isset($op['subject_id']) && ! isset($op['course_id'])) {
@@ -620,6 +628,7 @@ class ScheduleController extends Controller
                         ->sortBy(static fn (Schedule $schedule): int => array_search((int) $schedule->id, $savedIds, true))
                         ->values()
                         ->all();
+                    $this->revisionChanges->recordScheduleChanges($revisionBefore, $savedSchedules, request()->user()?->id, 'batch');
 
                     $createdBatchIds = array_values(array_diff($savedIds, $updateIds));
                     if ($createdBatchIds !== []) {
@@ -1518,8 +1527,9 @@ class ScheduleController extends Controller
         $resolvedConflicts = [];
 
         try {
-            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, $semesterId, &$movedPartnerIds, &$resolvedConflicts): void {
-                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, $semesterId, &$movedPartnerIds, &$resolvedConflicts): void {
+            $actorId = $request->user()?->id;
+            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, $semesterId, $actorId, &$movedPartnerIds, &$resolvedConflicts): void {
+                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, $semesterId, $actorId, &$movedPartnerIds, &$resolvedConflicts): void {
                     // Dragging a class, moving it by click, or changing who
                     // teaches it all save here; read what those rows clash
                     // with now so the save can record what it cleared.
@@ -1529,6 +1539,7 @@ class ScheduleController extends Controller
                         ...$manualFacultyScheduleIds,
                     ])));
                     $conflictsBefore = $this->conflictsTouching((int) $semesterId, $touchedIds);
+                    $revisionBefore = Schedule::query()->whereIn('id', $touchedIds)->get();
 
                     $violations = $instructorOnly
                         ? $this->ruleEngine->validateInstructorAssignment($attemptData)
@@ -1581,6 +1592,12 @@ class ScheduleController extends Controller
                         (int) $semesterId,
                         $conflictsBefore,
                         array_values(array_unique([...$touchedIds, ...$movedPartnerIds])),
+                    );
+                    $this->revisionChanges->recordScheduleChanges(
+                        $revisionBefore,
+                        Schedule::query()->whereIn('id', $revisionBefore->modelKeys())->get(),
+                        $actorId,
+                        'update',
                     );
                 });
             });
@@ -1734,12 +1751,15 @@ class ScheduleController extends Controller
             foreach ($schedules as $s) {
                 $s->delete();
             }
+            $removed = $schedules;
         } else {
             if (! in_array($schedule->status, self::DELETABLE_STATUSES, true)) {
                 return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
             }
             $schedule->delete();
+            $removed = collect([$schedule]);
         }
+        $this->revisionChanges->recordScheduleChanges($removed, [], $request->user()?->id, 'delete');
 
         $this->notifyScheduleSaved($request, $deletedSchedule, 'deleted');
         SchedulingAuditLog::create([
