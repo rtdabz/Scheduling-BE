@@ -23,17 +23,16 @@ final readonly class ScheduleConflictCase
     /**
      * What the user may do about each rule, in the order the UI offers them.
      * Every entry is an action ResolveScheduleConflict implements, except
-     * `request_override`, which routes to the override endpoint, and
-     * `apply_recommendation`, which routes to the existing
-     * preview -> select plan_id -> accept contract.
+     * `request_override`, which routes to the override endpoint. Ranked
+     * one-click fixes come from ConflictRecommender, not from this list.
      *
      * @var array<string, list<string>>
      */
     public const RESOLUTION_OPTIONS = [
-        BatchConflict::RULE_SECTION => ['move_schedule', 'apply_recommendation'],
-        BatchConflict::RULE_ROOM => ['change_room', 'change_delivery_mode', 'move_schedule', 'apply_recommendation'],
+        BatchConflict::RULE_SECTION => ['move_schedule'],
+        BatchConflict::RULE_ROOM => ['change_room', 'change_delivery_mode', 'move_schedule'],
         BatchConflict::RULE_FACULTY => ['reassign_instructor', 'move_schedule', 'request_override'],
-        BatchConflict::RULE_SUBJECT_SECTION_TIME => ['move_schedule', 'change_delivery_mode', 'apply_recommendation'],
+        BatchConflict::RULE_SUBJECT_SECTION_TIME => ['move_schedule', 'change_delivery_mode'],
     ];
 
     public function __construct(
@@ -132,6 +131,25 @@ final readonly class ScheduleConflictCase
         ])));
 
         return ['department_ids' => $ids('department_id'), 'section_ids' => $ids('section_id')];
+    }
+
+    /**
+     * What an audit row keeps about a conflict a change cleared: enough for
+     * the Resolved list to show it after both rows have moved or gone.
+     *
+     * @return array<string, mixed>
+     */
+    public function toResolutionRecord(): array
+    {
+        return [
+            'id' => $this->id(),
+            'rule' => $this->rule,
+            'message' => $this->message(),
+            'day' => $this->day,
+            'overlap_start' => $this->overlapStart,
+            'overlap_end' => $this->overlapEnd,
+            ...$this->owners(),
+        ];
     }
 
     public function involves(int $scheduleId): bool

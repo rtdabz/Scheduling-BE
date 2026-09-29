@@ -20,10 +20,12 @@ class UserFacultyProfileService
 
     public const MODES = [self::MODE_CREATE, self::MODE_LINK, self::MODE_NONE];
 
+    public const DEFAULT_MAX_UNITS = 21;
+
     public function __construct(private readonly FacultyDesignationService $designations) {}
 
     /**
-     * @param  list<int>  $designationIds  up to three; validated by the caller
+     * @param  list<int>  $designationIds  validated by the caller
      */
     public function createFor(User $user, array $designationIds = []): Faculty
     {
@@ -37,7 +39,7 @@ class UserFacultyProfileService
             'last_name' => $lastName,
             'suffix' => $suffix,
             'employment_type' => 'full-time',
-            'max_units' => 21,
+            'max_units' => self::DEFAULT_MAX_UNITS,
             'overload_units' => 0,
             'deload_units' => 0,
             'probono_units' => 0,
@@ -107,7 +109,7 @@ class UserFacultyProfileService
             ->where('department_id', $departmentId)
             ->orderBy('last_name')
             ->orderBy('first_name')
-            ->get(['id', 'first_name', 'middle_name', 'last_name', 'employment_type', 'program_id', 'status']);
+            ->get(['id', 'first_name', 'middle_name', 'last_name', 'employment_type', 'max_units', 'program_id', 'status']);
     }
 
     /**
@@ -124,7 +126,17 @@ class UserFacultyProfileService
 
         [$firstName, $middleName, $lastName, $suffix] = $this->nameParts($user);
 
-        $faculty->update([
+        // A deactivated account takes the instructor out of scheduling, and
+        // reactivating it brings them back. Only a change of the account's
+        // state reactivates, so an instructor set inactive on the roster stays
+        // that way through unrelated account edits.
+        $status = match (true) {
+            ! $user->is_active => ['status' => 'inactive'],
+            $user->wasChanged('is_active') => ['status' => 'active'],
+            default => [],
+        };
+
+        $faculty->update($status + [
             'administrative_role' => $user->role,
             'first_name' => $firstName,
             'middle_name' => $middleName,

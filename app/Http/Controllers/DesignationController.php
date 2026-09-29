@@ -43,6 +43,33 @@ class DesignationController extends Controller
         return response()->json($designation->load('parent:id,name')->loadCount(['faculties', 'children']));
     }
 
+    /**
+     * The instructors holding a designation, across every department. Behind
+     * the manage capability rather than the roster read gate, since the roster
+     * itself is department-scoped.
+     */
+    public function holders(Designation $designation): JsonResponse
+    {
+        $holders = $designation->faculties()
+            ->with('department:id,department_name,department_code')
+            ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->get(['faculties.id', 'first_name', 'last_name', 'middle_name', 'suffix', 'employment_type', 'department_id', 'deload_units', 'status'])
+            ->map(fn ($faculty) => [
+                'id' => $faculty->id,
+                'first_name' => $faculty->first_name,
+                'last_name' => $faculty->last_name,
+                'middle_name' => $faculty->middle_name,
+                'suffix' => $faculty->suffix,
+                'employment_type' => $faculty->employment_type,
+                'deload_units' => (int) $faculty->deload_units,
+                'status' => $faculty->status,
+                'department' => $faculty->department?->only(['id', 'department_name', 'department_code']),
+            ]);
+
+        return response()->json($holders);
+    }
+
     public function store(StoreDesignationRequest $request): JsonResponse
     {
         $payload = $this->normalize($request->validated());

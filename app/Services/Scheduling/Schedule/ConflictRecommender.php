@@ -33,8 +33,10 @@ final class ConflictRecommender
     public const DEFAULT_LIMIT = 5;
 
     /**
-     * Candidates checked against the RuleEngine before giving up. Each check
-     * queries, and a busy instructor can refuse most of a room's free week.
+     * Candidates checked against the RuleEngine before giving up, shared out
+     * evenly between the conflict's classes. Each check queries, and a busy
+     * instructor can refuse most of a room's free week -- one class must not
+     * spend the whole allowance and leave the other with no options.
      */
     private const MAX_VALIDATIONS = 60;
 
@@ -56,7 +58,7 @@ final class ConflictRecommender
     {
         $allowed = $case->resolutionOptions();
         $schedules = Schedule::query()->whereIn('id', $case->scheduleIds())->get()->keyBy('id');
-        $budget = self::MAX_VALIDATIONS;
+        $perSchedule = intdiv(self::MAX_VALIDATIONS, max(1, count($case->scheduleIds())));
         $buckets = [];
 
         foreach ($case->scheduleIds() as $scheduleId) {
@@ -64,6 +66,8 @@ final class ConflictRecommender
             if (! $schedule instanceof Schedule) {
                 continue;
             }
+
+            $budget = $perSchedule;
 
             foreach ($this->placementCandidates($schedule, $allowed) as $candidates) {
                 $buckets[] = $this->firstValid($candidates, self::PER_BUCKET, $budget);
@@ -181,17 +185,20 @@ final class ConflictRecommender
         $startTime = substr((string) $slot['start_time'], 0, 5);
         $endTime = substr((string) $slot['end_time'], 0, 5);
         $where = $mode === 'online' ? 'online' : 'in '.$slot['room_code'];
+        $modeChange = 'Changes delivery to '.$mode;
 
-        [$score, $payload, $summary] = match ($action) {
+        [$score, $payload, $summary, $reasons] = match ($action) {
             'change_room' => [
                 100,
                 ['room_id' => $roomId, 'mode' => $mode],
                 "Move {$this->label($schedule)} to {$slot['room_code']}, same time.",
+                ['Same day and time', 'Only the room changes'],
             ],
             'change_delivery_mode' => [
                 85,
                 ['mode' => $mode, 'room_id' => $roomId],
                 "Hold {$this->label($schedule)} {$where} instead, same time.",
+                ['Same day and time', $modeChange],
             ],
             default => [
                 // Nearer the original day and hour is less disruptive; keeping
@@ -203,6 +210,7 @@ final class ConflictRecommender
                     - ($keepsMode ? 0 : 15),
                 ['day' => $slot['day'], 'start_time' => $startTime, 'end_time' => $endTime, 'room_id' => $roomId, 'mode' => $mode],
                 "Move {$this->label($schedule)} to {$slot['day']} {$startTime}-{$endTime} {$where}.",
+                $this->moveReasons($schedule, $slot, $currentStart, $keepsRoom, $keepsMode ? null : $modeChange),
             ],
         };
 
@@ -210,6 +218,7 @@ final class ConflictRecommender
             'action' => $action,
             'schedule_id' => (int) $schedule->id,
             'summary' => $summary,
+            'reasons' => $reasons,
             'score' => $score,
             'day' => $slot['day'],
             'start_time' => $startTime,
@@ -225,6 +234,44 @@ final class ConflictRecommender
                 'ignore_schedule_id' => (int) $schedule->id,
             ],
         ];
+    }
+
+    /**
+     * Why a move ranks where it does, in the terms its score uses: the day,
+     * how far the start shifts, and whether the room and delivery stay.
+     *
+     * @param  array<string, mixed>  $slot
+     * @return list<string>
+     */
+    private function moveReasons(Schedule $schedule, array $slot, int $currentStart, bool $keepsRoom, ?string $modeChange): array
+    {
+        $day = (string) $slot['day'];
+        $reasons = [];
+
+        if ($day === $schedule->day) {
+            $reasons[] = 'Same day';
+        } elseif (! in_array($day, SchedulingPolicy::WEEKDAYS, true) && in_array($schedule->day, SchedulingPolicy::WEEKDAYS, true)) {
+            $reasons[] = 'Moves to the weekend';
+        }
+
+        $shift = SchedulingPolicy::timeToMinutes((string) $slot['start_time']) - $currentStart;
+        if ($shift === 0) {
+            $reasons[] = 'Same start time';
+        } else {
+            $hours = intdiv(abs($shift), 60);
+            $minutes = abs($shift) % 60;
+            $amount = trim(($hours > 0 ? "{$hours}h " : '').($minutes > 0 ? "{$minutes}m" : ''));
+            $reasons[] = "Starts {$amount} ".($shift > 0 ? 'later' : 'earlier');
+        }
+
+        if ($keepsRoom && $slot['mode'] !== 'online') {
+            $reasons[] = 'Keeps its room';
+        }
+        if ($modeChange !== null) {
+            $reasons[] = $modeChange;
+        }
+
+        return $reasons;
     }
 
     /**
@@ -323,6 +370,13 @@ final class ConflictRecommender
                 'action' => 'reassign_instructor',
                 'schedule_id' => (int) $schedule->id,
                 'summary' => "Assign {$name} to {$this->label($schedule)}.",
+                'reasons' => [
+                    'Timetable unchanged',
+                    'Free at this time',
+                    $load['requires_confirmation']
+                        ? "Over Basic Load at {$load['projected_units']} units"
+                        : "{$load['projected_units']} units after this class",
+                ],
                 // Below every same-time room change, above most moves: a new
                 // instructor leaves the timetable alone.
                 'score' => ($load['requires_confirmation'] ? 40 : 90) - min(30, (int) $load['projected_units']),

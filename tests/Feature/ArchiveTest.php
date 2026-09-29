@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Departments;
+use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -111,8 +112,41 @@ class ArchiveTest extends TestCase
         $this->assertSoftDeleted('users', ['id' => $user['id']]);
         $this->assertDatabaseHas('faculties', [
             'user_id' => $user['id'],
-            'administrative_role' => 'secretary',
+            'administrative_role' => null,
             'deleted_at' => null,
+        ]);
+
+        // With the account archived, the profile itself can now be archived.
+        $faculty = Faculty::where('user_id', $user['id'])->firstOrFail();
+        $this->actingAs($vpaa, 'sanctum')
+            ->deleteJson("/api/faculties/{$faculty->id}")
+            ->assertOk();
+    }
+
+    public function test_restoring_an_archived_user_restores_the_profile_role(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $department = Departments::create([
+            'department_name' => 'College of Education',
+            'department_code' => 'CED',
+        ]);
+
+        $user = $this->actingAs($vpaa, 'sanctum')->postJson('/api/user', [
+            'first_name' => 'Department',
+            'last_name' => 'Secretary',
+            'username' => 'department.secretary',
+            'email' => 'secretary@example.com',
+            'password' => 'StrongPass123',
+            'role' => 'secretary',
+            'department_id' => $department->id,
+        ])->assertCreated()->json('data');
+
+        $this->actingAs($vpaa, 'sanctum')->deleteJson("/api/user/{$user['id']}")->assertOk();
+        $this->actingAs($vpaa, 'sanctum')->postJson("/api/archives/users/{$user['id']}/restore")->assertOk();
+
+        $this->assertDatabaseHas('faculties', [
+            'user_id' => $user['id'],
+            'administrative_role' => 'secretary',
         ]);
     }
 }

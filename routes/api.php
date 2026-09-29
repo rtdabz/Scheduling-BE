@@ -244,6 +244,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('conflicts', [ScheduleConflictController::class, 'index']);
         Route::post('conflicts/{conflict}/review', [ScheduleConflictController::class, 'review']);
         Route::get('conflicts/resolved', [ScheduleConflictController::class, 'resolved']);
+        Route::get('conflicts/rule-issues', [ScheduleConflictController::class, 'ruleIssues']);
         Route::get('conflicts/{conflict}/recommendations', [ScheduleConflictController::class, 'recommendations']);
         Route::post('conflicts/{conflict}/resolve', [ScheduleConflictController::class, 'resolve']);
         Route::post('conflicts/{conflict}/override', [ScheduleConflictController::class, 'override']);
@@ -256,7 +257,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
             ->whereNumber('duration');
     });
 
-    Route::middleware('role:vpaa,admin')->group(function () {
+    Route::middleware('role:vpaa')->group(function () {
         Route::patch('timeslots/settings', [TimeslotController::class, 'updateSettings']);
         Route::post('timeslots/overrides', [TimeslotController::class, 'storeOverride']);
         Route::match(['put', 'patch'], 'timeslots/overrides/{id}', [TimeslotController::class, 'updateOverride'])
@@ -269,6 +270,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     // gate, so which roles hold it is decided in config/capabilities.php.
     // Reads stay open to every scheduling role above.
     Route::middleware('capability:faculty.manage_designations')->group(function () {
+        Route::get('designations/{designation}/holders', [DesignationController::class, 'holders']);
         Route::post('designations', [DesignationController::class, 'store']);
         Route::match(['put', 'patch'], 'designations/{designation}', [DesignationController::class, 'update']);
         Route::delete('designations/{designation}', [DesignationController::class, 'destroy']);
@@ -315,21 +317,14 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     Route::middleware('capability:schedule.generate')->group(function () {
-        Route::post('schedule-recommendations/auto-generate', [ScheduleRecommendationController::class, 'autoGenerateAndApply']);
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
         Route::post('schedule-recommendations/available-slots', [ScheduleRecommendationController::class, 'availableSlots']);
-        Route::post('schedule-recommendations/preview/queue', [ScheduleRecommendationController::class, 'queuePreview'])->middleware('throttle:10,1');
         Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview'])->middleware('throttle:5,1');
         Route::post('schedule-recommendations/year-level-preview/queue', [ScheduleRecommendationController::class, 'queueYearLevelPreview'])->middleware('throttle:5,1');
         Route::get('schedule-recommendations/active-generation-run', [ScheduleRecommendationController::class, 'activeGenerationRun']);
         Route::get('schedule-recommendations/generation-runs/{runId}', [ScheduleRecommendationController::class, 'generationRun']);
         Route::post('schedule-recommendations/generation-runs/{runId}/cancel', [ScheduleRecommendationController::class, 'cancelGenerationRun']);
         Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
-        Route::post('schedule-recommendations/recommend-split', [ScheduleRecommendationController::class, 'recommendSplit']);
-        Route::get('schedule-recommendations', [ScheduleRecommendationController::class, 'index']);
-        Route::post('schedule-recommendations', [ScheduleRecommendationController::class, 'store']);
-        Route::get('schedule-recommendations/{scheduleRecommendation}', [ScheduleRecommendationController::class, 'show']);
-        Route::post('schedule-recommendations/{scheduleRecommendation}/review', [ScheduleRecommendationController::class, 'review']);
         Route::post('schedule-recommendations/{scheduleRecommendation}/accept', [ScheduleRecommendationController::class, 'accept']);
         Route::post('schedule-recommendations/{scheduleRecommendation}/reject', [ScheduleRecommendationController::class, 'reject']);
         Route::get('scheduling-settings', [SchedulingSettingsController::class, 'show']);

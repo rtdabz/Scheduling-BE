@@ -39,7 +39,7 @@ class FacultyController extends Controller
     private const DEFAULT_MAX_UNITS = 21;
 
     /**
-     * The designations an instructor holds (up to three), and the older
+     * The designations an instructor holds, and the older
      * single-designation field. Not load fields and not part of their identity,
      * so they are permitted alongside either set -- but only for a caller
      * holding `faculty.manage_designations`, and the deload they imply is always
@@ -103,7 +103,10 @@ class FacultyController extends Controller
         }
 
         $designationIds = $this->designations->idsFrom($request);
-        $this->designations->validate($designationIds);
+        $this->designations->validate(
+            $designationIds,
+            maxUnits: (int) ($validator->validated()['max_units'] ?? self::DEFAULT_MAX_UNITS),
+        );
 
         // Only the validated keys are assigned. `user_id` and
         // `administrative_role` are fillable but belong to the user-account link,
@@ -297,7 +300,7 @@ class FacultyController extends Controller
 
         $designationIds = $submitsDesignation ? $this->designations->idsFrom($request) : [];
         if ($submitsDesignation) {
-            $this->designations->validate($designationIds, $faculty);
+            $this->designations->validate($designationIds, $faculty, (int) ($payload['max_units'] ?? $faculty->max_units));
         }
 
         // Designations win over a hand-typed deload in the same request: the
@@ -321,7 +324,8 @@ class FacultyController extends Controller
             return $response;
         }
 
-        if ($faculty->user_id !== null) {
+        // An archived account no longer holds the profile; only a live one does.
+        if ($faculty->user()->exists()) {
             return response()->json([
                 'message' => 'Archive the linked user account first before archiving this faculty profile.',
             ], 409);

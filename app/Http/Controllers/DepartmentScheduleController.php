@@ -13,6 +13,8 @@ use App\Models\User;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Department\DepartmentScheduleStatusDeriver;
 use App\Services\Scheduling\Department\ScheduleOverviewService;
+use App\Services\Scheduling\Schedule\ScheduleConflictCase;
+use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
@@ -28,7 +30,55 @@ class DepartmentScheduleController extends Controller
         private readonly ScheduleHistoryRecorder $historyRecorder,
         private readonly DepartmentScheduleStatusDeriver $statusDeriver,
         private readonly ScheduleOverviewService $scheduleOverviews,
+        private readonly ScheduleConflictScanner $conflictScanner,
     ) {}
+
+    /**
+     * Open conflicts on the classes a submission covers, checked again at
+     * approval. A package is conflict-free when it is sent, but it can stop
+     * being so before the Dean or VPAA reaches it (an instructor shared with
+     * another department, a recall and edit), and approving it would carry
+     * the clash forward. Instructor clashes allowed to stand are not open.
+     *
+     * @param  list<int>  $sectionIds
+     * @return list<ScheduleConflictCase>
+     */
+    private function openConflictsIn(int $departmentId, array $sectionIds): array
+    {
+        $semesterId = (int) $this->activeSemesterId();
+        $sections = array_flip(array_map('intval', $sectionIds));
+
+        return array_values(array_filter(
+            $this->conflictScanner->scan($semesterId, $departmentId),
+            static function (ScheduleConflictCase $case) use ($departmentId, $sections): bool {
+                foreach ([$case->schedule, $case->otherSchedule] as $row) {
+                    if ((int) ($row['department_id'] ?? 0) === $departmentId && isset($sections[(int) ($row['section_id'] ?? 0)])) {
+                        return true;
+                    }
+                }
+
+                return false;
+            },
+        ));
+    }
+
+    /**
+     * The refusal an approval answers with while the package has open
+     * conflicts: the approver can return it, not wave it through.
+     *
+     * @param  list<ScheduleConflictCase>  $conflicts
+     */
+    private function openConflictsResponse(array $conflicts): JsonResponse
+    {
+        $count = count($conflicts);
+
+        return response()->json([
+            'message' => "This schedule has {$count} open conflict".($count === 1 ? '' : 's')
+                .'. Return it for revision so the department can resolve '.($count === 1 ? 'it' : 'them').'.',
+            'error_code' => 'open_conflicts',
+            'conflicts' => array_map(static fn (ScheduleConflictCase $case): array => $case->toArray(), $conflicts),
+        ], 422);
+    }
 
     private function activeSemesterId(): ?int
     {
@@ -642,6 +692,10 @@ class DepartmentScheduleController extends Controller
         }
         $targetSectionIds = $this->includedSectionIds($submission);
 
+        if (($openConflicts = $this->openConflictsIn($id, $targetSectionIds)) !== []) {
+            return $this->openConflictsResponse($openConflicts);
+        }
+
         // Room TBA is decided here, not by the page: a stale queue used to
         // approve Room TBA meetings as a clean approval, or label a schedule
         // with every room assigned as conditional.
@@ -1127,6 +1181,10 @@ class DepartmentScheduleController extends Controller
             return response()->json(['message' => 'No schedule submission is pending VPAA approval.'], 422);
         }
         $targetSectionIds = $this->includedSectionIds($submission);
+
+        if (($openConflicts = $this->openConflictsIn($id, $targetSectionIds)) !== []) {
+            return $this->openConflictsResponse($openConflicts);
+        }
 
         $updated = DB::transaction(function () use ($id, $user, $now, $submission, $targetSectionIds) {
             if (! $this->lockSubmissionAtStage($submission, ['approved_by_dean', 'conditionally_approved'])) {

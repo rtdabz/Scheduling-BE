@@ -5,9 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\Departments;
 use App\Models\Faculty;
 use App\Models\Schedule;
+use App\Models\Semester;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
-use App\Models\Semester;
 use App\Models\User;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -26,7 +26,8 @@ use Illuminate\Support\Facades\DB;
  * half-way through a withdrawal would otherwise print with classes missing.
  *
  * Unlike `/initial-data`, nothing here is capped at a row limit: a truncated
- * printout would look complete while silently dropping classes.
+ * printout would look complete while silently dropping classes. Nor is it tied
+ * to the active semester: every semester's approved schedules are included.
  */
 class ReportsController extends Controller
 {
@@ -41,7 +42,6 @@ class ReportsController extends Controller
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
-        $semester = $this->activeSemester();
 
         $departments = Departments::query()
             ->with(['programs' => fn ($query) => $query->orderBy('code')])
@@ -50,18 +50,14 @@ class ReportsController extends Controller
             ->get();
 
         $programScope = $this->viewerProgramId($user);
-        $completeSections = $semester === null
-            ? collect()
-            : Sections::query()
-                ->whereIn('id', $this->completeSectionIds($semester->id, $departments->pluck('id')->all()))
-                ->get(['id', 'department_id', 'program_id']);
+        $completeSections = Sections::query()
+            ->whereIn('id', $this->completeSectionIds($departments->pluck('id')->all()))
+            ->get(['id', 'department_id', 'program_id']);
 
-        $loadedFaculty = $semester === null
-            ? collect()
-            : Faculty::query()
-                ->whereIn('department_id', $departments->pluck('id'))
-                ->whereIn('id', $this->facultyIdsWithLoad($semester->id))
-                ->get(['id', 'department_id', 'program_id']);
+        $loadedFaculty = Faculty::query()
+            ->whereIn('department_id', $departments->pluck('id'))
+            ->whereIn('id', $this->facultyIdsWithLoad())
+            ->get(['id', 'department_id', 'program_id']);
 
         $payload = $departments->map(function (Departments $department) use ($completeSections, $loadedFaculty, $programScope): array {
             $sections = $completeSections->where('department_id', $department->id);
@@ -92,7 +88,6 @@ class ReportsController extends Controller
         })->values();
 
         return response()->json([
-            'active_semester' => $semester,
             'departments' => $payload,
         ]);
     }
@@ -125,19 +120,17 @@ class ReportsController extends Controller
             abort(404, 'That program does not belong to this department.');
         }
 
-        $semester = $this->activeSemester();
-
-        $faculties = $this->facultyLoad->get($department, $semester?->id, $programId);
-        $sections = $semester === null ? collect() : Sections::query()
+        $faculties = $this->facultyLoad->getAcrossSemesters($department, $programId);
+        $sections = Sections::query()
             ->with(['department', 'program', 'academicSemester', 'curriculum'])
-            ->whereIn('id', $this->completeSectionIds($semester->id, [$department]))
+            ->whereIn('id', $this->completeSectionIds([$department]))
             ->when($programId !== null, fn (Builder $query) => $query->where('program_id', $programId))
             ->get();
 
         // The schedule printout needs its sections' meetings; each load sheet
         // needs every approved class its instructor teaches, including ones
         // delegated to them from another department's sections.
-        $schedules = $semester === null ? collect() : Schedule::query()
+        $schedules = Schedule::query()
             ->with([
                 'academicSemester:id,academic_year,semester',
                 'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
@@ -146,7 +139,6 @@ class ReportsController extends Controller
                 'room:id,room_code,building,room_type,allow_lecture_usage,department_id',
                 'department:id,department_name,department_code',
             ])
-            ->where('semester_id', $semester->id)
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
             ->where(fn (Builder $scope) => $scope
                 ->whereIn('section_id', $sections->pluck('id'))
@@ -172,7 +164,8 @@ class ReportsController extends Controller
 
         SchedulingAuditLog::create([
             'user_id' => $user->id,
-            'semester_id' => $semester?->id,
+            // Reports span every semester, so the log names none.
+            'semester_id' => null,
             'department_id' => $department,
             'action' => 'schedule_report_generated',
             'metadata' => [
@@ -183,7 +176,8 @@ class ReportsController extends Controller
         ]);
 
         return response()->json([
-            'active_semester' => $semester,
+            // The PDFs label themselves with this; null keeps them semester-free.
+            'active_semester' => null,
             'time_grid' => [
                 'opening_time' => substr(SchedulingPolicy::openingTime(), 0, 5),
                 'closing_time' => substr(SchedulingPolicy::closingTime(), 0, 5),
@@ -251,12 +245,12 @@ class ReportsController extends Controller
     }
 
     /**
-     * Sections whose every meeting this semester has cleared VPAA approval.
+     * Sections whose every meeting has cleared VPAA approval.
      *
      * @param  array<int, int>  $departmentIds
      * @return array<int, int>
      */
-    private function completeSectionIds(int $semesterId, array $departmentIds): array
+    private function completeSectionIds(array $departmentIds): array
     {
         if ($departmentIds === []) {
             return [];
@@ -267,7 +261,6 @@ class ReportsController extends Controller
 
         return Schedule::query()
             ->join('sections', 'schedules.section_id', '=', 'sections.id')
-            ->where('schedules.semester_id', $semesterId)
             ->whereIn('sections.department_id', $departmentIds)
             ->groupBy('schedules.section_id')
             ->havingRaw("SUM(CASE WHEN schedules.status IN ($placeholders) THEN 0 ELSE 1 END) = 0", $approved)
@@ -277,11 +270,10 @@ class ReportsController extends Controller
     }
 
     /** @return array<int, int> */
-    private function facultyIdsWithLoad(int $semesterId): array
+    private function facultyIdsWithLoad(): array
     {
         return DB::table('schedules')
             ->whereNull('deleted_at')
-            ->where('semester_id', $semesterId)
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
             ->whereNotNull('faculty_id')
             ->distinct()

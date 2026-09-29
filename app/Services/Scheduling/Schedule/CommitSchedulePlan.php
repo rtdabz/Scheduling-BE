@@ -137,10 +137,13 @@ final class CommitSchedulePlan
 
                     $resolvedConflicts = $openBefore === []
                         ? []
-                        : $this->resolvedConflicts(
-                            $openBefore,
-                            $this->conflicts->scan($semesterId, onlyScheduleIds: $createdIds),
-                            $replacedIds,
+                        : array_map(
+                            static fn (ScheduleConflictCase $case): array => $case->toResolutionRecord(),
+                            ScheduleConflictScanner::cleared(
+                                $openBefore,
+                                $this->conflicts->scan($semesterId, onlyScheduleIds: $createdIds),
+                                $replacedIds,
+                            ),
                         );
 
                     $version = $this->historyRecorder->record(
@@ -298,52 +301,6 @@ final class CommitSchedulePlan
     }
 
     /** @param list<ConstraintViolation> $violations */
-    /**
-     * The conflicts the replaced rows had that the new rows no longer have.
-     *
-     * The replaced rows are gone, so every conflict they were part of vanishes
-     * from a scan by definition. That alone is not a resolution: if a new row
-     * lands on the same clash with the same class, the conflict only changed
-     * ids. So a conflict counts as resolved only when no new row breaks the
-     * same rule with the class that stayed.
-     *
-     * @param  list<ScheduleConflictCase>  $before  conflicts touching the replaced rows
-     * @param  list<ScheduleConflictCase>  $after  conflicts touching the new rows
-     * @param  list<int>  $replacedIds
-     * @return list<array<string, mixed>>
-     */
-    private function resolvedConflicts(array $before, array $after, array $replacedIds): array
-    {
-        $resolved = [];
-        foreach ($before as $case) {
-            $stayed = array_values(array_diff($case->scheduleIds(), $replacedIds));
-
-            $stillClashing = false;
-            foreach ($after as $open) {
-                foreach ($stayed as $stayedId) {
-                    if ($open->rule === $case->rule && $open->involves($stayedId)) {
-                        $stillClashing = true;
-                        break 2;
-                    }
-                }
-            }
-
-            if (! $stillClashing) {
-                $resolved[] = [
-                    'id' => $case->id(),
-                    'rule' => $case->rule,
-                    'message' => $case->message(),
-                    'day' => $case->day,
-                    'overlap_start' => $case->overlapStart,
-                    'overlap_end' => $case->overlapEnd,
-                    ...$case->owners(),
-                ];
-            }
-        }
-
-        return $resolved;
-    }
-
     private function reject(array $violations, string $message = 'The schedule plan cannot be committed.'): never
     {
         throw new SchedulePlanCommitException($violations, $message);

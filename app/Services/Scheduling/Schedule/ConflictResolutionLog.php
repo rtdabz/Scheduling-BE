@@ -13,7 +13,9 @@ use App\Models\SchedulingAuditLog;
  * already writes a `scheduling_audit_logs` row in the same transaction as the
  * change: `conflict_resolved` and `conflict_overridden` from the inbox, and
  * `schedule_plan_committed` (with `resolved_conflicts`) when an accepted
- * recommendation replaces the clashing rows. This only reads those rows back.
+ * recommendation replaces the clashing rows, and `schedule_conflicts_cleared`
+ * when a class is moved by hand in the Schedule Builder. This only reads those
+ * rows back.
  *
  * A resolution is history, not a status. The open list stays the only truth
  * about what is broken now, so an entry whose conflict a fresh scan finds
@@ -41,7 +43,7 @@ final class ConflictResolutionLog
                     // Most plan commits clear nothing; only the ones that did
                     // belong here, or they would crowd the limit out.
                     ->orWhere(static fn ($commits) => $commits
-                        ->where('action', 'schedule_plan_committed')
+                        ->whereIn('action', ['schedule_plan_committed', 'schedule_conflicts_cleared'])
                         ->whereJsonLength('metadata->resolved_conflicts', '>', 0));
             })
             ->orderByDesc('created_at')
@@ -65,7 +67,11 @@ final class ConflictResolutionLog
                     'overlap_start' => $conflict['overlap_start'],
                     'overlap_end' => $conflict['overlap_end'],
                     'method' => $overridden ? 'overridden' : $conflict['method'],
-                    'source' => $log->action === 'schedule_plan_committed' ? 'schedule_generator' : 'conflict_inbox',
+                    'source' => match ($log->action) {
+                        'schedule_plan_committed' => 'schedule_generator',
+                        'schedule_conflicts_cleared' => 'schedule_builder',
+                        default => 'conflict_inbox',
+                    },
                     'status' => isset($open[$conflict['id']]) ? 'reopened' : ($overridden ? 'overridden' : 'resolved'),
                     'resolved_at' => $log->created_at?->toISOString(),
                     'resolved_by' => $log->user?->name,
@@ -92,7 +98,9 @@ final class ConflictResolutionLog
     {
         $metadata = is_array($log->metadata) ? $log->metadata : [];
 
-        if ($log->action === 'schedule_plan_committed') {
+        if (in_array($log->action, ['schedule_plan_committed', 'schedule_conflicts_cleared'], true)) {
+            $manual = $log->action === 'schedule_conflicts_cleared';
+
             return array_values(array_map(static fn (array $conflict): array => [
                 'id' => (string) ($conflict['id'] ?? ''),
                 'rule' => (string) ($conflict['rule'] ?? ''),
@@ -102,8 +110,11 @@ final class ConflictResolutionLog
                 'overlap_end' => $conflict['overlap_end'] ?? null,
                 'department_ids' => $conflict['department_ids'] ?? null,
                 'section_ids' => $conflict['section_ids'] ?? null,
-                'method' => 'recommended',
-                'affected_schedule_ids' => array_map('intval', $metadata['created_schedule_ids'] ?? []),
+                'method' => $manual ? 'manual' : 'recommended',
+                'affected_schedule_ids' => array_map(
+                    'intval',
+                    $metadata[$manual ? 'saved_schedule_ids' : 'created_schedule_ids'] ?? [],
+                ),
             ], array_filter($metadata['resolved_conflicts'] ?? [], 'is_array')));
         }
 

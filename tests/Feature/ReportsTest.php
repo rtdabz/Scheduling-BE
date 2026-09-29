@@ -115,6 +115,31 @@ class ReportsTest extends TestCase
             ->assertJsonPath('faculties.0.id', $f['faculty']->id);
     }
 
+    public function test_reports_include_every_semester(): void
+    {
+        $f = $this->fixture();
+        $current = $this->section($f, 'IT-1A');
+        $this->schedule($f, $current, ['status' => 'finalized', 'faculty_id' => $f['faculty']->id]);
+
+        $second = Semester::create(['academic_year' => '2026-2027', 'semester' => '2nd', 'is_active' => false, 'is_enabled' => true]);
+        $f['semester'] = $second;
+        $inactive = $this->section($f, 'IT-1B');
+        $this->schedule($f, $inactive, ['status' => 'finalized', 'faculty_id' => $f['faculty']->id]);
+
+        $this->actingAs($f['secretary'])
+            ->getJson('/api/reports')
+            ->assertOk()
+            ->assertJsonPath('departments.0.complete_section_count', 2);
+
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/reports/departments/{$f['department']->id}")
+            ->assertOk()
+            ->assertJsonPath('active_semester', null)
+            ->assertJsonCount(2, 'sections')
+            ->assertJsonCount(2, 'schedules')
+            ->assertJsonPath('faculties.0.assigned_units', 6);
+    }
+
     /** @return array<string, mixed> */
     private function fixture(): array
     {

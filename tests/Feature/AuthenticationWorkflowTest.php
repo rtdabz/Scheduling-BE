@@ -97,10 +97,12 @@ class AuthenticationWorkflowTest extends TestCase
         $this->actingAs($vpaa, 'sanctum')->deleteJson("/api/user/{$user->id}")
             ->assertOk();
         $this->assertSoftDeleted('users', ['id' => $user->id]);
+        // The profile survives and stays linked, but no longer carries the
+        // archived account's role.
         $this->assertDatabaseHas('faculties', [
             'id' => $facultyId,
             'user_id' => $user->id,
-            'administrative_role' => 'secretary',
+            'administrative_role' => null,
         ]);
     }
 

@@ -12,9 +12,12 @@ class UpdateCourseRequest extends CourseRequest
 {
     public function authorize(ScheduleAuthorizationService $authorization): Response
     {
+        // A department user edits only their own department's courses, and may
+        // not move one into another department.
         return $authorization->payloadBelongsToDepartment($this, (int) $this->course()->department_id)
+            && ! $authorization->rejectsRequestedDepartment($this, $this->input('department_id'))
             ? Response::allow()
-            : Response::deny('Forbidden.');
+            : Response::deny('You can only manage courses for your department.');
     }
 
     /** @return array<string, mixed> */
@@ -40,7 +43,7 @@ class UpdateCourseRequest extends CourseRequest
             'room_type_required' => 'sometimes|required|in:lecture,laboratory,field,online',
             'year_level' => 'sometimes|required|in:1,2,3,4',
             'semester' => 'sometimes|required|in:1st,2nd,summer',
-            'department_id' => 'nullable|exists:departments,id',
+            'department_id' => 'sometimes|required|integer|exists:departments,id',
             'program_id' => $this->programRule($departmentId),
             'status' => 'nullable|in:active,inactive',
         ];

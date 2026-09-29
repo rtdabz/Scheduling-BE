@@ -59,10 +59,9 @@ class AuditDatabaseIntegrityCommand extends Command
                 ->select('department_id', 'semester_id', DB::raw('UPPER(TRIM(section_name)) AS section_name'), DB::raw('COUNT(*) AS count'))
                 ->groupBy('department_id', 'semester_id', DB::raw('UPPER(TRIM(section_name))'))
                 ->havingRaw('COUNT(*) > 1')->get()->map(fn ($r) => (array) $r)->values()->all(),
-            'duplicate_shared_course_codes' => DB::table('courses')->whereNull('department_id')
-                ->select('course_code', DB::raw('COUNT(*) AS count'))
-                ->groupBy('course_code')->havingRaw('COUNT(*) > 1')
-                ->get()->map(fn ($r) => (array) $r)->values()->all(),
+            // Every course belongs to one department (2026_09_29_000001).
+            'courses_without_department' => DB::table('courses')->whereNull('department_id')->whereNull('deleted_at')
+                ->pluck('course_code')->values()->all(),
 
             // Links held as text or copies that can drift from their source.
             'course_rules_on_archived_course' => DB::table('department_course_rules AS rules')

@@ -66,4 +66,12 @@ abstract class DesignationRequest extends FormRequest
             'sort_order' => ['sometimes', 'nullable', 'integer', 'min:0'],
         ];
     }
+
+    /** @return array<string, string> */
+    public function messages(): array
+    {
+        return [
+            'name.unique' => 'This designation is already added.',
+        ];
+    }
 }

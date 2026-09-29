@@ -220,6 +220,24 @@ class DesignationManagementTest extends TestCase
             ->assertJsonPath('0.faculties_count', 1);
     }
 
+    public function test_holders_lists_the_instructors_holding_a_designation(): void
+    {
+        $f = $this->fixture();
+        $dean = Designation::create(['name' => 'Dean', 'deload_units' => 6]);
+        $this->hold($f['faculty'], [$dean]);
+
+        $this->actingAs($f['vpaa'])
+            ->getJson("/api/designations/{$dean->id}/holders")
+            ->assertOk()
+            ->assertJsonCount(1)
+            ->assertJsonPath('0.id', $f['faculty']->id)
+            ->assertJsonPath('0.department.department_code', 'DSG');
+
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/designations/{$dean->id}/holders")
+            ->assertForbidden();
+    }
+
     public function test_index_can_exclude_inactive_designations(): void
     {
         $f = $this->fixture();
@@ -314,7 +332,7 @@ class DesignationManagementTest extends TestCase
             ->assertJsonPath('designations.2.id', $adviser->id);
     }
 
-    public function test_an_instructor_cannot_hold_more_than_three_designations(): void
+    public function test_an_instructor_can_hold_more_than_three_designations(): void
     {
         $f = $this->fixture();
         $ids = collect(range(1, 4))
@@ -323,10 +341,32 @@ class DesignationManagementTest extends TestCase
 
         $this->actingAs($f['vpaa'])
             ->patchJson("/api/faculties/{$f['faculty']->id}", ['designation_ids' => $ids])
+            ->assertOk();
+
+        $this->assertSame(4, $f['faculty']->designations()->count());
+        $this->assertSame(4, (int) $f['faculty']->fresh()->deload_units);
+    }
+
+    public function test_designations_cannot_deload_more_than_the_maximum(): void
+    {
+        $f = $this->fixture();
+        $f['faculty']->forceFill(['max_units' => 12])->save();
+        $big = Designation::create(['name' => 'Big Post', 'deload_units' => 9]);
+        $mid = Designation::create(['name' => 'Mid Post', 'deload_units' => 6]);
+        $small = Designation::create(['name' => 'Small Post', 'deload_units' => 3]);
+
+        // 9 + 3 = 12 fits a 12-unit maximum exactly.
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/faculties/{$f['faculty']->id}", ['designation_ids' => [$big->id, $small->id]])
+            ->assertOk();
+
+        // 6 + 9 = 15 would leave a negative Basic Load.
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/faculties/{$f['faculty']->id}", ['designation_ids' => [$mid->id, $big->id]])
             ->assertStatus(422)
             ->assertJsonValidationErrors(['designation_ids']);
 
-        $this->assertSame(0, $f['faculty']->designations()->count());
+        $this->assertSame([$big->id, $small->id], $f['faculty']->designations()->pluck('designations.id')->map('intval')->all());
     }
 
     public function test_clearing_the_list_releases_every_deload(): void

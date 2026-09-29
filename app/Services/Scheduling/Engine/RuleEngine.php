@@ -85,6 +85,33 @@ class RuleEngine
      */
     public function validate(array $attempt): array
     {
+        return $this->evaluate($attempt, withOverlaps: true);
+    }
+
+    /**
+     * Every rule a saved class answers to on its own, without the pairwise
+     * clashes with other classes.
+     *
+     * For re-checking classes already on the timetable: a rule can stop
+     * holding after a class was placed (an instructor's availability edited, a
+     * room taken out of service, operating hours narrowed) with nothing about
+     * the class itself changing. Clashes between two classes are the conflict
+     * scan's to report, and checking them here would cost a query per class.
+     *
+     * @param  array<string, mixed>  $attempt
+     * @return list<array<string, mixed>>
+     */
+    public function validateStanding(array $attempt): array
+    {
+        return $this->evaluate($attempt, withOverlaps: false);
+    }
+
+    /**
+     * @param  array<string, mixed>  $attempt
+     * @return list<array<string, mixed>>
+     */
+    private function evaluate(array $attempt, bool $withOverlaps): array
+    {
         $violations = $this->requiredFields($attempt);
         if ($violations !== []) {
             return $violations;
@@ -114,7 +141,7 @@ class RuleEngine
             ...array_filter([
                 $this->deliveryModes->hybridShape($attempt),
             ]),
-            ...$this->overlaps->check($attempt),
+            ...($withOverlaps ? $this->overlaps->check($attempt) : []),
             ...array_filter([
                 $hasMissingRecord ? null : $this->roomTypeFor($attempt),
                 $this->meetingDays->preferredPattern($day, $attempt['preferred_pattern'] ?? null),

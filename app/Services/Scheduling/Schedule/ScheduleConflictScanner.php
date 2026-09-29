@@ -97,6 +97,44 @@ final class ScheduleConflictScanner
     }
 
     /**
+     * The conflicts a write cleared: in `$before`, gone from `$after`.
+     *
+     * A conflict whose rows were all kept is cleared once its id is gone. A
+     * row that was removed (replaced by a new one) takes every conflict it
+     * was in with it, so that alone proves nothing: if a new row lands on the
+     * same clash with the class that stayed, the conflict only changed ids.
+     * Those count as cleared only when no new conflict of the same rule
+     * involves the class that stayed.
+     *
+     * @param  list<ScheduleConflictCase>  $before  conflicts touching the rows the write changed
+     * @param  list<ScheduleConflictCase>  $after  conflicts touching the rows as they now are
+     * @param  list<int>  $removedIds  rows the write deleted or replaced
+     * @return list<ScheduleConflictCase>
+     */
+    public static function cleared(array $before, array $after, array $removedIds = []): array
+    {
+        $afterIds = array_flip(array_map(static fn (ScheduleConflictCase $case): string => $case->id(), $after));
+        $new = self::introduced($before, $after);
+
+        return array_values(array_filter($before, static function (ScheduleConflictCase $case) use ($afterIds, $new, $removedIds): bool {
+            if (isset($afterIds[$case->id()])) {
+                return false;
+            }
+
+            $stayed = array_values(array_diff($case->scheduleIds(), $removedIds));
+            foreach ($new as $open) {
+                foreach ($stayed as $stayedId) {
+                    if ($open->rule === $case->rule && $open->involves($stayedId) && count($stayed) < 2) {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }));
+    }
+
+    /**
      * @param  list<ScheduleConflictCase>  $cases
      */
     public static function contains(array $cases, string $conflictId): bool

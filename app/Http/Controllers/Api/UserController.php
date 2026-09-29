@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\User\StoreUserRequest;
 use App\Http\Requests\User\UpdateUserRequest;
+use App\Models\Faculty;
 use App\Models\Program;
 use App\Models\User;
 use App\Notifications\AccountInvitationNotification;
@@ -33,7 +34,13 @@ class UserController extends Controller
         $this->ensureRoleSlotAvailable($validated, (bool) ($validated['is_active'] ?? true));
         $facultyMode = $validated['faculty_mode'] ?? UserFacultyProfileService::MODE_CREATE;
         $designationIds = app(FacultyDesignationService::class)->idsFrom($request);
-        app(FacultyDesignationService::class)->validate($designationIds);
+        // A new profile starts at the default 21 units; a linked one keeps its own.
+        $maxUnits = match ($facultyMode) {
+            UserFacultyProfileService::MODE_LINK => Faculty::query()->whereKey((int) ($validated['faculty_id'] ?? 0))->value('max_units'),
+            UserFacultyProfileService::MODE_CREATE => UserFacultyProfileService::DEFAULT_MAX_UNITS,
+            default => null,
+        };
+        app(FacultyDesignationService::class)->validate($designationIds, maxUnits: $maxUnits === null ? null : (int) $maxUnits);
 
         $user = DB::transaction(function () use ($validated, $request, $facultyMode, $designationIds) {
             $user = User::create([
@@ -146,6 +153,9 @@ class UserController extends Controller
             $this->audit->record($request, 'user_archived', $user, [
                 'faculty_profile_preserved' => $user->facultyProfile()->exists(),
             ]);
+            // The profile keeps its user_id so restoring the account reconnects
+            // it, but it stops carrying the archived account's role.
+            $user->facultyProfile?->update(['administrative_role' => null]);
             $user->tokens()->delete();
             $user->delete();
         });

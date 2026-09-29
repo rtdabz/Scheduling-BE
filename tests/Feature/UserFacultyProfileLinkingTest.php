@@ -163,6 +163,30 @@ class UserFacultyProfileLinkingTest extends TestCase
         $this->assertDatabaseMissing('faculties', ['user_id' => $userId]);
     }
 
+    public function test_deactivating_the_account_makes_the_instructor_inactive_until_reactivated(): void
+    {
+        $userId = $this->createUser()->assertCreated()->json('data.id');
+        $edit = fn (bool $active) => $this->actingAs($this->vpaa, 'sanctum')->putJson("/api/user/{$userId}", [
+            'first_name' => 'New',
+            'last_name' => 'Account',
+            'email' => 'new.account@school.edu.ph',
+            'role' => 'secretary',
+            'department_id' => $this->department->id,
+            'is_active' => $active,
+        ])->assertOk();
+
+        $edit(false);
+        $this->assertDatabaseHas('faculties', ['user_id' => $userId, 'status' => 'inactive']);
+
+        $edit(true);
+        $this->assertDatabaseHas('faculties', ['user_id' => $userId, 'status' => 'active']);
+
+        // An instructor set inactive on the roster stays so through account edits.
+        Faculty::where('user_id', $userId)->update(['status' => 'inactive']);
+        $edit(true);
+        $this->assertDatabaseHas('faculties', ['user_id' => $userId, 'status' => 'inactive']);
+    }
+
     public function test_linkable_faculty_lists_only_unlinked_instructors_in_the_department(): void
     {
         $owner = User::factory()->create(['role' => 'dean', 'department_id' => $this->department->id]);

@@ -32,7 +32,7 @@ class Faculty extends Model
         'profile_picture',
     ];
 
-    /** Every designation the instructor holds (up to three), in their listed order. */
+    /** Every designation the instructor holds, in their listed order. */
     public function designations()
     {
         return $this->belongsToMany(Designation::class, 'designation_faculty')

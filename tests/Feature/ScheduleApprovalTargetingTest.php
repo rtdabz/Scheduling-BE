@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\Departments;
+use App\Models\Faculty;
 use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
@@ -30,7 +31,10 @@ class ScheduleApprovalTargetingTest extends TestCase
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
         $first = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'submitted']);
-        $second = $this->schedule($department, $semester, $room, $course, $secondSection, ['status' => 'submitted']);
+        $second = $this->schedule($department, $semester, $room, $course, $secondSection, [
+            // Another day: two sections in one room at one time is a conflict,
+            // and approval refuses a package that still has one.
+            'day' => 'Tuesday', 'status' => 'submitted']);
         $older = $this->submission($department, $semester, [$firstSection], 'pending_dean');
         $newer = $this->submission($department, $semester, [$secondSection], 'pending_dean');
 
@@ -54,7 +58,10 @@ class ScheduleApprovalTargetingTest extends TestCase
         $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
         $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
         $first = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'submitted']);
-        $second = $this->schedule($department, $semester, $room, $course, $secondSection, ['status' => 'submitted']);
+        $second = $this->schedule($department, $semester, $room, $course, $secondSection, [
+            // Another day: two sections in one room at one time is a conflict,
+            // and approval refuses a package that still has one.
+            'day' => 'Tuesday', 'status' => 'submitted']);
         $older = $this->submission($department, $semester, [$firstSection], 'pending_dean');
         $this->submission($department, $semester, [$secondSection], 'pending_dean');
 
@@ -78,7 +85,10 @@ class ScheduleApprovalTargetingTest extends TestCase
         $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
         $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
         $recalled = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'revision']);
-        $remaining = $this->schedule($department, $semester, $room, $course, $secondSection, ['status' => 'submitted']);
+        $remaining = $this->schedule($department, $semester, $room, $course, $secondSection, [
+            // Another day: two sections in one room at one time is a conflict,
+            // and approval refuses a package that still has one.
+            'day' => 'Tuesday', 'status' => 'submitted']);
         $submission = $this->submission($department, $semester, [$firstSection, $secondSection], 'partially_withdrawn');
         $submission->sections()->updateExistingPivot($firstSection->id, ['state' => 'withdrawn']);
 
@@ -183,6 +193,59 @@ class ScheduleApprovalTargetingTest extends TestCase
         $this->assertSame('approved_by_dean', $schedule->refresh()->status);
         $this->assertFalse((bool) $submission->refresh()->approval_override);
         $this->assertNull($submission->approval_override_reason);
+    }
+
+    public function test_approval_is_refused_while_the_package_has_an_open_conflict(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
+        // Both sections in the one room at the same time.
+        $first = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'submitted']);
+        $second = $this->schedule($department, $semester, $room, $course, $secondSection, ['status' => 'submitted']);
+        $submission = $this->submission($department, $semester, [$firstSection, $secondSection], 'pending_dean');
+
+        $this->actingAs($dean)
+            ->postJson("/api/departments/{$department->id}/approve-by-dean", ['schedule_submission_id' => $submission->id])
+            ->assertStatus(422)
+            ->assertJsonPath('error_code', 'open_conflicts')
+            ->assertJsonPath('conflicts.0.id', "room_conflict:{$first->id}:{$second->id}");
+
+        $this->assertSame('submitted', $first->refresh()->status);
+        $this->assertSame('pending_dean', $submission->refresh()->status);
+    }
+
+    public function test_an_instructor_clash_allowed_to_stand_does_not_block_approval(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
+        $otherRoom = Rooms::create([
+            'room_code' => 'CIT 102',
+            'room_type' => 'lecture',
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+        $faculty = Faculty::create([
+            'first_name' => 'Shared',
+            'last_name' => 'Instructor',
+            'employment_type' => 'full-time',
+            'department_id' => $department->id,
+            'status' => 'active',
+        ]);
+        $this->schedule($department, $semester, $room, $course, $firstSection, [
+            'status' => 'submitted',
+            'faculty_id' => $faculty->id,
+            'faculty_conflict_override' => true,
+        ]);
+        $this->schedule($department, $semester, $otherRoom, $course, $secondSection, [
+            'status' => 'submitted',
+            'faculty_id' => $faculty->id,
+            'faculty_conflict_override' => true,
+        ]);
+        $submission = $this->submission($department, $semester, [$firstSection, $secondSection], 'pending_dean');
+
+        $this->actingAs($dean)
+            ->postJson("/api/departments/{$department->id}/approve-by-dean", ['schedule_submission_id' => $submission->id])
+            ->assertOk();
     }
 
     private function fixture(): array

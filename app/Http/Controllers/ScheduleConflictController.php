@@ -19,6 +19,7 @@ use App\Services\Scheduling\Schedule\ResolveScheduleConflict;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Schedule\ScheduleConflictCase;
 use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
+use App\Services\Scheduling\Schedule\StandingRuleScanner;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -32,11 +33,8 @@ use Illuminate\Http\Request;
  * `conflict_overridden`) entry in `scheduling_audit_logs`, both written in the
  * same transaction as the schedule change they describe.
  *
- * Recommendation-based resolution is not duplicated here. It keeps its existing
- * contract -- preview, select a plan_id, accept, CommitSchedulePlan -- which
- * already revalidates against a fresh snapshot and refuses a stale plan. A
- * conflict whose options include `apply_recommendation` is telling the client
- * to go through those endpoints, not this one.
+ * Recommended fixes (ConflictRecommender) are ordinary resolve requests: each
+ * option carries the exact body for POST /api/conflicts/{id}/resolve.
  */
 class ScheduleConflictController extends Controller
 {
@@ -49,6 +47,7 @@ class ScheduleConflictController extends Controller
         private readonly FacultyLoadService $facultyLoad,
         private readonly ConflictRecommender $recommender,
         private readonly ConflictResolutionLog $resolutionLog,
+        private readonly StandingRuleScanner $standingRules,
     ) {}
 
     /**
@@ -137,6 +136,43 @@ class ScheduleConflictController extends Controller
                 static fn (array $option, int $index): array => [...$option, 'rank' => $index + 1],
                 $options,
                 array_keys($options),
+            ),
+        ]);
+    }
+
+    /**
+     * GET /api/conflicts/rule-issues — saved classes in the caller's scope that
+     * no longer satisfy a rule on their own (see StandingRuleScanner).
+     *
+     * Separate from the conflict list because it re-runs every single-class
+     * rule on every row: read when asked for, not on each timetable change.
+     */
+    public function ruleIssues(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'semester_id' => 'nullable|integer|exists:semesters,id',
+            'department_id' => 'nullable|integer|exists:departments,id',
+            'section_id' => 'nullable|integer|exists:sections,id',
+        ]);
+
+        if ($this->authorization->rejectsRequestedDepartment($request, $validated['department_id'] ?? null)) {
+            return $this->forbidden();
+        }
+
+        $semesterId = (int) ($validated['semester_id'] ?? Semester::query()->where('is_active', true)->value('id'));
+        if ($semesterId <= 0) {
+            return response()->json(['semester_id' => null, 'issues' => []]);
+        }
+
+        $departmentId = $this->authorization->requestedDepartment($request, $validated['department_id'] ?? null);
+
+        return response()->json([
+            'semester_id' => $semesterId,
+            'department_id' => $departmentId,
+            'issues' => $this->standingRules->scan(
+                $semesterId,
+                $departmentId,
+                isset($validated['section_id']) ? (int) $validated['section_id'] : null,
             ),
         ]);
     }

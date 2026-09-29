@@ -15,24 +15,38 @@ class FacultyLoadService
      */
     public function get(?int $departmentId, ?int $semesterId, ?int $programId = null): Collection
     {
-        $faculties = Faculty::query()
+        $faculties = $this->faculties($departmentId, $programId);
+
+        if ($semesterId === null) {
+            return $faculties->each(fn (Faculty $faculty) => $this->applyRows($faculty, collect()));
+        }
+
+        return $this->decorateMany($faculties, $semesterId);
+    }
+
+    /**
+     * The same rows as get(), but with load counted across every semester --
+     * the printed reports are not tied to one semester.
+     */
+    public function getAcrossSemesters(?int $departmentId, ?int $programId = null): Collection
+    {
+        $faculties = $this->faculties($departmentId, $programId);
+        $byFaculty = $this->assignmentRows(null, $faculties->pluck('id')->all())->groupBy('faculty_id');
+
+        return $faculties->each(function (Faculty $faculty) use ($byFaculty): void {
+            $this->applyRows($faculty, $byFaculty->get($faculty->id, collect()));
+        });
+    }
+
+    private function faculties(?int $departmentId, ?int $programId): Collection
+    {
+        return Faculty::query()
             ->with(['department', 'program', 'availabilities', 'user', 'designations.parent'])
             ->when($departmentId !== null, fn ($query) => $query->where('department_id', $departmentId))
             ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
             ->orderBy('last_name')
             ->orderBy('first_name')
             ->get();
-
-        if ($semesterId === null || $faculties->isEmpty()) {
-            return $faculties->each(fn (Faculty $faculty) => $this->applyRows($faculty, collect()));
-        }
-
-        $assignments = $this->assignmentRows($semesterId, $faculties->pluck('id')->all())
-            ->groupBy('faculty_id');
-
-        return $faculties->each(function (Faculty $faculty) use ($assignments): void {
-            $this->applyRows($faculty, $assignments->get($faculty->id, collect()));
-        });
     }
 
     /**
@@ -141,9 +155,11 @@ class FacultyLoadService
      * not-yet-approved row is not a real assignment, so it is not load even when
      * it still carries a faculty_id.
      *
+     * A null semester means every semester.
+     *
      * @param  array<int, int>  $facultyIds
      */
-    private function assignmentRows(int $semesterId, array $facultyIds): \Illuminate\Support\Collection
+    private function assignmentRows(?int $semesterId, array $facultyIds): \Illuminate\Support\Collection
     {
         if ($facultyIds === []) {
             return collect();
@@ -152,7 +168,7 @@ class FacultyLoadService
         return DB::table('schedules')
             ->join('courses', 'schedules.course_id', '=', 'courses.id')
             ->join('sections', 'schedules.section_id', '=', 'sections.id')
-            ->where('schedules.semester_id', $semesterId)
+            ->when($semesterId !== null, fn ($query) => $query->where('schedules.semester_id', $semesterId))
             ->whereIn('schedules.status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
             ->whereIn('schedules.faculty_id', $facultyIds)
             ->select([

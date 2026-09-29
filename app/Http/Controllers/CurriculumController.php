@@ -144,7 +144,6 @@ class CurriculumController extends Controller
     public function store(Request $request)
     {
         $user = $request->user();
-        $isPrivileged = in_array($user->role, ['vpaa', 'super_admin']);
 
         $rules = [
             'name' => 'required|string|max:255',
@@ -152,23 +151,27 @@ class CurriculumController extends Controller
             'program_id' => [
                 'nullable',
                 'integer',
-                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id') ?: $user->department_id)),
+                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $user->department_id)),
             ],
-            'effective_school_year' => 'required|string|max:20',
+            'effective_school_year' => ['required', 'string', $this->schoolYearRule()],
             'status' => 'nullable|string|in:active,deactivated,archived',
             'description' => 'nullable|string',
         ];
 
-        if ($isPrivileged) {
-            $rules['department_id'] = 'nullable|exists:departments,id';
-        }
-
         $validated = $request->validate($rules);
-        // A new curriculum starts out of service until somebody activates it.
-        $validated['status'] = $validated['status'] ?? 'deactivated';
+        // A curriculum is created to be used, so it starts in service; retiring
+        // it is a separate status change.
+        $validated['status'] = $validated['status'] ?? 'active';
 
-        if (! $isPrivileged) {
-            $validated['department_id'] = $user->department_id;
+        // Curriculum authoring belongs to the department secretary, so a new
+        // curriculum is always their own department's.
+        $validated['department_id'] = $user->department_id;
+        // A program head authors their own program's curriculum only.
+        if ($user->role === 'program_head') {
+            if ($user->program_id === null) {
+                return response()->json(['message' => 'Your account is not linked to a program yet.'], 403);
+            }
+            $validated['program_id'] = $user->program_id;
         }
 
         // Activating a curriculum no longer demotes its siblings: a department
@@ -197,35 +200,55 @@ class CurriculumController extends Controller
         return response()->json($curriculum);
     }
 
-    public function update(Request $request, Curriculum $curriculum)
+    /**
+     * Whether the caller may change this curriculum: it must be their
+     * department's, and a program head may only touch their own program's.
+     */
+    private function canAuthor(Request $request, Curriculum $curriculum): bool
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return false;
         }
         $user = $request->user();
-        $isPrivileged = in_array($user->role, ['vpaa', 'super_admin']);
 
+        return $user->role !== 'program_head'
+            || ($user->program_id !== null && (int) $curriculum->program_id === (int) $user->program_id);
+    }
+
+    /** A school year is two consecutive years, e.g. 2025-2026. */
+    private function schoolYearRule(): \Closure
+    {
+        return function (string $attribute, mixed $value, \Closure $fail): void {
+            if (! is_string($value) || ! preg_match('/^(\d{4})-(\d{4})$/', $value, $years)
+                || (int) $years[2] !== (int) $years[1] + 1) {
+                $fail('The effective school year must be two consecutive years, e.g. 2025-2026.');
+            }
+        };
+    }
+
+    public function update(Request $request, Curriculum $curriculum)
+    {
+        if (! $this->canAuthor($request, $curriculum)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
         $rules = [
             'name' => 'sometimes|string|max:255',
             'code' => 'sometimes|string|max:50|unique:curriculum,code,'.$curriculum->id,
             'program_id' => [
                 'nullable',
                 'integer',
-                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $request->input('department_id') ?: $curriculum->department_id)),
+                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $curriculum->department_id)),
             ],
-            'effective_school_year' => 'sometimes|string|max:20',
+            'effective_school_year' => ['sometimes', 'string', $this->schoolYearRule()],
             'status' => 'nullable|string|in:active,deactivated,archived',
             'description' => 'nullable|string',
         ];
 
-        if ($isPrivileged) {
-            $rules['department_id'] = 'nullable|exists:departments,id';
-        }
-
+        // The owning department is fixed at creation; it is not editable, and
+        // neither is a program head's program.
         $validated = $request->validate($rules);
-
-        if (! $isPrivileged) {
-            unset($validated['department_id']);
+        if ($request->user()->role === 'program_head') {
+            unset($validated['program_id']);
         }
 
         $newStatus = $validated['status'] ?? $curriculum->status;
@@ -245,7 +268,7 @@ class CurriculumController extends Controller
 
     public function destroy(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+        if (! $this->canAuthor($request, $curriculum)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
         if (($blocked = $this->rejectIfStillInUse($curriculum, 'archived')) !== null) {
@@ -261,7 +284,7 @@ class CurriculumController extends Controller
 
     public function duplicate(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+        if (! $this->canAuthor($request, $curriculum)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -296,7 +319,7 @@ class CurriculumController extends Controller
 
     public function updateStatus(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+        if (! $this->canAuthor($request, $curriculum)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -324,7 +347,7 @@ class CurriculumController extends Controller
 
     public function attachCourse(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+        if (! $this->canAuthor($request, $curriculum)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -362,7 +385,7 @@ class CurriculumController extends Controller
 
     public function attachCoursesBatch(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+        if (! $this->canAuthor($request, $curriculum)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -394,7 +417,7 @@ class CurriculumController extends Controller
 
     public function batchCreateAndAttachCourses(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+        if (! $this->canAuthor($request, $curriculum)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -427,17 +450,12 @@ class CurriculumController extends Controller
             try {
                 \DB::beginTransaction();
 
-                // 1. Check if course already exists (majors scoped to department, minors globally)
-                $course = null;
-                if ($category === 'minor') {
-                    $course = Course::where('course_code', $code)
-                        ->where('course_category', 'minor')
-                        ->first();
-                } else {
-                    $course = Course::where('course_code', $code)
-                        ->where('department_id', $curriculum->department_id)
-                        ->first();
-                }
+                // 1. Reuse this department's own course with the code. Another
+                // department's course with the same code is a separate record
+                // and is never looked up, let alone updated, from here.
+                $course = Course::where('course_code', $code)
+                    ->where('department_id', $curriculum->department_id)
+                    ->first();
 
                 $semStr = $semester == 1 ? '1st' : ($semester == 2 ? '2nd' : 'summer');
 
@@ -453,7 +471,7 @@ class CurriculumController extends Controller
                         'room_type_required' => $lab > 0 ? 'laboratory' : 'lecture',
                         'year_level' => (string) $yearLevel,
                         'semester' => $semStr,
-                        'department_id' => $category === 'minor' ? null : $curriculum->department_id,
+                        'department_id' => $curriculum->department_id,
                         'status' => 'active',
                     ]);
                 } else {
@@ -530,7 +548,7 @@ class CurriculumController extends Controller
 
     public function detachCourse(Request $request, Curriculum $curriculum, Course $course)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+        if (! $this->canAuthor($request, $curriculum)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
@@ -553,8 +571,7 @@ class CurriculumController extends Controller
 
         $courses = $curriculum->courses()
             ->where(function ($query) use ($curriculum) {
-                $query->whereNull('courses.department_id')
-                    ->orWhere('courses.department_id', $curriculum->department_id);
+                $query->where('courses.department_id', $curriculum->department_id);
             })
             ->orderBy('curriculum_course.year_level')
             ->orderBy('curriculum_course.semester')
@@ -586,6 +603,8 @@ class CurriculumController extends Controller
                         // Which program owns a major decides who may teach it, so
                         // the course editor shows and edits it here.
                         'program_id' => $c->program_id,
+                        // The owning department; always the curriculum's own.
+                        'department_id' => $c->department_id,
                     ])->values(),
                     'totals' => [
                         'lec' => $group->sum('lecture_hours'),
@@ -614,10 +633,7 @@ class CurriculumController extends Controller
 
     private function ensureCourseBelongsToCurriculumDepartment(Curriculum $curriculum, Course $course): void
     {
-        if (
-            $course->department_id !== null &&
-            (int) $course->department_id !== (int) $curriculum->department_id
-        ) {
+        if ((int) $course->department_id !== (int) $curriculum->department_id) {
             abort(422, 'Course belongs to another department and cannot be attached to this curriculum.');
         }
     }

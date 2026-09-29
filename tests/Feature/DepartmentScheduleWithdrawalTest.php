@@ -31,6 +31,9 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             'status' => 'faculty_assignment',
         ]);
         $second = $this->schedule($department, $semester, $room, $course, $secondSection, [
+            // Another day: two sections in one room at one time is a conflict,
+            // and approval refuses a package that still has one.
+            'day' => 'Tuesday',
             'status' => 'faculty_assignment',
         ]);
         $submission = $this->submission($department, $semester, [$firstSection, $secondSection], 'approved', [
@@ -94,6 +97,9 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             'status' => 'submitted',
         ]);
         $finalized = $this->schedule($department, $semester, $room, $course, $secondSection, [
+            // Another day: two sections in one room at one time is a conflict,
+            // and approval refuses a package that still has one.
+            'day' => 'Tuesday',
             'status' => 'finalized',
         ]);
 
@@ -134,6 +140,9 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             'faculty_id' => $instructor->id,
         ]);
         $untouched = $this->schedule($department, $semester, $room, $course, $secondSection, [
+            // Another day: two sections in one room at one time is a conflict,
+            // and approval refuses a package that still has one.
+            'day' => 'Tuesday',
             'status' => 'faculty_assignment',
             'faculty_id' => $instructor->id,
         ]);
@@ -168,6 +177,9 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $withdrawnSubmission = $this->submission($department, $semester, [$firstSection], 'approved');
         $secondSection->update(['section_name' => 'BSIT 4A', 'year_level' => '4']);
         $finalized = $this->schedule($department, $semester, $room, $course, $secondSection, [
+            // Another day: two sections in one room at one time is a conflict,
+            // and approval refuses a package that still has one.
+            'day' => 'Tuesday',
             'status' => 'finalized',
         ]);
         $finalizedSubmission = $this->submission($department, $semester, [$secondSection], 'approved', [
@@ -254,7 +266,10 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $ready = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
-        $draft = $this->schedule($department, $semester, $room, $course, $secondSection, ['status' => 'draft']);
+        $draft = $this->schedule($department, $semester, $room, $course, $secondSection, [
+            // Another day: two sections in one room at one time is a conflict,
+            // and approval refuses a package that still has one.
+            'day' => 'Tuesday', 'status' => 'draft']);
 
         $this->actingAs($secretary)
             ->postJson("/api/departments/{$department->id}/submit-schedules", [
@@ -367,6 +382,9 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             'faculty_id' => $instructor->id,
         ]);
         $sameHour = $this->schedule($department, $semester, $otherRoom, $course, $secondSection, [
+            // Another day: two sections in one room at one time is a conflict,
+            // and approval refuses a package that still has one.
+            'day' => 'Tuesday',
             'status' => 'faculty_assignment',
         ]);
 

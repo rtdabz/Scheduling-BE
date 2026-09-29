@@ -12,6 +12,7 @@ use App\Models\ScheduleSplit;
 use App\Models\Semester;
 use App\Models\TimeslotOverride;
 use App\Models\User;
+use App\Services\UserFacultyProfileService;
 use App\Support\ApiCache;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
@@ -19,6 +20,8 @@ use Illuminate\Http\JsonResponse;
 
 class ArchiveController extends Controller
 {
+    public function __construct(private readonly UserFacultyProfileService $facultyProfiles) {}
+
     /** @var array<string, class-string<Model>> */
     private const TYPES = [
         'users' => User::class,
@@ -59,6 +62,10 @@ class ArchiveController extends Controller
 
         try {
             $record->restore();
+            // Archiving an account cleared its role from the linked profile.
+            if ($record instanceof User) {
+                $this->facultyProfiles->sync($record);
+            }
         } catch (QueryException) {
             return response()->json([
                 'message' => 'This record cannot be restored because an active record now uses the same unique value.',

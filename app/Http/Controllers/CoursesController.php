@@ -59,12 +59,7 @@ class CoursesController extends Controller
                         ->whereHas('curriculum', function ($q) use ($activeCurriculumIds) {
                             $q->whereIn('curriculum.id', $activeCurriculumIds);
                         })
-                        ->when($deptId, function ($q) use ($deptId) {
-                            $q->where(function ($courseQuery) use ($deptId) {
-                                $courseQuery->whereNull('department_id')
-                                    ->orWhere('department_id', $deptId);
-                            });
-                        })
+                        ->when($deptId, fn ($q) => $q->where('department_id', $deptId))
                         ->when($request->has('status') && $request->query('status'), function ($q) use ($request) {
                             $q->where('status', $request->query('status'));
                         })
@@ -185,8 +180,7 @@ class CoursesController extends Controller
     {
         $validated = $request->validated();
 
-        $requestedDepartmentId = $validated['department_id'] ?? null;
-        if ($requestedDepartmentId !== null && ! $this->authorization->payloadBelongsToDepartment($request, (int) $requestedDepartmentId)) {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only manage courses for your department.'], 403);
         }
 

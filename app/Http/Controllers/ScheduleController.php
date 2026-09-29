@@ -21,6 +21,8 @@ use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Schedule\SameTimePartnerMover;
+use App\Services\Scheduling\Schedule\ScheduleConflictCase;
+use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -64,6 +66,7 @@ class ScheduleController extends Controller
         private readonly ScheduleHistoryRecorder $historyRecorder,
         private readonly SchedulingScopeLock $scheduleWriteLock,
         private readonly SameTimePartnerMover $sameTimePartners,
+        private readonly ScheduleConflictScanner $conflictScanner,
     ) {
         $this->ruleEngine = $ruleEngine;
     }
@@ -472,14 +475,15 @@ class ScheduleController extends Controller
 
         $savedSchedules = [];
         $deletedScheduleIds = [];
+        $resolvedConflicts = [];
 
         // Conflict validation must observe the same snapshot the write commits
         // against, so it runs inside the transaction rather than before it.
         // The advisory lock serializes concurrent batch writes for the same
         // semester, which is what actually closes the check-then-write race.
         try {
-            $this->withScheduleWriteLock($this->conflictScopeSemesterIds($validated['operations'], $deleteIds), function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds): void {
-                DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds): void {
+            $this->withScheduleWriteLock($this->conflictScopeSemesterIds($validated['operations'], $deleteIds), function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds, &$resolvedConflicts): void {
+                DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds, &$resolvedConflicts): void {
                     $sectionsById = [];
                     $allViolations = array_merge(
                         $this->checkIntraBatchConflicts($validated['operations']),
@@ -522,6 +526,16 @@ class ScheduleController extends Controller
                     if (! empty($allViolations)) {
                         throw new ScheduleConflictException($allViolations);
                     }
+
+                    // Saved conflicts the rows being edited or removed are in
+                    // now, read before the write so the edit can say which it
+                    // cleared. Only for edits: a batch of new rows (placing a
+                    // class, a generated timetable) had no saved conflict to fix.
+                    $touchedIds = array_values(array_filter(array_map('intval', $mergedIgnoreIds)));
+                    $conflictSemesterId = $touchedIds === []
+                        ? 0
+                        : (int) Schedule::query()->whereIn('id', $touchedIds)->value('semester_id');
+                    $conflictsBefore = $this->conflictsTouching($conflictSemesterId, $touchedIds);
 
                     $deletedBefore = collect();
                     if (! empty($deleteIds)) {
@@ -591,6 +605,13 @@ class ScheduleController extends Controller
                         }
                         $savedIds[] = (int) $schedule->id;
                     }
+
+                    $resolvedConflicts = $this->recordClearedConflicts(
+                        $conflictSemesterId,
+                        $conflictsBefore,
+                        $savedIds,
+                        array_map('intval', $deleteIds),
+                    );
 
                     $savedSchedules = Schedule::query()
                         ->whereIn('id', $savedIds)
@@ -665,6 +686,7 @@ class ScheduleController extends Controller
             'message' => 'Batch schedule operation completed successfully.',
             'schedules' => $savedSchedules,
             'deleted_schedule_ids' => $deletedScheduleIds,
+            'resolved_conflicts' => $resolvedConflicts,
         ]);
     }
 
@@ -1493,10 +1515,21 @@ class ScheduleController extends Controller
 
         /** @var list<int> $movedPartnerIds */
         $movedPartnerIds = [];
+        $resolvedConflicts = [];
 
         try {
-            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, &$movedPartnerIds): void {
-                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, &$movedPartnerIds): void {
+            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, $semesterId, &$movedPartnerIds, &$resolvedConflicts): void {
+                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, $semesterId, &$movedPartnerIds, &$resolvedConflicts): void {
+                    // Dragging a class, moving it by click, or changing who
+                    // teaches it all save here; read what those rows clash
+                    // with now so the save can record what it cleared.
+                    $touchedIds = array_values(array_unique(array_map('intval', [
+                        (int) $schedule->id,
+                        ...$groupPartners->pluck('id')->all(),
+                        ...$manualFacultyScheduleIds,
+                    ])));
+                    $conflictsBefore = $this->conflictsTouching((int) $semesterId, $touchedIds);
+
                     $violations = $instructorOnly
                         ? $this->ruleEngine->validateInstructorAssignment($attemptData)
                         : $this->ruleEngine->validate($attemptData);
@@ -1543,6 +1576,12 @@ class ScheduleController extends Controller
                     }
 
                     FacultyConflictOverride::flag($overriddenIds);
+
+                    $resolvedConflicts = $this->recordClearedConflicts(
+                        (int) $semesterId,
+                        $conflictsBefore,
+                        array_values(array_unique([...$touchedIds, ...$movedPartnerIds])),
+                    );
                 });
             });
         } catch (ScheduleConflictException $exception) {
@@ -1574,6 +1613,7 @@ class ScheduleController extends Controller
         if (array_key_exists('faculty_id', $validated)) {
             return response()->json([
                 ...$schedule->toArray(),
+                'resolved_conflicts' => $resolvedConflicts,
                 'schedule' => $schedule,
                 'schedules' => Schedule::query()
                     ->whereIn('id', $manualFacultyScheduleIds)
@@ -1587,6 +1627,7 @@ class ScheduleController extends Controller
             // at once instead of after the next background refresh.
             return response()->json([
                 ...$schedule->toArray(),
+                'resolved_conflicts' => $resolvedConflicts,
                 'moved_partners' => Schedule::query()
                     ->whereIn('id', $movedPartnerIds)
                     ->with(Schedule::RESPONSE_RELATIONS)
@@ -1594,7 +1635,67 @@ class ScheduleController extends Controller
             ]);
         }
 
-        return response()->json($schedule);
+        return response()->json([...$schedule->toArray(), 'resolved_conflicts' => $resolvedConflicts]);
+    }
+
+    /**
+     * Saved conflicts the given rows are part of, read before a write so the
+     * write can say which it cleared. Empty without rows: new classes had no
+     * saved conflict to fix.
+     *
+     * @param  list<int>  $scheduleIds
+     * @return list<ScheduleConflictCase>
+     */
+    private function conflictsTouching(int $semesterId, array $scheduleIds): array
+    {
+        return $semesterId > 0 && $scheduleIds !== []
+            ? $this->conflictScanner->scan($semesterId, onlyScheduleIds: $scheduleIds)
+            : [];
+    }
+
+    /**
+     * Record the conflicts a Schedule Builder write cleared, in the same
+     * transaction, as the Resolved list's evidence (see ConflictResolutionLog).
+     * Without this a fix made by dragging a class showed its green flag only
+     * until the page was reloaded.
+     *
+     * @param  list<ScheduleConflictCase>  $before  from conflictsTouching()
+     * @param  list<int>  $savedIds  the rows as they now are
+     * @param  list<int>  $removedIds  rows the write deleted
+     * @return list<array<string, mixed>>
+     */
+    private function recordClearedConflicts(int $semesterId, array $before, array $savedIds, array $removedIds = []): array
+    {
+        if ($before === []) {
+            return [];
+        }
+
+        $cleared = ScheduleConflictScanner::cleared(
+            $before,
+            $this->conflictScanner->scan($semesterId, onlyScheduleIds: $savedIds),
+            $removedIds,
+        );
+        if ($cleared === []) {
+            return [];
+        }
+
+        $records = array_map(static fn (ScheduleConflictCase $case): array => $case->toResolutionRecord(), $cleared);
+
+        SchedulingAuditLog::create([
+            'user_id' => request()->user()?->id,
+            'semester_id' => $semesterId,
+            'department_id' => $cleared[0]->schedule['department_id'] ?? null,
+            'section_id' => $cleared[0]->schedule['section_id'] ?? null,
+            'action' => 'schedule_conflicts_cleared',
+            'metadata' => [
+                'resolved_conflicts' => $records,
+                'saved_schedule_ids' => $savedIds,
+                'deleted_schedule_ids' => $removedIds,
+            ],
+            'created_at' => now(),
+        ]);
+
+        return $records;
     }
 
     /**

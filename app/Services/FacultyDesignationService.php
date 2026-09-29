@@ -11,7 +11,7 @@ use Illuminate\Validation\ValidationException;
 /**
  * The one place an instructor's designations are written.
  *
- * An instructor holds up to MAX_PER_FACULTY designations:
+ * An instructor may hold as many designations as their Basic Load covers:
  *
  * - `designation_faculty` holds the designations and their order;
  * - `faculties.deload_units` is the sum of their deloads, which is the figure
@@ -19,8 +19,6 @@ use Illuminate\Validation\ValidationException;
  */
 class FacultyDesignationService
 {
-    public const MAX_PER_FACULTY = 3;
-
     /**
      * Whether the request says anything about designations at all. The
      * multi-select sends `designation_ids`; older clients still send the single
@@ -60,20 +58,17 @@ class FacultyDesignationService
     }
 
     /**
-     * Refuses a list that cannot be held: too many, unknown or archived, a
-     * heading that has sub-designations, or an inactive one the instructor does
+     * Refuses a list that cannot be held: unknown or archived, a
+     * heading that has sub-designations, an inactive one the instructor does
      * not already hold (an inactive designation cannot be newly assigned, but
-     * saving an instructor who still holds one must not fail).
+     * saving an instructor who still holds one must not fail), or deloads that
+     * add up to more than the instructor's maximum units.
      *
      * @param  list<int>  $ids
+     * @param  int|null  $maxUnits  the instructor's maximum; null skips the load check
      */
-    public function validate(array $ids, ?Faculty $faculty = null): void
+    public function validate(array $ids, ?Faculty $faculty = null, ?int $maxUnits = null): void
     {
-        if (count($ids) > self::MAX_PER_FACULTY) {
-            throw ValidationException::withMessages([
-                'designation_ids' => 'An instructor can hold at most '.self::MAX_PER_FACULTY.' designations.',
-            ]);
-        }
         if ($ids === []) {
             return;
         }
@@ -98,6 +93,16 @@ class FacultyDesignationService
                     'designation_ids' => "{$designation->label} is inactive and cannot be assigned.",
                 ]);
             }
+        }
+
+        // The deloads may not add up to more than the maximum, which would
+        // leave a negative Basic Load. Re-saving what the instructor already
+        // holds never fails, even if their maximum has since been lowered.
+        $deload = (int) $designations->sum('deload_units');
+        if ($maxUnits !== null && $deload > $maxUnits && array_diff($ids, $alreadyHeld) !== []) {
+            throw ValidationException::withMessages([
+                'designation_ids' => "These designations deload {$deload} units, more than the {$maxUnits}-unit maximum. Remove one to fit the Basic Load.",
+            ]);
         }
     }
 

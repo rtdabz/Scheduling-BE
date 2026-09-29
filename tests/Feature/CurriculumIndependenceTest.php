@@ -357,7 +357,8 @@ class CurriculumIndependenceTest extends TestCase
             'room_type_required' => 'lecture',
             'year_level' => '1',
             'semester' => '1st',
-            'department_id' => null,
+            // Minors are department-owned too: HM's GEC 1 is HM's own record.
+            'department_id' => $hmDept->id,
             'status' => 'active',
         ]);
 

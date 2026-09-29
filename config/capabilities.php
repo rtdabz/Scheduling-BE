@@ -140,11 +140,12 @@ return [
             'module' => 'curriculum',
             'title' => 'Manage Curriculum',
             'description' => 'Create, edit, duplicate, activate, and archive curricula and their course placements.',
-            // Curriculum authoring sits with the department secretary, who runs
-            // the programs the curriculum describes. The dean and the VPAA read
+            // Curriculum authoring sits with the department: the secretary for
+            // any of its programs, a program head for their own program only
+            // (CurriculumController scopes that). The dean and the VPAA read
             // curricula through the view routes and hold no write access, so
             // neither role may be granted this.
-            'allowed_roles' => ['secretary'],
+            'allowed_roles' => ['secretary', 'program_head'],
         ],
     ],
 
@@ -188,8 +189,8 @@ return [
      * Secretaries and program heads build their department's timetable end to
      * end; approvals and designations stay with the dean and VPAA. The
      * secretary alone also decides on requests to borrow their department's
-     * rooms, divides those rooms between the department's programs and
-     * authors the curriculum.
+     * rooms and divides those rooms between the department's programs. Both
+     * author curricula; a program head only for their own program.
      *
      * The VPAA holds every capability except `curriculum.manage` and
      * `room.review_requests`: the curriculum is authored by the department
@@ -216,7 +217,7 @@ return [
             'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
             'schedule.generate', 'schedule.submit', 'schedule.withdraw',
             'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
-            'room.request',
+            'room.request', 'curriculum.manage',
         ],
     ],
 ];
