@@ -19,6 +19,7 @@ use App\Services\Scheduling\Domain\ScheduleRecommendationPayload;
 use App\Services\Scheduling\Generation\GenerationCourseSelection;
 use App\Services\Scheduling\Generation\CourseSetupOverrides;
 use App\Services\Scheduling\Generation\GenerateSectionSchedulePlans;
+use App\Services\Scheduling\Generation\GenerationDraftReviewer;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\Manual\AvailableSlotFinder;
@@ -125,6 +126,82 @@ class ScheduleRecommendationController extends Controller
         );
 
         return response()->json($result);
+    }
+
+    /**
+     * Re-checks an unsaved generated timetable as a whole and returns the
+     * courses that still need attention, each with ranked placements. Stateless:
+     * the draft travels with every call, so a course a fix resolved is simply
+     * not reported again.
+     */
+    public function reviewDraft(Request $request): JsonResponse
+    {
+        $time = ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'];
+        $validated = $request->validate([
+            'semester_id' => 'required|integer|exists:semesters,id',
+            'department_id' => 'required|integer|exists:departments,id',
+            'section_ids' => 'required|array|min:1',
+            'section_ids.*' => 'integer',
+            'preferred_days' => 'sometimes|nullable|array',
+            'preferred_days.*' => SchedulingPolicy::allowedDaysRule('required'),
+            // References are resolved against the snapshot rather than with an
+            // `exists` rule per row: a year level is several hundred rows.
+            'rows' => 'present|array|max:3000',
+            'rows.*.section_id' => 'required|integer',
+            'rows.*.course_id' => 'required|integer',
+            'rows.*.semester_id' => 'required|integer',
+            'rows.*.department_id' => 'required|integer',
+            'rows.*.faculty_id' => 'nullable|integer',
+            'rows.*.room_id' => 'nullable|integer',
+            'rows.*.day' => SchedulingPolicy::allowedDaysRule('required'),
+            'rows.*.start_time' => $time,
+            'rows.*.end_time' => $time,
+            'rows.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('required'),
+            'rows.*.is_hybrid' => 'sometimes|boolean',
+            'rows.*.preferred_pattern' => 'nullable|string|max:20',
+            'rows.*.split_group_id' => 'nullable|string|max:36',
+            'rows.*.meeting_type' => 'nullable|in:lecture,laboratory',
+            'rows.*.meeting_index' => 'nullable|integer|min:1',
+            'unplaced' => 'sometimes|array|max:500',
+            'unplaced.*.section_id' => 'required|integer',
+            'unplaced.*.course_id' => 'required|integer',
+            'unplaced.*.reason' => 'nullable|string|max:500',
+            'unplaced.*.shape' => 'nullable|in:split,online_split',
+            'unplaced.*.meetings' => 'required|array|min:1|max:6',
+            'unplaced.*.meetings.*.duration_slots' => 'required|integer|min:1|max:48',
+            'unplaced.*.meetings.*.meeting_type' => 'nullable|in:lecture,laboratory',
+            'unplaced.*.meetings.*.modes' => 'sometimes|array',
+            'unplaced.*.meetings.*.modes.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
+        ]);
+
+        $semesterId = (int) $validated['semester_id'];
+        $departmentId = (int) $validated['department_id'];
+        if (($guard = $this->departmentGuard($request, $departmentId)) !== null) {
+            return $guard;
+        }
+
+        $sectionIds = array_values(array_unique(array_map('intval', $validated['section_ids'])));
+        $ownedSections = Sections::query()
+            ->whereIn('id', $sectionIds)
+            ->where('department_id', $departmentId)
+            ->where('semester_id', $semesterId)
+            ->count();
+        $foreignRow = collect([...$validated['rows'], ...($validated['unplaced'] ?? [])])
+            ->contains(fn (array $row): bool => ! in_array((int) $row['section_id'], $sectionIds, true));
+        if ($ownedSections !== count($sectionIds) || $foreignRow) {
+            return response()->json([
+                'message' => 'The draft may only hold sections of this department and semester.',
+            ], 422);
+        }
+
+        return response()->json(app(GenerationDraftReviewer::class)->review(
+            semesterId: $semesterId,
+            departmentId: $departmentId,
+            sectionIds: $sectionIds,
+            rows: $validated['rows'],
+            unplaced: $validated['unplaced'] ?? [],
+            preferredDays: $validated['preferred_days'] ?? null,
+        ));
     }
 
     public function preview(Request $request): JsonResponse
@@ -427,7 +504,9 @@ class ScheduleRecommendationController extends Controller
             'generation_changes' => $result['generation_changes'] ?? [],
             'recommendations' => $result['recommendations'] ?? [],
             'generation_metrics' => $result['generation_metrics'] ?? null,
-            'sections' => $sections->map(fn (Sections $section): array => [
+            'status' => $result['status'] ?? 'complete',
+            'unplaced_courses' => $result['unplaced_courses'] ?? [],
+            'sections' =>$sections->map(fn (Sections $section): array => [
                 'id' => (int) $section->id,
                 'name' => (string) $section->section_name,
             ])->values(),

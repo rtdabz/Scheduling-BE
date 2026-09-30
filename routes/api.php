@@ -327,6 +327,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('capability:schedule.generate')->group(function () {
         Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
         Route::post('schedule-recommendations/available-slots', [ScheduleRecommendationController::class, 'availableSlots']);
+        Route::post('schedule-recommendations/draft-review', [ScheduleRecommendationController::class, 'reviewDraft'])->middleware('throttle:30,1');
         Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview'])->middleware('throttle:5,1');
         Route::post('schedule-recommendations/year-level-preview/queue', [ScheduleRecommendationController::class, 'queueYearLevelPreview'])->middleware('throttle:5,1');
         Route::get('schedule-recommendations/active-generation-run', [ScheduleRecommendationController::class, 'activeGenerationRun']);

@@ -74,7 +74,17 @@ class YearLevelScheduleGenerationService
      */
     private const BASELINE_BUDGET_SHARE = 0.35;
 
-    /** Wall-clock wording for the hard teaching windows, for failure messages. */
+    /**
+     * Seconds kept back from the search for the best-effort draft: when no
+     * complete timetable is found, every course that does fit is still placed
+     * and the rest are reported, so the user fixes them all in one review
+     * instead of one bottleneck per generation.
+     */
+    private const DRAFT_RESERVE_SECONDS = 25.0;
+
+    /** A draft-pass solve of one section, before its blocking course is set aside. */
+    private const DRAFT_SECTION_SECONDS = 4.0;
+
     /** A retry below this is not worth starting. */
     private const MIN_RETRY_SECONDS = 8.0;
 
@@ -237,8 +247,11 @@ class YearLevelScheduleGenerationService
         }
 
         $startedAt = microtime(true);
-        $hardDeadline = $startedAt + self::PREVIEW_TIME_BUDGET_SECONDS;
-        $retryPossible = count($sections) > 1 || $this->hasRelaxablePreferences($configsBySectionId);
+        $draftDeadline = $startedAt + self::PREVIEW_TIME_BUDGET_SECONDS;
+        // The search stops early enough to leave the draft pass its time.
+        $hardDeadline = $draftDeadline - self::DRAFT_RESERVE_SECONDS;
+        // Only a re-ordering retry can follow, and only across sections.
+        $retryPossible = count($sections) > 1;
         $baselineDeadline = $retryPossible
             ? $startedAt + (self::PREVIEW_TIME_BUDGET_SECONDS * self::BASELINE_BUDGET_SHARE)
             : $hardDeadline;
@@ -289,11 +302,19 @@ class YearLevelScheduleGenerationService
             $bottleneck = $this->diagnostics()->markSearchIncomplete($bottleneck);
         }
 
-        $strategies = array_slice(
+        $plannedStrategies = array_slice(
             $this->planner()->plan($sections, $configsBySectionId, $courses, $bottleneck),
             0,
             self::MAX_RETRY_STRATEGIES,
         );
+        // Only retries that re-order the search run on their own. A strategy
+        // that changes a setting is the user's decision: it is offered as a
+        // recommendation instead of being applied, and the courses it would
+        // have helped reach the draft review with fixes of their own.
+        $strategies = array_values(array_filter(
+            $plannedStrategies,
+            static fn (array $strategy): bool => ($strategy['adjustments'] ?? []) === [],
+        ));
 
         $pending = count($strategies);
 
@@ -364,15 +385,29 @@ class YearLevelScheduleGenerationService
         }
         $recommendations = $this->diagnostics()->searchRecommendations(
             $bottleneck,
-            $strategies,
+            $plannedStrategies,
             $courses,
             $configsBySectionId,
             $this->suggestedPreferredDay($configsBySectionId),
             $searchIncomplete,
         );
+        $message = $this->diagnostics()->searchMessage($bottleneck, $attempts, $searchIncomplete);
+
+        $draft = $this->bestEffortDraft($sections, $configsBySectionId, $courses, $draftDeadline);
+        if ($draft !== null && $draft['unplaced_courses'] === []) {
+            // The draft pass placed everything: a complete timetable as
+            // configured, so there is nothing to review and the search's
+            // advice no longer applies.
+            unset($draft['unplaced_courses']);
+
+            return $this->decorateResult($draft, null, $attempts, $configsBySectionId, $sections);
+        }
+        if ($draft !== null) {
+            return $this->decorateDraftResult($draft, $attempts, $sections, $bottleneck, $recommendations, $message);
+        }
 
         throw new YearLevelGenerationException(
-            $this->diagnostics()->searchMessage($bottleneck, $attempts, $searchIncomplete),
+            $message,
             YearLevelGenerationException::STAGE_SEARCH,
             bottleneck: $bottleneck,
             attempts: $attempts,
@@ -477,6 +512,226 @@ class YearLevelScheduleGenerationService
         $candidate['generation_metrics'] = $this->reportedMetrics($attempts);
 
         return $candidate;
+    }
+
+    /**
+     * The whole year level placed as far as it goes, with every course that
+     * would not fit set aside rather than failing the run on the first one.
+     *
+     * Sections are placed in the usual resource-heavy-first order, each
+     * against everything already placed. A section that has no timetable gives
+     * up the course its search stalled on and is solved again without it, so
+     * one hard course costs only itself. The configuration is the user's own:
+     * nothing is relaxed here.
+     *
+     * @param  list<Sections>  $sections
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @param  Collection<int, Course>  $courses
+     * @return array<string, mixed>|null null when nothing could be placed
+     */
+    private function bestEffortDraft(array $sections, array $configsBySectionId, Collection $courses, float $deadline): ?array
+    {
+        $order = $this->candidateOrders($sections, $configsBySectionId)[0] ?? [];
+        $roomTypesById = Rooms::query()
+            ->pluck('room_type', 'id')
+            ->mapWithKeys(static fn (string $type, int|string $id): array => [(int) $id => $type])
+            ->all();
+
+        $this->tentativeSchedules = [];
+        $combined = [];
+        $unplaced = [];
+        $evaluationConfigs = [];
+        $placedSections = [];
+
+        foreach ($order as $position => $section) {
+            $sectionId = (int) $section->id;
+            $original = $configsBySectionId[$sectionId];
+            $config = $original;
+
+            while (($courseIds = array_map('intval', $config['course_ids'] ?? [])) !== []) {
+                $remaining = $deadline - microtime(true);
+                if ($remaining < 1.0) {
+                    foreach ($courseIds as $courseId) {
+                        $unplaced[] = $this->unplacedCourse($section, $original, $courseId, $courses, timedOut: true);
+                    }
+                    break;
+                }
+
+                $budget = max(1.0, min(self::DRAFT_SECTION_SECONDS, $remaining / max(1, count($order) - $position)));
+                $solutions = $this->solveSectionWithRetries(
+                    section: $section,
+                    config: $config,
+                    timeBudget: $budget,
+                    maxAttemptSeconds: $budget / 2,
+                );
+
+                if ($solutions !== []) {
+                    $combined = [...$combined, ...($solutions[0]['schedules'] ?? [])];
+                    $this->tentativeSchedules = $combined;
+                    $evaluationConfigs[$sectionId] = $config;
+                    $evaluationConfigs[$sectionId]['forced_days_by_course_id'] = $this->solver->generationForcedDaysByCourseId();
+                    $placedSections[] = $section;
+                    break;
+                }
+
+                $blocking = (int) ($this->blockingCourse($courses)['course_id'] ?? 0);
+                if (! in_array($blocking, $courseIds, true)) {
+                    $blocking = $courseIds[array_key_last($courseIds)];
+                }
+                $unplaced[] = $this->unplacedCourse($section, $original, $blocking, $courses);
+                $config = $this->withoutCourse($config, $blocking);
+            }
+        }
+
+        if ($combined === []) {
+            return null;
+        }
+
+        $draft = $this->evaluator->evaluate(
+            $combined,
+            $placedSections,
+            $evaluationConfigs,
+            $this->solver->departmentRoomFairness(),
+            $roomTypesById,
+        );
+        $draft['unplaced_courses'] = $unplaced;
+
+        return $draft;
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    private function withoutCourse(array $config, int $courseId): array
+    {
+        $drop = static fn (mixed $ids): array => array_values(array_diff(array_map('intval', (array) $ids), [$courseId]));
+
+        $config['course_ids'] = $drop($config['course_ids'] ?? []);
+        $config['selected_split_session_course_ids'] = $drop($config['selected_split_session_course_ids'] ?? []);
+        $config['balanced_split_course_ids'] = $drop($config['balanced_split_course_ids'] ?? []);
+        $config['hybrid_split_course_ids'] = $drop($config['hybrid_split_course_ids'] ?? []);
+        if ($config['selected_split_session_course_ids'] === []) {
+            $config['is_hybrid'] = false;
+        }
+        foreach (['requirements_by_course_id', 'preferred_patterns', 'delivery_modes_by_course_id'] as $key) {
+            if (isset($config[$key]) && is_array($config[$key])) {
+                unset($config[$key][$courseId], $config[$key][(string) $courseId]);
+            }
+        }
+
+        return $config;
+    }
+
+    /**
+     * A course the draft left out, with the meetings it still needs so the
+     * review can look for places to put them.
+     *
+     * @param  array<string, mixed>  $config  the section's configuration as the user set it
+     * @param  Collection<int, Course>  $courses
+     * @return array<string, mixed>
+     */
+    private function unplacedCourse(Sections $section, array $config, int $courseId, Collection $courses, bool $timedOut = false): array
+    {
+        $requirements = (array) ($config['requirements_by_course_id'][$courseId] ?? []);
+        $meetings = array_values(array_map(
+            static fn (array $requirement): array => [
+                'meeting_type' => count($requirements) > 1 && in_array($requirement['component_type'] ?? null, ['lecture', 'laboratory'], true)
+                    ? (string) $requirement['component_type']
+                    : null,
+                'duration_slots' => (int) ($requirement['duration_slots'] ?? 0),
+                'modes' => array_values((array) ($requirement['allowed_delivery_modes'] ?? [])),
+            ],
+            array_filter($requirements, 'is_array'),
+        ));
+
+        $course = $courses->get($courseId);
+        $isIn = static fn (string $key): bool => in_array($courseId, array_map('intval', (array) ($config[$key] ?? [])), true);
+        $pattern = SchedulingPolicy::normalizePreferredPattern($config['preferred_patterns'][$courseId] ?? null);
+
+        // A Split Session is one requirement the solver halves, and an Online
+        // Split is two fixed meetings, one online: report the meetings the
+        // course is configured to have, not one full-length block.
+        $shape = null;
+        if ($isIn('hybrid_split_course_ids')) {
+            $shape = 'online_split';
+            $slots = SchedulingPolicy::hybridSplitMeetingSlots();
+            $meetings = [
+                ['meeting_type' => 'lecture', 'duration_slots' => $slots, 'modes' => ['on-site']],
+                ['meeting_type' => 'lecture', 'duration_slots' => $slots, 'modes' => ['online']],
+            ];
+        } elseif ($isIn('balanced_split_course_ids') && count($meetings) === 1 && $meetings[0]['duration_slots'] >= 2) {
+            $shape = 'split';
+            $half = intdiv($meetings[0]['duration_slots'], 2);
+            $meetings = [
+                ['meeting_type' => 'lecture', 'duration_slots' => $half, 'modes' => $meetings[0]['modes']],
+                ['meeting_type' => 'lecture', 'duration_slots' => $half, 'modes' => $meetings[0]['modes']],
+            ];
+        }
+
+        $reason = match (true) {
+            $timedOut => 'The generator ran out of time before it reached this course.',
+            $pattern !== null => "No time fits its fixed {$pattern} pattern alongside the section's other classes.",
+            $isIn('selected_split_session_course_ids') => "No free days fit its lecture and laboratory meetings alongside the section's other classes.",
+            $isIn('balanced_split_course_ids') => "No two free days fit its Split Session alongside the section's other classes.",
+            $course !== null && SchedulingPolicy::isLaboratoryCourse($course) => "No laboratory room is free for it alongside the section's other classes.",
+            default => "No free time and room fits it alongside the section's other classes.",
+        };
+
+        return [
+            'section_id' => (int) $section->id,
+            'section_name' => (string) $section->section_name,
+            'course_id' => $courseId,
+            'course_code' => $this->courseCode($courses, $courseId),
+            'reason' => $reason,
+            'shape' => $shape,
+            'meetings' => $meetings,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $draft
+     * @param  list<array<string, mixed>>  $attempts
+     * @param  list<Sections>  $sections
+     * @param  array<string, mixed>|null  $bottleneck
+     * @param  list<array<string, mixed>>  $recommendations  configuration changes that might let a full run succeed
+     * @return array<string, mixed>
+     */
+    private function decorateDraftResult(
+        array $draft,
+        array $attempts,
+        array $sections,
+        ?array $bottleneck,
+        array $recommendations,
+        string $message,
+    ): array {
+        $count = count($draft['unplaced_courses']);
+        $attempts[] = $this->attemptRecord(
+            'best_effort_draft',
+            'Draft with unplaced courses',
+            'partial',
+            null,
+            "No complete timetable was found, so every course that fits was placed and {$count} left for review.",
+        );
+
+        $draft['status'] = 'partial';
+        $draft['message'] = $message;
+        $draft['generation_attempts'] = $attempts;
+        $draft['applied_strategy'] = null;
+        $draft['applied_adjustments'] = [];
+        $draft['generation_changes'] = (new YearLevelGenerationChangeReport)->build(
+            null,
+            [],
+            $draft['schedules'] ?? [],
+            collect($sections)->mapWithKeys(static fn (Sections $section): array => [(int) $section->id => (string) $section->section_name])->all(),
+            $this->loadedCourses->mapWithKeys(static fn ($course): array => [(int) $course->id => (string) $course->course_code])->all(),
+            $bottleneck,
+            $attempts,
+        );
+        $draft['recommendations'] = $recommendations;
+        $draft['generation_metrics'] = $this->reportedMetrics($attempts);
+
+        return $draft;
     }
 
     /**
@@ -698,27 +953,6 @@ class YearLevelScheduleGenerationService
             'iterations' => (int) ($failure['iterations'] ?? 0),
             'search_limit_reached' => $cutShort || (bool) ($failure['search_limit_reached'] ?? false),
         ];
-    }
-
-    /** @param  array<int, array<string, mixed>>  $configsBySectionId */
-    private function hasRelaxablePreferences(array $configsBySectionId): bool
-    {
-        foreach ($configsBySectionId as $config) {
-            if (array_filter($config['preferred_patterns'] ?? []) !== []) {
-                return true;
-            }
-            if (($config['selected_split_session_course_ids'] ?? []) !== []
-                || ($config['balanced_split_course_ids'] ?? []) !== []) {
-                return true;
-            }
-            foreach (($config['delivery_modes_by_course_id'] ?? []) as $mode) {
-                if ((string) $mode === 'on-site') {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
     /**

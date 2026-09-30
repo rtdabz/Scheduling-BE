@@ -109,11 +109,15 @@ final class SchedulingConstraintKernel
             return [];
         }
 
-        $persisted = array_values(array_filter(
-            $snapshot->persistedSchedules,
-            static fn (array $schedule): bool => ! in_array((int) ($schedule['id'] ?? 0), $ignoreScheduleIds, true),
-        ));
-        $others = [...$persisted, ...$candidateRows];
+        // Called once per candidate slot by AvailableSlotFinder, so the
+        // semester's rows are only copied when some of them are ignored.
+        $persisted = $ignoreScheduleIds === []
+            ? $snapshot->persistedSchedules
+            : array_filter(
+                $snapshot->persistedSchedules,
+                static fn (array $schedule): bool => ! in_array((int) ($schedule['id'] ?? 0), $ignoreScheduleIds, true),
+            );
+        $others = [...array_values($persisted), ...$candidateRows];
 
         return $this->sortViolations([
             ...$this->deliveryModes->forRow($row, $course, $snapshot),

@@ -101,10 +101,12 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
         $this->assertSame(0, Schedule::query()->count());
     }
 
-    public function test_retry_ladder_switches_the_fixed_pattern_and_reports_the_applied_adjustment(): void
+    public function test_a_pattern_change_that_would_fit_is_recommended_not_applied(): void
     {
         ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
 
+        // Only TTh fits. Switching the user's MW pattern is theirs to approve,
+        // so the run does not try it on its own: it reports it.
         $this->app->instance(CspSolver::class, $this->patternGatedSolver('TTh', (int) $course->id, $section, (int) $department->id));
 
         $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
@@ -119,23 +121,15 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             ]],
         ]);
 
-        $response->assertOk()
-            ->assertJsonPath('applied_strategy.key', 'alternate_pattern')
-            ->assertJsonPath('applied_adjustments.0.type', 'set_pattern')
-            ->assertJsonPath('applied_adjustments.0.value', 'TTh')
-            ->assertJsonPath('applied_adjustments.0.course_id', (int) $course->id)
-            ->assertJsonPath('applied_adjustments.0.section_id', (int) $section->id)
-            ->assertJsonPath('generation_changes.0.kind', 'preference_relaxed')
-            ->assertJsonPath('generation_changes.0.items.0.course_code', 'GEC 101')
-            ->assertJsonPath('generation_changes.0.items.0.adjustment_type', 'set_pattern')
-            ->assertJsonPath('generation_changes.0.items.0.adjustment_value', 'TTh')
-            ->assertJsonPath('generation_changes.0.detected_issue.type', 'fixed_pattern')
-            ->assertJsonPath('generation_changes.0.detected_issue.course_code', 'GEC 101')
-            ->assertJsonPath('generation_changes.0.failed_attempts', 1);
+        $response->assertStatus(422)->assertJsonPath('stage', 'search');
 
-        $outcomes = collect($response->json('generation_attempts'))->pluck('outcome', 'strategy')->all();
-        $this->assertSame('failed', $outcomes['preflight_pattern'] ?? null);
-        $this->assertSame('succeeded', $outcomes['alternate_pattern'] ?? null);
+        $strategies = collect($response->json('attempts'))->pluck('strategy')->all();
+        $this->assertNotContains('alternate_pattern', $strategies);
+
+        $recommendation = collect($response->json('recommendations'))->firstWhere('id', 'strategy-alternate_pattern');
+        $this->assertNotNull($recommendation);
+        $this->assertSame('set_pattern', $recommendation['adjustments'][0]['type']);
+        $this->assertSame('TTh', $recommendation['adjustments'][0]['value']);
         $this->assertSame(0, Schedule::query()->count());
     }
 
@@ -173,7 +167,8 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
 
         $strategies = collect($response->json('attempts'))->pluck('strategy')->all();
         $this->assertContains('preflight_pattern', $strategies);
-        $this->assertContains('alternate_pattern', $strategies);
+        // Settings changes are recommended, never tried unasked.
+        $this->assertNotContains('alternate_pattern', $strategies);
 
         $recommendationIds = collect($response->json('recommendations'))->pluck('id')->all();
         $this->assertContains('strategy-alternate_pattern', $recommendationIds);

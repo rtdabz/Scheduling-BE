@@ -32,6 +32,11 @@ abstract class TestCase extends BaseTestCase
 
         SchedulingPolicy::clearFieldCourseCache();
         SchedulingPolicy::clearTimeCache();
+
+        // The generation endpoints raise PHP's time limit for their own
+        // request. In one PHPUnit process that limit outlives the test and
+        // caps the wall time of every test after it.
+        set_time_limit(0);
     }
 
     /**

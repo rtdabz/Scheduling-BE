@@ -103,7 +103,19 @@ class UserController extends Controller
         $this->ensureRoleDepartmentHierarchy($validated['role'], (int) $validated['department_id']);
         $this->ensureRoleSlotAvailable($validated, (bool) $validated['is_active'], $user->id);
 
-        DB::transaction(function () use ($validated, $request, $user) {
+        $newEmail = strtolower(trim($validated['email']));
+        $emailChanged = $newEmail !== strtolower((string) $user->email);
+
+        DB::transaction(function () use ($validated, $request, $user, $emailChanged) {
+            if ($emailChanged) {
+                // Drops any setup token still keyed to the old address, and the
+                // Google link, which was tied to the old address.
+                /** @var \Illuminate\Auth\Passwords\PasswordBroker $broker */
+                $broker = Password::broker('invites');
+                $broker->deleteToken($user);
+                $user->forceFill(['google_id' => null, 'google_email' => null, 'google_linked_at' => null]);
+                $user->tokens()->where('name', 'wicars-google')->delete();
+            }
             $user->update([
                 'name' => $this->displayName($validated),
                 'first_name' => trim($validated['first_name']),
@@ -133,8 +145,16 @@ class UserController extends Controller
         });
         ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
+        // Sent after commit so the queued job sees the saved address. The
+        // notification is routed to the user's current (new) email.
+        $message = 'User updated successfully.';
+        if ($emailChanged && $user->is_active
+            && $this->sendInvitation($request, $user) === Password::RESET_LINK_SENT) {
+            $message = "User updated. A setup link was sent to {$user->email}.";
+        }
+
         return response()->json([
-            'message' => 'User updated successfully.',
+            'message' => $message,
             'data' => $this->withAccessState($user->fresh()->load(['department', 'program', 'facultyProfile'])),
         ]);
     }

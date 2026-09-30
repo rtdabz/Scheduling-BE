@@ -138,4 +138,32 @@ class AccountInvitationTest extends TestCase
         $user->forceFill(['is_active' => false])->save();
         $this->actingAs($vpaa, 'sanctum')->postJson("/api/user/{$user->id}/invitation")->assertStatus(422);
     }
+
+    public function test_changing_email_sends_setup_link_to_new_address_and_unlinks_google(): void
+    {
+        [$vpaa, $user, $oldToken] = $this->createAccount();
+        $user->forceFill(['google_id' => 'g-1', 'google_email' => 'invited@school.edu.ph', 'google_linked_at' => now()])->save();
+        Notification::fake();
+
+        $payload = [
+            'first_name' => $user->first_name,
+            'last_name' => $user->last_name,
+            'email' => 'New.Address@school.edu.ph',
+            'role' => $user->role,
+            'department_id' => $user->department_id,
+            'is_active' => true,
+        ];
+        // Right after creation, so the old address's throttle must not apply.
+        $this->actingAs($vpaa, 'sanctum')->putJson("/api/user/{$user->id}", $payload)->assertOk();
+
+        $user->refresh();
+        $this->assertSame('new.address@school.edu.ph', $user->email);
+        $this->assertNull($user->google_id);
+        Notification::assertSentTo($user, AccountInvitationNotification::class);
+
+        // An edit that keeps the email sends nothing.
+        Notification::fake();
+        $this->actingAs($vpaa, 'sanctum')->putJson("/api/user/{$user->id}", $payload)->assertOk();
+        Notification::assertNothingSent();
+    }
 }

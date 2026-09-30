@@ -47,6 +47,9 @@ final class SchedulingSnapshotRepository
      *
      * @param  list<int>  $sectionIds
      * @param  list<int>  $courseIds
+     * @param  list<array{0: int, 1: int}>|null  $replacedClasses  the exact [section id, course id] pairs a
+     *                                                             commit replaces; when given, only their rows are left out rather than
+     *                                                             every target section's rows of every target course
      */
     public function capture(
         int $semesterId,
@@ -54,6 +57,7 @@ final class SchedulingSnapshotRepository
         array $sectionIds = [],
         array $courseIds = [],
         bool $includeFaculties = true,
+        ?array $replacedClasses = null,
     ): SchedulingSnapshot {
         $queryCountBefore = $this->queryCounter->total();
         $startedAt = microtime(true);
@@ -132,12 +136,23 @@ final class SchedulingSnapshotRepository
             // can double-book the section against its own classes. (A
             // year-level run passes the union of its sections' courses.)
             // Finalized workflow rows remain authoritative.
-            ->when($sectionIds !== [], function ($query) use ($sectionIds, $courseIds): void {
-                $query->where(function ($scope) use ($sectionIds, $courseIds): void {
+            // (An empty list of replaced classes replaces nothing.)
+            ->when($sectionIds !== [] && $replacedClasses !== [], function ($query) use ($sectionIds, $courseIds, $replacedClasses): void {
+                $query->where(function ($scope) use ($sectionIds, $courseIds, $replacedClasses): void {
                     $scope
                         ->whereNotIn('section_id', $sectionIds)
                         ->orWhereNotIn('status', ['draft', 'completed', 'revision']);
-                    if ($courseIds !== []) {
+                    if ($replacedClasses !== null) {
+                        // A draft review knows exactly which classes the save
+                        // deletes: every other row of a target section stays.
+                        $scope->orWhere(function ($kept) use ($replacedClasses): void {
+                            foreach ($replacedClasses as [$sectionId, $courseId]) {
+                                $kept->where(static fn ($pair) => $pair
+                                    ->where('section_id', '!=', (int) $sectionId)
+                                    ->orWhere('course_id', '!=', (int) $courseId));
+                            }
+                        });
+                    } elseif ($courseIds !== []) {
                         $scope->orWhereNotIn('course_id', $courseIds);
                     }
                 });
