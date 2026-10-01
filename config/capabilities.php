@@ -160,7 +160,7 @@ return [
         ],
         'instructor_assignment' => [
             'title' => 'Instructor Assignment',
-            'description' => 'Faculty teaching assignments and workload allocation.',
+            'description' => 'Instructor teaching assignments and workload allocation.',
         ],
         'submission_workflow' => [
             'title' => 'Submission Workflow',

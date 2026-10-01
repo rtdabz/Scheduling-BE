@@ -27,7 +27,7 @@ final class InstructorConflictConstraints
                 && $row->facultyId === ConstraintSupport::nullableIntValue($other, 'faculty_id')) {
                 return [ConstraintSupport::violation(
                     'faculty_conflict',
-                    'Faculty is already teaching an overlapping class.',
+                    'Instructor is already teaching an overlapping class.',
                     context: ConstraintSupport::conflictContext($other),
                 )];
             }

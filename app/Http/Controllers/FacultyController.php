@@ -340,7 +340,7 @@ class FacultyController extends Controller
         ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
         return response()->json([
-            'message' => 'Faculty archived successfully',
+            'message' => 'Instructor archived successfully',
             'released_schedule_count' => count($released),
             'released_schedule_ids' => $released,
         ]);
@@ -381,12 +381,12 @@ class FacultyController extends Controller
     {
         $departmentId = $this->resolveDepartmentId($request);
         if ($departmentId !== null && (int) $faculty->department_id !== $departmentId) {
-            return response()->json(['message' => 'Faculty member not found in your department.'], 404);
+            return response()->json(['message' => 'Instructor not found in your department.'], 404);
         }
 
         $user = $request->user();
         if ($user?->role === 'program_head' && (int) $faculty->program_id !== (int) ($user->program_id ?? 0)) {
-            return response()->json(['message' => 'Faculty member not found in your program.'], 404);
+            return response()->json(['message' => 'Instructor not found in your program.'], 404);
         }
 
         return null;

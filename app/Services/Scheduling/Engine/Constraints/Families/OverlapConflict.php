@@ -47,7 +47,7 @@ final class OverlapConflict
             }
 
             if ($row->facultyId !== null && $row->facultyId === ConstraintSupport::nullableIntValue($other, 'faculty_id')) {
-                $violations['faculty_conflict'] ??= ConstraintSupport::violation('faculty_conflict', 'Faculty is already teaching an overlapping class.', context: $context);
+                $violations['faculty_conflict'] ??= ConstraintSupport::violation('faculty_conflict', 'Instructor is already teaching an overlapping class.', context: $context);
             }
 
             if ($row->sectionId === $otherSectionId) {

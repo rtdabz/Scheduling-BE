@@ -523,6 +523,7 @@ class InitialDataController extends Controller
             'schedules_truncated' => $schedulesTruncated,
             'schedule_submissions' => $scheduleSubmissions,
             'departments' => $departments,
+            'active_curricula_count' => $activeCurriculumList->count(),
             'scheduling_ready' => $departmentId === null || Departments::query()->whereKey($departmentId)->whereHas('programs')->exists(),
             // Submitting hands the schedules to a Dean, so the scheduler can
             // block the action up front instead of letting the request fail.
