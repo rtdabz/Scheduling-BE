@@ -111,6 +111,8 @@ class ScheduleController extends Controller
         if (($statuses = $this->authorization->visibleScheduleStatuses($request)) !== null) {
             $query->whereIn('status', $statuses);
         }
+        // A Program Head sees a sibling program's meetings only in shared rooms.
+        $this->authorization->scopeSchedulesToProgram($query, $request);
 
         $schedules = $query->latest()->limit($perPage)->get();
 
@@ -181,6 +183,9 @@ class ScheduleController extends Controller
         }
         if (! $this->authorization->departmentHasProgram((int) $validated['department_id'])) {
             return response()->json(['message' => 'Create at least one Program under this Department before scheduling.'], 422);
+        }
+        if (! $this->authorization->programIsWritable($request, (int) $validated['program_id'])) {
+            return $this->programForbidden();
         }
 
         $duplicateMessage = $this->delegatedCourseScheduleMessage($validated);
@@ -421,6 +426,18 @@ class ScheduleController extends Controller
         // instead of returning the required authorization response.
         if (! empty($deleteIds) && ! $this->authorization->scheduleIdsBelongToDepartment($request, $deleteIds)) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+
+        // Inside the department, each program is written by its owner only:
+        // every row touched, every section written into, and every section
+        // a generated timetable replaces.
+        $touchedSectionIds = array_merge(
+            $replaceSectionIds,
+            collect($validated['operations'])->pluck('section_id')->filter()->map('intval')->all(),
+        );
+        if (! $this->authorization->scheduleIdsWritable($request, array_merge($operationIds, array_map('intval', $deleteIds)))
+            || ! $this->authorization->sectionIdsWritable($request, $touchedSectionIds)) {
+            return $this->programForbidden();
         }
 
         $plottingFields = [
@@ -1362,7 +1379,9 @@ class ScheduleController extends Controller
                     ->where('department_id', $scope)
                     ->orWhereHas('course', fn (Builder $course) => $course->where('teaching_department_id', $scope)),
             ))
-            ->when($statuses !== null, fn (Builder $query) => $query->whereIn('status', $statuses));
+            ->when($statuses !== null, fn (Builder $query) => $query->whereIn('status', $statuses))
+            // A Program Head sees a sibling program's meetings only in shared rooms.
+            ->tap(fn (Builder $query) => $this->authorization->scopeSchedulesToProgram($query, $request));
     }
 
     public function update(Request $request, Schedule $schedule)
@@ -1400,6 +1419,10 @@ class ScheduleController extends Controller
             && ! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])
         ) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+        }
+        if (! $this->authorization->scheduleIsWritable($request, $schedule)
+            || (isset($validated['section_id']) && ! $this->authorization->sectionIdsWritable($request, [(int) $validated['section_id']]))) {
+            return $this->programForbidden();
         }
 
         if (array_key_exists('faculty_id', $validated)) {
@@ -1730,6 +1753,9 @@ class ScheduleController extends Controller
         if (! $this->authorization->scheduleBelongsToDepartment($request, $schedule)) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
+        if (! $this->authorization->scheduleIsWritable($request, $schedule)) {
+            return $this->programForbidden();
+        }
 
         $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'split']);
         $deletedSchedule = clone $schedule;
@@ -1743,6 +1769,9 @@ class ScheduleController extends Controller
 
             if (! $this->authorization->scheduleIdsBelongToDepartment($request, $schedules->pluck('id')->all())) {
                 return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+            }
+            if (! $this->authorization->scheduleIdsWritable($request, $schedules->pluck('id')->all())) {
+                return $this->programForbidden();
             }
             if ($schedules->contains(static fn (Schedule $s): bool => ! in_array($s->status, self::DELETABLE_STATUSES, true))) {
                 return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
@@ -2329,6 +2358,9 @@ class ScheduleController extends Controller
         if (! $this->authorization->scheduleIdsBelongToDepartment($request, $validated['ids'])) {
             return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
         }
+        if (! $this->authorization->scheduleIdsWritable($request, $validated['ids'])) {
+            return $this->programForbidden();
+        }
 
         $targetSchedules = Schedule::query()
             ->whereIn('id', $validated['ids'])
@@ -2466,5 +2498,10 @@ class ScheduleController extends Controller
             'schedules' => $schedules,
             'schedules_updated' => $updated,
         ]);
+    }
+
+    private function programForbidden(): JsonResponse
+    {
+        return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_FORBIDDEN_MESSAGE], 403);
     }
 }

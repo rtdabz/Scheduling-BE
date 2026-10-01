@@ -192,15 +192,16 @@ return [
      * rooms and divides those rooms between the department's programs. Both
      * author curricula; a program head only for their own program.
      *
-     * The VPAA holds every capability except `curriculum.manage` and
-     * `room.review_requests`: the curriculum is authored by the department
-     * secretary that owns the programs, and room lending is settled between
-     * departments, with the VPAA only notified.
+     * The VPAA approves and returns schedules but does not build them: it holds
+     * no create, update, delete, generate, submit or withdraw grant, and no
+     * `curriculum.manage` or `room.review_requests` either: the curriculum is
+     * authored by the department secretary that owns the programs, and room
+     * lending is settled between departments, with the VPAA only notified.
      */
     'role_defaults' => [
+        // The VPAA reviews and decides on timetables; it does not build them.
         'vpaa' => [
-            'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
-            'schedule.generate', 'schedule.submit', 'schedule.withdraw',
+            'schedule.view',
             'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
             'schedule.approve_dean', 'schedule.approve_vpaa',
             'faculty.manage_designations',

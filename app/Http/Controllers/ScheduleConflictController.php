@@ -354,6 +354,9 @@ class ScheduleConflictController extends Controller
         if (! $this->authorization->scheduleIdsBelongToDepartment($request, [$scheduleId])) {
             return $this->forbidden();
         }
+        if (! $this->authorization->scheduleIdsWritable($request, [$scheduleId])) {
+            return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_FORBIDDEN_MESSAGE], 403);
+        }
 
         return $request->user()?->hasCapability('schedule.update') === true
             ? null

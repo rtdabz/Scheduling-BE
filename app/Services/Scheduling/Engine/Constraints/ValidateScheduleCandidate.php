@@ -131,7 +131,7 @@ final class ValidateScheduleCandidate
             );
             $componentType = $row->meetingType ?? 'lecture';
             $roomTypes = $componentType === 'laboratory'
-                ? ['laboratory']
+                ? SchedulingPolicy::labRoomTypes()
                 : [(string) ($course['room_type_required'] ?? 'lecture')];
 
             return new ScheduleRequirement(

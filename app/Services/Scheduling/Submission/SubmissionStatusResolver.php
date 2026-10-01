@@ -135,6 +135,34 @@ class SubmissionStatusResolver
     }
 
     /**
+     * For each section of a submission, the recalled or rejected version it was
+     * revised from -- the one forSubmissions() compares it against.
+     *
+     * @return array<int, ScheduleSubmission>  Keyed by section id.
+     */
+    public function previousVersionsFor(ScheduleSubmission $submission): array
+    {
+        $candidates = ScheduleSubmission::query()
+            ->with('sections:id')
+            ->where('department_id', $submission->department_id)
+            ->where('semester_id', $submission->semester_id)
+            ->where('revision_number', '<', $submission->revision_number)
+            ->orderByDesc('revision_number')
+            ->orderByDesc('id')
+            ->get();
+
+        $result = [];
+        foreach ($submission->sections()->pluck('sections.id') as $sectionId) {
+            $previous = $candidates->first(fn (ScheduleSubmission $candidate): bool => $this->isClosedFor($candidate, (int) $sectionId));
+            if ($previous !== null) {
+                $result[(int) $sectionId] = $previous;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Sections whose latest submitted version is recalled or rejected -- the
      * ones now being revised -- with that version.
      *
@@ -248,19 +276,24 @@ class SubmissionStatusResolver
     {
         $keys = [];
         foreach ($rows as $row) {
-            $row = $row instanceof Schedule ? $row->getAttributes() : $row;
-            $keys[] = implode('|', [
-                (int) ($row['course_id'] ?? 0),
-                (string) ($row['day'] ?? ''),
-                substr((string) ($row['start_time'] ?? ''), 0, 5),
-                substr((string) ($row['end_time'] ?? ''), 0, 5),
-                (int) ($row['room_id'] ?? 0),
-                (string) ($row['mode'] ?? ''),
-                (int) (bool) ($row['is_hybrid'] ?? false),
-            ]);
+            $keys[] = self::meetingKey($row instanceof Schedule ? $row->getAttributes() : $row);
         }
         sort($keys);
 
         return implode(';', $keys);
+    }
+
+    /** What makes two meetings the same: its CONTENT_FIELDS, so never the instructor. */
+    public static function meetingKey(array $row): string
+    {
+        return implode('|', [
+            (int) ($row['course_id'] ?? 0),
+            (string) ($row['day'] ?? ''),
+            substr((string) ($row['start_time'] ?? ''), 0, 5),
+            substr((string) ($row['end_time'] ?? ''), 0, 5),
+            (int) ($row['room_id'] ?? 0),
+            (string) ($row['mode'] ?? ''),
+            (int) (bool) ($row['is_hybrid'] ?? false),
+        ]);
     }
 }

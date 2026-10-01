@@ -244,7 +244,7 @@ final class ValidateGenerationConfiguration
             if ($isMinorSplit && ! SchedulingPolicy::balancedSplitEligible($course, $snapshot->departmentSettings)) {
                 $violations[] = $this->violation(
                     'minor_split_eligibility',
-                    'Split Session requires an eligible minor or lecture-only major course.',
+                    'Split Session requires a minor course or a major with lecture or laboratory units.',
                     $this->courseContext($course),
                 );
                 $recommendations[] = $this->disableSplitRecommendation($configuration, $course, 'disable_minor_split');
@@ -374,7 +374,9 @@ final class ValidateGenerationConfiguration
                 && (($room['department_id'] ?? null) === null || (int) $room['department_id'] === $snapshot->departmentId),
         ));
         $hasLectureRoom = collect($availableRooms)->contains(static fn (array $room): bool => ($room['room_type'] ?? null) === 'lecture');
-        $hasLaboratoryRoom = collect($availableRooms)->contains(static fn (array $room): bool => ($room['room_type'] ?? null) === 'laboratory');
+        // A room a laboratory meeting may use, per the Default LAB Room Requirement.
+        $labRoomTypes = SchedulingPolicy::labRoomTypes();
+        $hasLaboratoryRoom = collect($availableRooms)->contains(static fn (array $room): bool => in_array($room['room_type'] ?? null, $labRoomTypes, true));
         $hybridSplitIds = array_map('intval', $configuration->hybridSplitCourseIds);
 
         foreach ($configuration->courseIds as $courseId) {

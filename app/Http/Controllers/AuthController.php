@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Program;
 use App\Models\User;
 use App\Services\AuthenticationAuditService;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\CapabilityRegistry;
 use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\Client\ConnectionException;
@@ -277,6 +278,7 @@ class AuthController extends Controller
             'capability_catalog' => $this->capabilities->catalogFor($user),
             'modules' => $this->capabilities->modulesFor($user),
             'scheduling_ready' => $user->department_id === null || Program::query()->where('department_id', $user->department_id)->exists(),
+            'can_edit_program_ids' => app(ScheduleAuthorizationService::class)->writableProgramIdsFor($user),
         ]);
     }
 

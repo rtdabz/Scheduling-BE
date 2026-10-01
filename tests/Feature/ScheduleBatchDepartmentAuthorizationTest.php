@@ -359,8 +359,9 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
         $this->assertSame('draft', $foreignSchedule->status);
     }
 
-    public function test_vpaa_can_batch_mutate_schedules_across_departments(): void
+    public function test_vpaa_cannot_batch_mutate_schedules(): void
     {
+        // The VPAA approves and returns timetables; it does not author them.
         [, $deptB, $semester, , $roomB, , $courseB, , $sectionB] = $this->fixture();
         $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
         $foreignSchedule = $this->schedule($deptB, $semester, $roomB, $courseB, $sectionB, ['status' => 'draft']);
@@ -370,8 +371,8 @@ class ScheduleBatchDepartmentAuthorizationTest extends TestCase
             'status' => 'completed',
         ]);
 
-        $response->assertOk();
-        $this->assertSame('completed', $foreignSchedule->refresh()->status);
+        $response->assertForbidden();
+        $this->assertSame('draft', $foreignSchedule->refresh()->status);
     }
 
     public function test_batch_rejects_unknown_references_with_field_keyed_errors(): void

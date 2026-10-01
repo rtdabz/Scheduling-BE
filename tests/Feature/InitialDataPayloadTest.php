@@ -51,7 +51,7 @@ class InitialDataPayloadTest extends TestCase
 
         foreach ($users as $row) {
             $this->assertSame(
-                ['department_id', 'id', 'name', 'role'],
+                ['department_id', 'id', 'name', 'program_id', 'role'],
                 collect(array_keys($row))->sort()->values()->all(),
             );
         }
@@ -179,6 +179,56 @@ class InitialDataPayloadTest extends TestCase
         $beedResponse = $this->actingAs($beedHead)->getJson('/api/initial-data')->assertOk();
         $this->assertSame([$beedCourse->id], collect($beedResponse->json('courses'))->pluck('id')->all());
         $this->assertSame([$beedCourse->id], collect($beedResponse->json('schedules'))->pluck('course_id')->unique()->values()->all());
+    }
+
+    /**
+     * A generated timetable saves shared GE/minor courses (no program of their
+     * own) into the Program Head's sections. Scoping the read by the course's
+     * program hid every one of them, so the grid emptied right after saving.
+     */
+    public function test_program_head_payload_keeps_shared_course_meetings_in_their_own_sections(): void
+    {
+        [, $department] = $this->fixture();
+        $semester = Semester::query()->where('is_active', true)->firstOrFail();
+        $bped = Program::create(['department_id' => $department->id, 'code' => 'BPED', 'name' => 'Physical Education']);
+        $beed = Program::create(['department_id' => $department->id, 'code' => 'BEED', 'name' => 'Elementary Education']);
+        $bpedHead = User::factory()->create(['role' => 'program_head', 'department_id' => $department->id, 'program_id' => $bped->id]);
+        $beedHead = User::factory()->create(['role' => 'program_head', 'department_id' => $department->id, 'program_id' => $beed->id]);
+        $section = Sections::create([
+            'section_name' => 'BPED-1A', 'year_level' => '1', 'semester' => '1st',
+            'department_id' => $department->id, 'program_id' => $bped->id,
+            'semester_id' => $semester->id, 'status' => 'active',
+        ]);
+        $shared = Course::create([
+            'course_code' => 'GEC 101', 'course_name' => 'GEC 101',
+            'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3,
+            'course_category' => 'minor', 'room_type_required' => 'lecture',
+            'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'status' => 'active',
+        ]);
+        $curriculum = Curriculum::create([
+            'name' => 'BPED 2026', 'code' => 'BPEDCURR', 'department_id' => $department->id,
+            'program_id' => $bped->id, 'effective_school_year' => '2026-2027', 'status' => 'active',
+        ]);
+        DB::table('curriculum_course')->insert([
+            'curriculum_id' => $curriculum->id, 'course_id' => $shared->id, 'year_level' => '1', 'semester' => '1',
+        ]);
+        $schedule = Schedule::create([
+            'semester_id' => $semester->id,
+            'section_id' => $section->id,
+            'course_id' => $shared->id,
+            'department_id' => $department->id,
+            'day' => 'Monday', 'start_time' => '08:00', 'end_time' => '10:00',
+            'mode' => 'online', 'status' => 'draft',
+        ]);
+
+        // The course has to ship too, or the card renders as UNKNOWN.
+        $bpedRows = $this->actingAs($bpedHead)->getJson('/api/initial-data?include=courses,schedules')->assertOk();
+        $this->assertSame([$schedule->id], collect($bpedRows->json('schedules'))->pluck('id')->all());
+        $this->assertContains($shared->id, collect($bpedRows->json('courses'))->pluck('id')->all());
+
+        $beedRows = $this->actingAs($beedHead)->getJson('/api/initial-data?include=courses,schedules')->assertOk();
+        $this->assertSame([], collect($beedRows->json('schedules'))->pluck('id')->all());
+        $this->assertNotContains($shared->id, collect($beedRows->json('courses'))->pluck('id')->all());
     }
 
     /**

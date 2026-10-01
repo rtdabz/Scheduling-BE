@@ -497,6 +497,45 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $this->assertSame('modified', $submissions[2]['revision_status']);
     }
 
+    public function test_revision_diff_lists_moved_meetings_against_the_rejected_version_and_ignores_instructors(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $secondSection->delete();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
+        $moved = $this->schedule($department, $semester, $room, $course, $firstSection);
+        $kept = $this->schedule($department, $semester, $room, $course, $firstSection, ['day' => 'Tuesday']);
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/submit-schedules", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $this->actingAs($dean)
+            ->postJson("/api/departments/{$department->id}/return-by-dean", ['rejection_reason' => 'Move Monday.'])
+            ->assertOk();
+
+        $moved->refresh()->update(['day' => 'Wednesday', 'status' => 'completed']);
+        // Neither an instructor nor the pair-level hybrid flag is a change to this meeting.
+        $kept->refresh()->update(['faculty_id' => $this->instructor($department)->id, 'is_hybrid' => ! $kept->is_hybrid, 'status' => 'completed']);
+        $this->editedDirectly();
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/submit-schedules", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+        $resubmitted = ScheduleSubmission::query()->latest('id')->firstOrFail();
+
+        $sections = $this->actingAs($dean)
+            ->getJson("/api/schedule-submissions/{$resubmitted->id}/revision-diff")
+            ->assertOk()
+            ->assertJsonPath('data.available', true)
+            ->json('data.sections');
+
+        $this->assertCount(1, $sections);
+        $this->assertSame('Move Monday.', $sections[0]['previous_rejection_reason']);
+        $this->assertCount(1, $sections[0]['changes']);
+        $this->assertSame('changed', $sections[0]['changes'][0]['change']);
+        $this->assertSame('Monday', $sections[0]['changes'][0]['before']['day']);
+        $this->assertSame('Wednesday', $sections[0]['changes'][0]['after']['day']);
+    }
+
     public function test_a_recalled_section_reads_recalled_and_initial_until_it_is_changed(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();

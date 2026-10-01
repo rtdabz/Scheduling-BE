@@ -92,8 +92,16 @@ final class RoomTypeRule
             return $violation("Course {$courseCode} requires a physical room, but '{$roomCode}' is a '{$roomType}' room.");
         }
 
-        if ($requiredRoomType === 'laboratory' && $roomType !== 'laboratory') {
-            return $violation("Course {$courseCode} requires a laboratory room, but '{$roomCode}' is a '{$roomType}' room.");
+        // A laboratory meeting takes the rooms the institution's Default LAB
+        // Room Requirement allows: a laboratory, a classroom, or either.
+        if ($requiredRoomType === 'laboratory') {
+            if (in_array($roomType, SchedulingPolicy::labRoomTypes(), true)) {
+                return null;
+            }
+
+            return $violation(SchedulingPolicy::labRoomType() === 'lecture'
+                ? "Course {$courseCode} meets in a classroom, but '{$roomCode}' is a '{$roomType}' room."
+                : "Course {$courseCode} requires a laboratory room, but '{$roomCode}' is a '{$roomType}' room.");
         }
 
         if ($requiredRoomType === 'lecture' && $roomType === 'laboratory'
@@ -102,10 +110,6 @@ final class RoomTypeRule
         }
 
         if ($requiredRoomType === 'lecture' && in_array($roomType, ['lecture', 'laboratory'], true)) {
-            return null;
-        }
-
-        if ($requiredRoomType === 'laboratory' && $roomType === 'laboratory') {
             return null;
         }
 

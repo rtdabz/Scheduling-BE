@@ -2436,15 +2436,14 @@ class CspSolver
             };
 
             // For on-site courses, prioritize room type based on curriculum (lab_hours).
-            // A lecture course may fall back to a lecture-capable laboratory, but a
-            // laboratory course gets no lecture-room fallback: RuleEngine rejects a
-            // laboratory course in a lecture room, so such a candidate could only
-            // ever produce a preview that fails to save. Online stays the fallback
-            // when no laboratory is free.
+            // A lecture course may fall back to a lecture-capable laboratory. A
+            // laboratory course takes the rooms the Default LAB Room Requirement
+            // allows (SchedulingPolicy::labRoomTypes), the same list RoomTypeRule
+            // accepts at save time.
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
-                    $roomTypes = ['laboratory'];
+                    $roomTypes = SchedulingPolicy::labRoomTypes();
                 } elseif ($targetRoomType === 'lecture') {
                     $roomTypes = $allowLectureInVacantLab
                         ? ['lecture', 'laboratory']
@@ -2501,7 +2500,7 @@ class CspSolver
                             'preferred_pattern' => null,
                             'mode' => $mode,
                             'is_hybrid' => $mode === 'field' ? false : $isHybrid,
-                            '_lab_fallback' => $isLabCourse && $roomType === 'lecture',
+                            '_lab_fallback' => $isLabCourse && SchedulingPolicy::isLabClassroomFallback($roomType),
                             '_lecture_lab_room_fallback' => ! $isLabCourse && $roomType === 'laboratory',
                             'blocks' => [
                                 array_merge($this->makeBlock(
@@ -2627,8 +2626,9 @@ class CspSolver
             return [];
         }
 
+        $labRoomTypes = SchedulingPolicy::labRoomTypes();
         $labRooms = $matchingRooms->filter(
-            static fn (Rooms $room): bool => $room->room_type === 'laboratory',
+            static fn (Rooms $room): bool => in_array($room->room_type, $labRoomTypes, true),
         );
 
         $lectureOptions = $this->splitLectureOptions(
@@ -2640,7 +2640,7 @@ class CspSolver
         $labOptions = $labRooms
             ->map(static fn (Rooms $room): array => [
                 'room_id' => (int) $room->id,
-                'room_type' => 'laboratory',
+                'room_type' => (string) $room->room_type,
                 'mode' => 'on-site',
             ])
             ->values()
@@ -3255,7 +3255,9 @@ class CspSolver
         $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
         $lecHours = (int) ($course->lecture_hours ?? 0);
         $labHours = (int) ($course->lab_hours ?? 0);
-        $hasBothComponents = $isMajor && $lecHours > 0 && $labHours > 0;
+        // A Split Session is one class halved, even for a course with both
+        // components; only the lecture/laboratory shape uses their lengths.
+        $hasBothComponents = ! $requireBalancedDurations && $isMajor && $lecHours > 0 && $labHours > 0;
 
         if ($isHybrid && $hasBothComponents && $day1 === $day2) {
             return [];
@@ -3278,15 +3280,14 @@ class CspSolver
             };
 
             // For on-site courses, prioritize room type based on curriculum (lab_hours).
-            // A lecture course may fall back to a lecture-capable laboratory, but a
-            // laboratory course gets no lecture-room fallback: RuleEngine rejects a
-            // laboratory course in a lecture room, so such a candidate could only
-            // ever produce a preview that fails to save. Online stays the fallback
-            // when no laboratory is free.
+            // A lecture course may fall back to a lecture-capable laboratory. A
+            // laboratory course takes the rooms the Default LAB Room Requirement
+            // allows (SchedulingPolicy::labRoomTypes), the same list RoomTypeRule
+            // accepts at save time.
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
-                    $roomTypes = ['laboratory'];
+                    $roomTypes = SchedulingPolicy::labRoomTypes();
                 } elseif ($targetRoomType === 'lecture') {
                     $roomTypes = $this->isMajorFullLectureCourse($course)
                         ? ['lecture', 'laboratory']
@@ -3349,11 +3350,12 @@ class CspSolver
                     }
 
                     if ($hasBothComponents && $mode === 'on-site') {
+                        $labRoomTypes = SchedulingPolicy::labRoomTypes();
                         $labOptions = $matchingRooms
-                            ->filter(static fn (Rooms $room): bool => $room->room_type === 'laboratory')
+                            ->filter(static fn (Rooms $room): bool => in_array($room->room_type, $labRoomTypes, true))
                             ->map(static fn (Rooms $room): array => [
                                 'room_id' => (int) $room->id,
-                                'room_type' => 'laboratory',
+                                'room_type' => (string) $room->room_type,
                                 'mode' => 'on-site',
                             ])
                             ->values()
@@ -3459,7 +3461,7 @@ class CspSolver
                                     'preferred_pattern' => $preferredPattern,
                                     'mode' => $mode,
                                     'is_hybrid' => $mode === 'field' ? false : $isHybrid,
-                                    '_lab_fallback' => $isLabCourse && $roomType === 'lecture',
+                                    '_lab_fallback' => $isLabCourse && SchedulingPolicy::isLabClassroomFallback($roomType),
                                     '_lecture_lab_room_fallback' => ! $isLabCourse && $roomType === 'laboratory',
                                     'blocks' => [
                                         $this->makeBlock(
@@ -4374,6 +4376,12 @@ class CspSolver
                 }
                 $roomType = (string) ($block['room_type'] ?? $candidate['room_type'] ?? '');
                 if (isset($eligible[$roomType])) {
+                    continue;
+                }
+                // Room TBA for a laboratory meeting stays available whichever
+                // rooms the Default LAB Room Requirement allows.
+                $blockRoomId = array_key_exists('room_id', $block) ? $block['room_id'] : ($candidate['room_id'] ?? null);
+                if ($roomType === 'laboratory' && $blockRoomId === null && $mode === 'on-site') {
                     continue;
                 }
                 if ($roomType === 'online' && isset($allowedModes['online'])) {

@@ -31,6 +31,9 @@ class CurriculumController extends Controller
         }
 
         $departmentId = $this->authorization->requestedDepartment($request, $request->query('department_id'));
+        // A Program Head sees its program's curricula and the department-wide ones.
+        $programId = $this->authorization->programScope($request);
+        $this->authorization->scopeCurriculaToProgram($query, $request);
         $status = $request->has('status') && $request->status !== 'all'
             ? (string) $request->status
             : null;
@@ -41,6 +44,7 @@ class CurriculumController extends Controller
         $curriculumList = Cache::remember(
             ApiCache::key('curriculum.index', [
                 'department_id' => $departmentId,
+                'program_id' => $programId,
                 'status' => $status,
             ]),
             ApiCache::LOOKUP_TTL_SECONDS,
@@ -147,7 +151,7 @@ class CurriculumController extends Controller
 
         $rules = [
             'name' => 'required|string|max:255',
-            'code' => 'required|string|max:50|unique:curriculum,code',
+            'code' => 'required|string|max:255|unique:curriculum,code',
             'program_id' => [
                 'nullable',
                 'integer',
@@ -188,7 +192,8 @@ class CurriculumController extends Controller
 
     public function show(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)
+            || ! $this->authorization->curriculumBelongsToProgram($request, $curriculum->program_id)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
         $curriculum->loadCount('courses');
@@ -233,7 +238,7 @@ class CurriculumController extends Controller
         }
         $rules = [
             'name' => 'sometimes|string|max:255',
-            'code' => 'sometimes|string|max:50|unique:curriculum,code,'.$curriculum->id,
+            'code' => 'sometimes|string|max:255|unique:curriculum,code,'.$curriculum->id,
             'program_id' => [
                 'nullable',
                 'integer',
@@ -595,7 +600,8 @@ class CurriculumController extends Controller
 
     public function showWithCourses(Request $request, Curriculum $curriculum)
     {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)
+            || ! $this->authorization->curriculumBelongsToProgram($request, $curriculum->program_id)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 

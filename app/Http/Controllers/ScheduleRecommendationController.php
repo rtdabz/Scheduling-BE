@@ -100,7 +100,7 @@ class ScheduleRecommendationController extends Controller
         /** @var Sections $section */
         $section = Sections::query()->findOrFail($validated['section_id']);
 
-        if (($guard = $this->departmentGuard($request, (int) $section->department_id)) !== null) {
+        if (($guard = $this->departmentGuard($request, (int) $section->department_id, [(int) $section->id])) !== null) {
             return $guard;
         }
 
@@ -176,7 +176,7 @@ class ScheduleRecommendationController extends Controller
 
         $semesterId = (int) $validated['semester_id'];
         $departmentId = (int) $validated['department_id'];
-        if (($guard = $this->departmentGuard($request, $departmentId)) !== null) {
+        if (($guard = $this->departmentGuard($request, $departmentId, $validated['section_ids'])) !== null) {
             return $guard;
         }
 
@@ -266,7 +266,7 @@ class ScheduleRecommendationController extends Controller
             return response()->json(['message' => $exception->getMessage()], 422);
         }
 
-        if (($guard = $this->departmentGuard($request, (int) $section->department_id)) !== null) {
+        if (($guard = $this->departmentGuard($request, (int) $section->department_id, [(int) $section->id])) !== null) {
             return $guard;
         }
 
@@ -377,7 +377,10 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.delivery_modes_by_course_id.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
         ]);
 
-        if (($guard = $this->departmentGuard($request, (int) $validated['department_id'])) !== null) {
+        if (($guard = $this->departmentGuard($request, (int) $validated['department_id'], [
+            ...array_column($validated['section_configs'], 'section_id'),
+            ...($validated['section_ids'] ?? []),
+        ])) !== null) {
             return $guard;
         }
 
@@ -393,6 +396,8 @@ class ScheduleRecommendationController extends Controller
             ->where('year_level', (string) $validated['year_level'])
             ->where('semester', (string) $semester->semester)
             ->where('status', 'active')
+            // A year level spans programs; each owner generates only theirs.
+            ->whereIn('program_id', $this->authorization->writableProgramIds($request))
             ->orderBy('section_name')
             ->get();
 
@@ -571,7 +576,10 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
             'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
         ]);
-        if (($guard = $this->departmentGuard($request, (int) $validated['department_id'])) !== null) {
+        if (($guard = $this->departmentGuard($request, (int) $validated['department_id'], [
+            ...array_column($validated['section_configs'], 'section_id'),
+            ...($validated['section_ids'] ?? []),
+        ])) !== null) {
             return $guard;
         }
         $semester = Semester::query()->findOrFail((int) $validated['semester_id']);
@@ -584,6 +592,7 @@ class ScheduleRecommendationController extends Controller
             ->where('year_level', (string) $validated['year_level'])
             ->where('semester', (string) $semester->semester)
             ->where('status', 'active')
+            ->whereIn('program_id', $this->authorization->writableProgramIds($request))
             ->when($requestedSectionIds !== [], fn ($query) => $query->whereIn('id', $requestedSectionIds))
             ->orderBy('section_name')->get();
         if ($sections->isEmpty()) {
@@ -853,7 +862,7 @@ class ScheduleRecommendationController extends Controller
             return response()->json(['message' => $exception->getMessage()], 422);
         }
 
-        if (($guard = $this->departmentGuard($request, (int) $section->department_id)) !== null) {
+        if (($guard = $this->departmentGuard($request, (int) $section->department_id, [(int) $section->id])) !== null) {
             return $guard;
         }
 
@@ -998,7 +1007,7 @@ class ScheduleRecommendationController extends Controller
 
     public function accept(Request $request, ScheduleRecommendation $scheduleRecommendation): JsonResponse
     {
-        if (($guard = $this->departmentGuard($request, (int) $scheduleRecommendation->department_id)) !== null) {
+        if (($guard = $this->departmentGuard($request, (int) $scheduleRecommendation->department_id, [(int) $scheduleRecommendation->section_id])) !== null) {
             return $guard;
         }
 
@@ -1280,7 +1289,7 @@ class ScheduleRecommendationController extends Controller
      *
      * Returns the response to send, or null when the caller may proceed.
      */
-    private function departmentGuard(Request $request, int $departmentId): ?JsonResponse
+    private function departmentGuard(Request $request, int $departmentId, array $sectionIds = []): ?JsonResponse
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, $departmentId)) {
             return $this->departmentForbiddenResponse();
@@ -1288,6 +1297,12 @@ class ScheduleRecommendationController extends Controller
 
         if (! $this->authorization->departmentHasProgram($departmentId)) {
             return $this->departmentMissingProgramResponse();
+        }
+
+        // Generating, previewing and accepting write a program's timetable,
+        // so they follow program ownership inside the department.
+        if (! $this->authorization->sectionIdsWritable($request, $sectionIds)) {
+            return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_FORBIDDEN_MESSAGE], 403);
         }
 
         return null;

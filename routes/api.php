@@ -121,6 +121,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         // course details edited, each with its state before and after.
         Route::get('schedule-submissions/{submission}/changes', [DepartmentScheduleController::class, 'submissionChanges'])
             ->whereNumber('submission');
+        // What a resubmitted version changed from the recalled or rejected one
+        // before it, meeting by meeting; instructor changes are not counted.
+        Route::get('schedule-submissions/{submission}/revision-diff', [DepartmentScheduleController::class, 'submissionRevisionDiff'])
+            ->whereNumber('submission');
 
         Route::get('rooms', [RoomsController::class, 'index']);
         Route::get('rooms/{room}', [RoomsController::class, 'show']);

@@ -6,18 +6,29 @@ use App\Http\Requests\Room\StoreRoomRequest;
 use App\Http\Requests\Room\UpdateRoomRequest;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
 class RoomsController extends Controller
 {
+    public function __construct(
+        private readonly ScheduleAuthorizationService $authorization,
+    ) {}
+
     /**
      * Display a listing of the resource.
      */
-    public function index()
+    public function index(Request $request)
     {
-        $rooms = Cache::remember(ApiCache::key('rooms.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Rooms::with('department')->get());
+        // A Program Head does not see rooms homed to a sibling program.
+        $programId = $this->authorization->programScope($request);
+        $rooms = Cache::remember(
+            ApiCache::key('rooms.index', ['program_id' => $programId]),
+            ApiCache::LOOKUP_TTL_SECONDS,
+            fn () => $this->authorization->scopeRoomsToProgram(Rooms::with('department'), $request)->get(),
+        );
 
         return response()->json($rooms);
     }
@@ -48,9 +59,9 @@ class RoomsController extends Controller
     /**
      * Display the specified resource.
      */
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $room = Rooms::with('department')->findOrFail($id);
+        $room = $this->authorization->scopeRoomsToProgram(Rooms::with('department'), $request)->findOrFail($id);
 
         return response()->json($room);
     }
@@ -65,6 +76,25 @@ class RoomsController extends Controller
 
         if (($validated['room_type'] ?? $room->room_type) !== 'laboratory') {
             $validated['allow_lecture_usage'] = false;
+        }
+
+        // Closing a room must not leave this semester's classes booked in it;
+        // generation and validation skip unavailable rooms, so they would
+        // never be flagged. Past semesters do not block it.
+        $closing = array_key_exists('status', $validated)
+            && $validated['status'] !== 'available'
+            && $room->status === 'available';
+        if ($closing) {
+            $activeClasses = Schedule::query()
+                ->where('room_id', $room->id)
+                ->whereHas('academicSemester', fn ($query) => $query->where('is_active', true))
+                ->count();
+            if ($activeClasses > 0) {
+                return response()->json([
+                    'message' => "This room cannot be marked unavailable while {$activeClasses} class meeting(s) this semester are scheduled in it. Move them to another room first.",
+                    'errors' => ['status' => ['This room still has classes scheduled this semester.']],
+                ], 422);
+            }
         }
 
         $room->update($validated);

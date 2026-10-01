@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Curriculum;
 use App\Models\Semester;
 use App\Models\User;
@@ -16,21 +17,11 @@ class CurriculumIndependenceTest extends TestCase
 
     public function test_departments_can_create_independent_courses_with_same_code()
     {
-        $user = User::create([
-            'name' => 'VPAA User',
-            'username' => 'vpaa_admin',
-            'email' => 'vpaa@example.com',
-            'password' => bcrypt('password'),
-            'role' => 'vpaa',
-        ]);
-        $this->grantCapabilities($user, ['schedule.view']);
-        $this->actingAs($user);
-
         $dept1 = Departments::create(['department_name' => 'Dept 1', 'department_code' => 'D1']);
         $dept2 = Departments::create(['department_name' => 'Dept 2', 'department_code' => 'D2']);
 
         // Try creating course with same code in Dept 1
-        $response1 = $this->postJson('/api/courses', [
+        $response1 = $this->actingAs($this->courseAuthor($dept1))->postJson('/api/courses', [
             'course_code' => 'IT101',
             'course_name' => 'Intro to IT',
             'lecture_hours' => 3,
@@ -45,7 +36,7 @@ class CurriculumIndependenceTest extends TestCase
         $response1->assertStatus(201);
 
         // Try creating course with same code in Dept 2
-        $response2 = $this->postJson('/api/courses', [
+        $response2 = $this->actingAs($this->courseAuthor($dept2))->postJson('/api/courses', [
             'course_code' => 'IT101',
             'course_name' => 'IT for Business',
             'lecture_hours' => 3,
@@ -126,18 +117,9 @@ class CurriculumIndependenceTest extends TestCase
 
     public function test_updating_course_does_not_modify_another_department_course_with_same_code()
     {
-        $user = User::create([
-            'name' => 'VPAA User',
-            'username' => 'vpaa_admin3',
-            'email' => 'vpaa3@example.com',
-            'password' => bcrypt('password'),
-            'role' => 'vpaa',
-        ]);
-        $this->grantCapabilities($user, ['schedule.view']);
-        $this->actingAs($user);
-
         $dept1 = Departments::create(['department_name' => 'IT Dept', 'department_code' => 'IT']);
         $dept2 = Departments::create(['department_name' => 'BA Dept', 'department_code' => 'BA']);
+        $this->actingAs($this->courseAuthor($dept1));
 
         $course1 = Course::create([
             'course_code' => 'IT104',
@@ -511,5 +493,17 @@ class CurriculumIndependenceTest extends TestCase
             'year_level' => 2,
             'semester' => 3,
         ]);
+    }
+
+    /** A secretary of the department, who manages its course records. */
+    private function courseAuthor(Departments $department): User
+    {
+        // Course writes sit behind schedule.create, which needs a program.
+        Program::firstOrCreate(['department_id' => $department->id, 'code' => $department->department_code.'-P'], ['name' => $department->department_name.' Program']);
+
+        return $this->grantCapabilities(User::factory()->create([
+            'role' => 'secretary',
+            'department_id' => $department->id,
+        ]), ['schedule.view', 'schedule.create']);
     }
 }

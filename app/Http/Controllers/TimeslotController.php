@@ -29,6 +29,7 @@ class TimeslotController extends Controller
                 'opening_time' => $this->formatTime($settings->opening_time),
                 'closing_time' => $this->formatTime($settings->closing_time),
                 'field_end_time' => $this->formatTime(SchedulingPolicy::fieldDayEndTime()),
+                'lab_room_type' => SchedulingPolicy::labRoomType(),
                 'slot_interval' => (int) $settings->slot_interval,
             ],
             'overrides' => TimeslotOverride::query()
@@ -61,6 +62,7 @@ class TimeslotController extends Controller
             ...(isset($validated['field_end_time'])
                 ? ['field_end_time' => $this->toDatabaseTime($validated['field_end_time'])]
                 : []),
+            ...(isset($validated['lab_room_type']) ? ['lab_room_type' => $validated['lab_room_type']] : []),
         ]);
         SchedulingPolicy::clearTimeCache();
         ApiCache::forgetGroup('initial.data');
@@ -71,6 +73,7 @@ class TimeslotController extends Controller
                 'opening_time' => $this->formatTime($settings->opening_time),
                 'closing_time' => $this->formatTime($settings->closing_time),
                 'field_end_time' => $this->formatTime(SchedulingPolicy::fieldDayEndTime()),
+                'lab_room_type' => SchedulingPolicy::labRoomType(),
                 'slot_interval' => (int) $settings->slot_interval,
             ],
         ]);

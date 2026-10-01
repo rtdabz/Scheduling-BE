@@ -3,11 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Models\ScheduleSplit;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class ScheduleSplitController extends Controller
 {
+    public function __construct(private readonly ScheduleAuthorizationService $authorization) {}
+
     /**
      * Display a listing of the resource.
      */
@@ -37,6 +40,9 @@ class ScheduleSplitController extends Controller
             'meeting_type'   => 'required|in:lecture,laboratory',
             'meeting_index'  => 'required|integer|min:1',
         ]);
+        if (! $this->authorization->scheduleIdsWritable($request, [(int) $validated['schedule_id']])) {
+            return $this->programForbidden();
+        }
 
         $split = ScheduleSplit::create($validated);
 
@@ -62,6 +68,9 @@ class ScheduleSplitController extends Controller
             'meeting_type'   => 'sometimes|required|in:lecture,laboratory',
             'meeting_index'  => 'sometimes|required|integer|min:1',
         ]);
+        if (! $this->authorization->scheduleIdsWritable($request, [(int) $scheduleSplit->schedule_id, (int) ($validated['schedule_id'] ?? $scheduleSplit->schedule_id)])) {
+            return $this->programForbidden();
+        }
 
         $scheduleSplit->update($validated);
 
@@ -71,10 +80,19 @@ class ScheduleSplitController extends Controller
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(ScheduleSplit $scheduleSplit): JsonResponse
+    public function destroy(Request $request, ScheduleSplit $scheduleSplit): JsonResponse
     {
+        if (! $this->authorization->scheduleIdsWritable($request, [(int) $scheduleSplit->schedule_id])) {
+            return $this->programForbidden();
+        }
+
         $scheduleSplit->delete();
 
         return response()->json(['message' => 'Schedule split archived successfully']);
+    }
+
+    private function programForbidden(): JsonResponse
+    {
+        return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_FORBIDDEN_MESSAGE], 403);
     }
 }

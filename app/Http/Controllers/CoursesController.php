@@ -12,6 +12,7 @@ use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class CoursesController extends Controller
 {
@@ -34,6 +35,10 @@ class CoursesController extends Controller
         $curriculumId = $request->query('curriculum_id') !== null
             ? (int) $request->query('curriculum_id')
             : null;
+        if ($curriculumId !== null
+            && ! $this->authorization->curriculumBelongsToProgram($request, Curriculum::query()->whereKey($curriculumId)->value('program_id'))) {
+            return response()->json(['message' => 'You can only view your own program curriculum.'], 403);
+        }
 
         $cacheKey = ApiCache::key('courses.index', [
             'department_id' => $deptId,
@@ -70,7 +75,7 @@ class CoursesController extends Controller
                         ->get();
 
                     // 3. Load pivot data for year_level and semester mapping
-                    $pivotData = \DB::table('curriculum_course')
+                    $pivotData = DB::table('curriculum_course')
                         ->join('curriculum', 'curriculum.id', '=', 'curriculum_course.curriculum_id')
                         ->whereIn('curriculum_course.curriculum_id', $activeCurriculumIds)
                         // Newest curriculum first; the flattening below keeps the

@@ -106,6 +106,12 @@ class InitialDataController extends Controller
             ),
         );
 
+        // Program ownership moves the moment a Program Head is assigned or
+        // deactivated, which no payload cache key tracks, so it is appended
+        // per request after the cached object instead of cached with it.
+        $json = substr(rtrim($json), 0, -1)
+            .',"can_edit_program_ids":'.json_encode($this->authorization->writableProgramIds($request)).'}';
+
         return JsonResponse::fromJsonString($json);
     }
 
@@ -184,6 +190,8 @@ class InitialDataController extends Controller
                     ->orWhere('department_id', $departmentId)
                     ->when($grantWindows !== [], fn (Builder $granted) => $granted->orWhereIn('id', array_keys($grantWindows))),
             ))
+            // A Program Head does not see rooms homed to a sibling program.
+            ->tap(fn (Builder $query) => $this->authorization->scopeRoomsToProgram($query, $request))
             ->get()
             ->each(function (Rooms $room) use ($grantWindows): void {
                 if (isset($grantWindows[(int) $room->id])) {
@@ -240,10 +248,18 @@ class InitialDataController extends Controller
                     // than "CAS only", so the picker offers the wrong staff.
                     ->when($departmentId !== null, fn ($delegated) => $delegated
                         ->orWhere('teaching_department_id', $departmentId)))
+                // A Program Head gets its program's courses, the ones delegated
+                // to it, and every course on its program's own curriculum --
+                // shared GE/minor courses carry no program, and without them
+                // their generated meetings rendered as unknown courses.
                 ->when($facultyProgramId !== null, fn (Builder $query) => $query->where(
                     fn (Builder $programScope) => $programScope
                         ->where('program_id', $facultyProgramId)
-                        ->orWhere('teaching_program_id', $facultyProgramId),
+                        ->orWhere('teaching_program_id', $facultyProgramId)
+                        ->orWhereHas('curriculum', fn ($curriculum) => $curriculum->whereIn(
+                            'curriculum.id',
+                            $activeCurriculumList->where('program_id', $facultyProgramId)->pluck('id'),
+                        )),
                 ))
                 ->get();
 
@@ -315,6 +331,10 @@ class InitialDataController extends Controller
             // sections to the active scheduler or generation workflows.
             ->whereHas('program')
             ->when($departmentId !== null, fn (Builder $query) => $query->where('department_id', $departmentId))
+            // A Program Head's timetable grids list its own program's sections
+            // only. A sibling program's classes in a shared room still reach it
+            // through `schedules`, for the room view and clash checks.
+            ->when($facultyProgramId !== null, fn (Builder $query) => $query->where('program_id', $facultyProgramId))
             ->when($activeSemesterId !== null, fn (Builder $query) => $query->where(function (Builder $q) use ($activeSemesterId, $activeSemester) {
                 $q->where('semester_id', $activeSemesterId)
                     ->orWhereNull('semester_id');
@@ -368,12 +388,14 @@ class InitialDataController extends Controller
                         fn ($course) => $course->where('teaching_department_id', $departmentId),
                     ),
             ))
-            ->when($facultyProgramId !== null, fn (Builder $query) => $query->whereHas(
-                'course',
-                fn (Builder $course) => $course
-                    ->where('program_id', $facultyProgramId)
-                    ->orWhere('teaching_program_id', $facultyProgramId),
-            ))
+            // A Program Head reads the meetings of its program: those written
+            // into its sections (the rows it owns and generates, which include
+            // shared GE/minor courses with no program of their own) plus the
+            // program's courses and the ones delegated to it. Scoping by the
+            // course alone hid every shared-course meeting it had just saved.
+            // Sibling programs' meetings come along only when held in a shared
+            // room, which both programs book from.
+            ->tap(fn (Builder $query) => $this->authorization->scopeSchedulesToProgram($query, $request))
             ->when($activeSemesterId !== null, fn (Builder $query) => $query->where('semester_id', $activeSemesterId))
             // The VPAA portal reads the approved timetable only; a department's
             // work in progress and anything still awaiting VPAA action is not
@@ -399,7 +421,10 @@ class InitialDataController extends Controller
         $needsSubmissions = $wants('schedules') || $wants('schedule_submissions');
         $scheduleSubmissions = ! $needsSubmissions ? collect() : ScheduleSubmission::query()
             ->with([
-                'sections:id,section_name,year_level,department_id,semester_id',
+                // The program rides along: a department submits per program, and
+                // the approval queue and printout must say which one was sent.
+                'sections:id,section_name,year_level,department_id,semester_id,program_id',
+                'sections.program:id,code,name,major',
                 'submitter:id,name',
                 'deanReviewer:id,name',
                 'vpaaReviewer:id,name',
@@ -483,6 +508,8 @@ class InitialDataController extends Controller
                 'slot_minutes' => SchedulingPolicy::SLOT_MINUTES,
                 'slot_count' => SchedulingPolicy::totalSlots(),
             ],
+            // Default LAB Room Requirement: the rooms a laboratory meeting may use.
+            'lab_room_type' => SchedulingPolicy::labRoomType(),
             'rooms' => $rooms,
             'courses' => $courses,
             // Department-wide schedulers may use the external-instructor tab. A
@@ -520,7 +547,7 @@ class InitialDataController extends Controller
                         ->orWhere('role', 'vpaa'),
                 ))
                 ->latest()
-                ->get(['id', 'name', 'role', 'department_id']),
+                ->get(['id', 'name', 'role', 'department_id', 'program_id']),
         ];
 
         // Opt-in pagination keeps existing clients backward compatible while

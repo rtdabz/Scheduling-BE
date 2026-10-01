@@ -21,6 +21,8 @@ class SectionsController extends Controller
 {
     private const LOCKED_SECTION_MESSAGE = 'This section has classes at an approval stage. Recall the submission first, then try again.';
 
+    private const OTHER_PROGRAM_MESSAGE = 'You can only manage sections for your own program.';
+
     /**
      * Fields that decide which classes a section should have. Changing one under
      * a submitted or approved timetable would leave those classes describing a
@@ -40,12 +42,15 @@ class SectionsController extends Controller
         // every department's (and every semester's) to be filtered in the
         // browser grew the payload each term. The nested department omits its
         // base64 logo, which was repeated on every row.
+        // A Program Head only sees their own program's sections.
         $departmentId = $this->authorization->departmentScope($request);
+        $programId = $this->authorization->programScope($request);
         $sections = Cache::remember(
-            ApiCache::key('sections.index', ['department_id' => $departmentId]),
+            ApiCache::key('sections.index', ['department_id' => $departmentId, 'program_id' => $programId]),
             ApiCache::LOOKUP_TTL_SECONDS,
             fn () => Sections::with(['department:id,department_name,department_code', 'program', 'academicSemester', 'curriculum'])
                 ->when($departmentId !== null, fn ($query) => $query->where('department_id', $departmentId))
+                ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
                 ->latest()
                 ->get(),
         );
@@ -84,6 +89,9 @@ class SectionsController extends Controller
 
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
             return response()->json(['message' => 'You can only manage sections for your department.'], 403);
+        }
+        if (! $this->authorization->payloadBelongsToProgram($request, $validated['program_id'] ?? null)) {
+            return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
         }
 
         $curriculumId = $validated['curriculum_id'] ?? null;
@@ -128,6 +136,11 @@ class SectionsController extends Controller
             ->unique();
         if ($departmentIds->contains(fn (int $departmentId) => ! $this->authorization->payloadBelongsToDepartment($request, $departmentId))) {
             return response()->json(['message' => 'You can only manage sections for your department.'], 403);
+        }
+        foreach ($validated['sections'] as $data) {
+            if (! $this->authorization->payloadBelongsToProgram($request, $data['program_id'] ?? null)) {
+                return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
+            }
         }
 
         foreach ($validated['sections'] as $data) {
@@ -186,8 +199,13 @@ class SectionsController extends Controller
     }
 
     // Get single section
-    public function show(Sections $section)
+    public function show(Request $request, Sections $section)
     {
+        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $section->department_id)
+            || ! $this->authorization->payloadBelongsToProgram($request, $section->program_id)) {
+            return response()->json(['message' => 'Section not found.'], 404);
+        }
+
         return response()->json($section->load(['department', 'program', 'academicSemester', 'curriculum']));
     }
 
@@ -196,6 +214,11 @@ class SectionsController extends Controller
     {
         // Access to the section's current department is checked in UpdateSectionRequest::authorize().
         $validated = $request->validated();
+
+        if (! $this->authorization->payloadBelongsToProgram($request, $section->program_id)
+            || (array_key_exists('program_id', $validated) && ! $this->authorization->payloadBelongsToProgram($request, $validated['program_id']))) {
+            return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
+        }
 
         // The semester label follows the semester row. Accepting it on its own
         // let a section claim "2nd" while still belonging to a 1st-semester row.
@@ -283,7 +306,9 @@ class SectionsController extends Controller
             return response()->json(['message' => 'Choose an active curriculum belonging to this department.'], 422);
         }
 
+        $programScope = $this->authorization->programScope($request);
         $sections = Sections::query()
+            ->when($programScope !== null, fn ($scope) => $scope->where('program_id', $programScope))
             ->where('semester_id', (int) $validated['semester_id'])
             ->where('department_id', (int) $validated['department_id'])
             ->where('year_level', (string) $validated['year_level'])
@@ -349,6 +374,9 @@ class SectionsController extends Controller
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $section->department_id)) {
             return response()->json(['message' => 'You can only manage sections for your department.'], 403);
+        }
+        if (! $this->authorization->payloadBelongsToProgram($request, $section->program_id)) {
+            return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
         }
 
         // Deleting a section removes its classes with it (the foreign key

@@ -4,7 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-/** The single global settings row: the signatory and the operating hours. */
+/** The single global settings row: the signatory, the operating hours and the lab room rule. */
 class InstitutionSetting extends Model
 {
     protected $table = 'institution_settings';
@@ -15,6 +15,7 @@ class InstitutionSetting extends Model
         'opening_time',
         'closing_time',
         'field_end_time',
+        'lab_room_type',
         'slot_interval',
     ];
 
@@ -30,6 +31,7 @@ class InstitutionSetting extends Model
             'opening_time' => '07:00:00',
             'closing_time' => '20:30:00',
             'field_end_time' => '17:00:00',
+            'lab_room_type' => 'laboratory',
             'slot_interval' => 30,
         ]);
     }

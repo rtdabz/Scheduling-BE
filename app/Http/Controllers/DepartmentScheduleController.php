@@ -15,10 +15,12 @@ use App\Models\User;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Department\DepartmentScheduleStatusDeriver;
 use App\Services\Scheduling\Department\ScheduleOverviewService;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Schedule\ScheduleConflictCase;
 use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
 use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Submission\ScheduleDescriptors;
+use App\Services\Scheduling\Submission\SubmissionStatusResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
@@ -37,6 +39,7 @@ class DepartmentScheduleController extends Controller
         private readonly DepartmentScheduleStatusDeriver $statusDeriver,
         private readonly ScheduleOverviewService $scheduleOverviews,
         private readonly ScheduleConflictScanner $conflictScanner,
+        private readonly ScheduleAuthorizationService $authorization,
     ) {}
 
     /**
@@ -444,6 +447,119 @@ class DepartmentScheduleController extends Controller
     }
 
     /**
+     * What a resubmitted version changed from the recalled or rejected version
+     * before it, section by section, read from both submit snapshots so later
+     * edits to the working copy never change the answer. Meetings match on
+     * SubmissionStatusResolver::meetingKey(), so an instructor change alone is
+     * not a change; same-course leftovers pair up as moved meetings.
+     */
+    public function submissionRevisionDiff(Request $request, ScheduleSubmission $submission, SubmissionStatusResolver $resolver): JsonResponse
+    {
+        $user = $request->user();
+        if ($user->role !== 'vpaa' && (int) $user->department_id !== (int) $submission->department_id) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $previousBySection = $resolver->previousVersionsFor($submission);
+        $versionIds = collect($previousBySection)->pluck('snapshot_version_id')
+            ->push($submission->snapshot_version_id)
+            ->filter()->unique()->values()->all();
+        $itemsByVersion = ScheduleHistoryItem::query()
+            ->whereIn('history_version_id', $versionIds)
+            ->orderBy('id')
+            ->get()
+            ->groupBy('history_version_id');
+        $rowsOf = function (?int $versionId, int $sectionId) use ($itemsByVersion): Collection {
+            $items = $itemsByVersion->get((int) $versionId, collect())->filter(static function (ScheduleHistoryItem $item) use ($sectionId): bool {
+                return (int) (($item->after_snapshot ?: [])['section_id'] ?? 0) === $sectionId;
+            });
+
+            return $this->describedSnapshotRows($items->values(), 'after');
+        };
+
+        $sections = [];
+        foreach ($previousBySection as $sectionId => $previous) {
+            if ($submission->snapshot_version_id === null || $previous->snapshot_version_id === null) {
+                continue;
+            }
+            $changes = $this->meetingChanges(
+                $rowsOf((int) $previous->snapshot_version_id, $sectionId),
+                $rowsOf((int) $submission->snapshot_version_id, $sectionId),
+            );
+            if ($changes === []) {
+                continue;
+            }
+            $named = collect($changes)->map(fn (array $change) => $change['after'] ?? $change['before'])->first();
+            $sections[] = [
+                'section_id' => $sectionId,
+                'section_name' => $named['section']['section_name'] ?? Sections::query()->find($sectionId)?->section_name,
+                'previous_submission_id' => $previous->id,
+                'previous_revision_number' => $previous->revision_number,
+                'previous_status' => $previous->status,
+                'previous_rejection_reason' => $previous->rejection_reason,
+                'changes' => $changes,
+            ];
+        }
+        usort($sections, static fn (array $a, array $b): int => strnatcasecmp((string) $a['section_name'], (string) $b['section_name']));
+
+        return response()->json(['data' => [
+            'submission_id' => $submission->id,
+            'available' => $submission->snapshot_version_id !== null,
+            'sections' => $sections,
+        ]]);
+    }
+
+    /**
+     * @param  Collection<int, array>  $before
+     * @param  Collection<int, array>  $after
+     * @return list<array{change: 'added'|'removed'|'changed', before: array|null, after: array|null}>
+     */
+    private function meetingChanges(Collection $before, Collection $after): array
+    {
+        $order = array_flip(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']);
+        $sort = static fn (Collection $rows): Collection => $rows->sortBy([
+            static fn (array $a, array $b): int => ($order[$a['day'] ?? ''] ?? 9) <=> ($order[$b['day'] ?? ''] ?? 9),
+            static fn (array $a, array $b): int => strcmp((string) ($a['start_time'] ?? ''), (string) ($b['start_time'] ?? '')),
+        ])->values();
+
+        // Identical meetings cancel out, one for one. is_hybrid describes the
+        // pair, not one meeting: moving a Hybrid Split's on-site half online
+        // clears it on both rows, and the untouched half is not a change.
+        $meetingKey = static fn (array $row): string => SubmissionStatusResolver::meetingKey(['is_hybrid' => false] + $row);
+        $removed = $sort($before)->all();
+        $added = [];
+        foreach ($sort($after) as $row) {
+            $key = $meetingKey($row);
+            $match = collect($removed)->search(static fn (array $old): bool => $meetingKey($old) === $key);
+            if ($match === false) {
+                $added[] = $row;
+            } else {
+                unset($removed[$match]);
+            }
+        }
+
+        $changes = [];
+        foreach ($added as $row) {
+            $match = collect($removed)->search(static fn (array $old): bool => (int) ($old['course_id'] ?? 0) === (int) ($row['course_id'] ?? 0));
+            if ($match === false) {
+                $changes[] = ['change' => 'added', 'before' => null, 'after' => $row];
+            } else {
+                $changes[] = ['change' => 'changed', 'before' => $removed[$match], 'after' => $row];
+                unset($removed[$match]);
+            }
+        }
+        foreach ($removed as $row) {
+            $changes[] = ['change' => 'removed', 'before' => $row, 'after' => null];
+        }
+        usort($changes, static fn (array $a, array $b): int => strnatcasecmp(
+            (string) (($a['after'] ?? $a['before'])['course']['course_code'] ?? ''),
+            (string) (($b['after'] ?? $b['before'])['course']['course_code'] ?? ''),
+        ));
+
+        return $changes;
+    }
+
+    /**
      * Snapshot rows with the section, course, room and instructor they named
      * when recorded. Snapshots from before those names were kept resolve them
      * now instead, archived records included.
@@ -499,7 +615,7 @@ class DepartmentScheduleController extends Controller
         })->values();
     }
 
-    public function scheduleStatus(int $id): JsonResponse
+    public function scheduleStatus(int $id, Request $request): JsonResponse
     {
         $department = Departments::findOrFail($id);
         $activeSemesterId = $this->activeSemesterId();
@@ -538,7 +654,14 @@ class DepartmentScheduleController extends Controller
             // Delegated work the dashboard cannot see: these classes sit in other
             // departments' sections, so they are absent from the schedule rows the
             // dashboard loads for its own department.
-            'cross_department_pending' => $this->crossDepartmentPendingCount((int) $department->id, $activeSemesterId),
+            'cross_department_pending' => $this->crossDepartmentPendingCount(
+                (int) $department->id,
+                $activeSemesterId,
+                // A program head only sees courses assigned to their program on the
+                // Cross-Department page, so the badge must count the same set. No
+                // program means nothing is assigned to them, hence no indicator.
+                $request->user()?->role === 'program_head' ? (int) ($request->user()?->program_id ?? 0) : null,
+            ),
         ]);
     }
 
@@ -551,7 +674,7 @@ class DepartmentScheduleController extends Controller
      * outstanding work. A class counts as pending while any of its meetings is
      * unassigned.
      */
-    private function crossDepartmentPendingCount(int $departmentId, ?int $activeSemesterId): int
+    private function crossDepartmentPendingCount(int $departmentId, ?int $activeSemesterId, ?int $programId = null): int
     {
         if ($activeSemesterId === null) {
             return 0;
@@ -564,7 +687,12 @@ class DepartmentScheduleController extends Controller
             ->where('department_id', '!=', $departmentId)
             ->whereHas('course', fn ($course) => $course
                 ->where('status', 'active')
-                ->where('teaching_department_id', $departmentId))
+                ->where('teaching_department_id', $departmentId)
+                ->when($programId !== null, fn ($scope) => $scope->where(
+                    fn ($programScope) => $programScope
+                        ->where('program_id', $programId)
+                        ->orWhere('teaching_program_id', $programId),
+                )))
             ->distinct()
             ->get(['section_id', 'course_id'])
             ->count();
@@ -632,6 +760,16 @@ class DepartmentScheduleController extends Controller
             return response()->json(['message' => 'Program Head accounts must be assigned to a program.'], 403);
         }
 
+        // Each owner submits only the programs they schedule.
+        $namedSectionIds = Sections::query()
+            ->whereIn('id', array_map('intval', array_filter((array) $request->input('section_ids', []), 'is_numeric')))
+            ->where('department_id', $id)
+            ->pluck('id')
+            ->all();
+        if (! $this->authorization->sectionIdsWritable($request, $namedSectionIds)) {
+            return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_FORBIDDEN_MESSAGE], 403);
+        }
+
         if (! Program::query()->where('department_id', $id)->exists()) {
             return response()->json(['message' => 'Create at least one Program under this Department before scheduling.'], 422);
         }
@@ -655,7 +793,7 @@ class DepartmentScheduleController extends Controller
                 ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId));
         }])
             ->where('department_id', $id)
-            ->when($user->role === 'program_head', fn ($query) => $query->where('program_id', $user->program_id))
+            ->whereIn('program_id', $this->authorization->writableProgramIds($request))
             ->where('status', 'active')
             ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId))
             ->get();
@@ -1060,13 +1198,8 @@ class DepartmentScheduleController extends Controller
         ]);
         $sectionIds = array_values(array_unique(array_map('intval', $validated['section_ids'])));
         $allowedSectionIds = $this->departmentSectionIds($id);
-        if ($user->role === 'program_head') {
-            $allowedSectionIds = Sections::query()
-                ->whereIn('id', $allowedSectionIds)
-                ->where('program_id', $user->program_id)
-                ->pluck('id')
-                ->map('intval')
-                ->all();
+        if (! $this->authorization->sectionIdsWritable($request, array_values(array_intersect($sectionIds, $allowedSectionIds)))) {
+            return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_FORBIDDEN_MESSAGE], 403);
         }
         $invalidSectionIds = array_diff($sectionIds, $allowedSectionIds);
         if (! empty($invalidSectionIds)) {

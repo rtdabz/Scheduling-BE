@@ -9,6 +9,7 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Services\TimeslotService;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use InvalidArgumentException;
@@ -25,6 +26,11 @@ final class SchedulingPolicy
     private static ?string $cachedClosingTime = null;
 
     private static ?string $cachedFieldDayEndTime = null;
+
+    /** The room a laboratory meeting may use (institution_settings.lab_room_type). */
+    public const LAB_ROOM_TYPES = ['laboratory', 'lecture', 'either'];
+
+    private static ?string $cachedLabRoomType = null;
 
     /** @var array<int, list<int>> */
     private static array $cachedStartSlotsByDuration = [];
@@ -714,14 +720,14 @@ final class SchedulingPolicy
             'enforced_by' => ['rule_engine', 'csp'],
         ],
         // The 'minor_split_' prefix is historical: these rules now govern every
-        // balanced two-day split, which includes lecture-only majors. The codes
+        // balanced two-day split, majors included. The codes
         // are persisted in violation payloads and in the audit trail, so they
         // are left alone on purpose -- {@see balancedSplitEligible} is the rule
         // they actually express.
         'minor_split_eligibility' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
-            'description' => 'Balanced split sessions are available only for eligible minor courses or lecture-only majors selected in Step 2.',
+            'description' => 'Balanced split sessions are available for minor courses and for majors with lecture or laboratory units selected in Step 2.',
             'enforced_by' => ['rule_engine', 'csp', 'schedule_generation_preflight'],
         ],
         'minor_split_pattern' => [
@@ -1039,7 +1045,53 @@ final class SchedulingPolicy
         self::$cachedOpeningTime = null;
         self::$cachedClosingTime = null;
         self::$cachedFieldDayEndTime = null;
+        self::$cachedLabRoomType = null;
         self::$cachedStartSlotsByDuration = [];
+    }
+
+    /**
+     * The institution-wide Default LAB Room Requirement: 'laboratory',
+     * 'lecture' (a regular classroom) or 'either'. It applies to every
+     * course's laboratory meetings, in generation and in every save check.
+     */
+    public static function labRoomType(): string
+    {
+        if (self::$cachedLabRoomType === null) {
+            try {
+                $value = (string) (app(TimeslotService::class)->settings()->lab_room_type ?? 'laboratory');
+            } catch (QueryException) {
+                // No settings table yet (a fresh database, or a test without
+                // one): the built-in rule, uncached so the stored one is read
+                // once it exists.
+                return 'laboratory';
+            }
+            self::$cachedLabRoomType = in_array($value, self::LAB_ROOM_TYPES, true) ? $value : 'laboratory';
+        }
+
+        return self::$cachedLabRoomType;
+    }
+
+    /**
+     * Physical room types a laboratory meeting may use, preferred first.
+     *
+     * @return list<string>
+     */
+    public static function labRoomTypes(): array
+    {
+        return match (self::labRoomType()) {
+            'lecture' => ['lecture'],
+            'either' => ['laboratory', 'lecture'],
+            default => ['laboratory'],
+        };
+    }
+
+    /**
+     * A laboratory meeting in a classroom when a laboratory is preferred
+     * ('either'): allowed, but ranked after a free laboratory.
+     */
+    public static function isLabClassroomFallback(string $roomType): bool
+    {
+        return $roomType === 'lecture' && self::labRoomType() === 'either';
     }
 
     public static function totalSlots(): int
@@ -1803,13 +1855,12 @@ final class SchedulingPolicy
      * placement one of them allows and another refuses is not a candidate — it is
      * an unexplained generation failure.
      *
-     * A minor is eligible under the department's minor-split setting. A major is
-     * eligible under the separate major-lecture setting and only when it is pure
-     * lecture: `minor_split_duration` asserts the two meetings add up to
-     * units * 60 minutes, and that holds only while no laboratory units are
-     * folded into the course's unit count. A major carrying laboratory units is
-     * the Lecture + Laboratory override's business instead, which also keeps the
-     * two settings from ever claiming the same course.
+     * Every minor is eligible. A major is eligible when it has lecture or
+     * laboratory units -- a laboratory-only (0 LEC + LAB) major included. A
+     * split is one class met on two days, `units * 60` minutes in all
+     * (`minor_split_duration`), so a course with both components may be split
+     * as well as Integrated; Setup Courses picks one shape per course. A split
+     * laboratory course meets in the rooms {@see labRoomTypes} allows.
      *
      * @param  array<string, mixed>|Course  $course
      * @param  array<string, mixed>  $departmentSettings
@@ -1827,8 +1878,7 @@ final class SchedulingPolicy
         $lectureHours = (int) ($course instanceof Course ? ($course->lecture_hours ?? 0) : ($course['lecture_hours'] ?? 0));
         $labHours = (int) ($course instanceof Course ? ($course->lab_hours ?? 0) : ($course['lab_hours'] ?? 0));
 
-        return $lectureHours > 0
-            && $labHours === 0;
+        return $lectureHours > 0 || $labHours > 0;
     }
 
     /**

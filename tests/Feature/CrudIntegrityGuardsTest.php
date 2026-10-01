@@ -113,6 +113,27 @@ class CrudIntegrityGuardsTest extends TestCase
             ->assertOk();
     }
 
+    public function test_a_room_with_classes_this_semester_cannot_be_marked_unavailable(): void
+    {
+        $fixture = $this->fixture();
+        $room = Rooms::create(['room_code' => 'CIT-101', 'room_type' => 'lecture', 'department_id' => $fixture['department']->id]);
+        $schedule = $this->schedule($fixture, $this->section($fixture), 'draft');
+        $schedule->update(['room_id' => $room->id]);
+
+        $this->actingAs($fixture['vpaa'], 'sanctum')
+            ->putJson("/api/rooms/{$room->id}", ['status' => 'not available'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('status');
+        $this->assertDatabaseHas('rooms', ['id' => $room->id, 'status' => 'available']);
+
+        // A past semester's classes do not hold the room open.
+        $fixture['semester']->update(['is_active' => false]);
+        $this->actingAs($fixture['vpaa'], 'sanctum')
+            ->putJson("/api/rooms/{$room->id}", ['status' => 'not available'])
+            ->assertOk();
+        $this->assertDatabaseHas('rooms', ['id' => $room->id, 'status' => 'not available']);
+    }
+
     public function test_a_record_under_an_archived_department_cannot_be_restored(): void
     {
         $fixture = $this->fixture();
