@@ -76,6 +76,21 @@ class SchedulingSettingsControllerTest extends TestCase
         $this->assertFalse((bool) $department->custom_lab_duration_other_enabled);
     }
 
+    public function test_the_default_lab_room_requirement_is_saved_for_the_department(): void
+    {
+        [$user, $department] = $this->laboratoryDepartment();
+
+        $this->actingAs($user)->getJson('/api/scheduling-settings')
+            ->assertOk()->assertJsonPath('lab_room_type', 'laboratory');
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['lab_room_type' => 'lecture'])
+            ->assertOk()->assertJsonPath('lab_room_type', 'lecture');
+        $this->assertSame('lecture', $department->refresh()->lab_room_type);
+
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['lab_room_type' => 'gym'])
+            ->assertStatus(422);
+    }
+
     public function test_custom_lab_duration_cannot_be_enabled_without_the_lecture_lab_split(): void
     {
         [$user, $department] = $this->laboratoryDepartment(splitEnabled: false);

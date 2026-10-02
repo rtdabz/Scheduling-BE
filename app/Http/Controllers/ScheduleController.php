@@ -105,14 +105,20 @@ class ScheduleController extends Controller
         if ($this->authorization->rejectsRequestedDepartment($request, $request->query('department_id'))) {
             return response()->json(['message' => 'You can only view schedules for your department.'], 403);
         }
-        if (($scope = $this->authorization->requestedDepartment($request, $request->query('department_id'))) !== null) {
-            $query->where('department_id', $scope);
+        // An instructor's week includes the service classes they teach for other
+        // departments; scoping those out left their own department's view empty.
+        $ownInstructorWeek = $request->filled('faculty_id') && ! $request->filled('department_id')
+            && $this->authorization->facultyBelongsToDepartment($request, (int) $request->query('faculty_id'));
+        if (! $ownInstructorWeek) {
+            if (($scope = $this->authorization->requestedDepartment($request, $request->query('department_id'))) !== null) {
+                $query->where('department_id', $scope);
+            }
+            // A Program Head sees a sibling program's meetings only in shared rooms.
+            $this->authorization->scopeSchedulesToProgram($query, $request);
         }
         if (($statuses = $this->authorization->visibleScheduleStatuses($request)) !== null) {
             $query->whereIn('status', $statuses);
         }
-        // A Program Head sees a sibling program's meetings only in shared rooms.
-        $this->authorization->scopeSchedulesToProgram($query, $request);
 
         $schedules = $query->latest()->limit($perPage)->get();
 
@@ -2491,7 +2497,9 @@ class ScheduleController extends Controller
         });
         $updated = $result['updated'];
         $schedules = $result['schedules'];
-        ApiCache::forgetGroups(['faculty.index', 'initial.data']);
+        // Finalize and Reassignment change which rows the assignment workspace
+        // shows as locked, so its cached payload has to go too.
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         return response()->json([
             'message' => 'Batch status update completed successfully.',

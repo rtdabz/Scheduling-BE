@@ -20,7 +20,6 @@ use App\Models\ScheduleSubmissionSection;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\SystemNotification;
-use App\Models\TimeslotOverride;
 use App\Models\User;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\Eloquent\Model;
@@ -56,7 +55,6 @@ final class LiveUpdateRecorder
         Program::class => ['departments'],
         User::class => ['users'],
         InstitutionSetting::class => ['settings'],
-        TimeslotOverride::class => ['settings'],
         Semester::class => ['settings'],
     ];
 

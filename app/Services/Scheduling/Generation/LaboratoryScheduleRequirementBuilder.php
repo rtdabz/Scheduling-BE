@@ -49,7 +49,7 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                         courseId: $courseId,
                         componentType: 'laboratory',
                         durationSlots: $laboratorySlots ?? SchedulingPolicy::laboratoryComponentSlots($course, $section->department),
-                        eligibleRoomTypes: SchedulingPolicy::labRoomTypes(),
+                        eligibleRoomTypes: SchedulingPolicy::labRoomTypes((int) $section->department_id),
                         allowedDeliveryModes: ['on-site'],
                         isSplitComponent: true,
                         customDuration: $laboratorySlots !== null,
@@ -81,7 +81,7 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                 // A laboratory component uses the rooms the Default LAB Room
                 // Requirement allows, the same list RoomTypeRule accepts at
                 // save time, so no preview offers a room the save refuses.
-                'laboratory' => SchedulingPolicy::labRoomTypes(),
+                'laboratory' => SchedulingPolicy::labRoomTypes((int) $section->department_id),
                 default => in_array('online', $allowedModes, true)
                     ? ['lecture', 'laboratory', 'online']
                     : ['lecture', 'laboratory'],

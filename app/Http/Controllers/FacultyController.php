@@ -103,6 +103,13 @@ class FacultyController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
+        if (($duplicate = $this->duplicateNameResponse(
+            $validator->validated(),
+            (int) ($departmentId ?? $validator->validated()['department_id']),
+        )) !== null) {
+            return $duplicate;
+        }
+
         $designationIds = $this->designations->idsFrom($request);
         $this->designations->validate(
             $designationIds,
@@ -299,6 +306,15 @@ class FacultyController extends Controller
             $payload['department_id'] = $departmentId;
         }
 
+        $renames = array_intersect_key($payload, array_flip(['first_name', 'middle_name', 'last_name', 'suffix', 'department_id']));
+        if ($renames !== [] && ($duplicate = $this->duplicateNameResponse(
+            [...$faculty->only(['first_name', 'middle_name', 'last_name', 'suffix']), ...$payload],
+            (int) ($payload['department_id'] ?? $faculty->department_id),
+            (int) $faculty->id,
+        )) !== null) {
+            return $duplicate;
+        }
+
         $designationIds = $submitsDesignation ? $this->designations->idsFrom($request) : [];
         if ($submitsDesignation) {
             $this->designations->validate($designationIds, $faculty, (int) ($payload['max_units'] ?? $faculty->max_units));
@@ -448,5 +464,41 @@ class FacultyController extends Controller
         }
 
         return $user->department_id !== null ? (int) $user->department_id : null;
+    }
+
+    /**
+     * One instructor per full name in a department. The same first, middle and
+     * last name and suffix, ignoring case and spacing, is the same person, so a
+     * second record would split their load and schedules. Archived instructors
+     * count too: they are restored, not recreated.
+     *
+     * @param  array<string, mixed>  $name
+     */
+    private function duplicateNameResponse(array $name, int $departmentId, ?int $ignoreId = null): ?JsonResponse
+    {
+        $normalize = static fn (mixed $value): string => mb_strtolower(trim((string) preg_replace('/\s+/', ' ', (string) ($value ?? ''))));
+        $wanted = array_map($normalize, [
+            $name['first_name'] ?? '', $name['middle_name'] ?? '', $name['last_name'] ?? '', $name['suffix'] ?? '',
+        ]);
+
+        $match = Faculty::withTrashed()
+            ->where('department_id', $departmentId)
+            ->when($ignoreId !== null, fn ($query) => $query->whereKeyNot($ignoreId))
+            ->whereRaw('LOWER(TRIM(last_name)) = ?', [$wanted[2]])
+            ->whereRaw('LOWER(TRIM(first_name)) = ?', [$wanted[0]])
+            ->get(['id', 'first_name', 'middle_name', 'last_name', 'suffix', 'deleted_at'])
+            ->first(fn (Faculty $faculty): bool => array_map($normalize, [
+                $faculty->first_name, $faculty->middle_name, $faculty->last_name, $faculty->suffix,
+            ]) === $wanted);
+
+        if ($match === null) {
+            return null;
+        }
+
+        $message = $match->trashed()
+            ? 'An archived instructor already has this name in this department. Restore them from Archives instead of adding them again.'
+            : 'An instructor with this name already exists in this department.';
+
+        return response()->json(['message' => $message, 'errors' => ['first_name' => [$message]]], 422);
     }
 }

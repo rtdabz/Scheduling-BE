@@ -13,10 +13,8 @@ use App\Models\ScheduleSplit;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
-use App\Models\TimeslotOverride;
 use App\Models\User;
 use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
-use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\UserFacultyProfileService;
 use App\Support\ApiCache;
 use Illuminate\Database\Eloquent\Model;
@@ -45,7 +43,6 @@ class ArchiveController extends Controller
         'semesters' => Semester::class,
         'schedules' => Schedule::class,
         'schedule-splits' => ScheduleSplit::class,
-        'timeslot-overrides' => TimeslotOverride::class,
     ];
 
     public function index(): JsonResponse
@@ -151,11 +148,6 @@ class ArchiveController extends Controller
         }
 
         $this->audit($request, $type, $record, $deactivatedFor?->name);
-
-        // The slot grid is memoised per process; a restored override changes it.
-        if ($record instanceof TimeslotOverride) {
-            SchedulingPolicy::clearTimeCache();
-        }
 
         ApiCache::forgetGroups([
             'departments.index',
@@ -322,7 +314,6 @@ class ArchiveController extends Controller
             'users' => trim(str_replace('_', ' ', ucfirst((string) $record->getAttribute('role'))).($department ? " · {$department}" : '')),
             'schedules' => $this->scheduleContext($record, $department, $lookups),
             'schedule-splits' => $this->scheduleContext($parent, $department, $lookups),
-            'timeslot-overrides' => null,
             default => $department,
         };
     }
@@ -350,7 +341,6 @@ class ArchiveController extends Controller
             'semesters' => trim((string) $record->getAttribute('academic_year').' '.(string) $record->getAttribute('semester')),
             'schedules' => $this->scheduleText($record, $lookups),
             'schedule-splits' => 'Meeting of '.$this->scheduleText($lookups['schedules'][$record->getAttribute('schedule_id')] ?? null, $lookups),
-            'timeslot-overrides' => (string) $record->getAttribute('duration_minutes').' minute override',
         };
     }
 }

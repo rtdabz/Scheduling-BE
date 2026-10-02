@@ -2443,7 +2443,7 @@ class CspSolver
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
-                    $roomTypes = SchedulingPolicy::labRoomTypes();
+                    $roomTypes = $this->labRoomTypes();
                 } elseif ($targetRoomType === 'lecture') {
                     $roomTypes = $allowLectureInVacantLab
                         ? ['lecture', 'laboratory']
@@ -2500,7 +2500,7 @@ class CspSolver
                             'preferred_pattern' => null,
                             'mode' => $mode,
                             'is_hybrid' => $mode === 'field' ? false : $isHybrid,
-                            '_lab_fallback' => $isLabCourse && SchedulingPolicy::isLabClassroomFallback($roomType),
+                            '_lab_fallback' => $isLabCourse && SchedulingPolicy::isLabClassroomFallback($roomType, $this->labRoomDepartmentId()),
                             '_lecture_lab_room_fallback' => ! $isLabCourse && $roomType === 'laboratory',
                             'blocks' => [
                                 array_merge($this->makeBlock(
@@ -2626,7 +2626,7 @@ class CspSolver
             return [];
         }
 
-        $labRoomTypes = SchedulingPolicy::labRoomTypes();
+        $labRoomTypes = $this->labRoomTypes();
         $labRooms = $matchingRooms->filter(
             static fn (Rooms $room): bool => in_array($room->room_type, $labRoomTypes, true),
         );
@@ -3287,7 +3287,7 @@ class CspSolver
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
-                    $roomTypes = SchedulingPolicy::labRoomTypes();
+                    $roomTypes = $this->labRoomTypes();
                 } elseif ($targetRoomType === 'lecture') {
                     $roomTypes = $this->isMajorFullLectureCourse($course)
                         ? ['lecture', 'laboratory']
@@ -3350,7 +3350,7 @@ class CspSolver
                     }
 
                     if ($hasBothComponents && $mode === 'on-site') {
-                        $labRoomTypes = SchedulingPolicy::labRoomTypes();
+                        $labRoomTypes = $this->labRoomTypes();
                         $labOptions = $matchingRooms
                             ->filter(static fn (Rooms $room): bool => in_array($room->room_type, $labRoomTypes, true))
                             ->map(static fn (Rooms $room): array => [
@@ -3461,7 +3461,7 @@ class CspSolver
                                     'preferred_pattern' => $preferredPattern,
                                     'mode' => $mode,
                                     'is_hybrid' => $mode === 'field' ? false : $isHybrid,
-                                    '_lab_fallback' => $isLabCourse && SchedulingPolicy::isLabClassroomFallback($roomType),
+                                    '_lab_fallback' => $isLabCourse && SchedulingPolicy::isLabClassroomFallback($roomType, $this->labRoomDepartmentId()),
                                     '_lecture_lab_room_fallback' => ! $isLabCourse && $roomType === 'laboratory',
                                     'blocks' => [
                                         $this->makeBlock(
@@ -4454,6 +4454,24 @@ class CspSolver
         }
 
         return SchedulingPolicy::isLaboratoryCourse($course);
+    }
+
+    /**
+     * Rooms a laboratory meeting may use in the solving department (its
+     * Default LAB Room Requirement), as RoomTypeRule checks them at save time.
+     *
+     * @return list<string>
+     */
+    private function labRoomTypes(): array
+    {
+        return SchedulingPolicy::labRoomTypes($this->labRoomDepartmentId());
+    }
+
+    private function labRoomDepartmentId(): ?int
+    {
+        $departmentId = (int) ($this->inputSnapshot?->departmentId ?? 0);
+
+        return $departmentId > 0 ? $departmentId : null;
     }
 
     /**

@@ -4,7 +4,6 @@ namespace App\Http\Requests\Room;
 
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rule;
 
 class UpdateRoomRequest extends FormRequest
 {
@@ -18,7 +17,7 @@ class UpdateRoomRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'room_code' => ['sometimes', 'required', 'string', 'max:255', Rule::unique('rooms')->whereNull('deleted_at')->ignore($this->route('room'))],
+            'room_code' => ['sometimes', 'required', 'string', 'max:255', StoreRoomRequest::uniqueRoomCode($this->routeRoomId())],
             'building' => StoreRoomRequest::BUILDING_RULE,
             'room_type' => SchedulingPolicy::allowedRoomTypesRule('sometimes|required|string'),
             'allow_lecture_usage' => 'sometimes|boolean',
@@ -27,11 +26,17 @@ class UpdateRoomRequest extends FormRequest
         ];
     }
 
-    /** @return array<string, string> */
-    public function messages(): array
+    protected function prepareForValidation(): void
     {
-        return [
-            'room_code.unique' => 'This room code is already used by another room.',
-        ];
+        if ($this->has('room_code')) {
+            $this->merge(['room_code' => StoreRoomRequest::normalizeRoomCode($this->input('room_code'))]);
+        }
+    }
+
+    private function routeRoomId(): ?int
+    {
+        $room = $this->route('room');
+
+        return $room === null ? null : (int) (is_object($room) ? $room->getKey() : $room);
     }
 }

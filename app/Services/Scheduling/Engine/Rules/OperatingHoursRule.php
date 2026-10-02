@@ -111,7 +111,7 @@ final class OperatingHoursRule
 
         return [
             'rule' => 'field_evening_window',
-            'message' => 'Field courses must end by '.date('g:i A', strtotime($fieldEndTime)).'.',
+            'message' => 'Field courses cannot be scheduled beyond '.date('g:i A', strtotime($fieldEndTime)).'.',
         ];
     }
 }

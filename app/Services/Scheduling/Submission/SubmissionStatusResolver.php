@@ -16,7 +16,8 @@ use Illuminate\Support\Collection;
  * whatever happens to the working copy in between.
  *
  * Revision status: initial, or modified when the working copy (or the version
- * resubmitted from it) differs from the last recalled or rejected version. That
+ * resubmitted from it) differs from the last recalled or rejected version, or
+ * reset when the working copy was emptied after one. That
  * version is read from its submit snapshot, so an edit or Reset of the working
  * copy never changes what it is compared against.
  *
@@ -33,6 +34,7 @@ class SubmissionStatusResolver
 
     public const INITIAL = 'initial';
     public const MODIFIED = 'modified';
+    public const RESET = 'reset';
 
     /** What makes two versions of a section the same timetable; status and instructors are not content. */
     private const CONTENT_FIELDS = ['course_id', 'day', 'start_time', 'end_time', 'room_id', 'mode', 'is_hybrid'];
@@ -80,7 +82,8 @@ class SubmissionStatusResolver
                 $before = $snapshots->get((int) $closed->snapshot_version_id, collect())
                     ->filter(fn (array $row): bool => (int) ($row['section_id'] ?? 0) === $sectionId);
                 if ($this->fingerprint($before) !== $this->fingerprint($live)) {
-                    $revision = self::MODIFIED;
+                    // A working copy emptied by Reset is a fresh start, not an edit.
+                    $revision = $live->isEmpty() && $before->isNotEmpty() ? self::RESET : self::MODIFIED;
                 }
             }
 

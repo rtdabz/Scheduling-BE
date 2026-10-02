@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Models\InstitutionSetting;
+use App\Models\Departments;
 use App\Services\Scheduling\Engine\Rules\RoomTypeRule;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -26,26 +26,40 @@ class DefaultLabRoomRequirementTest extends TestCase
 
     private const LABORATORY = ['room_code' => 'LAB1', 'room_type' => 'laboratory', 'allow_lecture_usage' => false];
 
+    private int $departmentId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->departmentId = (int) Departments::create([
+            'department_name' => 'College of Arts and Sciences',
+            'department_code' => 'CAS',
+            'status' => 'active',
+        ])->id;
+    }
+
     protected function tearDown(): void
     {
-        SchedulingPolicy::clearTimeCache();
+        SchedulingPolicy::clearFieldCourseCache();
         parent::tearDown();
     }
 
-    private function useLabRoomType(string $value): void
+    private function useLabRoomType(string $value, ?int $departmentId = null): void
     {
-        InstitutionSetting::current()->update(['lab_room_type' => $value]);
-        SchedulingPolicy::clearTimeCache();
+        $department = Departments::query()->findOrFail($departmentId ?? $this->departmentId);
+        $department->lab_room_type = $value;
+        $department->save();
+        SchedulingPolicy::clearFieldCourseCache();
     }
 
-    private function mismatch(array $room): ?array
+    private function mismatch(array $room, ?int $departmentId = null): ?array
     {
-        return RoomTypeRule::mismatch(self::LAB_ONLY_COURSE, $room, 'on-site', null, null, []);
+        return RoomTypeRule::mismatch(self::LAB_ONLY_COURSE, $room, 'on-site', null, $departmentId ?? $this->departmentId, []);
     }
 
     public function test_laboratory_default_keeps_laboratory_courses_out_of_classrooms(): void
     {
-        $this->assertSame(['laboratory'], SchedulingPolicy::labRoomTypes());
+        $this->assertSame(['laboratory'], SchedulingPolicy::labRoomTypes($this->departmentId));
         $this->assertNotNull($this->mismatch(self::CLASSROOM));
         $this->assertNull($this->mismatch(self::LABORATORY));
     }
@@ -57,14 +71,14 @@ class DefaultLabRoomRequirementTest extends TestCase
         $this->assertNull($this->mismatch(self::CLASSROOM));
         $this->assertNotNull($this->mismatch(self::LABORATORY));
         // Room TBA stays available to a laboratory meeting.
-        $this->assertNull(RoomTypeRule::mismatch(self::LAB_ONLY_COURSE, null, 'on-site', null, null, []));
+        $this->assertNull(RoomTypeRule::mismatch(self::LAB_ONLY_COURSE, null, 'on-site', null, $this->departmentId, []));
     }
 
     public function test_either_setting_accepts_both_rooms(): void
     {
         $this->useLabRoomType('either');
 
-        $this->assertSame(['laboratory', 'lecture'], SchedulingPolicy::labRoomTypes());
+        $this->assertSame(['laboratory', 'lecture'], SchedulingPolicy::labRoomTypes($this->departmentId));
         $this->assertNull($this->mismatch(self::CLASSROOM));
         $this->assertNull($this->mismatch(self::LABORATORY));
     }
@@ -82,6 +96,19 @@ class DefaultLabRoomRequirementTest extends TestCase
     {
         $this->useLabRoomType('gym');
 
-        $this->assertSame('laboratory', SchedulingPolicy::labRoomType());
+        $this->assertSame('laboratory', SchedulingPolicy::labRoomType($this->departmentId));
+    }
+
+    public function test_the_rule_belongs_to_the_scheduling_department(): void
+    {
+        $other = (int) Departments::create([
+            'department_name' => 'College of Computer Studies',
+            'department_code' => 'CCS',
+            'status' => 'active',
+        ])->id;
+        $this->useLabRoomType('lecture');
+
+        $this->assertNull($this->mismatch(self::CLASSROOM));
+        $this->assertNotNull($this->mismatch(self::CLASSROOM, $other));
     }
 }

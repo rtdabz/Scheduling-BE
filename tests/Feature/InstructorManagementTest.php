@@ -432,6 +432,56 @@ class InstructorManagementTest extends TestCase
     }
 
     /** @return array<string, mixed> */
+    public function test_the_same_instructor_cannot_be_added_twice_in_a_department(): void
+    {
+        $f = $this->fixture();
+        $payload = $this->payload($f) + ['middle_name' => 'Reyes'];
+
+        $this->actingAs($f['vpaa'])->postJson('/api/faculties', $payload)->assertCreated();
+
+        // Case and spacing do not make a different person.
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', [
+                ...$payload,
+                'first_name' => '  '.strtoupper($payload['first_name']).' ',
+                'last_name' => strtolower($payload['last_name']),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('first_name');
+
+        // A different middle name or suffix is a different person.
+        $this->actingAs($f['vpaa'])->postJson('/api/faculties', [...$payload, 'middle_name' => 'Santos'])->assertCreated();
+        $this->actingAs($f['vpaa'])->postJson('/api/faculties', [...$payload, 'suffix' => 'Jr.'])->assertCreated();
+
+        $this->assertSame(3, Faculty::query()->where('first_name', $payload['first_name'])->where('last_name', $payload['last_name'])->count());
+    }
+
+    public function test_renaming_onto_another_instructor_or_an_archived_one_is_refused(): void
+    {
+        $f = $this->fixture();
+        $payload = $this->payload($f);
+        $first = $this->actingAs($f['vpaa'])->postJson('/api/faculties', $payload)->assertCreated()->json('id');
+        $second = $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', [...$payload, 'first_name' => 'Other'])
+            ->assertCreated()
+            ->json('id');
+
+        $this->actingAs($f['vpaa'])
+            ->putJson("/api/faculties/{$second}", ['first_name' => $payload['first_name']])
+            ->assertUnprocessable();
+
+        // Saving an instructor under their own name is not a duplicate.
+        $this->actingAs($f['vpaa'])
+            ->putJson("/api/faculties/{$first}", ['first_name' => $payload['first_name']])
+            ->assertOk();
+
+        Faculty::query()->findOrFail($first)->delete();
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', $payload)
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'An archived instructor already has this name in this department. Restore them from Archives instead of adding them again.');
+    }
+
     private function payload(array $f): array
     {
         return [

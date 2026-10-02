@@ -17,6 +17,7 @@ use App\Services\Scheduling\Department\DepartmentSchedulingAuditService;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 class DepartmentSchedulingPreflightTest extends TestCase
@@ -35,14 +36,14 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'department_id' => $department->id,
         ]);
 
-        $response = $this->actingAs($this->grantCapabilities(User::factory()->create([
+        $response = $this->previewYearLevel(
+            $this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
-        ])))->postJson('/api/schedule-recommendations/preview', [
-            'section_id' => $section->id,
-            'course_ids' => [$course->id],
-            'mode' => 'on-site',
-        ]);
+        ])),
+            $section,
+            $course,
+        );
 
         $response->assertOk();
         $this->assertSame('standard', $response->json('department_profile'));
@@ -64,14 +65,14 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'department_id' => $department->id,
         ]);
 
-        $response = $this->actingAs($this->grantCapabilities(User::factory()->create([
+        $response = $this->previewYearLevel(
+            $this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
-        ])))->postJson('/api/schedule-recommendations/preview', [
-            'section_id' => $section->id,
-            'course_ids' => [$course->id],
-            'mode' => 'on-site',
-        ]);
+        ])),
+            $section,
+            $course,
+        );
 
         $response->assertOk();
         $this->assertSame('standard', $response->json('department_profile'));
@@ -97,21 +98,19 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'department_id' => $department->id,
         ]);
 
-        $response = $this->actingAs($this->grantCapabilities(User::factory()->create([
+        $response = $this->previewYearLevel(
+            $this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
-        ])))->postJson('/api/schedule-recommendations/preview', [
-            'section_id' => $section->id,
-            'course_ids' => [$course->id],
-            'mode' => 'on-site',
-            'max_solutions' => 3,
-        ]);
+        ])),
+            $section,
+            $course,
+        );
 
         $response->assertOk();
-        foreach ($response->json('recommendations') as $recommendation) {
-            foreach ($recommendation['schedules'] as $schedule) {
-                $this->assertSame($lecture->id, $schedule['room_id']);
-            }
+        $this->assertNotEmpty($response->json('schedules'));
+        foreach ($response->json('schedules') as $schedule) {
+            $this->assertSame($lecture->id, $schedule['room_id']);
         }
     }
 
@@ -144,14 +143,14 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'status' => 'draft',
         ]);
 
-        $response = $this->actingAs($this->grantCapabilities(User::factory()->create([
+        $response = $this->previewYearLevel(
+            $this->grantCapabilities(User::factory()->create([
             'role' => 'secretary',
             'department_id' => $department->id,
-        ])))->postJson('/api/schedule-recommendations/preview', [
-            'section_id' => $section->id,
-            'course_ids' => [$course->id],
-            'mode' => 'on-site',
-        ]);
+        ])),
+            $section,
+            $course,
+        );
 
         $response->assertStatus(422)
             ->assertJsonPath('error_code', 'schedule_generation_preflight_failed')
@@ -171,11 +170,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
         ]);
         $user->syncPermissions(['schedule.generate']);
 
-        $response = $this->actingAs($user)->postJson('/api/schedule-recommendations/preview', [
-            'section_id' => $section->id,
-            'course_ids' => [$course->id],
-            'mode' => 'on-site',
-        ]);
+        $response = $this->previewYearLevel($user, $section, $course);
 
         $response->assertStatus(422)
             ->assertJsonPath('error_code', 'schedule_generation_preflight_failed')
@@ -309,6 +304,20 @@ class DepartmentSchedulingPreflightTest extends TestCase
         $this->assertSame(1, $row['active_course_count']);
         $this->assertSame(1, $row['available_lecture_rooms']);
         $this->assertFalse($row['profile_mismatch']);
+    }
+
+    private function previewYearLevel(User $user, Sections $section, Course $course): TestResponse
+    {
+        return $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', [
+            'semester_id' => $section->semester_id,
+            'department_id' => $section->department_id,
+            'year_level' => (int) $section->year_level,
+            'section_configs' => [[
+                'section_id' => $section->id,
+                'course_ids' => [$course->id],
+                'mode' => 'on-site',
+            ]],
+        ]);
     }
 
     private function createBase(string $code, string $name, string $profile): array

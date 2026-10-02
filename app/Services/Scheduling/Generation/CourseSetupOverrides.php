@@ -333,7 +333,7 @@ final class CourseSetupOverrides
                 && (in_array($courseId, $hybridLaboratoryIds, true) || SchedulingPolicy::isLaboratoryCourse($course));
             $fits = match (true) {
                 $isField => $room->room_type === 'field',
-                $needsLaboratory => in_array($room->room_type, SchedulingPolicy::labRoomTypes(), true),
+                $needsLaboratory => in_array($room->room_type, SchedulingPolicy::labRoomTypes($departmentId), true),
                 default => $room->room_type === 'lecture' || SchedulingPolicy::laboratoryServesLecture($course, $room),
             };
             if (! $fits) {
@@ -342,7 +342,7 @@ final class CourseSetupOverrides
                     $code,
                     $room->room_code,
                     $room->room_type,
-                    $isField ? 'field' : ($needsLaboratory ? implode(' or ', SchedulingPolicy::labRoomTypes()) : 'lecture'),
+                    $isField ? 'field' : ($needsLaboratory ? implode(' or ', SchedulingPolicy::labRoomTypes($departmentId)) : 'lecture'),
                 ));
             }
 

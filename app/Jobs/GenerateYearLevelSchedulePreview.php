@@ -9,6 +9,7 @@ use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\GenerationCancellationToken;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use Illuminate\Bus\Queueable;
@@ -41,6 +42,8 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
         public readonly string $runId,
         public readonly array $sectionIds,
         public readonly array $configsBySectionId,
+        /** This run's own Required Day, Consecutive Days and Field Course rules; never saved. */
+        public readonly ?array $ruleOverrides = null,
     ) {}
 
     public function handle(YearLevelScheduleGenerationService $generator): void
@@ -91,7 +94,7 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
                 throw new \RuntimeException('The sections for this generation run no longer exist.');
             }
 
-            $result = $generator->preview(
+            $result = DepartmentCourseRules::withOverride((int) $run->department_id, $this->ruleOverrides, fn () => $generator->preview(
                 $sections,
                 $this->configsBySectionId,
                 new GenerationCancellationToken(fn (): bool => ScheduleGenerationRun::query()
@@ -105,7 +108,7 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
                     ->where('run_id', $this->runId)
                     ->where('status', 'running')
                     ->update(['result' => $report]),
-            );
+            ));
             $this->finalize([
                 'status' => 'completed',
                 'result' => $result,

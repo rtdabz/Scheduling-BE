@@ -23,14 +23,12 @@ use Illuminate\Validation\ValidationException;
  *
  * The secretary asks for weekly windows in one room; the secretary of the
  * department that owns the room approves, rejects or later revokes. The VPAA
- * only watches and is notified when a room is lent or handed back. Approval is
- * what RoomAccessPolicy reads, so a grant takes effect in the validator and
+ * takes no part in it and is only notified when a room is lent or handed back.
+ * Approval is what RoomAccessPolicy reads, so a grant takes effect in the validator and
  * the generator at the same moment.
  */
 class RoomRequestController extends Controller
 {
-    private const OVERSIGHT_CAPABILITY = 'room.view_all_requests';
-
     /** Only real, bookable rooms can be lent; ONLINE and FIELD are shared already. */
     private const LENDABLE_ROOM_TYPES = ['lecture', 'laboratory'];
 
@@ -42,19 +40,16 @@ class RoomRequestController extends Controller
         $validated = $request->validate([
             'semester_id' => 'nullable|integer|exists:semesters,id',
             'status' => ['nullable', Rule::in($this->statuses())],
-            'scope' => 'nullable|in:department,all',
         ]);
 
-        // The VPAA sees every department's requests unless they ask for their
-        // own; a department sees the requests it sent and the ones for its rooms.
-        $seesAll = $user->hasCapability(self::OVERSIGHT_CAPABILITY) && ($validated['scope'] ?? 'all') === 'all';
+        // A department sees the requests it sent and the ones for its rooms.
         $departmentId = (int) $user->department_id;
 
         $requests = RoomRequest::query()
             ->with($this->relations())
-            ->when(! $seesAll, fn ($query) => $query->where(fn ($query) => $query
+            ->where(fn ($query) => $query
                 ->where('requesting_department_id', $departmentId)
-                ->orWhere('owner_department_id', $departmentId)))
+                ->orWhere('owner_department_id', $departmentId))
             ->when(isset($validated['semester_id']), fn ($query) => $query->where('semester_id', (int) $validated['semester_id']))
             ->when(isset($validated['status']), fn ($query) => $query->where('status', $validated['status']))
             ->orderByRaw("CASE WHEN status = 'pending' THEN 0 ELSE 1 END")
@@ -632,7 +627,8 @@ class RoomRequestController extends Controller
             (int) $model->requesting_department_id,
             (int) $model->semester_id,
             null,
-            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/room-requests'],
+            // The VPAA has no Room Requests page; the facility list shows the room.
+            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/rooms'],
         );
     }
 

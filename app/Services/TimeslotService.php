@@ -3,32 +3,18 @@
 namespace App\Services;
 
 use App\Models\InstitutionSetting;
-use App\Models\TimeslotOverride;
 use Carbon\Carbon;
-use Illuminate\Support\Collection;
 
 class TimeslotService
 {
     /**
-     * Return available start times for a class duration.
-     *
-     * Active overrides for the requested duration take priority. When no
-     * override exists, slots are generated from institution settings.
+     * Return available start times for a class duration: from opening time,
+     * stepping by the duration, while the class still ends by closing time.
      *
      * @return array<int, string>
      */
     public function generateStartTimes(int $durationMinutes): array
     {
-        $overrides = TimeslotOverride::query()
-            ->where('duration_minutes', $durationMinutes)
-            ->where('is_active', true)
-            ->orderBy('start_time')
-            ->pluck('start_time');
-
-        if ($overrides->isNotEmpty()) {
-            return $this->formatTimes($overrides);
-        }
-
         $settings = $this->settings();
         $start = Carbon::parse($settings->opening_time);
         $end = Carbon::parse($settings->closing_time);
@@ -46,25 +32,5 @@ class TimeslotService
     public function settings(): InstitutionSetting
     {
         return InstitutionSetting::current();
-    }
-
-    public function hasActiveOverridesForDuration(int $durationMinutes): bool
-    {
-        return TimeslotOverride::query()
-            ->where('duration_minutes', $durationMinutes)
-            ->where('is_active', true)
-            ->exists();
-    }
-
-    /**
-     * @param  Collection<int, string>  $times
-     * @return array<int, string>
-     */
-    private function formatTimes(Collection $times): array
-    {
-        return $times
-            ->map(fn (string $time): string => Carbon::parse($time)->format('g:i A'))
-            ->values()
-            ->all();
     }
 }

@@ -2,30 +2,20 @@
 
 namespace App\Http\Controllers;
 
-use App\Exceptions\GenerationConfigurationConfirmationException;
 use App\Exceptions\ScheduleGenerationPreflightException;
-use App\Exceptions\SchedulePlanCommitException;
 use App\Exceptions\YearLevelGenerationException;
 use App\Jobs\GenerateYearLevelSchedulePreview;
-use App\Models\Schedule;
 use App\Models\ScheduleGenerationRun;
-use App\Models\ScheduleRecommendation;
-use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
-use App\Services\Scheduling\Domain\PreparedGenerationConfiguration;
-use App\Services\Scheduling\Domain\SchedulePlan;
-use App\Services\Scheduling\Domain\ScheduleRecommendationPayload;
 use App\Services\Scheduling\Generation\GenerationCourseSelection;
 use App\Services\Scheduling\Generation\CourseSetupOverrides;
-use App\Services\Scheduling\Generation\GenerateSectionSchedulePlans;
 use App\Services\Scheduling\Generation\GenerationDraftReviewer;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\Manual\AvailableSlotFinder;
-use App\Services\Scheduling\Schedule\CommitSchedulePlan;
-use App\Services\Scheduling\Schedule\PreviewedPlanStore;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
+use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use App\Services\Scheduling\YearLevel\YearLevelGenerationEligibilityService;
@@ -53,10 +43,7 @@ class ScheduleRecommendationController extends Controller
         private readonly YearLevelGenerationEligibilityService $yearLevelEligibility,
         private readonly ScheduleGenerationPreflightService $preflight,
         private readonly ScheduleRequirementBuilderResolver $requirementBuilders,
-        private readonly GenerateSectionSchedulePlans $sectionGeneration,
-        private readonly CommitSchedulePlan $planCommitter,
         private readonly ScheduleAuthorizationService $authorization,
-        private readonly PreviewedPlanStore $previewedPlans,
         private readonly GenerationCourseSelection $courseSelection,
     ) {}
 
@@ -204,138 +191,6 @@ class ScheduleRecommendationController extends Controller
         ));
     }
 
-    public function preview(Request $request): JsonResponse
-    {
-        $validated = $request->validate([
-            'section_id' => 'required|integer|exists:sections,id',
-            'course_ids' => 'sometimes|array|min:1',
-            'course_ids.*' => 'integer|exists:courses,id',
-            'anchored_schedules' => 'sometimes|array',
-            'anchored_schedules.*.course_id' => 'required|integer|exists:courses,id',
-            'anchored_schedules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
-            'anchored_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
-            'anchored_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:anchored_schedules.*.start_time'],
-            'anchored_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
-            'tentative_schedules' => 'sometimes|array',
-            'tentative_schedules.*.id' => 'sometimes|integer|exists:schedules,id',
-            'tentative_schedules.*.semester_id' => 'required|integer|exists:semesters,id',
-            'tentative_schedules.*.section_id' => 'required|integer|exists:sections,id',
-            'tentative_schedules.*.course_id' => 'required|integer|exists:courses,id',
-            'tentative_schedules.*.faculty_id' => 'nullable|integer|exists:faculties,id',
-            'tentative_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
-            'tentative_schedules.*.department_id' => 'required|integer|exists:departments,id',
-            'tentative_schedules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
-            'tentative_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
-            'tentative_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:tentative_schedules.*.start_time'],
-            'tentative_schedules.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('required'),
-            'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
-            'is_hybrid' => 'sometimes|boolean',
-            'preferred_patterns' => 'sometimes|array',
-            'preferred_patterns.*' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
-            'split_session_enabled' => 'sometimes|boolean',
-            'selected_split_session_course_ids' => 'sometimes|array',
-            'selected_split_session_course_ids.*' => 'integer|exists:courses,id',
-            'split_units_enabled' => 'sometimes|boolean',
-            'selected_split_unit_course_ids' => 'sometimes|array',
-            'selected_split_unit_course_ids.*' => 'integer|exists:courses,id',
-            'split_gec_enabled' => 'sometimes|boolean',
-            'selected_gec_course_ids' => 'sometimes|array',
-            'selected_gec_course_ids.*' => 'integer|exists:courses,id',
-            'hybrid_split_course_ids' => 'sometimes|array',
-            'hybrid_split_course_ids.*' => 'integer|exists:courses,id',
-            'component_minutes_by_course_id' => 'sometimes|array',
-            'component_minutes_by_course_id.*' => 'array',
-            'component_minutes_by_course_id.*.lecture' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
-            'component_minutes_by_course_id.*.laboratory' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
-            'max_solutions' => 'sometimes|integer|min:1|max:5',
-            'max_iterations' => 'sometimes|integer|min:1',
-            'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
-            'seed' => 'sometimes|integer',
-            // The day the placement collided on: alternatives are offered on
-            // it first, then day by day after it.
-            'search_from_day' => SchedulingPolicy::allowedDaysRule('sometimes'),
-            ...$this->configurationConfirmationRules(),
-        ]);
-
-        /** @var Sections $section */
-        $section = Sections::query()->findOrFail($validated['section_id']);
-
-        try {
-            $this->assertActiveSectionSemester($section);
-        } catch (InvalidArgumentException $exception) {
-            return response()->json(['message' => $exception->getMessage()], 422);
-        }
-
-        if (($guard = $this->departmentGuard($request, (int) $section->department_id, [(int) $section->id])) !== null) {
-            return $guard;
-        }
-
-        try {
-            $validated = [...$validated, ...$this->courseSelection->resolve($section, $validated)];
-            $validated = $this->withComponentOverrides($section, $validated);
-            $generated = $this->sectionGeneration->generate($section, $validated);
-            $profile = $generated->profile;
-            $preparedConfiguration = $generated->preparedConfiguration;
-            $solutions = $generated->solutions;
-            $plans = $generated->plans;
-        } catch (ScheduleGenerationPreflightException $exception) {
-            return response()->json($exception->payload(), 422);
-        } catch (GenerationConfigurationConfirmationException $exception) {
-            return response()->json($exception->payload(), 422);
-        } catch (InvalidArgumentException|RuntimeException $exception) {
-            return response()->json([
-                'message' => $exception->getMessage(),
-            ], 422);
-        }
-
-        if ($request->user() !== null) {
-            $this->previewedPlans->remember(
-                (int) $request->user()->id,
-                (int) $section->id,
-                $validated,
-                $generated,
-                $this->configurationContract($preparedConfiguration),
-            );
-        }
-
-        return response()->json([
-            'message' => $solutions === []
-                ? 'No recommendations found that satisfy the scheduling constraints.'
-                : 'Schedule recommendations generated successfully.',
-            'department_profile' => $profile->value,
-            'search_limit_reached' => (bool) ($generated->generationMetrics['search_limit_reached'] ?? false),
-            'iterations_used' => (int) ($generated->generationMetrics['iterations'] ?? 0),
-            'generation_metrics' => $generated->generationMetrics,
-            'configuration_contract' => $this->configurationContract($preparedConfiguration),
-            'recommendations' => $solutions,
-            'schedule_plans' => array_map(static fn (SchedulePlan $plan): array => $plan->toArray(), $plans),
-        ]);
-    }
-
-    /**
-     * Integrated's lecture and laboratory lengths for a single-section solve,
-     * as the Setup Courses "Configure" panel and the drop dialog both send
-     * them: minutes per component, normalised to slots and refused here when
-     * the validator would refuse the result at save time. The year-level
-     * endpoints do the same per section config.
-     *
-     * @param  array<string, mixed>  $input
-     * @return array<string, mixed>
-     *
-     * @throws \Illuminate\Validation\ValidationException
-     */
-    private function withComponentOverrides(Sections $section, array $input): array
-    {
-        $input[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
-            $section,
-            $input['component_minutes_by_course_id'] ?? [],
-            array_map('intval', $input['course_ids'] ?? []),
-            $input,
-        );
-
-        return $input;
-    }
-
     public function yearLevelPreview(Request $request): JsonResponse
     {
         $this->allowLongRunningGeneration(self::YEAR_LEVEL_PREVIEW_EXECUTION_SECONDS);
@@ -375,6 +230,7 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
             'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
             'section_configs.*.delivery_modes_by_course_id.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
+            ...$this->ruleOverrideRules(),
         ]);
 
         if (($guard = $this->departmentGuard($request, (int) $validated['department_id'], [
@@ -384,6 +240,7 @@ class ScheduleRecommendationController extends Controller
             return $guard;
         }
 
+        return DepartmentCourseRules::withOverride((int) $validated['department_id'], $this->ruleOverrides($validated), function () use ($request, $validated) {
         $semester = Semester::query()->findOrFail((int) $validated['semester_id']);
         if (! $semester->is_active) {
             return response()->json(['message' => 'Schedule generation is only available for the active academic semester.'], 422);
@@ -529,6 +386,7 @@ class ScheduleRecommendationController extends Controller
             'section_summaries' => $result['section_summaries'],
             'schedules' => $result['schedules'],
         ]);
+        });
     }
 
     /** Queue the expensive year-level solve and return immediately. */
@@ -575,6 +433,7 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.component_minutes_by_course_id.*.laboratory' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
             'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
             'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
+            ...$this->ruleOverrideRules(),
         ]);
         if (($guard = $this->departmentGuard($request, (int) $validated['department_id'], [
             ...array_column($validated['section_configs'], 'section_id'),
@@ -582,6 +441,7 @@ class ScheduleRecommendationController extends Controller
         ])) !== null) {
             return $guard;
         }
+        return DepartmentCourseRules::withOverride((int) $validated['department_id'], $this->ruleOverrides($validated), function () use ($request, $validated) {
         $semester = Semester::query()->findOrFail((int) $validated['semester_id']);
         if (! $semester->is_active) {
             return response()->json(['message' => 'Schedule generation is only available for the active academic semester.'], 422);
@@ -669,9 +529,11 @@ class ScheduleRecommendationController extends Controller
             $runId,
             $sections->pluck('id')->map('intval')->values()->all(),
             $configsBySectionId,
+            $this->ruleOverrides($validated),
         )->onQueue('scheduling');
 
         return response()->json(['run_id' => $runId, 'status' => 'queued'], 202);
+        });
     }
 
     public function generationRun(Request $request, string $runId): JsonResponse
@@ -812,322 +674,56 @@ class ScheduleRecommendationController extends Controller
         return $run;
     }
 
-    public function select(Request $request): JsonResponse
+    /** @return array<string, mixed> */
+    private function ruleOverrideRules(): array
     {
-        $validated = $request->validate([
-            'section_id' => 'required|integer|exists:sections,id',
-            'course_ids' => 'sometimes|array|min:1',
-            'course_ids.*' => 'integer|exists:courses,id',
-            'mode' => SchedulingPolicy::allowedDeliveryModesRule('sometimes'),
-            'is_hybrid' => 'sometimes|boolean',
-            'preferred_patterns' => 'sometimes|array',
-            'preferred_patterns.*' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidPreferredPattern($value) ? null : $fail('The preferred pattern is not supported.')],
-            'split_session_enabled' => 'sometimes|boolean',
-            'selected_split_session_course_ids' => 'sometimes|array',
-            'selected_split_session_course_ids.*' => 'integer|exists:courses,id',
-            'split_gec_enabled' => 'sometimes|boolean',
-            'selected_gec_course_ids' => 'sometimes|array',
-            'selected_gec_course_ids.*' => 'integer|exists:courses,id',
-            'component_minutes_by_course_id' => 'sometimes|array',
-            'component_minutes_by_course_id.*' => 'array',
-            'component_minutes_by_course_id.*.lecture' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
-            'component_minutes_by_course_id.*.laboratory' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
-            'tentative_schedules' => 'sometimes|array',
-            'tentative_schedules.*.id' => 'sometimes|integer|exists:schedules,id',
-            'tentative_schedules.*.semester_id' => 'required|integer|exists:semesters,id',
-            'tentative_schedules.*.section_id' => 'required|integer|exists:sections,id',
-            'tentative_schedules.*.course_id' => 'required|integer|exists:courses,id',
-            'tentative_schedules.*.faculty_id' => 'nullable|integer|exists:faculties,id',
-            'tentative_schedules.*.room_id' => 'nullable|integer|exists:rooms,id',
-            'tentative_schedules.*.department_id' => 'required|integer|exists:departments,id',
-            'tentative_schedules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
-            'tentative_schedules.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
-            'tentative_schedules.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:tentative_schedules.*.start_time'],
-            'tentative_schedules.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('required'),
-            'max_solutions' => 'sometimes|integer|min:1|max:5',
-            'max_iterations' => 'sometimes|integer|min:1',
-            'timeout_seconds' => 'sometimes|numeric|min:0.1|max:5',
-            'selected_rank' => 'required|integer|min:1|max:5',
-            'plan_id' => 'sometimes|nullable|string|max:64',
-            'seed' => 'sometimes|integer',
-            ...$this->configurationConfirmationRules(),
-        ]);
-
-        /** @var Sections $section */
-        $section = Sections::query()->findOrFail($validated['section_id']);
-
-        try {
-            $this->assertActiveSectionSemester($section);
-        } catch (InvalidArgumentException $exception) {
-            return response()->json(['message' => $exception->getMessage()], 422);
-        }
-
-        if (($guard = $this->departmentGuard($request, (int) $section->department_id, [(int) $section->id])) !== null) {
-            return $guard;
-        }
-
-        $selectedRank = (int) $validated['selected_rank'];
-
-        // Save exactly the plan the user previewed and compared. Re-running the
-        // solver could return different rows for the same rank, because the
-        // search stops on a wall-clock limit.
-        $previewed = isset($validated['plan_id']) && $request->user() !== null
-            ? $this->previewedPlans->find((string) $validated['plan_id'], (int) $request->user()->id, (int) $section->id)
-            : null;
-        if ($previewed !== null && (int) ($previewed['solution']['rank'] ?? 0) === $selectedRank) {
-            return $this->storeSelectedRecommendation(
-                $request,
-                $section,
-                $previewed['solution'],
-                $previewed['input_payload'],
-                $previewed['schedule_plan'],
-                $previewed['department_profile'],
-                $previewed['generation_metrics'],
-                $previewed['configuration_contract'],
-            );
-        }
-
-        // No remembered preview (expired, another server, or an older client):
-        // generate again with the same input and seed.
-        $solverInput = $validated;
-        unset($solverInput['selected_rank'], $solverInput['plan_id']);
-
-        try {
-            $solverInput = [...$solverInput, ...$this->courseSelection->resolve($section, $solverInput)];
-            $solverInput = $this->withComponentOverrides($section, $solverInput);
-            $generated = $this->sectionGeneration->generate($section, $solverInput);
-            $profile = $generated->profile;
-            $preparedConfiguration = $generated->preparedConfiguration;
-            $solutions = $generated->solutions;
-            $plans = $generated->plans;
-        } catch (ScheduleGenerationPreflightException $exception) {
-            return response()->json($exception->payload(), 422);
-        } catch (GenerationConfigurationConfirmationException $exception) {
-            return response()->json($exception->payload(), 422);
-        } catch (InvalidArgumentException|RuntimeException $exception) {
-            return response()->json(['message' => $exception->getMessage()], 422);
-        }
-
-        $selectedSolution = collect($solutions)->first(
-            static fn (array $solution): bool => (int) $solution['rank'] === $selectedRank,
-        );
-        $selectedPlan = collect($plans)->first(
-            static fn (SchedulePlan $plan): bool => ($selectedSolution['plan_id'] ?? null) === $plan->planId
-                || (int) ($plan->metadata['rank'] ?? 0) === $selectedRank,
-        );
-
-        if ($selectedSolution === null) {
-            return response()->json([
-                'message' => 'The selected recommendation is no longer available. Please refresh the recommendations.',
-            ], 422);
-        }
-
-        return $this->storeSelectedRecommendation(
-            $request,
-            $section,
-            $selectedSolution,
-            ScheduleRecommendationPayload::fromPrepared($solverInput, $preparedConfiguration, $selectedPlan)->toArray(),
-            $selectedPlan?->toArray(),
-            $profile->value,
-            $generated->generationMetrics,
-            $this->configurationContract($preparedConfiguration),
-        );
+        return [
+            'rule_overrides' => 'sometimes|array',
+            'rule_overrides.forced_day_rules' => 'sometimes|array',
+            'rule_overrides.forced_day_rules.*.course_id' => 'required|integer|exists:courses,id',
+            'rule_overrides.forced_day_rules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
+            'rule_overrides.consecutive_day_rules' => 'sometimes|array',
+            'rule_overrides.consecutive_day_rules.*.course_id' => 'required|integer|exists:courses,id',
+            'rule_overrides.consecutive_day_rules.*.section_id' => 'nullable|integer|exists:sections,id',
+            'rule_overrides.consecutive_day_rules.*.day_count' => 'required|integer|min:'.SchedulingPolicy::MIN_CONSECUTIVE_DAYS,
+            'rule_overrides.consecutive_day_rules.*.preferred_start_day' => SchedulingPolicy::allowedDaysRule('nullable'),
+            'rule_overrides.consecutive_day_rules.*.meeting_days' => 'nullable|array',
+            'rule_overrides.consecutive_day_rules.*.meeting_days.*' => SchedulingPolicy::allowedDaysRule('required'),
+            'rule_overrides.field_course_codes' => 'sometimes|array',
+            'rule_overrides.field_course_codes.*' => 'required|string|max:255',
+        ];
     }
 
     /**
-     * Records the chosen solution as a pending recommendation.
+     * Required Day, Consecutive Days and Field Course rules chosen for this run
+     * in Setup Courses. They stand in for the department's saved rules of the
+     * run's courses and are never saved; null leaves the saved rules in force.
      *
-     * @param  array<string, mixed>  $selectedSolution
-     * @param  array<string, mixed>  $inputPayload
-     * @param  array<string, mixed>|null  $schedulePlan
-     * @param  array<string, mixed>  $generationMetrics
-     * @param  array<string, mixed>  $configurationContract
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>|null
      */
-    private function storeSelectedRecommendation(
-        Request $request,
-        Sections $section,
-        array $selectedSolution,
-        array $inputPayload,
-        ?array $schedulePlan,
-        string $departmentProfile,
-        array $generationMetrics,
-        array $configurationContract,
-    ): JsonResponse {
-        $user = $request->user();
-
-        $recommendation = DB::transaction(function () use ($selectedSolution, $inputPayload, $section, $user) {
-            $recommendation = ScheduleRecommendation::create([
-                'semester_id' => (int) $section->semester_id,
-                'section_id' => (int) $section->id,
-                'department_id' => (int) $section->department_id,
-                'requested_by' => $user?->id,
-                'rank' => (int) $selectedSolution['rank'],
-                'score' => (int) $selectedSolution['score'],
-                'status' => 'pending',
-                'input_payload' => $inputPayload,
-                'recommended_schedules' => $selectedSolution['schedules'],
-            ]);
-
-            $this->recordAudit(
-                action: 'recommendation_selected',
-                userId: $user?->id,
-                recommendation: $recommendation,
-                metadata: [
-                    'rank' => $selectedSolution['rank'],
-                    'score' => $selectedSolution['score'],
-                    'schedule_count' => count($selectedSolution['schedules']),
-                ],
-            );
-
-            return $recommendation->load(['section', 'academicSemester', 'department', 'requester']);
-        });
-
-        return response()->json([
-            'message' => 'Schedule recommendation selected successfully.',
-            'department_profile' => $departmentProfile,
-            'generation_metrics' => $generationMetrics,
-            'configuration_contract' => $configurationContract,
-            'schedule_plan' => $schedulePlan,
-            'recommendation' => $recommendation,
-        ], 201);
-    }
-
-    private function recommendationPlan(ScheduleRecommendation $recommendation): ?SchedulePlan
+    private function ruleOverrides(array $validated): ?array
     {
-        $payload = is_array($recommendation->input_payload) ? $recommendation->input_payload : [];
-        // Order 4 only accepts recommendations that carry the immutable,
-        // versioned plan envelope. Historical row-only payloads are rejected
-        // until the dedicated Order 5 migration reconstructs them explicitly.
-        if (! ScheduleRecommendationPayload::isVersioned($payload)) {
+        $rules = $validated['rule_overrides'] ?? null;
+        if (! is_array($rules)) {
             return null;
         }
 
-        return ScheduleRecommendationPayload::fromArray($payload)->schedulePlan;
-    }
-
-    public function accept(Request $request, ScheduleRecommendation $scheduleRecommendation): JsonResponse
-    {
-        if (($guard = $this->departmentGuard($request, (int) $scheduleRecommendation->department_id, [(int) $scheduleRecommendation->section_id])) !== null) {
-            return $guard;
-        }
-
-        $user = $request->user();
-
-        // New recommendations carry the exact immutable plan generated during
-        // preview. Commit it through the shared persistence boundary so stale
-        // snapshots and final constraint violations are rechecked uniformly.
-        try {
-            $plan = $this->recommendationPlan($scheduleRecommendation);
-        } catch (InvalidArgumentException|RuntimeException $exception) {
-            return response()->json(['message' => $exception->getMessage()], 422);
-        }
-        if ($plan !== null) {
-            try {
-                // Keep schedule persistence and recommendation state changes in
-                // one database transaction. A committed schedule must never
-                // be visible while its recommendation remains pending.
-                $resetInstructors = $request->boolean('reset_instructors');
-                [$committedPlan, $recommendation, $createdIds] = DB::transaction(function () use ($plan, $scheduleRecommendation, $user, $resetInstructors) {
-                    $recommendation = ScheduleRecommendation::query()
-                        ->whereKey($scheduleRecommendation->id)
-                        ->lockForUpdate()
-                        ->firstOrFail();
-                    if ($recommendation->status !== 'pending') {
-                        throw new InvalidArgumentException('Only pending recommendations can be accepted.');
-                    }
-
-                    [$committedPlan, $createdIds] = $this->commitAndAccept($recommendation, $plan, $user?->id, $resetInstructors);
-
-                    return [
-                        $committedPlan,
-                        $recommendation->fresh(['section', 'academicSemester', 'department', 'requester', 'accepter']),
-                        $createdIds,
-                    ];
-                });
-
-                return response()->json([
-                    'message' => 'Recommendation accepted and schedules created successfully.',
-                    'recommendation' => $recommendation,
-                    'schedules' => Schedule::query()->whereIn('id', $createdIds)->with(Schedule::RESPONSE_RELATIONS)->get(),
-                    'schedule_plan' => $committedPlan,
-                ]);
-            } catch (SchedulePlanCommitException|InvalidArgumentException|RuntimeException $exception) {
-                return response()->json(['message' => $exception->getMessage()], 422);
+        $scope = [];
+        foreach ($validated['section_configs'] ?? [] as $config) {
+            foreach ($config['course_ids'] ?? [] as $courseId) {
+                $scope[(int) $courseId] = (int) $courseId;
             }
         }
 
-        return response()->json([
-            'message' => 'This recommendation does not contain a migrated schedule plan. Regenerate the recommendation before accepting it.',
-        ], 422);
+        return [
+            'forced_day_rules' => array_values($rules['forced_day_rules'] ?? []),
+            'consecutive_day_rules' => array_values($rules['consecutive_day_rules'] ?? []),
+            'field_course_codes' => array_values($rules['field_course_codes'] ?? []),
+            'scope_course_ids' => array_values($scope),
+        ];
     }
 
-    public function reject(Request $request, ScheduleRecommendation $scheduleRecommendation): JsonResponse
-    {
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $scheduleRecommendation->department_id)) {
-            return $this->departmentForbiddenResponse();
-        }
-
-        $validated = $request->validate([
-            'reason' => 'nullable|string|max:2000',
-        ]);
-
-        $user = $request->user();
-
-        try {
-            $recommendation = DB::transaction(function () use ($scheduleRecommendation, $validated, $user) {
-                /** @var ScheduleRecommendation $recommendation */
-                $recommendation = ScheduleRecommendation::query()
-                    ->whereKey($scheduleRecommendation->id)
-                    ->lockForUpdate()
-                    ->firstOrFail();
-
-                if ($recommendation->status !== 'pending') {
-                    throw new InvalidArgumentException('Only pending recommendations can be rejected.');
-                }
-
-                $recommendation->update([
-                    'status' => 'rejected',
-                    'rejected_by' => $user?->id,
-                    'rejected_at' => now(),
-                    'rejection_reason' => $validated['reason'] ?? null,
-                ]);
-
-                $this->recordAudit(
-                    action: 'recommendation_rejected',
-                    userId: $user?->id,
-                    recommendation: $recommendation,
-                    metadata: [
-                        'reason' => $validated['reason'] ?? null,
-                    ],
-                );
-
-                return $recommendation->fresh([
-                    'section',
-                    'academicSemester',
-                    'department',
-                    'requester',
-                    'rejecter',
-                ]);
-            });
-        } catch (InvalidArgumentException $exception) {
-            return response()->json([
-                'message' => $exception->getMessage(),
-            ], 422);
-        }
-
-        return response()->json([
-            'message' => 'Recommendation rejected successfully.',
-            'recommendation' => $recommendation,
-        ]);
-    }
-
-    /**
-     * Resolve which courses to schedule for a section. If the caller
-     * explicitly supplied course_ids, use those (manual override still
-     * allowed). Otherwise, derive the list from the section's department's
-     * ACTIVE curriculum, filtered to the section's year_level and semester —
-     * Curriculum is the source of truth for what should be scheduled.
-     */
     /**
      * Refuses a run whose client was looking at a different curriculum than the
      * one the section now follows.
@@ -1191,90 +787,6 @@ class ScheduleRecommendationController extends Controller
     }
 
     /**
-     * Commits a recommendation's plan and marks it accepted, inside the
-     * caller's transaction.
-     *
-     * @return array{0: SchedulePlan, 1: list<int>}
-     */
-    private function commitAndAccept(ScheduleRecommendation $recommendation, SchedulePlan $plan, ?int $userId, bool $resetInstructors = false): array
-    {
-        $committedPlan = $this->planCommitter->commit($plan, $userId, $resetInstructors);
-        $createdIds = array_values(array_map('intval', $committedPlan->metadata['created_schedule_ids'] ?? []));
-
-        $recommendation->update([
-            'status' => 'accepted',
-            'accepted_by' => $userId,
-            'accepted_at' => now(),
-        ]);
-        $this->recordAudit(
-            action: 'recommendation_accepted',
-            userId: $userId,
-            recommendation: $recommendation,
-            metadata: [
-                'created_schedule_ids' => $createdIds,
-                'plan_id' => $plan->planId,
-            ],
-        );
-
-        return [$committedPlan, $createdIds];
-    }
-
-    private function recordAudit(
-        string $action,
-        ?int $userId,
-        ScheduleRecommendation $recommendation,
-        array $metadata = [],
-    ): void {
-        SchedulingAuditLog::create([
-            'user_id' => $userId,
-            'schedule_recommendation_id' => $recommendation->id,
-            'semester_id' => $recommendation->semester_id,
-            'section_id' => $recommendation->section_id,
-            'department_id' => $recommendation->department_id,
-            'action' => $action,
-            'history_version_id' => $metadata['history_version_id'] ?? null,
-            'metadata' => $metadata,
-            'created_at' => now(),
-        ]);
-    }
-
-    /** @return array<string, string> */
-    private function configurationConfirmationRules(): array
-    {
-        return [
-            'configuration_confirmation' => 'sometimes|array',
-            'configuration_confirmation.schema_version' => 'required_with:configuration_confirmation|integer|in:1',
-            'configuration_confirmation.configuration_fingerprint' => ['required_with:configuration_confirmation', 'string', 'size:64', 'regex:/^[a-f0-9]+$/'],
-            'configuration_confirmation.confirmed_warning_rule_ids' => 'required_with:configuration_confirmation|array',
-            'configuration_confirmation.confirmed_warning_rule_ids.*' => 'string|max:100|distinct',
-        ];
-    }
-
-    /** @return array<string, mixed> */
-    private function configurationContract(PreparedGenerationConfiguration $prepared): array
-    {
-        return [
-            'schema_version' => 1,
-            'configuration_schema_version' => $prepared->configuration->schemaVersion,
-            'configuration_fingerprint' => $prepared->configurationFingerprint,
-            'snapshot_fingerprint' => $prepared->validation->snapshotFingerprint,
-            'confirmed_warning_rule_ids' => $prepared->confirmedWarningRuleIds,
-        ];
-    }
-
-    private function assertActiveSectionSemester(Sections $section): void
-    {
-        $semester = Semester::query()->find((int) $section->semester_id);
-        if (! $semester?->is_active) {
-            throw new InvalidArgumentException('Schedule generation is only available for the active academic semester.');
-        }
-
-        if ((string) $section->semester !== (string) $semester->semester) {
-            throw new InvalidArgumentException('The selected section belongs to a different semester than the active academic semester.');
-        }
-    }
-
-    /**
      * Ownership plus the program precondition, for the paths that build or
      * commit schedules.
      *
@@ -1283,9 +795,7 @@ class ScheduleRecommendationController extends Controller
      * right department whose department has no program yet is merely missing a
      * setup step. Folding the second into the ownership check answered it with
      * "you can only manage schedules for your department", which is misleading
-     * -- the department is correct. Read-only and recommendation-lifecycle
-     * endpoints keep the ownership check alone; requiring a program to list or
-     * reject a recommendation would gate reads on a scheduling precondition.
+     * -- the department is correct.
      *
      * Returns the response to send, or null when the caller may proceed.
      */
@@ -1299,7 +809,7 @@ class ScheduleRecommendationController extends Controller
             return $this->departmentMissingProgramResponse();
         }
 
-        // Generating, previewing and accepting write a program's timetable,
+        // Generating and previewing build a program's timetable,
         // so they follow program ownership inside the department.
         if (! $this->authorization->sectionIdsWritable($request, $sectionIds)) {
             return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_FORBIDDEN_MESSAGE], 403);

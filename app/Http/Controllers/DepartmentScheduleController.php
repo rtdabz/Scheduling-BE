@@ -32,6 +32,13 @@ use Illuminate\Support\Str;
 
 class DepartmentScheduleController extends Controller
 {
+    /**
+     * Rows Submit sends to the Dean. There is no separate Done step: a section
+     * still being plotted goes straight into review. 'completed' stays for rows
+     * marked Done before that step was removed, and for generated rows.
+     */
+    private const SUBMITTABLE_STATUSES = ['draft', 'revision', 'completed', 'rejected', 'rejected_by_dean'];
+
     public function __construct(
         private readonly SystemNotificationService $notifications,
         private readonly ScheduleHistoryRecorder $historyRecorder,
@@ -810,7 +817,7 @@ class DepartmentScheduleController extends Controller
             ], 422);
         }
 
-        $readyStatuses = ['completed', 'rejected', 'rejected_by_dean'];
+        $readyStatuses = self::SUBMITTABLE_STATUSES;
         $protectedStatuses = [
             'submitted',
             'approved_by_dean',
@@ -823,7 +830,6 @@ class DepartmentScheduleController extends Controller
         $readySectionIds = collect();
         $protectedSectionIds = collect();
         $blockedYears = [];
-        $revisionYears = [];
 
         foreach ($sections as $section) {
             $statuses = $section->schedules->pluck('status')->filter()->unique()->values();
@@ -846,9 +852,7 @@ class DepartmentScheduleController extends Controller
                 continue;
             }
 
-            if ($statuses->contains('revision')) {
-                $revisionYears[] = (int) $section->year_level;
-            }
+            // Nothing plotted yet.
             $blockedYears[] = (int) $section->year_level;
         }
 
@@ -864,17 +868,7 @@ class DepartmentScheduleController extends Controller
 
         if ($readySectionIds->isEmpty()) {
             return response()->json([
-                'message' => 'No completed or revised schedule sections are ready for submission.',
-            ], 422);
-        }
-
-        if (! empty($revisionYears)) {
-            $revisionYears = array_values(array_unique($revisionYears));
-            sort($revisionYears);
-
-            return response()->json([
-                'message' => 'Cannot submit while recalled sections are still under revision.',
-                'blocked_years' => $revisionYears,
+                'message' => 'No plotted schedule sections are ready for submission.',
             ], 422);
         }
 
@@ -887,9 +881,9 @@ class DepartmentScheduleController extends Controller
             $yearLabels = array_map(static fn (int $year): string => "Year {$year}", $blockedYears);
 
             return response()->json([
-                'message' => 'Cannot submit: some year levels still have sections in draft or revision.',
+                'message' => 'Cannot submit: some year levels still have sections with nothing plotted.',
                 'blocked_years' => $blockedYears,
-                'hint' => 'Finish '.implode(', ', $yearLabels).' before submitting the initial schedule.',
+                'hint' => 'Plot '.implode(', ', $yearLabels).' before submitting the initial schedule.',
             ], 422);
         }
 
@@ -919,7 +913,7 @@ class DepartmentScheduleController extends Controller
                 'section_count' => count($sectionIds),
                 'subject_count' => Schedule::whereIn('section_id', $sectionIds)
                     ->where('semester_id', $activeSemesterId)
-                    ->whereIn('status', ['completed', 'rejected', 'rejected_by_dean'])
+                    ->whereIn('status', self::SUBMITTABLE_STATUSES)
                     ->distinct()
                     ->count('course_id'),
                 'submitted_by' => $user->id,
@@ -928,7 +922,7 @@ class DepartmentScheduleController extends Controller
             $submission->sections()->attach($sectionIds, ['state' => 'included']);
 
             $updated = Schedule::whereIn('section_id', $sectionIds)
-                ->whereIn('status', ['completed', 'rejected', 'rejected_by_dean'])
+                ->whereIn('status', self::SUBMITTABLE_STATUSES)
                 ->update([
                     'status' => 'submitted',
                     'updated_at' => now(),
@@ -1328,7 +1322,7 @@ class DepartmentScheduleController extends Controller
         $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses, $affectedSubmissions, $submissionSections, $user, $semesterId) {
             // A recalled section keeps its instructors: the meetings come back
             // for revision with their assignments intact and are revalidated
-            // when the schedule changes (see CommitSchedulePlan). Only the
+            // when the schedule changes. Only the
             // "done" handoff from the last round is reopened.
             $this->departmentScheduleQuery($id)
                 ->whereIn('section_id', $sectionIds)

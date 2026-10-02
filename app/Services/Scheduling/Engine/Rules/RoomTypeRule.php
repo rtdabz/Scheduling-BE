@@ -95,11 +95,15 @@ final class RoomTypeRule
         // A laboratory meeting takes the rooms the institution's Default LAB
         // Room Requirement allows: a laboratory, a classroom, or either.
         if ($requiredRoomType === 'laboratory') {
-            if (in_array($roomType, SchedulingPolicy::labRoomTypes(), true)) {
+            // The scheduling department's rule; a course's own department
+            // stands in when no scheduling department was given.
+            $courseDepartmentId = is_array($course) ? ($course['department_id'] ?? null) : $course->department_id;
+            $labDepartmentId = $departmentId ?? ($courseDepartmentId === null ? null : (int) $courseDepartmentId);
+            if (in_array($roomType, SchedulingPolicy::labRoomTypes($labDepartmentId), true)) {
                 return null;
             }
 
-            return $violation(SchedulingPolicy::labRoomType() === 'lecture'
+            return $violation(SchedulingPolicy::labRoomType($labDepartmentId) === 'lecture'
                 ? "Course {$courseCode} meets in a classroom, but '{$roomCode}' is a '{$roomType}' room."
                 : "Course {$courseCode} requires a laboratory room, but '{$roomCode}' is a '{$roomType}' room.");
         }

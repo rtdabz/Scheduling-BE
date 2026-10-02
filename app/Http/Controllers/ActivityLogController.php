@@ -44,7 +44,7 @@ class ActivityLogController extends Controller
         $candidateLimit = min(10000, max(500, ($page * $perPage) + $perPage));
 
         $scheduling = SchedulingAuditLog::query()
-            ->with(['user:id,name,username,role', 'recommendation:id,department_id,semester_id,section_id'])
+            ->with('user:id,name,username,role')
             ->when(in_array($category, ['account_access', 'authentication'], true), fn ($q) => $q->whereRaw('1 = 0'))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))

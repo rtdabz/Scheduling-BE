@@ -131,6 +131,17 @@ class RoomRequestTest extends TestCase
         $this->assertStringContainsString('CIT is borrowing LAB-1 from CAS', $notice->message);
     }
 
+    /** The VPAA is only told about borrowing; it cannot take part in it. */
+    public function test_the_vpaa_takes_no_part_in_room_requests(): void
+    {
+        $f = $this->fixture();
+        $id = $this->approvedGrant($f);
+
+        $this->actingAs($f['vpaa'])->getJson('/api/room-requests')->assertForbidden();
+        $this->actingAs($f['vpaa'])->postJson('/api/room-requests', $this->payload($f))->assertForbidden();
+        $this->actingAs($f['vpaa'])->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'x'])->assertForbidden();
+    }
+
     public function test_rejection_requires_a_reason_and_notifies_the_requester(): void
     {
         $f = $this->fixture();
@@ -223,7 +234,7 @@ class RoomRequestTest extends TestCase
             ->exists());
     }
 
-    public function test_requester_lists_its_own_while_the_owner_and_the_vpaa_see_both(): void
+    public function test_requester_lists_its_own_while_the_owner_sees_both(): void
     {
         $f = $this->fixture();
         $third = Departments::create(['department_name' => 'College of Engineering', 'department_code' => 'COE']);
@@ -234,7 +245,6 @@ class RoomRequestTest extends TestCase
 
         $this->actingAs($f['secretary'])->getJson('/api/room-requests')->assertOk()->assertJsonCount(1);
         $this->actingAs($f['ownerSecretary'])->getJson('/api/room-requests')->assertOk()->assertJsonCount(2);
-        $this->actingAs($f['vpaa'])->getJson('/api/room-requests')->assertOk()->assertJsonCount(2);
     }
 
     /** The builder's room list carries the borrowed room, tagged with its windows. */
