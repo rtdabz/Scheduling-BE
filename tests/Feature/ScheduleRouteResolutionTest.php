@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Http\Controllers\ScheduleController;
+use App\Http\Controllers\Scheduling\ScheduleController;
 use Illuminate\Http\Request;
 use Tests\TestCase;
 

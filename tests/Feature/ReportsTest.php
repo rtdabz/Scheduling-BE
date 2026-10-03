@@ -115,6 +115,35 @@ class ReportsTest extends TestCase
             ->assertJsonPath('faculties.0.id', $f['faculty']->id);
     }
 
+    public function test_program_report_includes_department_wide_instructors_teaching_its_sections(): void
+    {
+        $f = $this->fixture();
+        $otherProgram = Program::create(['department_id' => $f['department']->id, 'code' => 'BSCS', 'name' => 'Computer Science']);
+        $shared = fn (string $last) => Faculty::create([
+            'first_name' => 'Dept', 'last_name' => $last, 'employment_type' => 'full-time', 'max_units' => 18,
+            'department_id' => $f['department']->id, 'program_id' => null, 'status' => 'active',
+        ]);
+        $teachesIt = $shared('Wide');
+        $teachesCsOnly = $shared('Elsewhere');
+        $this->schedule($f, $this->section($f, 'IT-1A'), ['status' => 'finalized', 'faculty_id' => $teachesIt->id]);
+        $this->schedule($f, $this->section($f, 'CS-1A', $otherProgram->id), ['status' => 'finalized', 'faculty_id' => $teachesCsOnly->id]);
+        $this->schedule($f, $this->section($f, 'IT-1B'), ['status' => 'finalized', 'faculty_id' => $f['faculty']->id]);
+
+        $this->actingAs($f['secretary'])
+            ->getJson('/api/reports')
+            ->assertOk()
+            ->assertJsonPath('departments.0.programs.0.code', 'BSCS')
+            ->assertJsonPath('departments.0.programs.0.instructor_count', 1)
+            ->assertJsonPath('departments.0.programs.1.code', 'BSIT')
+            ->assertJsonPath('departments.0.programs.1.instructor_count', 2);
+
+        $ids = collect($this->actingAs($f['secretary'])
+            ->getJson("/api/reports/departments/{$f['department']->id}?program_id={$f['program']->id}")
+            ->assertOk()
+            ->json('faculties'))->pluck('id')->sort()->values()->all();
+        $this->assertSame(collect([$f['faculty']->id, $teachesIt->id])->sort()->values()->all(), $ids);
+    }
+
     public function test_reports_include_every_semester(): void
     {
         $f = $this->fixture();

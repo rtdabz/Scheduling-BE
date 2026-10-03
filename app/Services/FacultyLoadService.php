@@ -30,12 +30,63 @@ class FacultyLoadService
      */
     public function getAcrossSemesters(?int $departmentId, ?int $programId = null): Collection
     {
-        $faculties = $this->faculties($departmentId, $programId);
+        $faculties = $programId === null
+            ? $this->faculties($departmentId, null)
+            : $this->programReportFaculties($departmentId, $programId);
         $byFaculty = $this->assignmentRows(null, $faculties->pluck('id')->all())->groupBy('faculty_id');
 
         return $faculties->each(function (Faculty $faculty) use ($byFaculty): void {
             $this->applyRows($faculty, $byFaculty->get($faculty->id, collect()));
         });
+    }
+
+    /**
+     * A program's printed load covers its own instructors plus the
+     * department-wide ones (no program) who teach approved classes in its
+     * sections. Matching on `program_id` alone left every department-wide
+     * instructor out of every program's report -- and a single-program
+     * department offers no department-wide report to catch them.
+     */
+    private function programReportFaculties(?int $departmentId, int $programId): Collection
+    {
+        $teaching = $this->programTeachers([$programId])[$programId] ?? [];
+
+        return Faculty::query()
+            ->with(['department', 'program', 'availabilities', 'user', 'designations.parent'])
+            ->when($departmentId !== null, fn ($query) => $query->where('department_id', $departmentId))
+            ->where(fn ($query) => $query
+                ->where('program_id', $programId)
+                ->orWhere(fn ($shared) => $shared->whereNull('program_id')->whereIn('id', $teaching)))
+            ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->get();
+    }
+
+    /**
+     * Instructors with an approved class in each program's sections, keyed by
+     * program id.
+     *
+     * @param  array<int, int>  $programIds
+     * @return array<int, array<int, int>>
+     */
+    public function programTeachers(array $programIds): array
+    {
+        if ($programIds === []) {
+            return [];
+        }
+
+        return DB::table('schedules')
+            ->join('sections', 'schedules.section_id', '=', 'sections.id')
+            ->whereNull('schedules.deleted_at')
+            ->whereIn('schedules.status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
+            ->whereNotNull('schedules.faculty_id')
+            ->whereIn('sections.program_id', $programIds)
+            ->distinct()
+            ->get(['sections.program_id', 'schedules.faculty_id'])
+            ->groupBy('program_id')
+            ->map(fn ($rows) => $rows->pluck('faculty_id')->map('intval')->values()->all())
+            ->mapWithKeys(fn ($ids, $programId) => [(int) $programId => $ids])
+            ->all();
     }
 
     private function faculties(?int $departmentId, ?int $programId): Collection

@@ -51,4 +51,10 @@ class ScheduleHistoryVersion extends Model
     {
         return $this->belongsTo(Departments::class, 'department_id');
     }
+
+    /** Named apart from the legacy `semester` label column. */
+    public function semesterRecord()
+    {
+        return $this->belongsTo(Semester::class, 'semester_id');
+    }
 }

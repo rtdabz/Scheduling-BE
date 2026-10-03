@@ -57,7 +57,14 @@ class YearLevelScheduleGenerationService
 
     private const MAX_COMPLETE_CANDIDATES_PER_ORDER = 6;
 
-    private const PREVIEW_TIME_BUDGET_SECONDS = 135.0;
+    /**
+     * The whole run, draft pass included: about a minute after Generate the
+     * user has either a timetable or a draft with recommendations. Searching
+     * longer rarely helped -- a run still unsolved here was almost always an
+     * over-constrained setup (e.g. more split lecture-room hours than the
+     * rooms have) that only a settings change fixes.
+     */
+    private const PREVIEW_TIME_BUDGET_SECONDS = 60.0;
 
     private const RESERVED_SECONDS_PER_REMAINING_SECTION = 4.0;
 
@@ -67,12 +74,12 @@ class YearLevelScheduleGenerationService
      * budget is what the retry ladder exists to replace, so the remainder is
      * reserved for strategies that change the shape of the search.
      *
-     * About 47 seconds. Recorded runs that fit as configured almost all
+     * About 27 seconds. Recorded runs that fit as configured almost all
      * finished within 30; a run still searching past this point is far more
      * likely to need a retry, and every second kept here is one the retry
      * ladder (starting with a plain reordering) no longer has.
      */
-    private const BASELINE_BUDGET_SHARE = 0.35;
+    private const BASELINE_BUDGET_SHARE = 0.45;
 
     /**
      * Seconds kept back from the search for the best-effort draft: when no
@@ -80,7 +87,7 @@ class YearLevelScheduleGenerationService
      * and the rest are reported, so the user fixes them all in one review
      * instead of one bottleneck per generation.
      */
-    private const DRAFT_RESERVE_SECONDS = 25.0;
+    private const DRAFT_RESERVE_SECONDS = 18.0;
 
     /** A draft-pass solve of one section, before its blocking course is set aside. */
     private const DRAFT_SECTION_SECONDS = 4.0;
