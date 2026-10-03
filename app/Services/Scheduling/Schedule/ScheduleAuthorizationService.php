@@ -165,6 +165,17 @@ final class ScheduleAuthorizationService
             && (int) $requestedDepartmentId !== $scope;
     }
 
+    /** True for unscoped users, or when the instructor is in the requester's department. */
+    public function facultyBelongsToDepartment(Request $request, int $facultyId): bool
+    {
+        $scope = $this->departmentScope($request);
+
+        return $scope === null || DB::table('faculties')
+            ->where('id', $facultyId)
+            ->where('department_id', $scope)
+            ->exists();
+    }
+
     public function scheduleBelongsToDepartment(Request $request, Schedule $schedule): bool
     {
         return $this->payloadBelongsToDepartment($request, (int) $schedule->department_id);

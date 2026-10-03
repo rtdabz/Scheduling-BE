@@ -434,9 +434,16 @@ class InstructorAssignmentController extends Controller
             static fn (Schedule $schedule): array => [(string) $schedule->id => (int) $schedule->faculty_id]
         )->all();
 
+        // A course taught in several sections is one assignment per section.
+        $coursesCleared = $targetSchedules
+            ->map(static fn (Schedule $schedule): string => $schedule->section_id.'-'.$schedule->course_id)
+            ->unique()
+            ->count();
+
         $updatedSchedules = DB::transaction(function () use (
             $request,
             $targetSchedules,
+            $coursesCleared,
             $scheduleIds,
             $previousFacultyIds,
             $facultyIds,
@@ -472,7 +479,7 @@ class InstructorAssignmentController extends Controller
                     'previous_faculty_ids' => $previousFacultyIds,
                     'faculty_ids' => $facultyIds->all(),
                     'schedules_updated' => count($scheduleIds),
-                    'courses_cleared' => $targetSchedules->pluck('course_id')->unique()->count(),
+                    'courses_cleared' => $coursesCleared,
                     'offering_department_ids' => $targetSchedules->pluck('department_id')->map('intval')->unique()->values()->all(),
                 ],
                 'created_at' => now(),
@@ -500,8 +507,8 @@ class InstructorAssignmentController extends Controller
             'section_id' => $section?->id,
             'section_ids' => $sectionIds,
             'schedules_updated' => $updatedSchedules->count(),
-            'courses_cleared' => $targetSchedules->pluck('course_id')->unique()->count(),
-            'schedules' => $updatedSchedules,
+            'courses_cleared' => $coursesCleared,
+            'schedules' =>$updatedSchedules,
             'faculties' => $affectedFaculties,
         ]);
     }

@@ -375,7 +375,7 @@ final class ValidateGenerationConfiguration
         ));
         $hasLectureRoom = collect($availableRooms)->contains(static fn (array $room): bool => ($room['room_type'] ?? null) === 'lecture');
         // A room a laboratory meeting may use, per the Default LAB Room Requirement.
-        $labRoomTypes = SchedulingPolicy::labRoomTypes();
+        $labRoomTypes = SchedulingPolicy::labRoomTypes($snapshot->departmentId);
         $hasLaboratoryRoom = collect($availableRooms)->contains(static fn (array $room): bool => in_array($room['room_type'] ?? null, $labRoomTypes, true));
         $hybridSplitIds = array_map('intval', $configuration->hybridSplitCourseIds);
 

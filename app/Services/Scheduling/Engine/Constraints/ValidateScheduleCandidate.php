@@ -123,15 +123,16 @@ final class ValidateScheduleCandidate
         }
 
         $course = $snapshot->coursesById[$courseId] ?? [];
+        $labRoomTypes = SchedulingPolicy::labRoomTypes($snapshot->departmentId);
 
-        return array_map(static function (ScheduleRow $row) use ($courseId, $course): ScheduleRequirement {
+        return array_map(static function (ScheduleRow $row) use ($courseId, $course, $labRoomTypes): ScheduleRequirement {
             $durationSlots = intdiv(
                 SchedulingPolicy::timeToMinutes($row->endTime) - SchedulingPolicy::timeToMinutes($row->startTime),
                 SchedulingPolicy::SLOT_MINUTES,
             );
             $componentType = $row->meetingType ?? 'lecture';
             $roomTypes = $componentType === 'laboratory'
-                ? SchedulingPolicy::labRoomTypes()
+                ? $labRoomTypes
                 : [(string) ($course['room_type_required'] ?? 'lecture')];
 
             return new ScheduleRequirement(

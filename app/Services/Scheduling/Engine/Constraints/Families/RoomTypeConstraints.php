@@ -31,7 +31,7 @@ final class RoomTypeConstraints
             return [];
         }
 
-        $mismatch = RoomTypeRule::mismatch($course, $room, $row->mode, $row->meetingType, null, $snapshot->fieldCourseCodes);
+        $mismatch = RoomTypeRule::mismatch($course, $room, $row->mode, $row->meetingType, $snapshot->departmentId, $snapshot->fieldCourseCodes);
 
         return $mismatch === null ? [] : [ConstraintSupport::violation($mismatch['rule'], $mismatch['message'])];
     }

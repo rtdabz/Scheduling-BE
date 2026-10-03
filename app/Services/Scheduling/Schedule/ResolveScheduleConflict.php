@@ -18,10 +18,9 @@ use Illuminate\Support\Facades\DB;
 /**
  * Turns a chosen fix for a detected conflict into one transactional write.
  *
- * The shape is deliberately the same as CommitSchedulePlan's: take the
- * scheduling scope lock, reload the affected rows inside the transaction,
- * apply the change, revalidate against what is now persisted, and refuse the
- * whole thing if anything hard remains. Nothing here decides what a conflict
+ * It takes the scheduling scope lock, reloads the affected rows inside the
+ * transaction, applies the change, revalidates against what is now persisted,
+ * and refuses the whole thing if anything hard remains. Nothing here decides what a conflict
  * *is* -- RuleEngine judges the changed row against persisted rows and
  * ScheduleConflictScanner re-derives the conflict set -- so there is no second
  * conflict engine to keep in step with the first.

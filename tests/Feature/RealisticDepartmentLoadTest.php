@@ -191,20 +191,6 @@ class RealisticDepartmentLoadTest extends TestCase
             }
         }
 
-        // Optional: widen the start grid for the three-hour NSTP block. Without
-        // overrides generateStartTimes() steps by the whole duration, so a
-        // three-hour class may only begin at 07:00, 10:00, 13:00 or 16:00.
-        if (getenv('NSTP_HOURLY_STARTS')) {
-            foreach (range(7, 17) as $hour) {
-                DB::table('timeslot_override')->insert([
-                    'duration_minutes' => 180,
-                    'start_time' => sprintf('%02d:00:00', $hour),
-                    'is_active' => true,
-                    'created_at' => now(), 'updated_at' => now(),
-                ]);
-            }
-        }
-
         $sections = [];
         $configs = [];
         $sectionTarget = (int) (getenv('REAL_SECTIONS') ?: self::SECTION_COUNT);

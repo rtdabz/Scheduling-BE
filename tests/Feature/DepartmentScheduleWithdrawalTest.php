@@ -477,11 +477,11 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $this->editedDirectly();
         $this->assertSectionStatus($secretary, $firstSection, 'rejected', 'modified');
 
-        // So does a Reset that leaves nothing.
+        // A Reset that leaves nothing is shown as reset, not modified.
         $this->actingAs($secretary)
             ->postJson('/api/schedules/batch', ['operations' => [], 'delete_ids' => [$original->id]])
             ->assertOk();
-        $this->assertSectionStatus($secretary, $firstSection, 'rejected', 'modified');
+        $this->assertSectionStatus($secretary, $firstSection, 'rejected', 'reset');
 
         $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed', 'day' => 'Wednesday']);
         $this->actingAs($secretary)

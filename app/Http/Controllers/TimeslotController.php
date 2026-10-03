@@ -2,10 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Requests\Timeslot\StoreTimeslotOverrideRequest;
-use App\Http\Requests\Timeslot\UpdateTimeslotOverrideRequest;
 use App\Http\Requests\Timeslot\UpdateTimeslotSettingsRequest;
-use App\Models\TimeslotOverride;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\TimeslotService;
 use App\Support\ApiCache;
@@ -29,15 +26,8 @@ class TimeslotController extends Controller
                 'opening_time' => $this->formatTime($settings->opening_time),
                 'closing_time' => $this->formatTime($settings->closing_time),
                 'field_end_time' => $this->formatTime(SchedulingPolicy::fieldDayEndTime()),
-                'lab_room_type' => SchedulingPolicy::labRoomType(),
                 'slot_interval' => (int) $settings->slot_interval,
             ],
-            'overrides' => TimeslotOverride::query()
-                ->orderBy('duration_minutes')
-                ->orderBy('start_time')
-                ->get()
-                ->map(fn (TimeslotOverride $override): array => $this->serializeOverride($override))
-                ->values(),
             'generated_slots' => collect($durations)
                 ->mapWithKeys(fn (int $duration): array => [
                     $duration => $this->timeslotService->generateStartTimes($duration),
@@ -62,7 +52,6 @@ class TimeslotController extends Controller
             ...(isset($validated['field_end_time'])
                 ? ['field_end_time' => $this->toDatabaseTime($validated['field_end_time'])]
                 : []),
-            ...(isset($validated['lab_room_type']) ? ['lab_room_type' => $validated['lab_room_type']] : []),
         ]);
         SchedulingPolicy::clearTimeCache();
         ApiCache::forgetGroup('initial.data');
@@ -73,64 +62,8 @@ class TimeslotController extends Controller
                 'opening_time' => $this->formatTime($settings->opening_time),
                 'closing_time' => $this->formatTime($settings->closing_time),
                 'field_end_time' => $this->formatTime(SchedulingPolicy::fieldDayEndTime()),
-                'lab_room_type' => SchedulingPolicy::labRoomType(),
                 'slot_interval' => (int) $settings->slot_interval,
             ],
-        ]);
-    }
-
-    public function storeOverride(StoreTimeslotOverrideRequest $request): JsonResponse
-    {
-        $validated = $request->validated();
-
-        $override = TimeslotOverride::query()->create([
-            'duration_minutes' => (int) $validated['duration_minutes'],
-            'start_time' => $this->toDatabaseTime($validated['start_time']),
-            'is_active' => (bool) ($validated['is_active'] ?? true),
-        ]);
-        SchedulingPolicy::clearTimeCache();
-        ApiCache::forgetGroup('initial.data');
-
-        return response()->json([
-            'message' => 'Timeslot override created successfully.',
-            'override' => $this->serializeOverride($override),
-        ], 201);
-    }
-
-    public function updateOverride(UpdateTimeslotOverrideRequest $request, int $id): JsonResponse
-    {
-        $validated = $request->validated();
-        $override = TimeslotOverride::query()->findOrFail($id);
-
-        $override->fill(collect($validated)
-            ->mapWithKeys(function (mixed $value, string $key): array {
-                if ($key === 'start_time') {
-                    return [$key => $this->toDatabaseTime($value)];
-                }
-
-                return [$key => $value];
-            })
-            ->all());
-
-        $override->save();
-        SchedulingPolicy::clearTimeCache();
-        ApiCache::forgetGroup('initial.data');
-
-        return response()->json([
-            'message' => 'Timeslot override updated successfully.',
-            'override' => $this->serializeOverride($override),
-        ]);
-    }
-
-    public function destroyOverride(int $id): JsonResponse
-    {
-        $override = TimeslotOverride::query()->findOrFail($id);
-        $override->delete();
-        SchedulingPolicy::clearTimeCache();
-        ApiCache::forgetGroup('initial.data');
-
-        return response()->json([
-            'message' => 'Timeslot override archived successfully.',
         ]);
     }
 
@@ -154,16 +87,6 @@ class TimeslotController extends Controller
     public function getAvailableSlots(int $duration): array
     {
         return $this->timeslotService->generateStartTimes($duration);
-    }
-
-    private function serializeOverride(TimeslotOverride $override): array
-    {
-        return [
-            'id' => $override->id,
-            'duration_minutes' => (int) $override->duration_minutes,
-            'start_time' => $this->formatTime($override->start_time),
-            'is_active' => (bool) $override->is_active,
-        ];
     }
 
     private function toDatabaseTime(string $time): string

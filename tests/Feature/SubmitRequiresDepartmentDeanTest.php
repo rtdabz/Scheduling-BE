@@ -11,6 +11,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -52,6 +53,27 @@ class SubmitRequiresDepartmentDeanTest extends TestCase
 
         $this->assertNotSame(422, $response->status(), 'An assigned Dean must clear the gate.');
         $this->assertNotSame(self::MESSAGE, $response->json('message'));
+    }
+
+    /** There is no Done step: a section still being plotted goes straight to the Dean. */
+    #[DataProvider('plottingStatuses')]
+    public function test_a_plotting_section_submits_without_being_marked_done(string $status): void
+    {
+        $context = $this->scaffold();
+        $this->dean($context['department']);
+        Schedule::query()->update(['status' => $status]);
+
+        $this->actingAs($context['secretary'])
+            ->postJson("/api/departments/{$context['department']->id}/submit-schedules")
+            ->assertOk();
+
+        $this->assertSame('submitted', Schedule::query()->sole()->status);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function plottingStatuses(): array
+    {
+        return ['draft' => ['draft'], 'revision' => ['revision']];
     }
 
     public function test_the_submission_keeps_what_was_sent_after_its_meetings_are_deleted(): void

@@ -60,7 +60,7 @@ class RoleCapabilityDefaultsTest extends TestCase
         $this->assertNotContains('schedule.approve_vpaa', $defaults['secretary']);
         $this->assertContains('room.review_requests', $defaults['secretary']);
         $this->assertNotContains('room.review_requests', $defaults['vpaa']);
-        $this->assertContains('room.view_all_requests', $defaults['vpaa']);
+        $this->assertNotContains('room.request', $defaults['vpaa']);
         $this->assertNotContains('faculty.manage_designations', $defaults['secretary']);
     }
 

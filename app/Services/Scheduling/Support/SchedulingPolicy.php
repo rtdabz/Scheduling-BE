@@ -27,10 +27,11 @@ final class SchedulingPolicy
 
     private static ?string $cachedFieldDayEndTime = null;
 
-    /** The room a laboratory meeting may use (institution_settings.lab_room_type). */
+    /** The room a laboratory meeting may use (departments.lab_room_type). */
     public const LAB_ROOM_TYPES = ['laboratory', 'lecture', 'either'];
 
-    private static ?string $cachedLabRoomType = null;
+    /** @var array<int, string> */
+    private static array $cachedLabRoomTypeByDepartment = [];
 
     /** @var array<int, list<int>> */
     private static array $cachedStartSlotsByDuration = [];
@@ -1045,30 +1046,34 @@ final class SchedulingPolicy
         self::$cachedOpeningTime = null;
         self::$cachedClosingTime = null;
         self::$cachedFieldDayEndTime = null;
-        self::$cachedLabRoomType = null;
         self::$cachedStartSlotsByDuration = [];
     }
 
     /**
-     * The institution-wide Default LAB Room Requirement: 'laboratory',
-     * 'lecture' (a regular classroom) or 'either'. It applies to every
-     * course's laboratory meetings, in generation and in every save check.
+     * A department's Default LAB Room Requirement (Generate Schedule Step 2 →
+     * Default Settings): 'laboratory', 'lecture' (a regular classroom) or
+     * 'either'. It applies to every course's laboratory meetings in that
+     * department's schedules, in generation and in every save check. With no
+     * department in scope the original rule, laboratory, stands.
      */
-    public static function labRoomType(): string
+    public static function labRoomType(?int $departmentId): string
     {
-        if (self::$cachedLabRoomType === null) {
-            try {
-                $value = (string) (app(TimeslotService::class)->settings()->lab_room_type ?? 'laboratory');
-            } catch (QueryException) {
-                // No settings table yet (a fresh database, or a test without
-                // one): the built-in rule, uncached so the stored one is read
-                // once it exists.
-                return 'laboratory';
-            }
-            self::$cachedLabRoomType = in_array($value, self::LAB_ROOM_TYPES, true) ? $value : 'laboratory';
+        if ($departmentId === null) {
+            return 'laboratory';
         }
 
-        return self::$cachedLabRoomType;
+        if (! isset(self::$cachedLabRoomTypeByDepartment[$departmentId])) {
+            try {
+                $value = (string) (Departments::query()->whereKey($departmentId)->value('lab_room_type') ?? 'laboratory');
+            } catch (QueryException) {
+                // No departments table (a test without a database): the
+                // original rule, uncached so the stored one is read later.
+                return 'laboratory';
+            }
+            self::$cachedLabRoomTypeByDepartment[$departmentId] = in_array($value, self::LAB_ROOM_TYPES, true) ? $value : 'laboratory';
+        }
+
+        return self::$cachedLabRoomTypeByDepartment[$departmentId];
     }
 
     /**
@@ -1076,9 +1081,9 @@ final class SchedulingPolicy
      *
      * @return list<string>
      */
-    public static function labRoomTypes(): array
+    public static function labRoomTypes(?int $departmentId): array
     {
-        return match (self::labRoomType()) {
+        return match (self::labRoomType($departmentId)) {
             'lecture' => ['lecture'],
             'either' => ['laboratory', 'lecture'],
             default => ['laboratory'],
@@ -1089,9 +1094,9 @@ final class SchedulingPolicy
      * A laboratory meeting in a classroom when a laboratory is preferred
      * ('either'): allowed, but ranked after a free laboratory.
      */
-    public static function isLabClassroomFallback(string $roomType): bool
+    public static function isLabClassroomFallback(string $roomType, ?int $departmentId): bool
     {
-        return $roomType === 'lecture' && self::labRoomType() === 'either';
+        return $roomType === 'lecture' && self::labRoomType($departmentId) === 'either';
     }
 
     public static function totalSlots(): int
@@ -2063,6 +2068,7 @@ final class SchedulingPolicy
     public static function clearFieldCourseCache(): void
     {
         self::$cachedFieldCourseCodeMap = [];
+        self::$cachedLabRoomTypeByDepartment = [];
     }
 
     private static function courseRulesTableExists(): bool

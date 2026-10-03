@@ -508,8 +508,6 @@ class InitialDataController extends Controller
                 'slot_minutes' => SchedulingPolicy::SLOT_MINUTES,
                 'slot_count' => SchedulingPolicy::totalSlots(),
             ],
-            // Default LAB Room Requirement: the rooms a laboratory meeting may use.
-            'lab_room_type' => SchedulingPolicy::labRoomType(),
             'rooms' => $rooms,
             'courses' => $courses,
             // Department-wide schedulers may use the external-instructor tab. A

@@ -220,10 +220,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     // Room requests: a department borrowing another department's vacant room
-    // for weekly windows of a semester. Both lists are gated by capability, never
-    // role, so the role defaults in config/capabilities.php decide who may ask,
-    // who may decide (the owning department) and who only watches (the VPAA).
-    Route::middleware('capability:room.request,room.review_requests,room.view_all_requests')->group(function () {
+    // for weekly windows of a semester. Gated by capability, never role, so the
+    // role defaults in config/capabilities.php decide who may ask and who may
+    // decide (the owning department).
+    Route::middleware('capability:room.request,room.review_requests')->group(function () {
         Route::get('room-requests', [RoomRequestController::class, 'index']);
         Route::get('room-requests/rooms/{room}/occupancy', [RoomRequestController::class, 'occupancy'])->whereNumber('room');
     });
@@ -271,11 +271,6 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
     Route::middleware('role:vpaa')->group(function () {
         Route::patch('timeslots/settings', [TimeslotController::class, 'updateSettings']);
-        Route::post('timeslots/overrides', [TimeslotController::class, 'storeOverride']);
-        Route::match(['put', 'patch'], 'timeslots/overrides/{id}', [TimeslotController::class, 'updateOverride'])
-            ->whereNumber('id');
-        Route::delete('timeslots/overrides/{id}', [TimeslotController::class, 'destroyOverride'])
-            ->whereNumber('id');
     });
 
     // Maintaining the designation list is its own capability rather than a role
@@ -329,7 +324,6 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     Route::middleware('capability:schedule.generate')->group(function () {
-        Route::post('schedule-recommendations/preview', [ScheduleRecommendationController::class, 'preview']);
         Route::post('schedule-recommendations/available-slots', [ScheduleRecommendationController::class, 'availableSlots']);
         Route::post('schedule-recommendations/draft-review', [ScheduleRecommendationController::class, 'reviewDraft'])->middleware('throttle:30,1');
         Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview'])->middleware('throttle:5,1');
@@ -337,9 +331,6 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('schedule-recommendations/active-generation-run', [ScheduleRecommendationController::class, 'activeGenerationRun']);
         Route::get('schedule-recommendations/generation-runs/{runId}', [ScheduleRecommendationController::class, 'generationRun']);
         Route::post('schedule-recommendations/generation-runs/{runId}/cancel', [ScheduleRecommendationController::class, 'cancelGenerationRun']);
-        Route::post('schedule-recommendations/select', [ScheduleRecommendationController::class, 'select']);
-        Route::post('schedule-recommendations/{scheduleRecommendation}/accept', [ScheduleRecommendationController::class, 'accept']);
-        Route::post('schedule-recommendations/{scheduleRecommendation}/reject', [ScheduleRecommendationController::class, 'reject']);
         Route::get('scheduling-settings', [SchedulingSettingsController::class, 'show']);
         Route::patch('scheduling-settings', [SchedulingSettingsController::class, 'update']);
     });

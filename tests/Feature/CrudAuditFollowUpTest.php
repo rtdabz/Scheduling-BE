@@ -5,7 +5,6 @@ namespace Tests\Feature;
 use App\Models\Departments;
 use App\Models\Designation;
 use App\Models\Semester;
-use App\Models\TimeslotOverride;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -71,19 +70,6 @@ class CrudAuditFollowUpTest extends TestCase
             ->postJson("/api/archives/designations/{$child->id}/restore")
             ->assertStatus(422)
             ->assertJsonPath('message', 'A designation with this name already exists here. Rename it first.');
-    }
-
-    public function test_a_restored_timeslot_override_is_live_again(): void
-    {
-        $vpaa = User::factory()->create(['role' => 'vpaa']);
-        $override = TimeslotOverride::query()->create(['duration_minutes' => 90, 'start_time' => '08:00:00', 'is_active' => true]);
-        $override->delete();
-
-        $this->actingAs($vpaa, 'sanctum')
-            ->postJson("/api/archives/timeslot-overrides/{$override->id}/restore")
-            ->assertOk();
-
-        $this->assertNotNull(TimeslotOverride::find($override->id));
     }
 
     public function test_a_taken_name_that_is_archived_says_so(): void

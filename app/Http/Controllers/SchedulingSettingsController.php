@@ -46,6 +46,8 @@ class SchedulingSettingsController extends Controller
             'gec_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'major_lecture_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'sunday_classes_enabled' => 'sometimes|required|boolean',
+            // Default LAB Room Requirement: where every course's laboratory meetings may meet.
+            'lab_room_type' => 'sometimes|required|string|in:'.implode(',', SchedulingPolicy::LAB_ROOM_TYPES),
             'forced_day_rules' => 'sometimes|array',
             'forced_day_rules.*.course_id' => 'required|integer|exists:courses,id',
             'forced_day_rules.*.day' => SchedulingPolicy::allowedDaysRule('required'),
@@ -191,10 +193,14 @@ class SchedulingSettingsController extends Controller
             }
             $department->major_lecture_split_schedule_override_enabled = (bool) $validated['major_lecture_split_schedule_override_enabled'];
         }
+        if (array_key_exists('lab_room_type', $validated)) {
+            $department->lab_room_type = (string) $validated['lab_room_type'];
+        }
         // Turning Sunday off leaves classes already on Sunday in place; the
         // sunday_classes rule only refuses new Sunday placements.
         $department->sunday_classes_enabled = $sundayClassesEnabled;
         $department->save();
+        SchedulingPolicy::clearFieldCourseCache();
 
         if (array_key_exists('forced_day_rules', $validated)) {
             $this->syncForcedDayRules($department, $validated['forced_day_rules'], $section);
@@ -258,6 +264,7 @@ class SchedulingSettingsController extends Controller
             'lecture_lab_available' => $lectureLabAvailable,
             'major_lecture_split_available' => $this->hasMajorLectureOnlyCourses($department),
             'sunday_classes_enabled' => (bool) $department->sunday_classes_enabled,
+            'lab_room_type' => SchedulingPolicy::labRoomType((int) $department->id),
             'can_manage_sunday_classes' => $canManageSundayClasses,
             'sunday_class_count' => $this->sundayClassCount($department),
             'generation_period' => $section ? [

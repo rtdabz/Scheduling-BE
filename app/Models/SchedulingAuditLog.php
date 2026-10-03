@@ -28,11 +28,6 @@ class SchedulingAuditLog extends Model
         'created_at' => 'datetime',
     ];
 
-    public function recommendation()
-    {
-        return $this->belongsTo(ScheduleRecommendation::class, 'schedule_recommendation_id');
-    }
-
     public function historyVersion()
     {
         return $this->belongsTo(ScheduleHistoryVersion::class, 'history_version_id');

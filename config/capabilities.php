@@ -105,6 +105,8 @@ return [
             'requires' => ['schedule.view'],
             'module' => 'room_requests',
             'requires_program' => true,
+            // Room borrowing is between departments; the VPAA takes no part.
+            'allowed_roles' => ['secretary', 'program_head'],
             'title' => 'Request Rooms',
             'description' => "Ask another department to lend one of its vacant rooms during specific weekly windows.",
         ],
@@ -116,14 +118,6 @@ return [
             // The department that owns the room decides whether to lend it; the
             // controller also checks the room belongs to the reviewer's department.
             'allowed_roles' => ['secretary'],
-        ],
-        'room.view_all_requests' => [
-            'requires' => ['schedule.view'],
-            'module' => 'room_requests',
-            'title' => 'Monitor Room Borrowing',
-            'description' => 'See every room request between departments without deciding on them.',
-            // The VPAA is kept informed of borrowing but no longer approves it.
-            'allowed_roles' => ['vpaa'],
         ],
         'room.assign_program' => [
             'requires' => ['schedule.view'],
@@ -205,7 +199,6 @@ return [
             'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
             'schedule.approve_dean', 'schedule.approve_vpaa',
             'faculty.manage_designations',
-            'room.request', 'room.view_all_requests',
         ],
         'dean' => ['schedule.view', 'schedule.approve_dean'],
         'secretary' => [
