@@ -25,9 +25,6 @@ abstract class CourseRequest extends FormRequest
     }
 
     /**
-     * A major's program decides which instructors may teach it, so the program has
-     * to belong to the department that offers the course.
-     *
      * @return array<int, mixed>
      */
     protected function programRule(mixed $departmentId): array

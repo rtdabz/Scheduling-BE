@@ -62,10 +62,6 @@ final class ValidateScheduleCandidate
             if ($row->splitGroupId !== null) {
                 $rowsByGroup[$row->splitGroupId][] = $row;
             } elseif ($row->isHybrid) {
-                // Hybrid lecture/laboratory rows must remain one meeting
-                // group even if older/manual payloads omitted split_group_id.
-                // This prevents same-day components from bypassing group
-                // validation at the persistence boundary.
                 $rowsByGroup['hybrid:'.$row->courseId][] = $row;
             }
         }

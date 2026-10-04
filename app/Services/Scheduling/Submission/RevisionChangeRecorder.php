@@ -10,15 +10,6 @@ use App\Models\Sections;
 use App\Services\ScheduleHistoryRecorder;
 use Illuminate\Support\Collection;
 
-/**
- * Records what happens to a recalled or rejected version's working copy.
- *
- * The submitted version itself is frozen in its submit snapshot. This keeps the
- * steps from it to the next version -- meetings added, removed or changed, a
- * section deleted, a course's details edited -- as history versions linked to
- * that submission, each with the state before and after and the names the ids
- * resolved to at the time, so none of it depends on rows that may since be gone.
- */
 class RevisionChangeRecorder
 {
     public const SOURCE = 'revision_working_copy';
@@ -27,10 +18,8 @@ class RevisionChangeRecorder
     public const SECTION_DELETED = 'revision_section_deleted';
     public const COURSE_CHANGED = 'revision_course_changed';
 
-    /** A meeting's content; status, instructor flags and timestamps are not a revision. */
     private const CONTENT_FIELDS = ['section_id', 'course_id', 'faculty_id', 'room_id', 'day', 'start_time', 'end_time', 'mode', 'is_hybrid'];
 
-    /** The course details a section's timetable depends on. */
     private const COURSE_FIELDS = ['course_code', 'course_name', 'course_category', 'units', 'lecture_hours', 'lab_hours', 'room_type_required'];
 
     public function __construct(
@@ -40,9 +29,6 @@ class RevisionChangeRecorder
     ) {}
 
     /**
-     * Meetings added, removed or changed in one operation. Only rows of sections
-     * under revision are kept; anything else is ordinary drafting.
-     *
      * @param  iterable<Schedule|array>  $before  The rows as they were, before the write.
      * @param  iterable<Schedule|array>  $after  The rows as they are now; a removed row is absent.
      */
@@ -95,18 +81,11 @@ class RevisionChangeRecorder
                 'removed_schedule_ids' => $changes['removed'],
                 'updated_schedule_ids' => $changes['updated'],
             ],
-            // Names from before the write for removed and changed rows, from
-            // after it for added ones.
             $this->descriptors->for($afterRows),
             $this->descriptors->for($beforeRows),
         );
     }
 
-    /**
-     * A section about to be deleted. Its meetings and its links to the
-     * submissions that sent it go with it, so it is recorded first whenever it
-     * was ever submitted -- not only while under revision.
-     */
     public function recordSectionDeleted(Sections $section, ?int $actorUserId): void
     {
         $submissions = ScheduleSubmission::query()
@@ -147,10 +126,6 @@ class RevisionChangeRecorder
     }
 
     /**
-     * A course's details edited while sections under revision schedule it. The
-     * submitted versions keep the details they were sent with; this records the
-     * change against each version being revised.
-     *
      * @param  array<string, mixed>  $originalAttributes  The course as it was before the edit.
      */
     public function recordCourseChanged(array $originalAttributes, Course $course, ?int $actorUserId): void

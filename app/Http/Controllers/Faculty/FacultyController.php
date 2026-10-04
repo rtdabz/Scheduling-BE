@@ -19,34 +19,12 @@ use Illuminate\Validation\Rule;
 
 class FacultyController extends Controller
 {
-    /**
-     * The teaching load allowances. The VPAA owns the roster; the secretary owns
-     * these three numbers, so a secretary update is narrowed to exactly this set
-     * and may not reach an instructor's identity, department or program. Pro
-     * bono is not among them: it is whatever passes Basic Load and Overload,
-     * not an allowance anyone grants.
-     */
     private const LOAD_FIELDS = ['max_units', 'deload_units', 'overload_units'];
 
-    /**
-     * The allowances the Secretary alone maintains. The two units the roster
-     * editor enters — the contract ceiling (`max_units`) and the overload
-     * granted on top of it — are set with the rest of the roster record, since
-     * the Add Instructor form asks for one of them by load type. Deload remains
-     * the Secretary's to grant.
-     */
     private const SECRETARY_ONLY_LOAD_FIELDS = ['deload_units'];
 
-    /** Fallback ceiling when the roster editor submits no load. */
     private const DEFAULT_MAX_UNITS = 21;
 
-    /**
-     * The designations an instructor holds, and the older
-     * single-designation field. Not load fields and not part of their identity,
-     * so they are permitted alongside either set -- but only for a caller
-     * holding `faculty.manage_designations`, and the deload they imply is always
-     * read from the designation records rather than the request.
-     */
     private const DESIGNATION_FIELDS = ['designation_ids', 'designation_id'];
 
     private const NAME_SUFFIXES = Faculty::NAME_SUFFIXES;
@@ -87,10 +65,6 @@ class FacultyController extends Controller
             'middle_name' => 'nullable|string|max:255',
             'suffix' => ['nullable', Rule::in(self::NAME_SUFFIXES)],
             'employment_type' => 'required|in:full-time,part-time',
-            // The units come from the roster editor, so a part-time instructor
-            // is not created carrying a full-time load. Which of the two the
-            // form fills depends on the load type it was given. Deload is
-            // maintained by the Secretary.
             'max_units' => 'sometimes|integer|min:0',
             'overload_units' => 'nullable|integer|min:0',
             'deload_units' => 'nullable|integer|min:0',
@@ -117,15 +91,8 @@ class FacultyController extends Controller
             maxUnits: (int) ($validator->validated()['max_units'] ?? self::DEFAULT_MAX_UNITS),
         );
 
-        // Only the validated keys are assigned. `user_id` and
-        // `administrative_role` are fillable but belong to the user-account link,
-        // so passing the raw request through let a caller forge an
-        // administrative badge or claim another user's profile.
         $payload = $validator->validated();
         unset($payload['deload_units']);
-        // `overload_units` is nullable in the request but NOT NULL in the
-        // table, so an explicit null has to fall through to the default below
-        // rather than be inserted.
         if (($payload['overload_units'] ?? null) === null) {
             unset($payload['overload_units']);
         }
@@ -139,9 +106,6 @@ class FacultyController extends Controller
             $payload['department_id'] = $departmentId;
         }
 
-        // The deload the designations carry is copied onto the instructor rather
-        // than joined at read time, because SchedulingPolicy::facultyBasicLoad()
-        // -- and the snapshot the generator runs against -- read one column.
         $faculty = DB::transaction(function () use ($payload, $designationIds): Faculty {
             $faculty = Faculty::create($payload);
             if ($designationIds !== []) {
@@ -164,12 +128,6 @@ class FacultyController extends Controller
         return response()->json($this->present($faculty));
     }
 
-    /**
-     * Every semester the instructor has taught, newest first, with the courses
-     * and sections they carried. Counted the way the live load is: only
-     * approved assignments, and a class met across several meetings counts
-     * its units once.
-     */
     public function teachingHistory(Request $request, Faculty $faculty)
     {
         if ($response = $this->guardDepartment($request, $faculty)) {
@@ -239,10 +197,6 @@ class FacultyController extends Controller
         $loadOnly = $this->isLoadOnlyEditor($request);
         $submitsDesignation = $this->designations->submitted($request);
 
-        // Assigning a designation moves the instructor's deload, so it is gated
-        // on the capability that owns the designation list rather than on the
-        // roster-editing role. A VPAA holds it by default; anyone else has to
-        // have been granted it.
         if ($submitsDesignation && ! ($request->user()?->hasCapability('faculty.manage_designations') ?? false)) {
             return response()->json([
                 'message' => 'You are not permitted to change an instructor designation.',
@@ -321,10 +275,6 @@ class FacultyController extends Controller
             $this->designations->validate($designationIds, $faculty, (int) ($payload['max_units'] ?? $faculty->max_units));
         }
 
-        // Designations win over a hand-typed deload in the same request: the
-        // designation records are the source of the figure, and the request is
-        // never trusted for it. Clearing them releases the deload back to zero,
-        // which is what "no longer a chairperson" means.
         DB::transaction(function () use ($faculty, $payload, $submitsDesignation, $designationIds): void {
             $faculty->update($payload);
             if ($submitsDesignation) {
@@ -342,15 +292,12 @@ class FacultyController extends Controller
             return $response;
         }
 
-        // An archived account no longer holds the profile; only a live one does.
         if ($faculty->user()->exists()) {
             return response()->json([
                 'message' => 'Archive the linked user account first before archiving this faculty profile.',
             ], 409);
         }
 
-        // Soft deletion hides the relationship from normal reads while retaining
-        // the foreign key so restoration reconnects the assignments.
         $released = $this->liveScheduleIds($faculty);
 
         DB::transaction(fn () => $faculty->delete());
@@ -409,28 +356,12 @@ class FacultyController extends Controller
         return null;
     }
 
-    /**
-     * The VPAA owns the roster -- it is the only account that may create or
-     * archive an instructor -- so it is the only full roster editor. Every
-     * other account that reaches a write route maintains the load allowances
-     * alone and may not reach an instructor's identity, department or program.
-     *
-     * This used to name the secretary, which was equivalent only while the
-     * route was gated on 'role:vpaa,secretary'. Now that the gate is the
-     * assignment capability, naming the one privileged role is what keeps a
-     * newly granted Program Head or Dean from silently becoming a roster
-     * editor.
-     */
     private function isLoadOnlyEditor(Request $request): bool
     {
         return ! ($request->user()?->isVpaa() ?? false);
     }
 
     /**
-     * An instructor's program is what makes them eligible for a major subject
-     * tied to that program, so it has to be a program of their own department —
-     * a program from elsewhere would describe a major they cannot teach anyway.
-     *
      * @return array<int, mixed>
      */
     private function programRule(mixed $departmentId): array
@@ -468,11 +399,6 @@ class FacultyController extends Controller
     }
 
     /**
-     * One instructor per full name in a department. The same first, middle and
-     * last name and suffix, ignoring case and spacing, is the same person, so a
-     * second record would split their load and schedules. Archived instructors
-     * count too: they are restored, not recreated.
-     *
      * @param  array<string, mixed>  $name
      */
     private function duplicateNameResponse(array $name, int $departmentId, ?int $ignoreId = null): ?JsonResponse

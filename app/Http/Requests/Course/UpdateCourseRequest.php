@@ -12,8 +12,6 @@ class UpdateCourseRequest extends CourseRequest
 {
     public function authorize(ScheduleAuthorizationService $authorization): Response
     {
-        // A department user edits only their own department's courses, and may
-        // not move one into another department.
         return $authorization->payloadBelongsToDepartment($this, (int) $this->course()->department_id)
             && ! $authorization->rejectsRequestedDepartment($this, $this->input('department_id'))
             ? Response::allow()

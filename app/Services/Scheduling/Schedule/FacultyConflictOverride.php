@@ -5,25 +5,10 @@ namespace App\Services\Scheduling\Schedule;
 use App\Models\Schedule;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * Lets an instructor be assigned over a conflict on purpose.
- *
- * Only the instructor's own clashes can be overridden: being double-booked at
- * that time, or teaching outside a part-timer's availability. Everything else
- * the rule engine reports (inactive instructor, department or program
- * alignment, room and section conflicts) stays a refusal.
- *
- * An override is recorded on the meetings themselves -- the ones assigned and
- * the ones they clash with -- so later saves of either do not raise the same
- * conflict again. It only stands while the meeting keeps the instructor, day
- * and time it was approved with: moving or reassigning it clears the flag (see
- * Schedule::booted), and a meeting that changes is checked afresh.
- */
 final class FacultyConflictOverride
 {
     public const RULES = ['faculty_conflict', 'part_time_faculty_availability'];
 
-    /** Request flag asking an assignment endpoint to override instructor conflicts. */
     public const REQUEST_FLAG = 'override_conflicts';
 
     /** @param  array<string, mixed>  $violation */
@@ -33,8 +18,6 @@ final class FacultyConflictOverride
     }
 
     /**
-     * True when there is something to override and nothing that cannot be.
-     *
      * @param  list<array<string, mixed>>  $violations
      */
     public static function onlyOverridable(array $violations): bool
@@ -53,9 +36,6 @@ final class FacultyConflictOverride
     }
 
     /**
-     * The refusal payload, with each violation marked and a top-level flag the
-     * client reads to offer "Assign anyway".
-     *
      * @param  list<array<string, mixed>>  $violations
      * @return array<string, mixed>
      */
@@ -72,9 +52,6 @@ final class FacultyConflictOverride
     }
 
     /**
-     * Meetings the assigned instructor clashes with, so they carry the override
-     * too and their own later saves stand.
-     *
      * @param  list<array<string, mixed>>  $violations
      * @return list<int>
      */
@@ -82,8 +59,6 @@ final class FacultyConflictOverride
     {
         $ids = [];
         foreach ($violations as $violation) {
-            // Section and room conflicts also name their clashes; they are never
-            // overridden, so their meetings must not be flagged.
             if (! self::isOverridable($violation)) {
                 continue;
             }
@@ -100,9 +75,6 @@ final class FacultyConflictOverride
     }
 
     /**
-     * Written with the query builder, after any model update in the same
-     * transaction, so the model's clearing hook cannot undo it.
-     *
      * @param  list<int>  $scheduleIds
      */
     public static function flag(array $scheduleIds): void
@@ -116,9 +88,6 @@ final class FacultyConflictOverride
     }
 
     /**
-     * Whether a persisted override still covers this attempt: the stored meeting
-     * is flagged and the attempt keeps its instructor, day and time.
-     *
      * @param  array<string, mixed>  $attempt
      */
     public static function standsFor(array $attempt): bool
@@ -142,9 +111,6 @@ final class FacultyConflictOverride
     }
 
     /**
-     * The persisted meetings, among these candidate rows, whose override still
-     * stands -- one query for a whole batch rather than one per row.
-     *
      * @param  iterable<array<string, mixed>>  $rows
      * @return array<int, true>
      */
@@ -182,12 +148,6 @@ final class FacultyConflictOverride
     }
 
     /**
-     * Drops the instructor conflicts a standing override already covers.
-     *
-     * A double-booking is covered only when every meeting it clashes with was
-     * overridden too. Otherwise a clash with a meeting placed later, which
-     * nobody approved, would be hidden on the next save of this one.
-     *
      * @param  array<string, mixed>  $attempt
      * @param  list<array<string, mixed>>  $violations
      * @return list<array<string, mixed>>

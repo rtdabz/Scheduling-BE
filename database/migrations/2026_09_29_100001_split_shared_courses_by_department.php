@@ -4,17 +4,6 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-/**
- * Courses are department-owned: GEC 1 in IT and GEC 1 in BA are two records.
- *
- * Until now a minor could be a "shared" course with no department, one row
- * every department's curriculum pointed at, so an edit from one department
- * (or re-adding the code in another) changed it for all of them. Each shared
- * course is split here into one copy per department that uses it — through a
- * curriculum, a scheduled class or a course rule — and those references move
- * to the department's own copy. The first department keeps the original row,
- * so its ids do not change. A shared course no department uses is archived.
- */
 return new class extends Migration
 {
     public function up(): void
@@ -45,7 +34,6 @@ return new class extends Migration
             }
         });
 
-        // Shared codes no longer exist, so their uniqueness guard goes too.
         if (DB::getDriverName() === 'mysql' && Schema::hasColumn('courses', 'shared_course_code')) {
             DB::statement('ALTER TABLE `courses` DROP INDEX `courses_shared_code_unique`');
             DB::statement('ALTER TABLE `courses` DROP COLUMN `shared_course_code`');
@@ -54,8 +42,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        // The split is not reversed: merging department copies back together
-        // would again let one department's edits change another's courses.
     }
 
     /** @return list<int> Departments referencing the course, lowest id first. */
@@ -81,7 +67,6 @@ return new class extends Migration
             ->map(fn ($id) => (int) $id)->unique()->sort()->values()->all();
     }
 
-    /** The first department takes the shared row itself, unless it already has the code. */
     private function claim(object $course, int $departmentId): int
     {
         $existing = $this->departmentCourseId($course->course_code, $departmentId);
@@ -122,12 +107,10 @@ return new class extends Migration
         return $id === null ? null : (int) $id;
     }
 
-    /** Moves one department's references from the shared course to its own copy. */
     private function repoint(int $fromId, int $toId, int $departmentId): void
     {
         $curriculumIds = DB::table('curriculum')->where('department_id', $departmentId)->pluck('id');
 
-        // A curriculum already holding the department's copy keeps that link.
         $alreadyLinked = DB::table('curriculum_course')
             ->whereIn('curriculum_id', $curriculumIds)
             ->where('course_id', $toId)

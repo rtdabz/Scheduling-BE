@@ -19,44 +19,10 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
-/**
- * Manages which college teaches a course, when that is not the college that owns it.
- *
- * Information Technology owns GEC 101; the College of Arts and Sciences teaches it.
- * A secretary or program head records that here, and the rule engine then holds
- * instructor assignment for GEC 101 to active CAS instructors — see
- * SchedulingPolicy::assignedTeachingDepartmentId and the
- * `service_subject_faculty_department_alignment` rule.
- *
- * The override is deliberately not scoped to the acting user's own department: any
- * secretary may decide who teaches a delegable course, whichever college owns it.
- * What is refused is delegating a **major**, which belongs to the department and
- * program that offers it.
- *
- * The *listing*, however, is department-specific, and its source is the department's
- * own curriculum. Like the Auto-Assign Instructor wizard it answers "what does my
- * curriculum offer", by year level, rather than listing every course in the
- * institution: a global list made the user hunt through other colleges' majors to
- * find their own minors. A course this college merely *teaches* for someone else is
- * not part of that answer — it belongs to the owner's curriculum, and it is reported
- * separately as an incoming cross-department course.
- *
- * It is also scoped to the active semester's period (1st, 2nd or summer), for the same reason
- * InitialDataController is: delegation is decided one semester at a time, and a list
- * carrying all three made the year-level tabs claim work that is not this semester's.
- */
 class CourseTeachingAssignmentController extends Controller
 {
     public function __construct(private readonly SystemNotificationService $notifications) {}
 
-    /**
-     * The courses of the acting department's curriculum, organised by year level,
-     * with the override each currently carries.
-     *
-     * Majors are returned too, flagged `delegable: false`, so the management UI can
-     * list them disabled with the reason rather than hiding them and leaving the
-     * user wondering where the course went.
-     */
     public function index(Request $request): JsonResponse
     {
         $departmentId = (int) ($request->user()?->department_id ?? 0);
@@ -76,9 +42,6 @@ class CourseTeachingAssignmentController extends Controller
         $instructorClasses = $this->classesWithInstructor($courses->pluck('id')->map('intval')->all());
         $incoming = Course::query()->with(['department', 'teachingDepartment', 'teachingProgram', 'teachingSourceProgram', 'program'])
             ->where('status', 'active')->delegatedTo($departmentId, $programId)
-            // An incoming course sits in the *owner's* curriculum, so its semester
-            // has to be read from wherever it is placed rather than from this
-            // department's curriculum, which does not carry it.
             ->when($activePeriod !== null, fn ($query) => $query->whereIn(
                 'courses.id',
                 $this->coursesPlacedInSemester($activePeriod),
@@ -87,13 +50,7 @@ class CourseTeachingAssignmentController extends Controller
 
         return response()->json([
             'current_department_id' => $departmentId,
-            // An empty list means two different things — "your curriculum has no
-            // minors left to delegate" and "you have not published a curriculum" —
-            // and the page has to say which.
             'has_active_curriculum' => $curriculumIds->isNotEmpty(),
-            // A third way to be empty: the curriculum is published but places
-            // nothing this semester. The page has to name the semester it is showing,
-            // or a narrowed list reads as a broken curriculum.
             'active_semester' => $activeSemester === null ? null : [
                 'id' => (int) $activeSemester->id,
                 'academic_year' => $activeSemester->academic_year,
@@ -102,9 +59,6 @@ class CourseTeachingAssignmentController extends Controller
             'departments' => Departments::query()
                 ->orderBy('department_name')
                 ->get(['id', 'department_code', 'department_name', 'logo']),
-            // Programs are assignment targets in every college, the acting user's own
-            // included: a major can only move to a sibling program of its college.
-            // The UI narrows this list to whichever department is currently selected.
             'programs' => Program::query()
                 ->orderBy('department_id')
                 ->orderBy('code')
@@ -118,13 +72,6 @@ class CourseTeachingAssignmentController extends Controller
     }
 
     /**
-     * The curricula this department is currently running.
-     *
-     * Genuinely a set: a department mid-transition teaches its incoming cohort
-     * from the new curriculum while the upper years finish on the old one, so
-     * several are active at once. What any individual cohort follows is recorded
-     * on the section, not inferred from this list.
-     *
      * @return Collection<int, int|string>
      */
     private function activeCurriculumIds(int $departmentId, ?int $programId = null): Collection
@@ -138,11 +85,6 @@ class CourseTeachingAssignmentController extends Controller
             ->pluck('id');
     }
 
-    /**
-     * The semester currently being scheduled, from the same cache entry
-     * InitialDataController reads, so the two pages cannot disagree about which
-     * semester is live.
-     */
     private function activeSemester(): ?Semester
     {
         return Cache::remember(
@@ -152,12 +94,6 @@ class CourseTeachingAssignmentController extends Controller
         );
     }
 
-    /**
-     * `semesters.semester` is the enum '1st'|'2nd'|'summer'; `curriculum_course.semester`
-     * is an unsigned tinyint 1|2|3. Every comparison between the two has to cross
-     * this gap, and a null means "do not narrow" — with no active semester the page
-     * shows the whole curriculum rather than nothing at all.
-     */
     private static function pivotSemester(?string $semesterPeriod): ?int
     {
         return match ($semesterPeriod) {
@@ -169,12 +105,6 @@ class CourseTeachingAssignmentController extends Controller
     }
 
     /**
-     * Every course any active curriculum places in the given semester.
-     *
-     * Used only for the incoming cross-department list, whose courses belong to
-     * other colleges' curricula; the department's own list narrows against its own
-     * curriculum instead, in departmentCourses().
-     *
      * @return Collection<int, int>
      */
     private function coursesPlacedInSemester(int $semester): Collection
@@ -189,33 +119,6 @@ class CourseTeachingAssignmentController extends Controller
     }
 
     /**
-     * What this department's curriculum offers, year level included.
-     *
-     * The department's active curriculum is the only source — the same one the
-     * scheduler and Auto-Assign read — so a course appears here if and only if that
-     * curriculum places it, at the year level it places it at rather than the level
-     * stored on the course record. A shared minor sits in a different year for every
-     * college, so the stored level is the wrong answer for all but one of them.
-     *
-     * Two things make the list:
-     *  - courses of the active curriculum that this department owns,
-     *  - shared minors of that curriculum, which no college owns — GEC and GEE
-     *    subjects, and precisely the ones this page exists to delegate.
-     *
-     * Courses another college delegated *to* this one are deliberately absent: they
-     * belong to someone else's curriculum, and they have their own list in
-     * `incoming_cross_department_courses`. Mixing them in would both contradict the
-     * year-level grid, which is this curriculum's, and list them twice.
-     *
-     * With no active curriculum there is nothing to offer and nothing to place, so
-     * the list is empty — the same answer InitialDataController gives. The page says
-     * so rather than falling back to ownership, which for a college that owns no
-     * minors would have returned every shared minor in the institution.
-     *
-     * Only the active semester's period (1st, 2nd or summer) is offered. A curriculum places a course in
-     * exactly one semester, so this both narrows the list and picks which placement
-     * the year level is read from, for the rare course placed twice.
-     *
      * @param  Collection<int, int|string>  $curriculumIds
      * @return Collection<int, Course>
      */
@@ -227,14 +130,10 @@ class CourseTeachingAssignmentController extends Controller
 
         $placements = $this->curriculumPlacements($curriculumIds, $activePeriod);
 
-        // A published curriculum that places nothing this semester offers nothing to
-        // delegate — distinct from having no curriculum, which the response also says.
         if ($placements->isEmpty()) {
             return new Collection;
         }
 
-        // Membership in the curriculum is already what $placements means, so the
-        // course query narrows to those ids rather than repeating it as a whereHas.
         $courses = Course::query()
             ->with(['department', 'teachingDepartment', 'teachingProgram', 'program'])
             ->where('status', 'active')
@@ -250,9 +149,6 @@ class CourseTeachingAssignmentController extends Controller
     }
 
     /**
-     * Where this department's curriculum places each course, narrowed to the active
-     * semester's period when there is one.
-     *
      * @param  Collection<int, int|string>  $curriculumIds
      * @return Collection<int|string, object> keyed by course_id
      */
@@ -263,26 +159,14 @@ class CourseTeachingAssignmentController extends Controller
             ->leftJoin('programs', 'programs.id', '=', 'curriculum.program_id')
             ->whereIn('curriculum_course.curriculum_id', $curriculumIds)
             ->when($activePeriod !== null, fn ($query) => $query->where('curriculum_course.semester', $activePeriod))
-            // Newest curriculum first, so the flattening below keeps its
-            // placement. A department mid-transition legitimately runs two, and
-            // this page's year tabs should follow the curriculum it is moving
-            // to rather than the one it is retiring.
             ->orderByDesc('curriculum.effective_school_year')
             ->orderByDesc('curriculum_course.curriculum_id')
             ->get(['curriculum_course.course_id', 'curriculum_course.year_level', 'curriculum_course.curriculum_id', 'curriculum.name as curriculum_name', 'curriculum.program_id as curriculum_program_id', 'programs.code as curriculum_program_code', 'programs.name as curriculum_program_name', 'programs.major as curriculum_program_major'])
-            // A course placed by both curricula appears once. The scalar year
-            // level this collapses to is only a display default — anything that
-            // schedules a cohort resolves the placement through that section's
-            // own curriculum instead, via SectionCurriculumResolver.
             ->unique('course_id')
             ->keyBy('course_id');
     }
 
     /**
-     * Rewrites each course's `year_level` to where the department's curriculum places
-     * it, which is the level the page's year tabs are built from. Every course in the
-     * list is placed by definition, so the guard here is only for the empty case.
-     *
      * @param  Collection<int, Course>  $courses
      * @param  Collection<int|string, object>  $placements
      * @return Collection<int, Course>
@@ -306,12 +190,6 @@ class CourseTeachingAssignmentController extends Controller
         });
     }
 
-    /**
-     * Record or change the teaching college for a course.
-     *
-     * A null `teaching_department_id` clears the override, which is the same effect
-     * as destroy() — accepted here so the UI's single Save button can express both.
-     */
     public function update(Request $request, Course $course): JsonResponse
     {
         $validated = $request->validate([
@@ -387,7 +265,6 @@ class CourseTeachingAssignmentController extends Controller
                 'teaching_source_program_id' => $sourceProgramIds[(int) $course->id] ?? null,
             ]);
         }));
-        // Same reason as store(): the receiving side's workspace and badge read cached payloads.
         ApiCache::forgetGroups(['instructor_assignments.index', 'courses.index', 'initial.data']);
         $courses->load(['teachingSourceProgram', 'department']);
         $source = $this->sourceLabel($courses, $actor);
@@ -408,7 +285,6 @@ class CourseTeachingAssignmentController extends Controller
         return response()->json(['course_ids' => $courses->pluck('id')->values()->all()]);
     }
 
-    /** Hand the course back to the derived rule — the college that owns it. */
     public function destroy(Request $request, Course $course): JsonResponse
     {
         if ($locked = $this->refuseIfInstructorAssigned($course, null)) {
@@ -424,14 +300,6 @@ class CourseTeachingAssignmentController extends Controller
     }
 
     /**
-     * Classes -- a course in one section -- that already have an instructor in
-     * the active semester, keyed by course id.
-     *
-     * Once someone is teaching a course, the question "which college teaches it"
-     * has been answered in practice. Handing it to another college then would
-     * leave those classes with an instructor the new college never chose and the
-     * rule engine now considers ineligible.
-     *
      * @param  list<int>  $courseIds
      * @return array<int, int>
      */
@@ -458,19 +326,11 @@ class CourseTeachingAssignmentController extends Controller
         return $course->teaching_department_id === null ? null : (int) $course->teaching_department_id;
     }
 
-    /**
-     * The college that actually teaches the course under a given override: the
-     * override itself, or the owner when none is recorded.
-     */
     private function effectiveTeachingDepartmentId(Course $course, ?int $override): ?int
     {
         return $override ?? ($course->department_id === null ? null : (int) $course->department_id);
     }
 
-    /**
-     * Refuses a change of teaching college while any class of the course already
-     * has an instructor. Saving the same college again is not a change and passes.
-     */
     private function refuseIfInstructorAssigned(Course $course, ?int $teachingDepartmentId): ?JsonResponse
     {
         $unchanged = $this->effectiveTeachingDepartmentId($course, $teachingDepartmentId)
@@ -490,10 +350,6 @@ class CourseTeachingAssignmentController extends Controller
         ], 422);
     }
 
-    /**
-     * Writes the override and drops the caches that answer with a teaching college,
-     * so a picker cannot go on offering instructors from the previous one.
-     */
     private function store(Course $course, ?int $teachingDepartmentId, ?int $teachingProgramId, ?User $actor = null): void
     {
         $previousTeachingDepartmentId = $course->teaching_department_id === null ? null : (int) $course->teaching_department_id;
@@ -526,24 +382,12 @@ class CourseTeachingAssignmentController extends Controller
             );
         }
 
-        // The instructor-assignment workspace caches its whole payload — schedules,
-        // eligible faculty and all — keyed by department. Both the old and the new
-        // teaching college now answer differently, and the group version is global,
-        // so one bump covers every department's entry.
         ApiCache::forgetGroups(['instructor_assignments.index', 'courses.index', 'initial.data']);
 
         $course->load(['department', 'teachingDepartment', 'teachingProgram', 'program']);
     }
 
     /**
-     * The program handing each course over, recorded on the course so the
-     * receiving side can name it later. A shared course (GEC 1) belongs to a
-     * college but no program, so this cannot be read off the course itself.
-     *
-     * A Program Head speaks for their program. Otherwise it is the course's own
-     * program, then the program whose curriculum row the acting department saw it
-     * under on the Course Teaching page.
-     *
      * @param  Collection<int, Course>  $courses
      * @return array<int, int|null> keyed by course id
      */
@@ -567,9 +411,6 @@ class CourseTeachingAssignmentController extends Controller
     }
 
     /**
-     * Who handed the courses over, named by program ("BSED-English") rather than
-     * college: within one college "College of Education assigned…" says nothing.
-     *
      * @param  Collection<int, Course>  $courses
      */
     private function sourceLabel(Collection $courses, ?User $actor): string
@@ -614,15 +455,9 @@ class CourseTeachingAssignmentController extends Controller
             'curriculum_program_code' => $course->getAttribute('curriculum_program_code'),
             'curriculum_program_name' => $course->getAttribute('curriculum_program_name'),
             'curriculum_program_major' => $course->getAttribute('curriculum_program_major'),
-            // False for a major: it cannot leave its college, but it can still be
-            // assigned to a sibling program of that college.
             'delegable' => SchedulingPolicy::isDelegableCourse($course),
             'is_major' => SchedulingPolicy::isMajorCourse($course),
-            // Classes this semester that already have an instructor. While any do,
-            // the teaching college cannot be changed.
             'instructor_assigned_classes' => $instructorAssignedClasses,
-            // The college that ends up teaching it once the fallback is applied, so
-            // the UI can show the effective answer next to the stored override.
             'effective_teaching_department_id' => SchedulingPolicy::assignedTeachingDepartmentId($course),
         ];
     }

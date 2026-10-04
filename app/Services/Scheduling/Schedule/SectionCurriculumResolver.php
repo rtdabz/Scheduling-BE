@@ -8,20 +8,6 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
-/**
- * The single answer to "which curriculum does this section follow?".
- *
- * Every scheduling stage — preflight, feasibility, snapshot, solver, validator —
- * must resolve a course's year level and semester from the *same* curriculum. If
- * two stages disagree, a placement the validator refuses becomes a candidate the
- * solver happily produces, and the run fails with a message that describes
- * neither problem. Routing every lookup through here is what keeps them aligned.
- *
- * There is deliberately no fallback to "the department's active curriculum". That
- * guess is exactly what this feature removes: a department mid-transition has
- * several, and picking one silently would schedule a cohort against the wrong
- * course list.
- */
 class SectionCurriculumResolver
 {
     /** @var array<int, Curriculum> */
@@ -78,17 +64,6 @@ class SectionCurriculumResolver
         return $this->cache[$sectionId] = $curriculum;
     }
 
-    /**
-     * Adopts the department's curriculum when there is only one to adopt.
-     *
-     * Sections are routinely created before a curriculum is published, so the
-     * column being null does not mean somebody declined to choose — it usually
-     * means there was nothing to choose from yet. Once exactly one selectable
-     * curriculum exists it is the only possible answer, so take it and persist
-     * it, which keeps every other consumer agreeing with the generator.
-     *
-     * Two or more and this returns null: the caller must ask a human.
-     */
     private function adoptUnambiguousCurriculum(Sections $section): ?int
     {
         $selectable = Curriculum::query()
@@ -111,8 +86,6 @@ class SectionCurriculumResolver
     }
 
     /**
-     * Course placements within one curriculum, keyed by course id.
-     *
      * @param  list<int>  $courseIds  empty means every course in the curriculum
      * @return Collection<int, object{course_id: int, year_level: int, semester: int}>
      */
@@ -127,12 +100,6 @@ class SectionCurriculumResolver
     }
 
     /**
-     * Placements across several curricula, keyed "curriculumId:courseId".
-     *
-     * A single generation run can span curricula when a year level is mid-split,
-     * so a course-id-keyed map is not enough — the same course can sit at
-     * different year levels in each.
-     *
      * @param  list<int>  $curriculumIds
      * @param  list<int>  $courseIds
      */

@@ -55,9 +55,6 @@ return new class extends Migration
             $table->index(['curriculum_id', 'year_level', 'semester'], 'curriculum_course_term_lookup_index');
         });
 
-        // Shared courses (no department) have unique codes. The composite key
-        // above cannot catch these, since a unique index treats every null
-        // department as distinct. MySQL/MariaDB only, like semesters.semester_key.
         if (DB::getDriverName() !== 'mysql') {
             return;
         }

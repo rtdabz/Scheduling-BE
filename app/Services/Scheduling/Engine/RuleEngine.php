@@ -20,16 +20,6 @@ use App\Services\Scheduling\Engine\Rules\RuleLookupCache;
 use App\Services\Scheduling\Schedule\FacultyConflictOverride;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * Validates one schedule attempt (a single meeting about to be saved) against
- * every hard scheduling rule, and linked meeting groups against the rules that
- * need the whole group.
- *
- * The rules themselves live in Engine/Rules, one class per concern; this class
- * decides the order they run in and how their findings combine. A violation is
- * `['rule' => id, 'message' => text, ...context]`; rule ids are registered in
- * SchedulingPolicy::CONSTRAINT_CATALOG and are relied on by the UI.
- */
 class RuleEngine
 {
     private readonly RuleLookupCache $lookups;
@@ -60,9 +50,6 @@ class RuleEngine
 
     public function __construct()
     {
-        // One lookup cache per engine: a batch save validates many meetings that
-        // share a semester, section and room, and should fetch each only once.
-        // The engine is resolved per request, so the cache cannot go stale.
         $this->lookups = $lookups = new RuleLookupCache;
 
         $this->references = new ReferenceIntegrityRule($lookups);
@@ -89,15 +76,6 @@ class RuleEngine
     }
 
     /**
-     * Every rule a saved class answers to on its own, without the pairwise
-     * clashes with other classes.
-     *
-     * For re-checking classes already on the timetable: a rule can stop
-     * holding after a class was placed (an instructor's availability edited, a
-     * room taken out of service, operating hours narrowed) with nothing about
-     * the class itself changing. Clashes between two classes are the conflict
-     * scan's to report, and checking them here would cost a query per class.
-     *
      * @param  array<string, mixed>  $attempt
      * @return list<array<string, mixed>>
      */
@@ -130,8 +108,6 @@ class RuleEngine
         ['violations' => $recordViolations, 'records' => $records] = $this->recordRules($attempt);
         $violations = [...$violations, ...$recordViolations];
 
-        // A missing course or room is already reported by subject_exists or
-        // room_exists; the room-type rule would only repeat the same error.
         $hasMissingRecord = collect($recordViolations)->contains(
             static fn (array $violation): bool => in_array($violation['rule'], ['subject_exists', 'room_exists'], true),
         );
@@ -150,33 +126,14 @@ class RuleEngine
             ]),
         ];
 
-        // An instructor conflict someone already chose to override does not come
-        // back on the next save of the same meeting.
         return FacultyConflictOverride::withoutStanding($attempt, array_values($violations));
     }
 
-    /**
-     * The rules a change of instructor alone can break: every `faculty`
-     * catalog rule, plus these from other categories.
-     *
-     * `relational_integrity` is kept whole: a missing record means the
-     * instructor rules could not be evaluated at all, not that they passed.
-     */
     private const INSTRUCTOR_ASSIGNMENT_RULES = ['faculty_conflict', 'required_field'];
 
     private const INSTRUCTOR_ASSIGNMENT_CATEGORIES = ['faculty', 'relational_integrity'];
 
     /**
-     * Validate a change of instructor on a meeting that is not moving.
-     *
-     * Choosing an instructor does not move the class, so placement rules are
-     * not re-judged. A class that satisfied them when it was placed can stop
-     * satisfying them later (a Required Day set for its course, a room taken out
-     * of service, a field-course list edited). Re-running them here refused the
-     * staffing of such a class -- or removing its instructor -- for a reason
-     * the change had nothing to do with. Moving the class goes through
-     * validate() and still answers to every rule.
-     *
      * @param  array<string, mixed>  $attempt
      * @return list<array<string, mixed>>
      */
@@ -195,8 +152,6 @@ class RuleEngine
     }
 
     /**
-     * room_type_match on its own, for callers choosing between rooms.
-     *
      * @return array<string, mixed>|null
      */
     public function checkRoomTypeMatch(
@@ -210,8 +165,6 @@ class RuleEngine
     }
 
     /**
-     * Validate linked meeting shapes that cannot be judged one row at a time.
-     *
      * @param  list<array<string, mixed>>  $operations
      * @return list<array<string, mixed>>
      */
@@ -248,9 +201,6 @@ class RuleEngine
     }
 
     /**
-     * Resolves the attempt's records, then runs every rule that reads them.
-     * When a record is missing only that is reported, and no records are returned.
-     *
      * @param  array<string, mixed>  $attempt
      * @return array{violations: list<array<string, mixed>>, records: AttemptRecords|null}
      */

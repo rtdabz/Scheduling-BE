@@ -8,11 +8,6 @@ use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * Helpers every constraint family shares: building a violation, and reading a
- * field from either a candidate ScheduleRow or a persisted schedule array, which
- * the families compare against each other interchangeably.
- */
 final class ConstraintSupport
 {
     /** @param array<string, mixed> $context */

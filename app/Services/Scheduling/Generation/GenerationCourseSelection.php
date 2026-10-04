@@ -10,27 +10,11 @@ use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use InvalidArgumentException;
 
-/**
- * The one place a generation request's course selection is resolved.
- * Extracted from ScheduleRecommendationController, where five endpoints each
- * repeated this logic and had drifted apart.
- */
 final class GenerationCourseSelection
 {
     public function __construct(private readonly SectionCurriculumResolver $curriculumResolver) {}
 
     /**
-     * Turns one section's generation request into the course selection the
-     * solver receives. Every generation endpoint -- section preview, queued
-     * preview, select, and both year-level paths -- goes through here, so a
-     * section is configured the same way whichever screen generated it.
-     *
-     * Minor (balanced) splits and Hybrid Splits are both fixed two-meeting
-     * shapes, so a preferred pattern set on either is kept; any other course's
-     * pattern is dropped. (The section-level paths used to drop a Hybrid
-     * Split's pattern while year-level kept it, so the same course generated
-     * differently depending on the screen.)
-     *
      * @param  array<string, mixed>  $config  course_ids, selected_split_session_course_ids,
      *                                        selected_gec_course_ids, hybrid_split_course_ids,
      *                                        preferred_patterns, is_hybrid
@@ -57,8 +41,6 @@ final class GenerationCourseSelection
     }
     public function resolveCourseIds(Sections $section, ?array $providedCourseIds): array
     {
-        // The curriculum is a property of the cohort, not of the department: a
-        // department mid-transition runs the old and the new one at once.
         $curriculum = $this->curriculumResolver->forSection($section);
 
         $period = $this->mapSemesterToInt($section->semester);

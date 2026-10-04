@@ -6,23 +6,11 @@ use App\Models\Course;
 use App\Models\Sections;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * delivery_mode, hybrid_mode, hybrid_eligibility, hybrid_component_type,
- * hybrid_component_shape.
- *
- * Whether the chosen delivery (on-site, online, field, hybrid) is allowed for
- * this meeting. Which room that delivery needs is RoomTypeRule's question.
- * There is no cap on how many online or field courses a section takes; the
- * solver balances online delivery through its department room-fairness targets.
- */
 final class DeliveryModeRule
 {
     public function __construct(private readonly RuleLookupCache $lookups) {}
 
     /**
-     * delivery_mode, hybrid_mode: the request names a real mode, and field
-     * delivery is never hybrid.
-     *
      * @param  array<string, mixed>  $attempt
      * @return list<array<string, mixed>>
      */
@@ -48,10 +36,6 @@ final class DeliveryModeRule
     }
 
     /**
-     * hybrid_eligibility, hybrid_component_type, hybrid_component_shape: a
-     * hybrid meeting is an online lecture or an on-site laboratory of the
-     * Generator's length, for a major with both, when the department allows it.
-     *
      * @param  array<string, mixed>  $attempt
      * @return array<string, mixed>|null
      */
@@ -80,15 +64,6 @@ final class DeliveryModeRule
     }
 
     /**
-     * The hybrid decision for one meeting already marked hybrid, for a course
-     * in either form (model or the kernel's snapshot array). The one
-     * implementation; the constraint kernel calls it too.
-     *
-     * Integrated Hybrid's lecture and laboratory lengths are the user's to set
-     * in Setup Courses, so only their delivery is fixed here; `class_duration`
-     * holds each session to one teaching day. Hybrid Split is a fixed shape and keeps
-     * its exact length.
-     *
      * @param  Course|array<string, mixed>  $course
      * @return array{rule: string, message: string}|null
      */

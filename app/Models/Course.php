@@ -34,7 +34,6 @@ class Course extends Model
     protected static function booted(): void
     {
         static::updated(function (self $course): void {
-            // Field settings follow the course id; only the cached codes go stale.
             if ($course->wasChanged('course_code')) {
                 SchedulingPolicy::clearFieldCourseCache();
             }
@@ -42,11 +41,6 @@ class Course extends Model
     }
 
     /**
-     * The curriculum is the source of a course's year level and semester. The
-     * copy on the course row mirrors the newest active curriculum that places
-     * it, the same rule the course list displays; a course no active curriculum
-     * places keeps its catalogue value.
-     *
      * @param  iterable<int>|null  $courseIds  null for every placed course
      * @return array<int, array{year_level: string, semester: string}>
      */
@@ -99,11 +93,6 @@ class Course extends Model
         return $this->belongsTo(Departments::class, 'department_id');
     }
 
-    /**
-     * The college delegated to teach this course, overriding the department that
-     * owns it. Null for the common case — see
-     * SchedulingPolicy::assignedTeachingDepartmentId for the fallback rule.
-     */
     public function teachingDepartment()
     {
         return $this->belongsTo(Departments::class, 'teaching_department_id');
@@ -114,20 +103,11 @@ class Course extends Model
         return $this->belongsTo(Program::class, 'teaching_program_id');
     }
 
-    /** The program that handed this course to its teaching program, when recorded. */
     public function teachingSourceProgram()
     {
         return $this->belongsTo(Program::class, 'teaching_source_program_id');
     }
 
-    /**
-     * Courses handed to this department (and, for a Program Head, this program)
-     * to teach for someone else. Two kinds:
-     *  - another college's course, delegated to this college (IT's GEC 101 → CAS);
-     *  - a course of this college handed to a sibling program (BSED-ENG Prof Ed →
-     *    BEED), which never leaves the college, so "owner is another college"
-     *    alone would miss it.
-     */
     public function scopeDelegatedTo($query, int $departmentId, ?int $programId = null)
     {
         return $query->where('teaching_department_id', $departmentId)->where(fn ($kind) => $kind

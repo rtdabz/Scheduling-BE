@@ -9,10 +9,6 @@ use Illuminate\Support\Facades\DB;
 
 class FacultyLoadService
 {
-    /**
-     * Every faculty row for a department, each decorated with its live teaching
-     * load for the semester.
-     */
     public function get(?int $departmentId, ?int $semesterId, ?int $programId = null): Collection
     {
         $faculties = $this->faculties($departmentId, $programId);
@@ -24,10 +20,6 @@ class FacultyLoadService
         return $this->decorateMany($faculties, $semesterId);
     }
 
-    /**
-     * The same rows as get(), but with load counted across every semester --
-     * the printed reports are not tied to one semester.
-     */
     public function getAcrossSemesters(?int $departmentId, ?int $programId = null): Collection
     {
         $faculties = $programId === null
@@ -40,13 +32,6 @@ class FacultyLoadService
         });
     }
 
-    /**
-     * A program's printed load covers its own instructors plus the
-     * department-wide ones (no program) who teach approved classes in its
-     * sections. Matching on `program_id` alone left every department-wide
-     * instructor out of every program's report -- and a single-program
-     * department offers no department-wide report to catch them.
-     */
     private function programReportFaculties(?int $departmentId, int $programId): Collection
     {
         $teaching = $this->programTeachers([$programId])[$programId] ?? [];
@@ -63,9 +48,6 @@ class FacultyLoadService
     }
 
     /**
-     * Instructors with an approved class in each program's sections, keyed by
-     * program id.
-     *
      * @param  array<int, int>  $programIds
      * @return array<int, array<int, int>>
      */
@@ -100,12 +82,6 @@ class FacultyLoadService
             ->get();
     }
 
-    /**
-     * The same load attributes for a single instructor. `store()` and `update()`
-     * return a faculty payload the same pages consume as `index()`, so they have
-     * to carry the load fields too — a bare model reply made the UI read the
-     * absent fields as a zero load and cache that over the real numbers.
-     */
     public function decorate(Faculty $faculty, ?int $semesterId): Faculty
     {
         $rows = $semesterId === null
@@ -118,10 +94,6 @@ class FacultyLoadService
     }
 
     /**
-     * The same load attributes for a whole set of instructors, in one query.
-     * Looping decorate() would issue a query per instructor, so callers that
-     * already hold a faculty collection use this instead.
-     *
      * @param  \Illuminate\Support\Collection<int, Faculty>|Collection  $faculties
      */
     public function decorateMany($faculties, ?int $semesterId)
@@ -142,13 +114,6 @@ class FacultyLoadService
     }
 
     /**
-     * What this instructor's load becomes once $incoming is assigned to them,
-     * and which band that lands in.
-     *
-     * Assignment past the Basic Load is allowed — it continues into the overload
-     * allowance, then pro bono — so this reports rather than refuses. The caller
-     * uses `requires_confirmation` to decide whether to ask the user first.
-     *
      * @param  array<int, array{section_id: int, course_id: int, units: int}>  $incoming
      * @return array<string, mixed>
      */
@@ -158,9 +123,6 @@ class FacultyLoadService
             ? collect()
             : $this->assignmentRows($semesterId, [$faculty->id]);
 
-        // Keyed the same way applyRows() dedupes, so a course split across
-        // several meeting blocks counts its units once, and re-assigning a class
-        // the instructor already holds adds nothing.
         $currentUnits = [];
         foreach ($rows as $row) {
             $currentUnits["{$row->section_id}:{$row->course_id}"] = (int) $row->units;
@@ -189,12 +151,6 @@ class FacultyLoadService
             'unit_ceiling' => SchedulingPolicy::facultyUnitCeiling($faculty),
             'tier' => $tier,
             'tier_label' => SchedulingPolicy::loadTierLabel($tier),
-            // Only an assignment that lands in pro bono is confirmed: going into
-            // the overload allowance is paid load and saves without a prompt.
-            // Only an assignment that *adds* units can cause it: a re-save of
-            // the instructor who already holds the class must not prompt. An
-            // instructor with no allowance configured at all has no threshold
-            // to cross, so there is nothing to confirm.
             'requires_confirmation' => SchedulingPolicy::facultyUnitCeiling($faculty) > 0
                 && $added > 0
                 && $tier === SchedulingPolicy::LOAD_TIER_PROBONO,
@@ -202,12 +158,6 @@ class FacultyLoadService
     }
 
     /**
-     * Live assignment rows for the given instructors. A withdrawn or
-     * not-yet-approved row is not a real assignment, so it is not load even when
-     * it still carries a faculty_id.
-     *
-     * A null semester means every semester.
-     *
      * @param  array<int, int>  $facultyIds
      */
     private function assignmentRows(?int $semesterId, array $facultyIds): \Illuminate\Support\Collection
@@ -267,9 +217,6 @@ class FacultyLoadService
             ])
             ->values());
 
-        // Deleting an instructor nulls `faculty_id` on every live row it is
-        // attached to, so the confirmation has to be able to say how many
-        // approved meetings would be left without an instructor.
         $faculty->setAttribute('live_schedule_count', $rows->unique('schedule_id')->count());
         $faculty->setAttribute('required_units', SchedulingPolicy::facultyRequiredUnits($faculty));
         $faculty->setAttribute('unit_ceiling', SchedulingPolicy::facultyUnitCeiling($faculty));

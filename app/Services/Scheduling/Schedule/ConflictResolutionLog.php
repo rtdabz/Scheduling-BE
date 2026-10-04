@@ -6,24 +6,8 @@ namespace App\Services\Scheduling\Schedule;
 
 use App\Models\SchedulingAuditLog;
 
-/**
- * The Resolved side of the conflict inbox, read back from the audit trail.
- *
- * Nothing new is stored to make this list. Every way a conflict can end
- * already writes a `scheduling_audit_logs` row in the same transaction as the
- * change: `conflict_resolved` and `conflict_overridden` from the inbox, and
- * `schedule_plan_committed` (with `resolved_conflicts`) when an accepted
- * recommendation replaces the clashing rows, and `schedule_conflicts_cleared`
- * when a class is moved by hand in the Schedule Builder. This only reads those
- * rows back.
- *
- * A resolution is history, not a status. The open list stays the only truth
- * about what is broken now, so an entry whose conflict a fresh scan finds
- * again is reported as `reopened` rather than quietly still "resolved".
- */
 final class ConflictResolutionLog
 {
-    /** Newest first; past this the list is an archive, not an inbox tab. */
     public const LIMIT = 200;
 
     /**
@@ -40,8 +24,6 @@ final class ConflictResolutionLog
             ->where('semester_id', $semesterId)
             ->where(static function ($query): void {
                 $query->whereIn('action', ['conflict_resolved', 'conflict_overridden'])
-                    // Most plan commits clear nothing; only the ones that did
-                    // belong here, or they would crowd the limit out.
                     ->orWhere(static fn ($commits) => $commits
                         ->whereIn('action', ['schedule_plan_committed', 'schedule_conflicts_cleared'])
                         ->whereJsonLength('metadata->resolved_conflicts', '>', 0));
@@ -89,9 +71,6 @@ final class ConflictResolutionLog
     }
 
     /**
-     * One audit row names one conflict from the inbox, or several from a plan
-     * commit. Normalised to the same shape either way.
-     *
      * @return list<array<string, mixed>>
      */
     private function conflictsOf(SchedulingAuditLog $log): array
@@ -126,8 +105,6 @@ final class ConflictResolutionLog
         return [[
             'id' => $conflictId,
             'rule' => (string) ($metadata['conflict_rule'] ?? ''),
-            // Rows written before the message was recorded fall back to the
-            // client's label for the rule.
             'message' => (string) ($metadata['conflict_message'] ?? ''),
             'day' => $metadata['conflict_day'] ?? null,
             'overlap_start' => $metadata['conflict_overlap_start'] ?? null,
@@ -140,9 +117,6 @@ final class ConflictResolutionLog
     }
 
     /**
-     * Same reach as the open list: a conflict belongs to both sides. Rows
-     * recorded before owners were stored fall back to the log's own columns.
-     *
      * @param  array<string, mixed>  $conflict
      */
     private function inScope(array $conflict, SchedulingAuditLog $log, ?int $departmentId, ?int $sectionId): bool

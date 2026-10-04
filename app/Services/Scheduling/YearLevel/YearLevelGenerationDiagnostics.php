@@ -6,18 +6,8 @@ use App\Models\Course;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
-/**
- * Turns a failed year-level run into something a user can act on.
- *
- * Two entry points mirror the two ways a run can fail. A feasibility failure is
- * arithmetic — the request cannot fit, and the blocking constraints already say
- * why. A search failure is not proof of anything: the solver ran out of budget
- * on a specific section, so the job here is to name the most constrained thing
- * about that section and propose the smallest change that could unblock it.
- */
 class YearLevelGenerationDiagnostics
 {
-    /** Bottleneck kinds, ordered by how confidently they explain a failure. */
     public const TYPE_FIXED_PATTERN = 'fixed_pattern';
 
     public const TYPE_LECTURE_LAB_SPLIT = 'lecture_lab_split';
@@ -81,10 +71,6 @@ class YearLevelGenerationDiagnostics
                 default => 'Adjust the generation scope',
             };
 
-            // Only preferences the wizard owns become adjustments. Rooms,
-            // operating hours, course units and Required Days are department
-            // data, so those blocks stay as advice. A null type means each
-            // target names its own fix.
             $adjustmentType = match ($code) {
                 'fixed_pattern_overloaded' => 'clear_pattern',
                 'preferred_days_too_few_for_hybrid' => null,
@@ -123,11 +109,6 @@ class YearLevelGenerationDiagnostics
     }
 
     /**
-     * One applicable recommendation per way of closing a room-time shortfall
-     * (Hybrid Split, Online), each changing the named courses in every
-     * section. They share the `room-capacity-` id so the wizard lists them as
-     * alternatives of one fix.
-     *
      * @param  array<string, mixed>  $constraint
      * @return list<array<string, mixed>>
      */
@@ -171,8 +152,6 @@ class YearLevelGenerationDiagnostics
     }
 
     /**
-     * Pick the section/course most likely responsible for the search failure.
-     *
      * @param  list<array<string, mixed>>  $failures  section failure records
      * @param  Collection<int, Course>  $courses
      * @return array<string, mixed>|null
@@ -192,9 +171,6 @@ class YearLevelGenerationDiagnostics
         $courseCount = (int) ($failure['course_count'] ?? 0);
         $preflightPatternConflict = (bool) ($failure['preflight_pattern_conflict'] ?? false);
 
-        // The course the solver actually stalled on names the cause. Only when
-        // that course carries no restrictive setting of its own does the
-        // section's most restrictive setting stand in for it.
         [$type, $focus] = $this->observedBlocker($failure) ?? match (true) {
             $patternCourses !== [] => [self::TYPE_FIXED_PATTERN, $patternCourses[0]],
             $splitCourses !== [] => [self::TYPE_LECTURE_LAB_SPLIT, $splitCourses[0]],
@@ -231,10 +207,6 @@ class YearLevelGenerationDiagnostics
     }
 
     /**
-     * A bottleneck found by a search that stopped at its time or step limit.
-     * The course it names is where the search spent its time, not a proven
-     * conflict, so the cause says that instead of "no free slot remains".
-     *
      * @param  array<string, mixed>|null  $bottleneck
      * @return array<string, mixed>|null
      */
@@ -339,9 +311,6 @@ class YearLevelGenerationDiagnostics
 
         $recommendations = [];
 
-        // Every relaxation the retry ladder tried is, by construction, a change
-        // the user can make permanently. Offering them in the same order keeps
-        // the panel consistent with what the generator already attempted.
         foreach ($strategies as $strategy) {
             $adjustments = array_values((array) ($strategy['adjustments'] ?? []));
             if ($adjustments === []) {
@@ -380,9 +349,6 @@ class YearLevelGenerationDiagnostics
             $mode = $configsBySectionId[$sectionId]['delivery_modes_by_course_id'][$courseId] ?? null;
             $splitCause = sprintf('%s has no two free on-site slots for its Split Session.', $courseCode);
 
-            // Hybrid Split is never applied by the retry ladder: the solver is
-            // not allowed to silently change delivery mode or meeting shape.
-            // It is offered here for the user to apply explicitly.
             if ($course !== null
                 && SchedulingPolicy::hybridSplitEligible($course)
                 && in_array($courseId, $splitIds, true)
@@ -411,11 +377,6 @@ class YearLevelGenerationDiagnostics
                 ];
             }
 
-            // Online Split keeps both meetings but moves them online, so they
-            // need free section time and no room at all. Like Hybrid Split it
-            // changes delivery, so it is only ever the user's choice. The
-            // bottleneck's split courses already exclude field courses, so an
-            // empty field list keeps this check off the database.
             if ($course !== null
                 && in_array($courseId, $splitIds, true)
                 && ! in_array($courseId, $hybridIds, true)
@@ -444,8 +405,6 @@ class YearLevelGenerationDiagnostics
                 ];
             }
 
-            // The retry ladder may already offer this exact change as a
-            // strategy; listing it twice would read as two different fixes.
             if (! $this->offersAdjustment($recommendations, 'disable_minor_split', $sectionId, $courseId)) {
                 $recommendations[] = [
                     'id' => 'recommend-regular-meeting-'.$sectionId.'-'.$courseId,
@@ -471,10 +430,6 @@ class YearLevelGenerationDiagnostics
             }
         }
 
-        // Room-time advice only helps when rooms are what ran out. A pattern
-        // or split bottleneck is a meeting-shape problem that more rooms
-        // would not have changed, and a search cut short never showed that
-        // rooms ran out at all.
         if ($searchIncomplete || ! in_array($bottleneck['type'] ?? null, [
             self::TYPE_LABORATORY_ROOM,
             self::TYPE_FORCED_ON_SITE,
@@ -507,12 +462,6 @@ class YearLevelGenerationDiagnostics
     }
 
     /**
-     * Preferred Days are the user's call, so widening them is only ever a
-     * recommendation: the retry ladder never adds a day on its own. They are
-     * one choice for the whole year level, so this is one recommendation
-     * carrying the change for every section. After a timetable that fits it
-     * is a low-impact suggestion to spread classes, not a fix.
-     *
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @return list<array<string, mixed>>
      */
@@ -571,10 +520,6 @@ class YearLevelGenerationDiagnostics
     }
 
     /**
-     * The bottleneck type and focus for the course the solver stalled on,
-     * judged by that course's own settings in the usual order of how tightly
-     * each one constrains a placement.
-     *
      * @param  array<string, mixed>  $failure
      * @return array{0: string, 1: array<string, mixed>}|null
      */

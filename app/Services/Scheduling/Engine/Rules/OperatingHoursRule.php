@@ -4,17 +4,6 @@ namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * slot_grid, operating_hours, field_evening_window.
- *
- * Whether the meeting's times are real, aligned to the 30-minute grid, inside
- * the institution's opening hours, and — for field courses — finished by the
- * institution's field end time.
- *
- * slotGrid() and withinOperatingHours() are pure and static so the constraint
- * kernel runs these same checks, passing the hours pinned in its snapshot;
- * RuleEngine passes nothing and gets the live settings.
- */
 final class OperatingHoursRule
 {
     /** @return array<string, mixed>|null */
@@ -77,11 +66,6 @@ final class OperatingHoursRule
     }
 
     /**
-     * Field courses end by the institution's field end time, which the VPAA sets
-     * beside the operating hours (SchedulingPolicy::fieldDayEndTime). It was a
-     * hardcoded 5:00 PM; setting it to the closing time allows evening field
-     * classes.
-     *
      * @param  array<string, mixed>  $attempt
      * @return array<string, mixed>|null
      */
@@ -97,10 +81,6 @@ final class OperatingHoursRule
     }
 
     /**
-     * field_evening_window for a meeting already known to be a field placement.
-     * Shared with the constraint kernel, which passes its snapshot's field end
-     * time instead of the live setting.
-     *
      * @return array{rule: string, message: string}|null
      */
     public static function fieldEveningMismatch(string $endTime, string $fieldEndTime): ?array

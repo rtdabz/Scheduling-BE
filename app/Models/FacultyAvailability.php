@@ -5,11 +5,6 @@ namespace App\Models;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Model;
 
-/**
- * Stores the day by name, like every other day column. `day_index`
- * (0 = Monday, SchedulingPolicy::DAYS order) is derived for the API and the
- * solver, which work on grid positions.
- */
 class FacultyAvailability extends Model
 {
     protected $table = 'faculty_availabilities';

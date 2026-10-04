@@ -25,10 +25,6 @@ use RuntimeException;
 
 class CspSolver
 {
-    /**
-     * Physical rooms offered to each component of a split candidate at any one
-     * day/start pair. See boundedRoomOptions().
-     */
     private const SPLIT_ROOM_OPTIONS_PER_SLOT = 6;
 
     private const SOFT_FIELD_EVENING_PENALTY = 6;
@@ -45,25 +41,16 @@ class CspSolver
     private array $databaseValidityCache = [];
 
     /**
-     * Existing persisted schedules indexed for O(1) conflict lookup.
-     * Keyed by room, section, faculty, online department capacity, and online
-     * subject/day so different sections of one online subject cannot overlap.
-     *
      * @var array<string, list<array{start_time: string, end_time: string}>>
      */
     private array $existingScheduleIndex = [];
 
-    /** Candidate schedules selected earlier in a year-level in-memory search. */
     private array $tentativeSchedules = [];
 
     public function setInputSnapshot(?SchedulingSnapshot $snapshot): void
     {
         $this->snapshotAutoCaptured = false;
 
-        // Year-level generation re-supplies the same snapshot before every
-        // solver attempt. Clearing unconditionally would throw away the semester
-        // rows and the built domains on each call, which is exactly the work
-        // these caches exist to avoid.
         $unchanged = $this->inputSnapshot !== null
             && $snapshot !== null
             && $this->inputSnapshot->fingerprint === $snapshot->fingerprint;
@@ -77,12 +64,6 @@ class CspSolver
     }
 
     /**
-     * The snapshot is the solver's only data source. Application paths pass
-     * the one they validated; a direct caller that passes none gets one
-     * captured here the same way, rather than a separate database loader that
-     * could read the data differently. An auto-captured snapshot lives for one
-     * solve only, so the next call sees the database as it is then.
-     *
      * @param  list<int>  $courseIds
      */
     private function ensureSnapshotFor(int $sectionId, array $courseIds): void
@@ -113,13 +94,11 @@ class CspSolver
         return $this->solutionDiversity ??= new SolutionDiversity;
     }
 
-    /** The section's name for an error message, read from the snapshot. */
     private function sectionLabel(int $sectionId): string
     {
         return (string) ($this->inputSnapshot?->sectionsById[$sectionId]['section_name'] ?? 'Section');
     }
 
-    /** The active snapshot; ensureSnapshotFor() has run by the time this is read. */
     private function snapshot(): SchedulingSnapshot
     {
         return $this->inputSnapshot ?? throw new RuntimeException('The solver has no scheduling snapshot.');
@@ -133,9 +112,6 @@ class CspSolver
     }
 
     /**
-     * Rooms owned by another department that this solve may use through an
-     * approved room request, keyed by room id, with their granted windows.
-     *
      * @var array<int, list<array{day: string, start_time: string, end_time: string, start_minutes: int, end_minutes: int}>>
      */
     private array $roomGrantWindows = [];
@@ -156,9 +132,6 @@ class CspSolver
     private array $generationForcedDaysByCourseId = [];
 
     /**
-     * Course id => the Consecutive Days rule this section follows
-     * ({day_count, preferred_start_day}), from the snapshot.
-     *
      * @var array<int, array{day_count: int, preferred_start_day: string|null, meeting_days?: list<string>|null}>
      */
     private array $consecutiveRulesByCourseId = [];
@@ -167,64 +140,23 @@ class CspSolver
     private array $requirementsByCourseId = [];
 
     /**
-     * Course id => the room Setup Courses asked for. A ranking preference
-     * inside an allocation tier; it never removes a candidate.
-     *
      * @var array<int, int>
      */
     private array $preferredRoomIdsByCourseId = [];
 
     /**
-     * Step 1's Preferred Days: the only days this run may place a meeting on,
-     * or null when every day is open. A hard window,
-     * applied to every shape (single, Split Session, both Hybrids) after its
-     * candidates are built.
-     *
      * @var list<string>|null
      */
     private ?array $allowedDays = null;
 
-    /**
-     * The department's Sunday Classes setting (sunday_classes rule). Off, no
-     * candidate is built on Sunday, so a run cannot even try it; read from the
-     * snapshot at the start of every solve.
-     */
     private bool $sundayClassesEnabled = false;
 
-    /**
-     * Setup Courses' "Allow Friday and Saturday as Paired Days": a Split
-     * Session or Hybrid Split may also meet Friday + Saturday, after MW and TTh.
-     */
     private bool $allowFridaySaturdaySplit = false;
 
-    /**
-     * Whether candidateSearchDayTier's late-week preference gates the search.
-     *
-     * That preference keeps Monday-Thursday lecture rooms open for the MW and
-     * TTh split patterns of *other* courses, so it only means anything while a
-     * whole timetable is being built. A single-course solve -- the placement
-     * dialog's "Find better options", which is handed the rest of the week as
-     * tentative schedules -- has no other course to protect, and the gate made
-     * every alternative a Friday while Monday to Thursday stood empty: the
-     * search only opens the Monday-Thursday tier when Friday and Saturday
-     * cannot complete, and for one course they always can.
-     */
     private bool $lateWeekCapacityPreference = true;
 
-    /**
-     * Whether single meetings yield Monday-Thursday to split sessions in this
-     * solve. Only when the run has a split to protect: with none (a department
-     * whose split settings are off), the preference only pushed whole sections
-     * onto Friday and Saturday while Monday-Thursday stood empty for them --
-     * CBA's first six BSBA 1st-year sections met only Friday and Saturday.
-     */
     private bool $protectsSplitCapacity = true;
 
-    /**
-     * The day a single-course alternatives list starts from -- the day the
-     * user's placement collided on. Alternatives are offered on that day
-     * first, then the other weekdays day by day, and the weekend last.
-     */
     private ?string $searchFromDay = null;
 
     /** @var array<int, Course> */
@@ -234,37 +166,22 @@ class CspSolver
     private array $semesterScheduleRowsCache = [];
 
     /**
-     * Built candidate sets keyed by domainCacheKey(), reused across the many
-     * solver attempts a single generation run makes. Cleared per generation
-     * context, never across runs.
-     *
      * @var array<string, array{domain: list<array<string, mixed>>, empty_after_requirements: bool}>
      */
     private array $domainCache = [];
 
     private ?SchedulingSnapshot $inputSnapshot = null;
 
-    /** True when ensureSnapshotFor() captured the snapshot, so the next solve recaptures it. */
     private bool $snapshotAutoCaptured = false;
 
     private ?SolutionDiversity $solutionDiversity = null;
 
     /**
-     * The solving department's settings, as Custom Lab Duration needs them.
-     *
-     * Held for the length of one solve so every split laboratory component --
-     * domain, total duration and the meeting type inferred back off a block --
-     * measures the laboratory half the same way.
-     *
      * @var array<string, mixed>|Departments|null
      */
     private array|Departments|null $departmentLabSettings = null;
 
     /**
-     * Exposes the prepared department-level fairness targets to coordinators
-     * that rank complete multi-section candidates. The returned snapshot is
-     * read-only; hard constraints and the solver search remain unchanged.
-     *
      * @return array{
      *     active_sections: int,
      *     physical_rooms: int,
@@ -300,10 +217,6 @@ class CspSolver
     private bool $searchLimitReached = false;
 
     /**
-     * How often the last search reached a course with no candidate left that
-     * fits beside the courses already placed, keyed by course id. The course
-     * the search keeps stalling on is what actually blocks the section.
-     *
      * @var array<int, int>
      */
     private array $deadEndsByCourseId = [];
@@ -476,8 +389,6 @@ class CspSolver
         $this->allowedDays = SchedulingPolicy::normalizeAllowedDays($allowedDays);
         $this->allowFridaySaturdaySplit = $allowFridaySaturdaySplit;
         $this->lateWeekCapacityPreference = count($courseIds) > 1;
-        // A start day only means something for an alternatives list: a
-        // timetable of many courses has no single day the user is looking at.
         $this->searchFromDay = $this->lateWeekCapacityPreference ? null : $searchFromDay;
 
         $courseIds = SolverInput::normalizeCourseIds($courseIds);
@@ -494,8 +405,6 @@ class CspSolver
             throw new RuntimeException('The requested section is not present in the scheduling snapshot.');
         }
         $section = new Sections($sectionAttributes);
-        // Restore guarded identity/scheduling fields explicitly when
-        // reconstructing a section from snapshot attributes.
         $section->id = (int) ($sectionAttributes['id'] ?? $sectionId);
         $section->semester_id = (int) ($sectionAttributes['semester_id'] ?? $snapshot->semesterId);
         $section->department_id = (int) ($sectionAttributes['department_id'] ?? $snapshot->departmentId);
@@ -506,34 +415,21 @@ class CspSolver
         $semester->semester = (string) ($snapshot->semester['semester'] ?? '');
         $section->setRelation('academicSemester', $semester);
 
-        // Every lookup below reads this snapshot. A snapshot for another
-        // semester or department would silently judge against the wrong data;
-        // the old database fallback hid that mismatch, so now it is refused.
         if ($snapshot->semesterId !== (int) $section->semester_id || $snapshot->departmentId !== (int) $section->department_id) {
             throw new RuntimeException('The scheduling snapshot belongs to a different semester or department than the section being solved.');
         }
 
         $this->validateSectionForScheduling($section);
 
-        // Snapshot entries begin as attribute arrays, so transform them with a
-        // base collection before wrapping the resulting Course models in the
-        // Eloquent collection contract below. The snapshot has already applied
-        // the section's own curriculum placement to each course.
         $courses = collect($snapshot->coursesById)
             ->only(array_map('intval', $courseIds))
             ->map(function (array $attributes): Course {
                 $course = new Course($attributes);
-                // The primary key is guarded by the model and is not restored
-                // by mass assignment. Preserve it explicitly so snapshot
-                // courses remain addressable by course ID.
                 $course->id = (int) ($attributes['id'] ?? 0);
 
                 return $course;
             })
             ->keyBy('id');
-        // Base Collection::map() is returned when the callback changes array
-        // snapshots into Course models. Re-wrap the final map so downstream
-        // solver helpers receive the required Eloquent type.
         $courses = new Collection($courses->all());
 
         SolverInput::ensureAllCoursesExist(
@@ -688,9 +584,6 @@ class CspSolver
         ));
 
         if (! $allowRoomTbaFallback) {
-            // Keep TBA out of the physical search entirely. Filtering only
-            // returned solutions lets TBA candidates consume CSP iterations
-            // before weekday and Saturday real-room combinations are tried.
             foreach ($variables as &$variable) {
                 $variable['domain'] = array_values(array_filter(
                     $variable['domain'],
@@ -701,12 +594,6 @@ class CspSolver
         }
 
         if (! $allowOnlineFallback) {
-            // Same reasoning for a lecture that only went online because every
-            // compatible lecture room was taken. Tier ordering alone cannot
-            // guarantee this: it ranks candidates within one variable, so an
-            // earlier course keeping a room can still push a later course
-            // online without ever being reconsidered. Removing the fallback
-            // from every domain makes the physical search exhaustive.
             foreach ($variables as &$variable) {
                 $variable['domain'] = array_values(array_filter(
                     $variable['domain'],
@@ -737,25 +624,18 @@ class CspSolver
         usort(
             $variables,
             static function (array $left, array $right): int {
-                // Fixed pattern / forced day courses are the most constrained (MRV heuristic)
                 $leftConstrained = ! empty($left['preferred_pattern']) || ! empty($left['forced_day']);
                 $rightConstrained = ! empty($right['preferred_pattern']) || ! empty($right['forced_day']);
                 if ($leftConstrained !== $rightConstrained) {
                     return $leftConstrained ? -1 : 1;
                 }
 
-                // Lecture/laboratory splits need a matched pair of placements, so
-                // they are the next-hardest thing to satisfy after a fixed pattern.
                 $leftSplit = (bool) ($left['is_split_lecture_lab'] ?? false);
                 $rightSplit = (bool) ($right['is_split_lecture_lab'] ?? false);
                 if ($leftSplit !== $rightSplit) {
                     return $leftSplit ? -1 : 1;
                 }
 
-                // A Split Session or Hybrid Split needs one start time free on
-                // both days of a pair, so it claims Monday-Thursday before any
-                // single meeting. Placed after one, it would drop to its pattern
-                // fallbacks rather than the search moving the single meeting.
                 $leftSplitSession = (bool) ($left['is_split_session'] ?? false);
                 $rightSplitSession = (bool) ($right['is_split_session'] ?? false);
                 if ($leftSplitSession !== $rightSplitSession) {
@@ -769,8 +649,6 @@ class CspSolver
                     return $priorityComparison;
                 }
 
-                // Courses that can only use a handful of physical rooms are placed
-                // before courses that could still go anywhere.
                 $roomOptionComparison = ($left['physical_room_options'] ?? PHP_INT_MAX)
                     <=> ($right['physical_room_options'] ?? PHP_INT_MAX);
 
@@ -798,19 +676,11 @@ class CspSolver
             }
         }
 
-        // Collect a larger candidate pool so the diversity filter has more
-        // material to choose from. We gather up to 20× the requested solutions
-        // (capped at 200) to maximise the variety of distinct scheduling choices
-        // before applying diversity-aware selection.
         $candidatePoolLimit = min(
             max($maxSolutions * 3, 8),
             18,
         );
 
-        // A single-course solve is an alternatives list, not a timetable: it has
-        // one variable, so a wider pool costs one more candidate check each and
-        // gives selectDiverse enough material to answer with different days
-        // rather than the same day at three start times.
         if (! $this->lateWeekCapacityPreference) {
             $candidatePoolLimit = min(max($maxSolutions * 8, 24), 40);
         }
@@ -818,12 +688,6 @@ class CspSolver
         $rawSolutions = [];
         $solutionSignatures = [];
 
-        // Online is reached only through the search's own tiers: a lecture's
-        // online candidates open once every physical room and time for it has
-        // failed to complete a timetable. A second pass used to demand a quota
-        // of online lectures, sized from a department-wide room-scarcity
-        // forecast, and so produced solutions that moved lectures online while
-        // their rooms were still free.
         $unrestrictedPoolLimit = max($maxSolutions, intdiv($candidatePoolLimit, 2));
         $this->backtrack(
             variableIndex: 0,
@@ -843,12 +707,6 @@ class CspSolver
             $rawSolutions = $resolvedLaboratorySolutions;
         }
 
-        // The same preference for online: a solution that kept every lecture in
-        // a real room beats one that only reached a lecture by going online.
-        // This looks at the marker rather than the delivery mode, so a hybrid
-        // lecture, an explicitly online course and a Sunday online-only
-        // placement are all left alone -- those chose online rather than
-        // falling back to it.
         $roomedLectureSolutions = array_values(array_filter(
             $rawSolutions,
             fn (array $assignments): bool => ! $this->solutionContainsOnlineFallback($assignments),
@@ -857,7 +715,6 @@ class CspSolver
             $rawSolutions = $roomedLectureSolutions;
         }
 
-        // Score every raw solution.
         $scored = array_map(
             function (array $assignments) use ($courses): array {
                 return [
@@ -870,15 +727,10 @@ class CspSolver
             $rawSolutions,
         );
 
-        // Select a diverse subset of the scored solutions. With a start day the
-        // days are exhausted in order: the start day's options come first,
-        // spread over its times and rooms, and a later day is offered only
-        // for the places the earlier days could not fill.
         $ranked = $this->searchFromDay !== null
             ? $this->selectDiverseFromDay($scored, $maxSolutions, $this->searchFromDay)
             : $this->solutionDiversity()->selectDiverse($scored, $maxSolutions);
 
-        // Strip the internal _raw field and assign sequential ranks.
         foreach ($ranked as $index => &$solution) {
             unset($solution['_raw']);
             $solution['rank'] = $index + 1;
@@ -964,8 +816,6 @@ class CspSolver
 
     public function generationMetrics(): SchedulingGenerationMetrics
     {
-        // A direct caller that passed no snapshot got one captured for it;
-        // counted so such callers stay visible in generation metrics.
         $fallbackUsage = $this->snapshotAutoCaptured
             ? ['auto_captured_snapshot' => 1]
             : [];
@@ -1081,8 +931,6 @@ class CspSolver
                 }
             }
 
-            // A lower-priority day or room fallback is opened only when this
-            // entire group cannot produce a complete conflict-free timetable.
             if (count($solutions) > $solutionsBeforeGroup) {
                 return;
             }
@@ -1094,22 +942,6 @@ class CspSolver
     }
 
     /**
-     * Keep ordinary generation priorities lexicographic after persisted
-     * conflicts have pruned the domain. Soft compactness and day-balancing
-     * scores may reorder candidates inside a tier, but cannot move a fallback
-     * tier (unsplit single-session, online, Sunday, Room TBA) ahead of a
-     * feasible physical placement. Physical rooms are therefore exhausted
-     * before the search opens unsplit or online fallbacks.
-     *
-     * Day tiers refine that ordering within each allocation tier:
-     *   0 - the preferred days for this candidate
-     *   1 - Monday-Thursday for a single meeting holding a lecture room, which
-     *       department policy keeps free for MW/TTh split sessions
-     *   2 - unused; Sunday sat here as a last resort before it became an
-     *       ordinary teaching day
-     * Tier 1 and 2 are only opened when the earlier tiers cannot complete a
-     * timetable, so the preference never removes a legal placement.
-     *
      * @param  list<array<string, mixed>>  $domain
      * @return list<list<array<string, mixed>>>
      */
@@ -1138,18 +970,9 @@ class CspSolver
             return [$domain];
         }
 
-        // Outer tier is the allocation priority already used to sort the
-        // domain: preferred physical (0), split/pattern fallbacks (1),
-        // single-session unsplit fallbacks (2), weekend physical (3-5),
-        // Room TBA (7), then online (10+). A lower-priority tier is only
-        // opened when every candidate in the earlier tiers fails to yield a
-        // complete conflict-free timetable, which guarantees normal rooms are
-        // exhausted before unsplit or online fallbacks are used.
         $byAllocation = [];
         foreach ($domain as $candidate) {
             $priority = $this->candidateAllocationPriority($candidate, $sectionId);
-            // Keep the historical Room TBA-last behaviour when both TBA and
-            // online candidates exist for the same variable.
             if ($hasRoomTbaCandidates && ($candidate['_room_tba'] ?? false)) {
                 $priority = 100 + $this->candidateSearchDayTier($candidate);
             }
@@ -1178,15 +1001,6 @@ class CspSolver
     }
 
     /**
-     * Deals the candidates out one day at a time, keeping each day's own order.
-     *
-     * A domain is built day by day, so the first candidates the search reaches
-     * are every start time and room of Monday. That is the right shape while a
-     * timetable is being filled, but an alternatives list built from it offers
-     * one day at three start times. Dealing by day makes the first few
-     * solutions land on different days, which is the material
-     * SolutionDiversity needs to answer with a genuine choice.
-     *
      * @param  list<array<string, mixed>>  $candidates
      * @return list<array<string, mixed>>
      */
@@ -1219,12 +1033,6 @@ class CspSolver
     }
 
     /**
-     * Orders candidates day by day starting from $fromDay: that day first, then
-     * the other weekdays, the weekend last (SchedulingPolicy::searchDayRank).
-     * Within a day the start times are dealt
-     * out in turn, so the pool holds different times on the day rather than one
-     * time in every room.
-     *
      * @param  list<array<string, mixed>>  $candidates
      * @return list<array<string, mixed>>
      */
@@ -1259,10 +1067,6 @@ class CspSolver
     }
 
     /**
-     * How soon a placement is reached searching from $fromDay: the best
-     * SchedulingPolicy::searchDayRank of its meetings, so a split meeting on
-     * the start day counts as being on it.
-     *
      * @param  array<string, mixed>  $placement  a candidate or an assignment
      */
     private static function candidateDayDistance(array $placement, string $fromDay): int
@@ -1279,15 +1083,7 @@ class CspSolver
     private function candidateSearchDayTier(array $candidate): int
     {
         $tier = 0;
-        // A single meeting holding a real lecture room is steered to the end of
-        // the week so Monday-Thursday lecture-room capacity stays open for the
-        // MW and TTh split-session patterns. Monday-Thursday becomes day tier 1
-        // for these candidates, which the group gate only opens when Friday and
-        // Saturday cannot complete the timetable -- so this reorders the search
-        // without ever removing a placement.
         $prefersLateWeek = $this->protectsSplitCapacity && $this->prefersLateWeekPlacement($candidate);
-        // Sunday is the true end of the week, so it serves the same purpose
-        // here that Friday and Saturday do.
         $lateWeekDays = [...SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS, 'Sunday'];
 
         foreach ($candidate['blocks'] ?? [] as $block) {
@@ -1296,21 +1092,11 @@ class CspSolver
             if ($prefersLateWeek && ! in_array($day, $lateWeekDays, true)) {
                 $tier = 1;
             }
-            // Every day is part of the normal physical search range; Sunday
-            // used to sit in a fallback tier of its own. Only virtual and TBA
-            // resources are fallback tiers now.
         }
 
         return $tier;
     }
 
-    /**
-     * True when a candidate is a single meeting that would occupy a real
-     * lecture room. Laboratory rooms are deliberately excluded: laboratories
-     * are the scarcer resource and keep their existing day distribution.
-     * Online, field and Room TBA placements consume no lecture-room capacity,
-     * so they are unaffected by the late-week preference as well.
-     */
     private function prefersLateWeekPlacement(array $candidate): bool
     {
         $blocks = $candidate['blocks'] ?? [];
@@ -1335,15 +1121,6 @@ class CspSolver
     }
 
     /**
-     * Re-ranks a variable domain against the partial assignment already built
-     * during search. This helps the solver fill adjacent room/section openings
-     * before it explores starts that create 30-minute or 1-hour holes.
-     *
-     * Compactness only reorders candidates inside the same allocation tier.
-     * A physical placement always stays ahead of an unsplit single-session or
-     * online fallback regardless of gap scores, so normal rooms are exhausted
-     * first.
-     *
      * @param  list<array<string, mixed>>  $domain
      * @param  list<array<string, mixed>>  $assignments
      * @return list<array<string, mixed>>
@@ -1354,17 +1131,6 @@ class CspSolver
             return $domain;
         }
 
-        // Keep a section's meetings spread across the teaching week while
-        // still preserving the compactness preference below. The rotating
-        // anchor prevents every course from starting on Monday; once a day is
-        // occupied, the load penalty naturally moves the next candidate to the
-        // next available day and eventually wraps back to Monday.
-        //
-        // Sunday counts like every other day. While it was excluded, it stayed
-        // at load zero for the whole solve, so it was permanently the cheapest
-        // day for any candidate the weekend allocation tier does not gate --
-        // which is exactly how every field course (PATHFIT, NSTP) ended up on
-        // Sunday.
         $dayLoads = [];
         foreach ($assignments as $assignment) {
             foreach ($assignment['blocks'] ?? [] as $block) {
@@ -1403,13 +1169,6 @@ class CspSolver
         return array_column($ranked, 'candidate');
     }
 
-    /**
-     * Blocks of the candidate that overlap another section's meeting of the
-     * same course where exactly one side is online. One instructor often
-     * teaches every section of a course, so such an overlap usually turns into
-     * a faculty conflict at assignment time. Unlike online-vs-online it is a
-     * preference, not a rule: dense loads may have no other place to go.
-     */
     private function candidateMixedModeCourseOverlaps(array $candidate, int $sectionId): int
     {
         $courseId = (int) ($candidate['course_id'] ?? 0);
@@ -1434,11 +1193,6 @@ class CspSolver
     }
 
     /**
-     * Prefer the least-loaded teaching day, with a rotating tie-breaker. The
-     * teaching week is Monday-Sunday. The tie-breaker is deterministic per
-     * section/course so retries remain reproducible while different sections do
-     * not all claim Monday first.
-     *
      * @param  array<string, int>  $dayLoads
      */
     private function candidateDayBalancePenalty(array $candidate, array $dayLoads, int $sectionId): int
@@ -1448,9 +1202,6 @@ class CspSolver
             return 0;
         }
 
-        // Explicit patterns and their documented fallbacks are already ranked
-        // by the CSP policy. Do not let the general distribution preference
-        // reorder those contractual choices.
         if (
             ! empty($candidate['preferred_pattern'])
             || ! empty($candidate['_pattern_fallback'])
@@ -1460,9 +1211,6 @@ class CspSolver
         }
 
         $courseId = (int) ($candidate['course_id'] ?? 0);
-        // The week is seven days, so the rotating tie-breaker rotates over
-        // seven. Sunday used to carry a flat surcharge here that kept it behind
-        // Monday-Saturday whatever the day loads said.
         $cycle = 7;
         $anchor = abs(($sectionId * 17) + ($courseId * 31)) % $cycle;
         $penalty = 0;
@@ -1480,14 +1228,6 @@ class CspSolver
     }
 
     /**
-     * A single lecture-room meeting that could not go late in the week should
-     * take a Monday-Thursday slot whose pair day (MW, TTh) is already booked in
-     * the same room at that time: no split session could use that slot anyway.
-     * One whose pair day is free is penalised, because it leaves that free slot
-     * on the pair day stranded for every MW/TTh split.
-     *
-     * Only a ranking penalty inside a tier; it never removes a candidate.
-     *
      * @param  list<array<string, mixed>>  $assignments
      */
     private function candidateSplitPairBreakPenalty(array $candidate, array $assignments): int
@@ -1542,10 +1282,6 @@ class CspSolver
     }
 
     /**
-     * Scores how much a candidate would spread the current partial timetable.
-     * Lower is better. Gaps in the same physical room are weighted heavily;
-     * section-day gaps are also penalized so student schedules stay compact.
-     *
      * @param  list<array<string, mixed>>  $assignments
      */
     private function candidateTentativeGapPenalty(array $candidate, array $assignments): int
@@ -1651,16 +1387,6 @@ class CspSolver
             && ($block['meeting_type'] ?? null) !== 'laboratory';
     }
 
-    /**
-     * Soft cost of ignoring a course's requested time band.
-     *
-     * This is a preference, not a constraint: it only reorders candidates
-     * inside one allocation tier, so asking for an afternoon slot can never
-     * turn a feasible timetable into a failed run. When no slot in the
-     * requested band survives the hard constraints, the solver still places
-     * the course elsewhere.
-     */
-    /** 0 when the candidate meets in the course's preferred room (or none was chosen), else 1. */
     private function candidatePreferredRoomRank(array $candidate): int
     {
         $roomId = $this->preferredRoomIdsByCourseId[(int) ($candidate['course_id'] ?? 0)] ?? null;
@@ -1681,8 +1407,6 @@ class CspSolver
     }
 
     /**
-     * The Setup Courses Custom Time Duration of a single-requirement course.
-     *
      * @param  list<array<string, mixed>>  $requirements
      */
     private function requirementCustomSlots(array $requirements): ?int
@@ -1696,9 +1420,6 @@ class CspSolver
     }
 
     /**
-     * The Setup Courses length of one Integrated Hybrid session
-     * ('lecture' or 'laboratory'), when one was chosen.
-     *
      * @param  list<array<string, mixed>>  $requirements
      */
     private function requirementComponentSlots(array $requirements, string $componentType): ?int
@@ -1783,8 +1504,6 @@ class CspSolver
                 && in_array((int) $course->id, $selectedLectureLabCourseIds, true)
                 && $lecHours > 0
                 && $labHours > 0;
-            // Integrated On-site keeps both sessions face-to-face; only
-            // Integrated Hybrid moves the lecture online.
             $courseIsHybrid = $isHybrid && $hasBothComponents
                 && ! SchedulingPolicy::isIntegratedOnSite($deliveryModesByCourseId, (int) $course->id);
 
@@ -1794,9 +1513,6 @@ class CspSolver
             $requiresBalancedSplit = in_array((int) $course->id, $balancedSplitCourseIds, true);
             $requiresHybridSplit = in_array((int) $course->id, $hybridSplitCourseIds, true);
 
-            // Consecutive Days is the course's shape in this section: one class
-            // met on N back-to-back days. It replaces any split the run asked
-            // for (the preflight refuses that combination with a reason).
             $consecutiveRule = $this->consecutiveRulesByCourseId[(int) $course->id] ?? null;
             if ($consecutiveRule !== null) {
                 $hasBothComponents = false;
@@ -1809,37 +1525,20 @@ class CspSolver
             $lectureComponentSlots = null;
             $laboratoryComponentSlots = null;
             if ($hasBothComponents) {
-                // Integrated Hybrid: each session's length is the one chosen
-                // in Setup Courses, else the course's own. The total below is
-                // only for ranking and the cache key; the two are placed as
-                // separate meetings.
                 $lectureComponentSlots = $this->requirementComponentSlots($requirements, 'lecture')
                     ?? SchedulingPolicy::lectureComponentSlots($course);
                 $laboratoryComponentSlots = $this->requirementComponentSlots($requirements, 'laboratory')
                     ?? $this->laboratoryComponentSlots($course);
                 $durationSlots = $lectureComponentSlots + $laboratoryComponentSlots;
             } elseif ($requiresHybridSplit) {
-                // Two fixed meetings: one online, one face-to-face.
                 $durationSlots = 2 * SchedulingPolicy::hybridSplitMeetingSlots();
             } else {
-                // A Setup Courses Custom Time Duration arrives on the course's
-                // requirement.
                 $durationSlots = $this->requirementCustomSlots($requirements)
                     ?? $this->getDurationSlots($course);
             }
 
-            // The candidate set for a course depends only on the course, the
-            // rooms and the configuration -- never on the partial assignment or
-            // on which attempt this is. Year-level generation solves the same
-            // section many times (two section orderings, the Room TBA ladder,
-            // the retry strategies and the recursive branch search), so without
-            // this cache the same tens of thousands of candidates are rebuilt
-            // for every attempt. Ranking stays outside the cache because it
-            // reads live room-usage counters that do change per attempt.
             $forcedDay = $forcedDaysByCourseId[(int) $course->id] ?? null;
 
-            // A run is a Regular class repeated: each of its days meets for the
-            // class's full length (an 8-unit course, 8 hours every day).
             $consecutiveDayCount = $consecutiveRule['day_count'] ?? 0;
             if ($throwOnEmptyDomain && $consecutiveRule !== null) {
                 $this->assertConsecutiveDaysPlaceable($course, $sectionId, $consecutiveRule, $forcedDay);
@@ -1887,10 +1586,6 @@ class CspSolver
                     deliveryMode: $courseDeliveryMode,
                     runs: SchedulingPolicy::consecutiveRuleRuns($consecutiveRule, $this->sundayClassesEnabled, $this->allowedDays),
                 ),
-                // Lecture and laboratory are always two separate meetings of
-                // their own lengths. A preferred pattern used to send this
-                // course to the generic pattern builder, which split the
-                // combined total across two days as if it were one class.
                 $hasBothComponents => $this->buildDefaultLectureLabDomain(
                     course: $course,
                     matchingRooms: $rooms,
@@ -1911,8 +1606,6 @@ class CspSolver
                     durationSlots: $durationSlots,
                     preferredPattern: $preferredPattern,
                 ),
-                // An Online Split Session is still two meetings: the split is
-                // checked before online, which alone would build one meeting.
                 $requiresBalancedSplit && $preferredPattern === null => $this->buildFlexibleBalancedSplitDomain(
                     course: $course,
                     matchingRooms: $rooms,
@@ -1969,7 +1662,6 @@ class CspSolver
             $emptyAfterRequirements = $domain === [] && isset($requirementsByCourseId[(int) $course->id]);
 
             $emptyAfterForcedDay = false;
-            // A run cannot sit on one Required Day; the pair is refused above.
             if ($forcedDay !== null && $domain !== [] && $consecutiveRule === null) {
                 $domain = $this->filterDomainByForcedDay($domain, $forcedDay);
                 $emptyAfterForcedDay = $domain === [];
@@ -1981,25 +1673,12 @@ class CspSolver
                 $emptyAfterDays = $domain === [];
             }
 
-            // allowedDayModePairsForCourse already leaves Sunday out; this also
-            // catches a shape built from its own day list (an anchored meeting,
-            // a forced day) so a closed Sunday is never offered.
             $emptyAfterSunday = false;
             if (! $this->sundayClassesEnabled && $domain !== []) {
                 $domain = $this->filterDomainByDays($domain, SchedulingPolicy::teachingDays(false));
                 $emptyAfterSunday = $domain === [];
             }
 
-            // The domain is shuffled and then ordered by allocation priority.
-            // A (day, start_slot) sort used to run here as well, but the
-            // Fisher-Yates shuffle below discards that ordering entirely before
-            // anything reads it, so it was pure cost on a domain that can hold
-            // tens of thousands of candidates.
-
-            // Apply a deterministic section+course-seeded shuffle to the domain
-            // so each section explores a different ordering of candidates,
-            // preventing resource starvation where section 1 always claims the
-            // same on-site rooms first.
             $this->domainCache[$domainCacheKey] = [
                 'domain' => $domain,
                 'empty_after_requirements' => $emptyAfterRequirements,
@@ -2009,14 +1688,9 @@ class CspSolver
             ];
             }
 
-            // The shuffle is seeded per attempt, so it stays outside the cache.
-            // It is a linear pass and costs far less than rebuilding.
             $shuffleSeed = abs($sectionId * 2053 + (int) $course->id * 97 + $seed);
             $domain = $this->seededShuffle($domain, $shuffleSeed);
 
-            // Sunday was the only day left, and the department has not opened
-            // it. Point at the Sunday Classes setting, not at Preferred Days or
-            // a Required Day that are otherwise valid.
             $blockedBySunday = ! $this->sundayClassesEnabled && (
                 $emptyAfterSunday
                 || ($emptyAfterForcedDay && $forcedDay === 'Sunday')
@@ -2030,8 +1704,6 @@ class CspSolver
                 ));
             }
 
-            // Step 1's Preferred Days removed every candidate. Named apart from
-            // the period so the fix points at the right control.
             if ($throwOnEmptyDomain && $emptyAfterDays && $this->allowedDays !== null) {
                 throw new RuntimeException(sprintf(
                     '%s / %s cannot be scheduled on the Preferred Days (%s). %s',
@@ -2044,9 +1716,6 @@ class CspSolver
                 ));
             }
 
-            // The course could meet on other days; the department's forced day is
-            // what rules every candidate out (e.g. a field course forced onto
-            // Sunday), so point at that setting rather than at room conflicts.
             if ($throwOnEmptyDomain && $emptyAfterForcedDay) {
                 throw new RuntimeException(sprintf(
                     '%s / %s has a Required Day of %s, but this course cannot be scheduled on that day. Change or clear its Required Day in Setup Courses.',
@@ -2064,17 +1733,6 @@ class CspSolver
                 ));
             }
 
-            // Enforce domain candidate priority order after shuffle:
-            //   0 -> preferred physical room, on-site  (laboratory for lab courses, lecture for lecture courses)
-            //   1 -> fallback physical room, on-site   (lecture room fallback for lab courses)
-            //   2 -> online delivery mode              (tried last when physical rooms unavailable)
-            //
-            // The ranking keys are computed once per candidate rather than
-            // inside the comparator: candidateAllocationPriority alone walks a
-            // candidate's blocks several times, and a comparator re-runs that
-            // for every one of the O(n log n) comparisons. The trailing index
-            // keeps the shuffled order for full ties, so the result is
-            // identical to the previous comparator.
             $ranked = [];
             foreach ($domain as $rankIndex => $rankCandidate) {
                 $ranked[] = [
@@ -2088,8 +1746,6 @@ class CspSolver
                     'candidate' => $rankCandidate,
                 ];
             }
-            // The preferred room ranks only inside an allocation tier, so it can
-            // never pull Saturday, Room TBA or Online ahead of a weekday room.
             usort(
                 $ranked,
                 static fn (array $left, array $right): int => $left['allocation'] <=> $right['allocation']
@@ -2110,7 +1766,6 @@ class CspSolver
                 'is_split_session' => $requiresBalancedSplit || $requiresHybridSplit,
                 'physical_room_options' => $this->countPhysicalRoomOptions($domain),
                 'duration_slots' => $durationSlots,
-                // A run is placed first: it needs one time free on N days.
                 'preferred_pattern' => $consecutiveRule !== null
                     ? SchedulingPolicy::consecutivePattern($consecutiveDayCount)
                     : $preferredPattern,
@@ -2125,10 +1780,6 @@ class CspSolver
     }
 
     /**
-     * Refuse, with the setting to change, a Consecutive Days course that can
-     * never be placed: it also has a Required Day, its ticked days fall
-     * outside the days this run may use, or those days have no N back-to-back.
-     *
      * @param  array{day_count: int, preferred_start_day: string|null, meeting_days?: list<string>|null}  $rule
      */
     private function assertConsecutiveDaysPlaceable(Course $course, int $sectionId, array $rule, ?string $forcedDay): void
@@ -2193,22 +1844,6 @@ class CspSolver
         }
     }
 
-    /**
-     * Consecutive Days: a Regular class met on $dayCount days, for its full
-     * length, at one start time and in one room every day. $runs are the day
-     * sets it may take (SchedulingPolicy::consecutiveRuleRuns): the days
-     * ticked in Setup Courses, back-to-back or not (Monday, Wednesday,
-     * Friday), or for an older rule any calendar-consecutive run that fits.
-     *
-     * Built from the single-meeting candidates of that length, so the
-     * room types, delivery modes, field window and Room TBA / online fallbacks
-     * are exactly a single meeting's. A run is kept only when the same start,
-     * room and mode is a candidate on every one of its days. Sharing the room
-     * keeps the domain the size of a single meeting's instead of rooms^N.
-     *
-     * The blocks carry no meeting type: a run is not an Integrated lecture or
-     * laboratory session, and a typed linked meeting would be judged as one.
-     */
     private function buildConsecutiveDaysDomain(
         Course $course,
         Collection $matchingRooms,
@@ -2256,17 +1891,6 @@ class CspSolver
     }
 
     /**
-     * Identity of a course's candidate set. Every input that can change which
-     * candidates are produced must appear here; anything ranked or filtered
-     * later against live solver state must not.
-     *
-     * Deliberately not keyed by section: no domain builder or filter takes a
-     * section, so two sections offering the same course under the same
-     * configuration have the same candidate set. Everything that does vary per
-     * section -- requirements, anchored schedules, forced day, delivery mode,
-     * split and pattern selections -- is passed in $parts. Section-specific
-     * ordering happens after the cache, in the seeded shuffle and the ranking.
-     *
      * @param  list<mixed>  $parts
      */
     private function domainCacheKey(int $courseId, string $roomsSignature, array $parts): string
@@ -2345,10 +1969,6 @@ class CspSolver
     }
 
     /**
-     * Deterministic Fisher-Yates shuffle seeded with $seed.
-     * Produces a stable ordering per (section, course) pair without using
-     * PHP's global mt_rand state, which would introduce non-determinism.
-     *
      * @param  array<int, array<string, mixed>>  $items
      * @return array<int, array<string, mixed>>
      */
@@ -2359,7 +1979,6 @@ class CspSolver
             return $items;
         }
 
-        // LCG parameters (Numerical Recipes)
         $a = 1664525;
         $c = 1013904223;
         $m = 2 ** 32;
@@ -2375,17 +1994,6 @@ class CspSolver
     }
 
     /**
-     * Returns the list of (day, mode) pairs that are valid for a given course
-     * based on its category, delivery type, and institutional scheduling rules:
-     *
-     *  - Any field course (PATHFIT, NSTP, ...): every day, field mode.
-     *  - Everything else                     : every day, on-site or online.
-     *
-     * The day limits are gone: field courses were Monday-Friday, minors
-     * Monday-Saturday, and a major's Sunday was online-only. Every course may
-     * now use every day, which is what MeetingDayRule enforces, so the
-     * generator and the rule engine still answer alike.
-     *
      * @return list<array{0: string, 1: string}> Each entry is [day, mode].
      */
     private function allowedDayModePairsForCourse(Course $course): array
@@ -2427,8 +2035,6 @@ class CspSolver
         $allowLectureInVacantLab = $this->isMajorFullLectureCourse($course);
         $singleBlockMeetingType = $this->singleBlockMeetingTypeForCourse($course);
         $isField = $deliveryMode === 'field' || $this->isFieldCourse($course);
-        // A course set to meet in the field for this run is held to the field
-        // days even when it is not a field course by record or department list.
         $dayModePairs = $isField && ! $this->isFieldCourse($course)
             ? array_map(
                 static fn (string $day): array => [$day, 'field'],
@@ -2450,11 +2056,6 @@ class CspSolver
                 default => (string) $course->room_type_required,
             };
 
-            // For on-site courses, prioritize room type based on curriculum (lab_hours).
-            // A lecture course may fall back to a lecture-capable laboratory. A
-            // laboratory course takes the rooms the Default LAB Room Requirement
-            // allows (SchedulingPolicy::labRoomTypes), the same list RoomTypeRule
-            // accepts at save time.
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
@@ -2482,10 +2083,6 @@ class CspSolver
                         'mode' => $mode,
                         'is_hybrid' => $isHybrid,
                         '_lab_fallback' => false,
-                        // Online is a fallback unless the course was set to
-                        // meet online. Without the marker the physical-first
-                        // pass kept these candidates, so a later lecture could
-                        // go online while a room was free at another time.
                         '_lecture_online_fallback' => $deliveryMode !== 'online',
                         'blocks' => [
                             array_merge($this->makeBlock(
@@ -2567,9 +2164,6 @@ class CspSolver
     }
 
     /**
-     * Keeps only candidates whose every meeting falls on an allowed day, so a
-     * Split Session or Hybrid survives only when both its days are allowed.
-     *
      * @param  list<string>  $allowedDays
      */
     private function filterDomainByDays(array $domain, array $allowedDays): array
@@ -2612,7 +2206,6 @@ class CspSolver
             return [];
         }
 
-        // The exact forced-day state that was validated and fingerprinted.
         return array_intersect_key(
             $this->snapshot()->forcedDaysByCourseId,
             array_fill_keys(array_map('intval', $courseIds), true),
@@ -2632,8 +2225,6 @@ class CspSolver
             return [];
         }
 
-        // Two separate meetings: the lengths chosen in Setup Courses, or
-        // each sized from the course itself.
         $lectureSlots ??= SchedulingPolicy::lectureComponentSlots($course);
         $labSlots = $laboratorySlots ?? $this->laboratoryComponentSlots($course);
 
@@ -2708,10 +2299,6 @@ class CspSolver
                     $startPairs = $this->rankedSplitStartPairs(
                         firstStartSlots: $day1StartSlots,
                         secondStartSlots: $day2StartSlots,
-                        // Laboratory room selection must see every valid
-                        // lecture/lab time pair. Otherwise a TBA candidate in
-                        // the first few pairs can win while a real laboratory
-                        // remains available in a later pair.
                         limit: null,
                     );
                 }
@@ -2720,9 +2307,6 @@ class CspSolver
                     $day1End = $day1Start + $firstComponent['slots'];
                     $day2End = $day2Start + $secondComponent['slots'];
 
-                    // Lecture/lab split meetings must be distributed across
-                    // different days. Saturday is part of the normal physical
-                    // range; it is never represented as a same-day fallback.
                     if ($isHybrid && $day1 === $day2) {
                         continue;
                     }
@@ -2747,15 +2331,7 @@ class CspSolver
                                 'is_hybrid' => $isHybrid,
                                 '_split_lecture_online_default' => true,
                                 '_all_saturday_split' => $day1 === 'Saturday' && $day2 === 'Saturday',
-                                // Preserve the fallback marker on the composed
-                                // split candidate. Without this, a Room TBA lab
-                                // is ranked like a real lab room and may win
-                                // merely because it has no room-usage penalty.
                                 '_room_tba' => (bool) (($option1['_room_tba'] ?? false) || ($option2['_room_tba'] ?? false)),
-                                // Preserve the lecture-online fallback marker too, so the
-                                // search and the solution filter can tell a lecture that
-                                // chose online from one that only fell back to it after
-                                // every compatible lecture room was taken.
                                 '_lecture_online_fallback' => (bool) (($option1['_lecture_online_fallback'] ?? false) || ($option2['_lecture_online_fallback'] ?? false)),
                                 '_lab_fallback' => false,
                                 'blocks' => [
@@ -2831,10 +2407,6 @@ class CspSolver
             ['Wednesday', 'Saturday'],
             ['Thursday', 'Saturday'],
             ['Friday', 'Saturday'],
-            // Sunday is an ordinary teaching day (SchedulingPolicy::DAYS), so it
-            // needs pairs too -- without these, a run whose allowed days require
-            // Sunday (Preferred Days, a forced course day) left this list empty
-            // and Integrated classes could not be generated at all.
             ['Monday', 'Sunday'],
             ['Tuesday', 'Sunday'],
             ['Wednesday', 'Sunday'],
@@ -2858,18 +2430,6 @@ class CspSolver
     }
 
     /**
-     * A bounded, rotating window of physical room options, with every virtual
-     * fallback (online lecture, Room TBA laboratory) always kept.
-     *
-     * A split candidate pairs one room per component, so enumerating every
-     * lecture-room x laboratory-room combination at every day and start pair
-     * multiplies out the whole room inventory. A department with 30 lecture
-     * rooms and 6 laboratories produced over 150,000 candidates for a single
-     * course and exhausted memory before the search even began. Offering each
-     * day/start pair a rotating slice instead keeps every room reachable
-     * somewhere in the domain while the candidate count stays proportional to
-     * the number of time slots rather than to the square of the inventory.
-     *
      * @param  list<array<string, mixed>>  $options
      * @return list<array<string, mixed>>
      */
@@ -2891,8 +2451,6 @@ class CspSolver
             for ($offset = 0; $offset < self::SPLIT_ROOM_OPTIONS_PER_SLOT; $offset++) {
                 $window[] = $rooms[abs($rotation + $offset) % $count];
             }
-            // A course's Preferred Room is offered at every time pair, or the
-            // preference could only ever win the pairs its rotation reached.
             if ($keepRoomId !== null && ! in_array($keepRoomId, array_column($window, 'room_id'), true)) {
                 foreach ($rooms as $room) {
                     if ($room['room_id'] === $keepRoomId) {
@@ -2933,9 +2491,6 @@ class CspSolver
             ->values()
             ->all();
 
-        // Online remains a valid alternative when all compatible lecture
-        // rooms are occupied or otherwise unavailable, but it is never the
-        // default for a non-Hybrid lecture/laboratory course.
         $options[] = [
             'room_id' => null,
             'room_type' => 'online',
@@ -3015,11 +2570,6 @@ class CspSolver
         return $domain;
     }
 
-    /**
-     * Hybrid Split: two equal meetings for a three-unit lecture course, with
-     * one online block and one physical block. The course and its delivery
-     * choice select this shape; no department switch participates.
-     */
     private function buildFlexibleHybridSplitDomain(
         Course $course,
         Collection $matchingRooms,
@@ -3066,12 +2616,6 @@ class CspSolver
             return [];
         }
 
-        // The face-to-face meeting is a lecture, so it takes the rooms
-        // RoomTypeRule accepts for one: a lecture room, or a laboratory flagged
-        // for lecture use when the course is a lecture-only major. It gets no
-        // Room TBA either -- that fallback belongs to laboratories alone
-        // (`allowsRoomTbaFallback`); offering it produced previews the save
-        // refused.
         $physicalOptions = $matchingRooms
             ->filter(static fn (Rooms $room): bool => $room->room_type === 'lecture'
                 || SchedulingPolicy::laboratoryServesLecture($course, $room))
@@ -3092,7 +2636,6 @@ class CspSolver
             'mode' => 'online',
         ];
         $domain = [];
-        // Both meetings share one time slot (split_group_same_time).
         foreach ($starts as $start1) {
             foreach ([$start1] as $start2) {
                 foreach ([false, true] as $onlineFirst) {
@@ -3102,11 +2645,6 @@ class CspSolver
                     $secondOptions = $onlineFirst ? $physicalOptions : [$second];
                     foreach ($firstOptions as $option1) {
                         foreach ($secondOptions as $option2) {
-                            // The candidate is labelled by its face-to-face
-                            // meeting whichever day it falls on. Labelling it by
-                            // the first meeting ranked every Online-first order
-                            // in the online tier, so every section met F2F on
-                            // its first day and online on its second.
                             $physical = $onlineFirst ? $option2 : $option1;
                             $domain[] = [
                                 'course_id' => (int) $course->id,
@@ -3141,14 +2679,6 @@ class CspSolver
     }
 
     /**
-     * The day pairs a Split Session or Hybrid Split may meet on.
-     *
-     * MW and TTh stay the pattern whenever the run allows them. When Step 1's
-     * Preferred Days leave neither, the pairs come from the chosen days
-     * instead -- spaced pairs (a rest day between) before back-to-back ones --
-     * so any two Preferred Days can hold a two-day class, as the year-level
-     * pre-check promises. Without Preferred Days the search is unchanged.
-     *
      * @return list<array{0: string, 1: string}>
      */
     private function balancedSplitDayPairs(Course $course): array
@@ -3167,9 +2697,6 @@ class CspSolver
             SchedulingPolicy::autoSplitDayPairs(),
             static fn (array $pair): bool => in_array($pair[0], $days, true) && in_array($pair[1], $days, true),
         ));
-        // Friday + Saturday is a third regular pair when the run allows it: it
-        // ranks with MW and TTh, not as a Saturday fallback, and
-        // candidateDayPairRotationRank spreads classes across the three.
         if ($this->allowFridaySaturdaySplit
             && in_array('Friday', $days, true)
             && in_array('Saturday', $days, true)) {
@@ -3213,8 +2740,6 @@ class CspSolver
             requireBalancedDurations: $requireBalancedDurations,
         );
 
-        // Alternative recommendations when preferred pattern is occupied:
-        // 1. Alternative vacant split day/time pattern with the same required duration
         $alternativePatternDomain = [];
         if ($durationSlots >= 2) {
             $flexibleSplitDomain = $this->buildFlexibleBalancedSplitDomain(
@@ -3233,8 +2758,6 @@ class CspSolver
             }
         }
 
-        // A configured Split remains a Split. A full-duration regular meeting
-        // is a user-facing recommendation, never an automatic solver fallback.
         return array_merge($primaryDomain, $alternativePatternDomain);
     }
 
@@ -3262,16 +2785,11 @@ class CspSolver
         }
 
         $domain = [];
-        // The requirement builder may resolve a field course using the
-        // department-scoped field-course settings. Preserve that resolved mode
-        // here even when the legacy course-only classifier lacks the context.
         $isField = $deliveryMode === 'field' || $this->isFieldCourse($course);
         $isLabCourse = $this->isMajorLabCourse($course);
         $isMajor = $course->course_category === 'major' || ($course->subject_category ?? null) === 'major';
         $lecHours = (int) ($course->lecture_hours ?? 0);
         $labHours = (int) ($course->lab_hours ?? 0);
-        // A Split Session is one class halved, even for a course with both
-        // components; only the lecture/laboratory shape uses their lengths.
         $hasBothComponents = ! $requireBalancedDurations && $isMajor && $lecHours > 0 && $labHours > 0;
 
         if ($isHybrid && $hasBothComponents && $day1 === $day2) {
@@ -3294,11 +2812,6 @@ class CspSolver
                 default => (string) $course->room_type_required,
             };
 
-            // For on-site courses, prioritize room type based on curriculum (lab_hours).
-            // A lecture course may fall back to a lecture-capable laboratory. A
-            // laboratory course takes the rooms the Default LAB Room Requirement
-            // allows (SchedulingPolicy::labRoomTypes), the same list RoomTypeRule
-            // accepts at save time.
             $roomTypes = [$targetRoomType];
             if ($mode === 'on-site') {
                 if ($isLabCourse) {
@@ -3341,8 +2854,6 @@ class CspSolver
                 $startPairs = $this->rankedSplitStartPairs(
                     firstStartSlots: $day1StartSlots,
                     secondStartSlots: $day2StartSlots,
-                    // Do not truncate laboratory pairs: all physical lab
-                    // slots must be exhausted before Room TBA is considered.
                     limit: null,
                 );
 
@@ -3401,10 +2912,6 @@ class CspSolver
                                     'is_hybrid' => $isHybrid,
                                     '_split_lecture_online_default' => true,
                                     '_room_tba' => (bool) (($option1['_room_tba'] ?? false) || ($option2['_room_tba'] ?? false)),
-                                    // Preserve the lecture-online fallback marker too, so the
-                                    // search and the solution filter can tell a lecture that
-                                    // chose online from one that only fell back to it after
-                                    // every compatible lecture room was taken.
                                     '_lecture_online_fallback' => (bool) (($option1['_lecture_online_fallback'] ?? false) || ($option2['_lecture_online_fallback'] ?? false)),
                                     '_lab_fallback' => false,
                                     'blocks' => [
@@ -3442,7 +2949,6 @@ class CspSolver
                                 'mode' => $mode,
                                 'is_hybrid' => $isHybrid,
                                 '_lab_fallback' => false,
-                                // See buildSingleDayDomain().
                                 '_lecture_online_fallback' => $deliveryMode !== 'online',
                                 'blocks' => [
                                     $this->makeBlock(
@@ -3525,11 +3031,6 @@ class CspSolver
     }
 
     /**
-     * Rank split start-time pairs by proximity. Minor/GEC split sessions use
-     * the complete pair list so an occupied early window cannot hide a valid
-     * later physical slot. Lecture/laboratory splits may pass the historical
-     * bound because each pair is multiplied by rooms and component orders.
-     *
      * @param  list<int>  $firstStartSlots
      * @param  list<int>  $secondStartSlots
      * @return list<array{0: int, 1: int}>
@@ -3607,7 +3108,6 @@ class CspSolver
                         && $assignedBlock['start_slot'] < $candidateBlock['end_slot'];
 
                     if ($overlaps) {
-                        // Section time overlap — always a conflict.
                         return true;
                     }
 
@@ -3627,10 +3127,6 @@ class CspSolver
             ? (int) $candidate['faculty_id']
             : null;
 
-        // Lightweight mode/room-type alignment guard using the room_type embedded
-        // in the candidate by the domain builder. This is a zero-query safety net
-        // that catches any mode/room mismatch (e.g. online room for an on-site course)
-        // without hitting the database on every backtracking iteration.
         $candidateRoomType = $candidate['room_type'] ?? null;
 
         foreach ($candidate['blocks'] as $block) {
@@ -3801,19 +3297,11 @@ class CspSolver
                     ];
                     $physicalRoomBlockTotal++;
 
-                    // Prefer rooms that are still empty or lightly used in the current semester.
                     $score += ($this->existingRoomUseCounts[$blockRoomId] ?? 0) * 3;
                 }
 
                 $blockDurations[] = $block['end_slot'] - $block['start_slot'];
 
-                // A weekend day is mildly discouraged, but a single meeting in a
-                // lecture room is exactly what department policy wants late in
-                // the week, so scoring must not pull it back onto Mon-Thu after
-                // the search deliberately placed it there. An allowed Friday +
-                // Saturday pair is a regular pair, so it is not discouraged
-                // either. Sunday used to take five times Saturday's penalty and
-                // no exemption; it now weighs the same as Saturday.
                 $prefersLateWeek = $this->prefersLateWeekPlacement($assignment)
                     || $this->isRegularFridaySaturdayPair($assignment);
                 $isWeekend = in_array($block['day'], ['Saturday', 'Sunday'], true);
@@ -3859,7 +3347,6 @@ class CspSolver
 
         if ($physicalRoomBlockTotal > 0) {
             $uniquePhysicalRooms = count($physicalRoomBlockCounts);
-            // Avoid concentrating generated classes in one room when other compatible rooms are free.
             $score += max(0, $physicalRoomBlockTotal - $uniquePhysicalRooms) * 12;
         }
 
@@ -3900,7 +3387,6 @@ class CspSolver
         }
 
         foreach ($byDay as $dayName => $dayAssignments) {
-            // Workload distribution penalty: heavily stacked days (>3 classes/day) get penalized
             $classCount = count($dayAssignments);
             if ($classCount > 3) {
                 $score += ($classCount - 3) * 5;
@@ -3938,7 +3424,6 @@ class CspSolver
             }
         }
 
-        // Upper limit penalty for online class distribution (max 5 online classes per section).
         if ($courses !== null && count($courses) >= 4) {
             $onlineCount = 0;
             foreach ($assignments as $assignment) {
@@ -3954,7 +3439,6 @@ class CspSolver
             }
         }
 
-        // Soft penalty for online delivery mode when physical rooms are preferred.
         foreach ($assignments as $assignment) {
             if ($assignment['_pattern_fallback'] ?? false) {
                 $score += 1500;
@@ -3991,9 +3475,6 @@ class CspSolver
             }
         }
 
-        // Soft penalty: a major lab course assigned to a lecture room because no
-        // lab was available. Solutions with actual lab-room assignments score lower
-        // (better) and are ranked above lecture-room fallbacks.
         if ($courses !== null) {
             foreach ($assignments as $assignment) {
                 $courseObj = $courses[(int) $assignment['course_id']] ?? null;
@@ -4001,8 +3482,6 @@ class CspSolver
                     continue;
                 }
 
-                // The _lab_fallback flag is set during domain building and carried
-                // through to the assignment — no extra DB query needed.
                 if ($assignment['_lab_fallback'] ?? false) {
                     $score += SchedulingPolicy::SOFT_LAB_FALLBACK_PENALTY;
                 }
@@ -4045,8 +3524,6 @@ class CspSolver
                     $row['split_session_fallback'] = true;
                 }
 
-                // The assignment flag covers both halves of a lecture/lab
-                // pair; only the half that actually went online was moved.
                 if (($assignment['_lecture_online_fallback'] ?? false) && $row['mode'] === 'online') {
                     $row['lecture_online_fallback'] = true;
                 }
@@ -4055,9 +3532,6 @@ class CspSolver
                     $row['split_group_id'] = $splitGroupId;
                     $row['meeting_index'] = $index + 1;
 
-                    // Determine meeting type: lecture or laboratory. A
-                    // Consecutive Days run is neither: typed, its linked
-                    // meetings would be judged as Integrated sessions.
                     $courseId = (int) $assignment['course_id'];
                     $courseObj = $this->loadedCoursesById[$courseId] ?? null;
                     if (SchedulingPolicy::consecutiveDayCount($assignment['preferred_pattern'] ?? null) !== null) {
@@ -4342,9 +3816,6 @@ class CspSolver
             ->values()
             ->all();
 
-        // When any course in the batch has a laboratory preference, also fetch
-        // lecture rooms so they are available as a fallback for departments
-        // that have no lab rooms or whose labs are fully booked.
         $hasLabCourse = $courses->contains(
             fn (Course $course): bool => $this->isMajorLabCourse($course),
         );
@@ -4393,8 +3864,6 @@ class CspSolver
                 if (isset($eligible[$roomType])) {
                     continue;
                 }
-                // Room TBA for a laboratory meeting stays available whichever
-                // rooms the Default LAB Room Requirement allows.
                 $blockRoomId = array_key_exists('room_id', $block) ? $block['room_id'] : ($candidate['room_id'] ?? null);
                 if ($roomType === 'laboratory' && $blockRoomId === null && $mode === 'on-site') {
                     continue;
@@ -4443,25 +3912,11 @@ class CspSolver
         return (string) $course->room_type_required;
     }
 
-    /**
-     * Field is the course record or the department's field list, read from the
-     * snapshot: it holds the list as it was when this run was validated, scoped
-     * to the scheduling department, so the solver and the kernel agree. The
-     * static database lookup could be stale in a long-lived worker, and was
-     * first read here before the solving department was even known. Outside a
-     * solve there is no department in scope, so only the course record counts.
-     */
     private function isFieldCourse(Course $course): bool
     {
         return SchedulingPolicy::isFieldCourse($course, fieldCourseCodes: $this->inputSnapshot?->fieldCourseCodes ?? []);
     }
 
-    /**
-     * Returns true when the course is a major course that prefers a laboratory
-     * room (room_type_required === 'laboratory') and is not a field/NSTP course.
-     * Used to decide whether lecture rooms should be included as a fallback in
-     * the CSP domain and whether a lab-fallback penalty should be applied.
-     */
     private function isMajorLabCourse(Course $course): bool
     {
         if ($this->isFieldCourse($course)) {
@@ -4472,9 +3927,6 @@ class CspSolver
     }
 
     /**
-     * Rooms a laboratory meeting may use in the solving department (its
-     * Default LAB Room Requirement), as RoomTypeRule checks them at save time.
-     *
      * @return list<string>
      */
     private function labRoomTypes(): array
@@ -4489,13 +3941,6 @@ class CspSolver
         return $departmentId > 0 ? $departmentId : null;
     }
 
-    /**
-     * The laboratory half of this course's split, in slots.
-     *
-     * Reads the department resolved for the current solve, so a department
-     * running Custom Lab Duration generates the length it configured instead
-     * of the unit-derived default the RuleEngine would otherwise reject.
-     */
     private function laboratoryComponentSlots(Course $course): int
     {
         return SchedulingPolicy::laboratoryComponentSlots($course, $this->departmentLabSettings);
@@ -4536,13 +3981,6 @@ class CspSolver
             : 'lecture';
     }
 
-    /**
-     * Hybrid Split may meet F2F-first or Online-first, and neither is better.
-     * The order alternates by section and course, so consecutive sections --
-     * and a section's own Hybrid Split courses -- take opposite orders instead
-     * of repeating one pattern. It is only a tie-break: rooms, time and every
-     * hard constraint rank first, and it is stable across retries.
-     */
     private function candidateHybridSplitOrderRank(array $candidate, int $sectionId): int
     {
         if (! array_key_exists('_hybrid_online_first', $candidate)) {
@@ -4554,10 +3992,6 @@ class CspSolver
         return (bool) $candidate['_hybrid_online_first'] === $preferOnlineFirst ? 0 : 1;
     }
 
-    /**
-     * The regular day pair (0 MW, 1 TTh, 2 Friday + Saturday) a two-meeting
-     * candidate uses, or null for any other shape.
-     */
     private function candidateRegularDayPairIndex(array $candidate): ?int
     {
         $blocks = $candidate['blocks'] ?? [];
@@ -4576,18 +4010,12 @@ class CspSolver
         };
     }
 
-    /**
-     * Friday + Saturday counts as a regular pair only when the run allows it.
-     */
     private function isRegularFridaySaturdayPair(array $candidate): bool
     {
         if ($this->candidateRegularDayPairIndex($candidate) !== 2) {
             return false;
         }
 
-        // A course the user set to FS asked for these days: ranking them in
-        // the weekend tier let an MW/TTh fallback win every time. Automatic
-        // pairs are labelled days:X-Y, so this never promotes those.
         if (($candidate['preferred_pattern'] ?? null) === 'FS' && empty($candidate['_pattern_fallback'])) {
             return true;
         }
@@ -4595,12 +4023,6 @@ class CspSolver
         return $this->allowFridaySaturdaySplit && ! empty($candidate['preferred_pattern']);
     }
 
-    /**
-     * A Saturday single meeting in a lecture room while a timetable is being
-     * built: one of SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS, so it is
-     * searched with Friday rather than after Monday-Thursday. Sunday stays in
-     * the weekend tier.
-     */
     private function isLateWeekSaturdayMeeting(array $candidate): bool
     {
         return $this->protectsSplitCapacity
@@ -4608,13 +4030,6 @@ class CspSolver
             && $this->prefersLateWeekPlacement($candidate);
     }
 
-    /**
-     * The pair a two-meeting class prefers rotates by section and course
-     * across MW and TTh -- and Friday + Saturday when the run allows it -- so
-     * the pairs share the load instead of one filling first. It is only a
-     * tie-break inside an allocation tier: a pair that cannot place still
-     * falls through to the next one.
-     */
     private function candidateDayPairRotationRank(array $candidate, int $sectionId): int
     {
         if (empty($candidate['preferred_pattern'])) {
@@ -4633,11 +4048,6 @@ class CspSolver
     }
 
     /**
-     * During search, a two-meeting class prefers the regular pair whose days
-     * the section has used least so far, with the rotation breaking ties.
-     * Split candidates skip the per-day balance penalty, so without this the
-     * gap penalty packed every split onto the same pair (all MW, TTh empty).
-     *
      * @param  array<string, int>  $dayLoads
      */
     private function candidateDayPairLoadRank(array $candidate, array $dayLoads, int $sectionId): int
@@ -4662,19 +4072,10 @@ class CspSolver
 
         $mode = (string) ($candidate['mode'] ?? 'on-site');
 
-        // An allowed Friday + Saturday pair ranks as a regular weekday pair,
-        // not in the Saturday tier. So does a Saturday single meeting in a
-        // lecture room: department policy wants it late in the week, and in
-        // the Saturday tier it was only reached after Monday-Thursday had
-        // been used up -- taking the lecture rooms the MW/TTh splits need.
         $containsWeekend = $this->candidateContainsWeekendBlock($candidate)
             && ! $this->isRegularFridaySaturdayPair($candidate)
             && ! $this->isLateWeekSaturdayMeeting($candidate);
 
-        // A field course consumes no classroom, so it stays in the preferred
-        // tier -- but a weekend field meeting is still a weekend meeting, and
-        // without this the search reached Saturday/Sunday field candidates
-        // before it had tried a single weekday one.
         if ($mode === 'field' || $this->candidateContainsFieldBlock($candidate)) {
             return $containsWeekend ? 3 : 0;
         }
@@ -4712,8 +4113,6 @@ class CspSolver
                 $onlineTier = 14;
             }
 
-            // Sunday used to take an extra step here; it now ranks with the
-            // rest of the week.
             return $onlineTier;
         }
 
@@ -4732,10 +4131,6 @@ class CspSolver
     }
 
     /**
-     * Distinct physical rooms this domain could still use. A low count marks a
-     * limited-room course, which the variable ordering places earlier so it
-     * claims a room before the flexible courses consume them.
-     *
      * @param  list<array<string, mixed>>  $domain
      */
     private function countPhysicalRoomOptions(array $domain): int
@@ -4754,8 +4149,6 @@ class CspSolver
             }
         }
 
-        // A domain with no physical room at all (virtual online/field delivery)
-        // is not room-constrained, so it must not sort ahead of a course that is.
         return $roomIds === [] ? PHP_INT_MAX : count($roomIds);
     }
 
@@ -4893,17 +4286,6 @@ class CspSolver
             || in_array($roomType, ['online', 'field'], true);
     }
 
-    /**
-     * Pre-fetches all persisted schedules for the given semester into memory and
-     * builds lookup indexes including:
-     *   "r:{roomId}:{day}"     → time ranges already booked for that room on that day
-     *   "s:{sectionId}:{day}" → time ranges already booked for that section on that day
-     *   "f:{facultyId}:{day}" → time ranges already booked for that instructor on that day
-     *   "c:{courseId}:{day}"  → time ranges other sections use for the course (with online flag)
-     *
-     * This single query replaces the repeated per-candidate DB queries that were
-     * previously issued inside the backtracking loop.
-     */
     private function preloadExistingSchedules(
         int $semesterId,
         int $sectionId,
@@ -4961,9 +4343,6 @@ class CspSolver
             ->reject(static fn (int $roomId): bool => isset($knownRoomTypeIds[$roomId]))
             ->values();
 
-        // Rooms other schedules already hold may be outside this section's
-        // usable rooms; the snapshot captures every referenced room, so their
-        // types come from it too.
         $snapshotRooms = $this->snapshot()->roomsById;
         foreach ($missingRoomTypeIds as $roomId) {
             if (isset($snapshotRooms[$roomId]['room_type'])) {
@@ -4972,13 +4351,6 @@ class CspSolver
         }
 
         foreach ($schedules as $schedule) {
-            // Persisted times reach the solver in mixed shapes: the snapshot
-            // truncates them to H:i (SchedulingSnapshotRepository) while the
-            // legacy database path and every candidate use H:i:s. Comparing
-            // those as raw strings is wrong -- "11:00" < "11:00:00" is true --
-            // so a class ending at 11:00 appeared to overlap one starting at
-            // 11:00 and every back-to-back placement was pruned as a conflict.
-            // Precompute minutes once here and compare numerically instead.
             $timeRange = [
                 'start_time' => (string) $schedule->start_time,
                 'end_time' => (string) $schedule->end_time,
@@ -4989,8 +4361,6 @@ class CspSolver
             if ($schedule->room_id !== null) {
                 $roomId = (int) $schedule->room_id;
                 $roomType = $this->roomTypes[$roomId] ?? null;
-                // Field and online rooms are shared without a limit, so only a
-                // lecture or laboratory room is ever booked out.
                 if (! Rooms::isSharedType($roomType)) {
                     $this->existingScheduleIndex["r:{$roomId}:{$schedule->day}"][] = $timeRange;
                 }
@@ -5031,8 +4401,6 @@ class CspSolver
                 'online' => ($schedule->mode ?? null) === 'online',
             ];
 
-            // Index instructor availability so the CSP can avoid recommending
-            // slots that conflict with an already-assigned faculty member.
             if (! empty($schedule->faculty_id)) {
                 $this->existingScheduleIndex["f:{$schedule->faculty_id}:{$schedule->day}"][] = $timeRange;
             }
@@ -5040,9 +4408,6 @@ class CspSolver
     }
 
     /**
-     * Granted windows for the section's department. The snapshot carries them
-     * on the room records so they are part of its fingerprint.
-     *
      * @return array<int, list<array{day: string, start_time: string, end_time: string, start_minutes: int, end_minutes: int}>>
      */
     private function grantWindowsForSection(Sections $section): array
@@ -5061,12 +4426,6 @@ class CspSolver
         return $windows;
     }
 
-    /**
-     * Books every granted room as occupied outside its windows, so domain
-     * pruning drops those placements through the same conflict check that
-     * keeps two classes out of one room. Without it the generator would build
-     * candidates the RuleEngine refuses.
-     */
     private function blockRoomsOutsideGrantWindows(): void
     {
         foreach ($this->roomGrantWindows as $roomId => $windows) {
@@ -5083,10 +4442,6 @@ class CspSolver
         }
     }
 
-    /**
-     * Books the department's own rooms as occupied inside the windows it lent
-     * to another department, so the generator never places the owner there.
-     */
     private function blockLentWindows(): void
     {
         foreach ($this->snapshot()->roomsById as $roomId => $attributes) {
@@ -5101,14 +4456,6 @@ class CspSolver
         }
     }
 
-    /**
-     * Books every divided room as occupied for the whole of each day another
-     * program owns (ProgramRoomShares), the same way a granted room is booked
-     * outside its windows. Per section, because one year-level run can hold
-     * sections of several programs. The generator never borrows another
-     * program's day, even a lendable one: borrowing is a deliberate manual
-     * placement, which the validator allows once the owner is done.
-     */
     private function blockRoomsOnOtherProgramsDays(Sections $section): void
     {
         if ($section->program_id === null) {
@@ -5141,9 +4488,6 @@ class CspSolver
     }
 
     /**
-     * Returns true if any persisted schedule conflicts with the given time window
-     * for the candidate room, target section, online subject, or assigned instructor.
-     *
      * @param  int|null  $facultyId  When provided, the instructor index is checked to
      *                               ensure the faculty member is not already teaching another class at the same
      *                               day and time, regardless of delivery mode.
@@ -5159,10 +4503,6 @@ class CspSolver
         string $mode = 'on-site',
         int $departmentId = 0,
     ): bool {
-        // Compare on minutes, never on raw strings. Persisted rows arrive as
-        // H:i from the snapshot and H:i:s from the legacy database path, and
-        // "11:00" < "11:00:00" is true, which made every back-to-back
-        // placement look like a conflict.
         $startMinutes = $this->timeToMinutes($startTime);
         $endMinutes = $this->timeToMinutes($endTime);
 
@@ -5193,14 +4533,6 @@ class CspSolver
         return false;
     }
 
-    /**
-     * True when at least $threshold indexed bookings overlap the given window.
-     *
-     * This is the innermost check of the whole search -- domain pruning alone
-     * runs it hundreds of thousands of times per generation. Counting stops at
-     * the threshold, and the semantics are distinct overlapping bookings rather
-     * than peak concurrency, matching what the capacity rules expect.
-     */
     private function overlapCountAtLeast(string $key, int $startMinutes, int $endMinutes, int $threshold): bool
     {
         $entries = $this->existingScheduleIndex[$key] ?? [];

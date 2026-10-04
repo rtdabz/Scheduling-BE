@@ -5,14 +5,6 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-/**
- * What a submission contained when it was sent, kept on the submission itself.
- *
- * The approval history counted sections from the submission's section links
- * and subjects from the meetings that exist now. Deleting a section drops its
- * links and regenerating a recalled section deletes its meetings, so past
- * submissions read "0 sections" / "0 subjects" as if the review had removed them.
- */
 return new class extends Migration
 {
     public function up(): void
@@ -22,8 +14,6 @@ return new class extends Migration
             $table->unsignedInteger('subject_count')->nullable()->after('section_count');
         });
 
-        // The submit audit entry recorded the sections sent; subjects were
-        // never recorded, so older submissions keep the live count for those.
         DB::table('scheduling_audit_logs')
             ->where('action', 'schedule_submitted')
             ->whereNotNull('schedule_submission_id')
@@ -39,7 +29,6 @@ return new class extends Migration
                 }
             });
 
-        // Whatever still has its links and was not in the audit log.
         DB::table('schedule_submissions')
             ->whereNull('section_count')
             ->update(['section_count' => DB::raw(

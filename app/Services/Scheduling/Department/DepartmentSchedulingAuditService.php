@@ -31,9 +31,6 @@ class DepartmentSchedulingAuditService
     private function auditDepartment(Departments $department): array
     {
         $profile = $this->profiles->resolve($department);
-        // Across every active curriculum. Reading only the first one made
-        // profile_mismatch a false negative for exactly the departments this
-        // report exists to catch -- those running two curricula at once.
         $curriculumIds = Curriculum::query()
             ->where('department_id', $department->id)
             ->where('status', 'active')
@@ -62,8 +59,6 @@ class DepartmentSchedulingAuditService
                 || (bool) $department->custom_lab_duration_6_hours_enabled
                 || (bool) $department->custom_lab_duration_5_hours_enabled
                 || (bool) $department->custom_lab_duration_other_enabled,
-            // Reported so a reviewer can see why a course meets twice a week
-            // without having to open the department's settings page.
             'balanced_split_settings_enabled' => (bool) $department->gec_split_schedule_override_enabled
                 || (bool) $department->major_lecture_split_schedule_override_enabled,
         ];

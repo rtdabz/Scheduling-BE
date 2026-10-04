@@ -4,11 +4,6 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-/**
- * The program that handed a course over to its teaching program. A shared course
- * such as GEC 1 belongs to a college but to no program, so without this the
- * receiving side could only name the college ("COED") rather than "BSED-English".
- */
 return new class extends Migration
 {
     public function up(): void

@@ -10,11 +10,6 @@ use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Rules\InstructorAvailabilityRule;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * faculty_active, part_time_faculty_availability. Kernel counterpart of
- * Rules\InstructorAvailabilityRule, reading the instructor from the snapshot.
- * A snapshot captured without faculties cannot judge this and reports nothing.
- */
 final class InstructorAvailabilityConstraints
 {
     /** @return list<ConstraintViolation> */
@@ -37,8 +32,6 @@ final class InstructorAvailabilityConstraints
         }
 
         $dayIndex = InstructorAvailabilityRule::DAY_INDEX[$row->day] ?? null;
-        // A part-timer with no windows recorded at all is unrestricted, as in
-        // InstructorAvailabilityRule.
         $recorded = (array) ($faculty['availabilities'] ?? []);
         if (($faculty['employment_type'] ?? null) === 'part-time' && $dayIndex !== null && $recorded !== []) {
             $windows = [];

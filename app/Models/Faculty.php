@@ -9,7 +9,6 @@ class Faculty extends Model
 {
     use SoftDeletes;
 
-    /** Name suffixes instructors and accounts accept; the forms offer exactly these. */
     public const NAME_SUFFIXES = ['Jr.', 'Sr.', 'II', 'III', 'IV', 'V'];
 
     protected $table = 'faculties';
@@ -32,7 +31,6 @@ class Faculty extends Model
         'profile_picture',
     ];
 
-    /** Every designation the instructor holds, in their listed order. */
     public function designations()
     {
         return $this->belongsToMany(Designation::class, 'designation_faculty')

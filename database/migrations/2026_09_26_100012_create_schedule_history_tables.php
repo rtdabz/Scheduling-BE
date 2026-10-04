@@ -29,7 +29,6 @@ return new class extends Migration
         Schema::create('schedule_history_items', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('history_version_id')->constrained('schedule_history_versions')->cascadeOnDelete();
-            // Not a foreign key: history outlives the schedule row it describes.
             $table->unsignedBigInteger('original_schedule_id')->nullable()->index();
             $table->json('before_snapshot')->nullable();
             $table->json('after_snapshot')->nullable();

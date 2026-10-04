@@ -19,12 +19,7 @@ class CurriculumController extends Controller
     {
         $query = Curriculum::with(['department', 'program'])
             ->withCount('courses')
-            // How many cohorts still follow this curriculum. Drives the "in use"
-            // badge; informational only, since an assignment on its own is
-            // undone with a dropdown.
             ->withCount(['sections as active_sections_count' => fn ($scope) => $scope->where('sections.status', 'active')])
-            // The subset of those that have a timetable plotted from it. This
-            // is what the retirement guard keys on.
             ->withCount(['scheduledSections as scheduled_sections_count' => fn ($scope) => $scope->where('sections.status', 'active')]);
 
         if ($this->authorization->rejectsRequestedDepartment($request, $request->query('department_id'))) {
@@ -32,16 +27,12 @@ class CurriculumController extends Controller
         }
 
         $departmentId = $this->authorization->requestedDepartment($request, $request->query('department_id'));
-        // A Program Head sees its program's curricula and the department-wide ones.
         $programId = $this->authorization->programScope($request);
         $this->authorization->scopeCurriculaToProgram($query, $request);
         $status = $request->has('status') && $request->status !== 'all'
             ? (string) $request->status
             : null;
 
-        // Nine mutation paths already call ApiCache::forgetGroups(['curriculum.index'])
-        // but nothing ever read that group, so the bumps were inert. Reading it here
-        // makes the existing invalidation meaningful.
         $curriculumList = Cache::remember(
             ApiCache::key('curriculum.index', [
                 'department_id' => $departmentId,
@@ -53,15 +44,10 @@ class CurriculumController extends Controller
                 $curricula = $query
                     ->when($departmentId !== null, fn ($scope) => $scope->where('department_id', $departmentId))
                     ->when($status !== null, fn ($scope) => $scope->where('status', $status))
-                    // Newest effective year first so the list reads in the same
-                    // order as the new/old badges the annotation assigns.
                     ->orderByDesc('effective_school_year')
                     ->orderBy('created_at', 'desc')
                     ->get();
 
-                // Ranking new against old needs every active sibling in the
-                // group, which a status filter would hide. Annotate against the
-                // unfiltered set, then return only what was asked for.
                 if ($status !== null) {
                     $siblings = Curriculum::query()
                         ->when($departmentId !== null, fn ($scope) => $scope->where('department_id', $departmentId))
@@ -85,10 +71,6 @@ class CurriculumController extends Controller
         return response()->json($curriculumList);
     }
 
-    /**
-     * New-vs-old is a statement about a curriculum's siblings, so a single
-     * record cannot label itself. Load the group and rank within it.
-     */
     private function annotateAgainstSiblings(Curriculum $curriculum): void
     {
         $siblings = Curriculum::query()
@@ -102,20 +84,6 @@ class CurriculumController extends Controller
         $curriculum->setAttribute('lifecycle_label', $match?->lifecycle_label);
     }
 
-    /**
-     * Refuses to retire a curriculum that active cohorts have already been
-     * scheduled from.
-     *
-     * Nothing else stops it: sections.curriculum_id is restrictOnDelete, but a
-     * status change is not a delete, and a section pointed at a deactivated or
-     * archived curriculum would fail generation with a confusing error far from
-     * the action that caused it. Answer here instead, naming the cohorts.
-     *
-     * The bar is a plotted schedule, not a year-level assignment. A cohort that
-     * is merely pointed at this curriculum has nothing to strand -- reassigning
-     * it is one dropdown -- and blocking on that alone made it impossible to
-     * retire a curriculum nobody had generated against.
-     */
     private function rejectIfStillInUse(Curriculum $curriculum, string $targetStatus): ?\Illuminate\Http\JsonResponse
     {
         $sections = $curriculum->scheduledSections()
@@ -164,14 +132,9 @@ class CurriculumController extends Controller
         ];
 
         $validated = $request->validate($rules);
-        // A curriculum is created to be used, so it starts in service; retiring
-        // it is a separate status change.
         $validated['status'] = $validated['status'] ?? 'active';
 
-        // Curriculum authoring belongs to the department secretary, so a new
-        // curriculum is always their own department's.
         $validated['department_id'] = $user->department_id;
-        // A program head authors their own program's curriculum only.
         if ($user->role === 'program_head') {
             if ($user->program_id === null) {
                 return response()->json(['message' => 'Your account is not linked to a program yet.'], 403);
@@ -179,9 +142,6 @@ class CurriculumController extends Controller
             $validated['program_id'] = $user->program_id;
         }
 
-        // Activating a curriculum no longer demotes its siblings: a department
-        // mid-transition runs the old and the new one side by side, and each
-        // section says which of them it follows.
         $curriculum = Curriculum::create($validated);
 
         $curriculum->loadCount('courses');
@@ -206,10 +166,6 @@ class CurriculumController extends Controller
         return response()->json($curriculum);
     }
 
-    /**
-     * Whether the caller may change this curriculum: it must be their
-     * department's, and a program head may only touch their own program's.
-     */
     private function canAuthor(Request $request, Curriculum $curriculum): bool
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $curriculum->department_id)) {
@@ -221,7 +177,6 @@ class CurriculumController extends Controller
             || ($user->program_id !== null && (int) $curriculum->program_id === (int) $user->program_id);
     }
 
-    /** A school year is two consecutive years, e.g. 2025-2026. */
     private function schoolYearRule(): \Closure
     {
         return function (string $attribute, mixed $value, \Closure $fail): void {
@@ -250,8 +205,6 @@ class CurriculumController extends Controller
             'description' => 'nullable|string',
         ];
 
-        // The owning department is fixed at creation; it is not editable, and
-        // neither is a program head's program.
         $validated = $request->validate($rules);
         if ($request->user()->role === 'program_head') {
             unset($validated['program_id']);
@@ -333,10 +286,6 @@ class CurriculumController extends Controller
             'status' => 'required|string|in:active,deactivated,archived',
         ]);
 
-        // An active curriculum may now be retired directly, but only once no
-        // cohort still follows it. That check replaces the old blanket refusal,
-        // which existed only because deactivating used to be the way to make
-        // room for a different active curriculum.
         if ($validated['status'] !== 'active'
             && ($blocked = $this->rejectIfStillInUse($curriculum, $validated['status'])) !== null) {
             return $blocked;
@@ -456,9 +405,6 @@ class CurriculumController extends Controller
             try {
                 \DB::beginTransaction();
 
-                // 1. Reuse this department's own course with the code. Another
-                // department's course with the same code is a separate record
-                // and is never looked up, let alone updated, from here.
                 $course = Course::where('course_code', $code)
                     ->where('department_id', $curriculum->department_id)
                     ->first();
@@ -466,7 +412,6 @@ class CurriculumController extends Controller
                 $semStr = $semester == 1 ? '1st' : ($semester == 2 ? '2nd' : 'summer');
 
                 if (! $course) {
-                    // Create course
                     $course = Course::create([
                         'course_code' => $code,
                         'course_name' => $name,
@@ -496,7 +441,6 @@ class CurriculumController extends Controller
                     ]);
                 }
 
-                // 2. Check if already attached to this curriculum
                 $isAttached = $curriculum->courses()->where('courses.id', $course->id)->exists();
 
                 if ($isAttached) {
@@ -521,7 +465,6 @@ class CurriculumController extends Controller
                     }
                 }
 
-                // 3. Attach
                 $curriculum->courses()->attach($course->id, [
                     'year_level' => $yearLevel,
                     'semester' => $semester,
@@ -558,9 +501,6 @@ class CurriculumController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        // A cohort following this curriculum that already has the course on its
-        // timetable would keep classes of a course its curriculum no longer
-        // lists. Same matching as rejectIfStillInUse(), narrowed to this course.
         $sections = $curriculum->sections()
             ->where('sections.status', 'active')
             ->whereHas('schedules', function ($schedules) use ($course): void {
@@ -640,10 +580,7 @@ class CurriculumController extends Controller
                         'lec_units' => $c->lecture_hours,
                         'lab_units' => $c->lab_hours,
                         'total_units' => $c->units,
-                        // Which program owns a major decides who may teach it, so
-                        // the course editor shows and edits it here.
                         'program_id' => $c->program_id,
-                        // The owning department; always the curriculum's own.
                         'department_id' => $c->department_id,
                     ])->values(),
                     'totals' => [

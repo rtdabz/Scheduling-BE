@@ -8,17 +8,12 @@ use App\Models\Sections;
 use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * Scores complete, already-valid CSP candidates. This service never creates
- * placements and never replaces RuleEngine/CSP hard-constraint validation.
- */
 class ScheduleQualityEvaluator
 {
     private const COMPONENT_BASE = 250000;
 
     private const FULLY_ONLINE_SECTION_WEIGHT = 100000;
 
-    /** Saturday and Sunday alike: a weekend class is a mild preference cost. */
     private const WEEKEND_BLOCK_WEIGHT = 3000;
 
     private const LATE_WEEKDAY_START_AFTER_MINUTES = 13 * 60;
@@ -91,8 +86,6 @@ class ScheduleQualityEvaluator
 
     private const LAB_ROOM_MISMATCH_WEIGHT = 220000;
 
-    // Room TBA remains a valid fallback when capacity is exhausted, but a
-    // candidate with an available compatible laboratory should rank higher.
     private const UNRESOLVED_LABORATORY_ROOM_WEIGHT = 180000;
 
     private const LAB_ROOM_IDLE_GAP_SLOT_WEIGHT = 18000;
@@ -251,8 +244,6 @@ class ScheduleQualityEvaluator
             'fair_distribution_score' => $componentScores['fair_distribution'],
             'schedule_compactness_score' => $componentScores['schedule_compactness'],
             'configuration_compliance_score' => $componentScores['configuration_compliance'],
-            // Retained for API compatibility; it now represents the combined
-            // resource-usage and distribution quality (higher is better).
             'resource_fairness_score' => $componentScores['resource_usage'] + $componentScores['fair_distribution'],
             'quality_breakdown' => $componentScores,
             'score_breakdown' => array_merge(
@@ -387,11 +378,6 @@ class ScheduleQualityEvaluator
         )) * self::FULLY_ONLINE_SECTION_WEIGHT;
     }
 
-    /**
-     * Saturday and Sunday are both ordinary teaching days and weigh the same.
-     * Sunday used to carry SUNDAY_BLOCK_WEIGHT, several times Saturday's, and
-     * was exempt from the late-week allowance that spares Saturday.
-     */
     private function weekendPenalty(
         array $schedules,
         array $configsBySectionId,
@@ -408,8 +394,6 @@ class ScheduleQualityEvaluator
             if ($this->isRequiredDayPlacement($row, $configsBySectionId)) {
                 continue;
             }
-            // A single meeting in a lecture room belongs late in the week under
-            // department policy, so a weekend day is not a penalty for it.
             if ($this->isLateWeekPreferredRow($row, $meetingCounts, $roomTypesById)) {
                 continue;
             }
@@ -421,9 +405,6 @@ class ScheduleQualityEvaluator
     }
 
     /**
-     * Mirrors CspSolver::prefersLateWeekPlacement for persisted/preview rows:
-     * a course that meets once in the week and holds a real lecture room.
-     *
      * @param  array<string, int>  $meetingCounts
      * @param  array<int, string>  $roomTypesById
      */
@@ -804,12 +785,6 @@ class ScheduleQualityEvaluator
     }
 
     /**
-     * Classroom meetings grouped by room and day, the unit every room-level gap
-     * measure below walks.
-     *
-     * Online and field rows are excluded because they occupy no classroom, so
-     * time around them is not idle room time.
-     *
      * @return array<string, list<array<string, mixed>>>
      */
     private function classroomBlocksByRoomDay(
@@ -1107,9 +1082,6 @@ class ScheduleQualityEvaluator
             foreach (array_map('intval', $config['balanced_split_course_ids'] ?? []) as $courseId) {
                 $courseRows = $sectionRows[$courseId] ?? [];
                 if (count($courseRows) === 1 && ! empty($courseRows[0]['split_session_fallback'])) {
-                    // This is the solver's controlled, lower-priority fallback:
-                    // the requested split was infeasible, but the single full
-                    // duration meeting remains valid under all hard rules.
                     continue;
                 }
                 if (count($courseRows) < 2) {
@@ -1162,8 +1134,6 @@ class ScheduleQualityEvaluator
 
     private function rowsMatchPattern(array $rows, string $pattern): bool
     {
-        // Same parser the solver and rules use, so custom days:X-Y pairs and
-        // FS are scored too, not silently treated as a match.
         try {
             $expected = SchedulingPolicy::allowedDaysForPattern($pattern);
         } catch (\InvalidArgumentException) {

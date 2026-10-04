@@ -10,12 +10,6 @@ use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Support\ProgramRoomShares;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 
-/**
- * room_availability, room_department_alignment. Kernel counterpart of
- * Rules\RoomAvailabilityRule and DepartmentAssignmentRule: the room must be
- * accessible to the department and marked available. Booking clashes live in
- * OverlapConflict.
- */
 final class RoomAvailabilityConstraints
 {
     /** @return list<ConstraintViolation> */
@@ -25,9 +19,6 @@ final class RoomAvailabilityConstraints
             return [];
         }
 
-        // The snapshot holds every room the department may use (own, shared,
-        // granted) plus any already booked, so a room missing from it is one
-        // the department has no access to. Skipping it let such a row through.
         $room = $snapshot->roomsById[$row->roomId] ?? null;
         if (! is_array($room)) {
             return [ConstraintSupport::violation(
@@ -44,7 +35,6 @@ final class RoomAvailabilityConstraints
             $violations[] = $access;
         }
 
-        // A preview captured before a room was closed must not commit into it.
         if ((string) ($room['status'] ?? 'available') !== 'available') {
             $violations[] = ConstraintSupport::violation(
                 'room_availability',
@@ -57,10 +47,6 @@ final class RoomAvailabilityConstraints
     }
 
     /**
-     * room_department_alignment. Mirrors DepartmentAssignmentRule: another
-     * department's room is usable only inside the windows granted to this
-     * one, which the snapshot carries on the room record.
-     *
      * @param  array<string, mixed>  $room
      */
     private function roomAccess(ScheduleRow $row, array $room): ?ConstraintViolation
@@ -70,7 +56,6 @@ final class RoomAvailabilityConstraints
             return null;
         }
 
-        // The owner may not book inside a window it lent to another department.
         if ((int) $ownerId === $row->departmentId) {
             $lent = RoomAccessPolicy::overlappingWindow(
                 self::withMinutes((array) ($room['lent_windows'] ?? [])),
@@ -121,10 +106,6 @@ final class RoomAvailabilityConstraints
     }
 
     /**
-     * room_department_alignment. Mirrors DepartmentAssignmentRule: in a
-     * department with several programs, a divided room belongs to one program
-     * per weekday; the snapshot carries that on the room record.
-     *
      * @param  array<string, mixed>  $room
      */
     private function programShare(ScheduleRow $row, array $room, SchedulingSnapshot $snapshot): ?ConstraintViolation

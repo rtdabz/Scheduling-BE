@@ -7,21 +7,6 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
-/**
- * valid_day, preferred_pattern, sunday_classes, forced_course_day.
- *
- * Every course may use every day the department teaches: Monday-Saturday, plus
- * Sunday once the department secretary allows it. A meeting is narrowed only
- * by what the department or user asked for -- Sunday classes, a declared
- * meeting pattern, or the day the course is pinned to -- never by the kind of
- * course it is.
- *
- * The category day limits are gone: field courses were Monday to Friday, minors
- * Monday to Saturday, and a Sunday major had to be online. Sunday is now an
- * ordinary teaching day, so `field_day_constraint`, `minor_day_constraint` and
- * `major_sunday_mode_constraint` were removed along with the
- * `sunday_online_only_enabled` department switch that gated the last of them.
- */
 final class MeetingDayRule
 {
     public function __construct(private readonly RuleLookupCache $lookups) {}
@@ -42,8 +27,6 @@ final class MeetingDayRule
     /** @return array<string, mixed>|null */
     public static function preferredPattern(string $day, ?string $preferredPattern): ?array
     {
-        // A Consecutive Days run may start on any day; MeetingGroupRule judges
-        // its days together.
         if (empty($preferredPattern) || SchedulingPolicy::consecutiveDayCount($preferredPattern) !== null) {
             return null;
         }
@@ -102,11 +85,6 @@ final class MeetingDayRule
     }
 
     /**
-     * sunday_classes: Sunday is an overflow day. A department books it only
-     * after its secretary turns Sunday classes on; classes already on Sunday
-     * when it is turned off stay, but nothing new may be placed there. Shared
-     * with the constraint kernel, which reads the setting from its snapshot.
-     *
      * @return array{rule: string, message: string}|null
      */
     public static function sundayClassesMismatch(bool $sundayClassesEnabled, string $day): ?array
@@ -122,10 +100,6 @@ final class MeetingDayRule
     }
 
     /**
-     * forced_course_day: a course the department pinned to one day meets only
-     * then. Shared with the constraint kernel, which reads the pin from its
-     * snapshot.
-     *
      * @return array{rule: string, message: string, required_day: string}|null
      */
     public static function forcedDayMismatch(?string $forcedDay, string $day): ?array

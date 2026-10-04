@@ -8,31 +8,14 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
-/**
- * The one place an instructor's designations are written.
- *
- * An instructor may hold as many designations as their Basic Load covers:
- *
- * - `designation_faculty` holds the designations and their order;
- * - `faculties.deload_units` is the sum of their deloads, which is the figure
- *   SchedulingPolicy::facultyBasicLoad() and the generator snapshot read.
- */
 class FacultyDesignationService
 {
-    /**
-     * Whether the request says anything about designations at all. The
-     * multi-select sends `designation_ids`; older clients still send the single
-     * `designation_id`.
-     */
     public function submitted(Request $request): bool
     {
         return $request->has('designation_ids') || $request->has('designation_id');
     }
 
     /**
-     * The designation ids a request asks for, in order, de-duplicated. A null or
-     * empty value means "no designations".
-     *
      * @return list<int>
      */
     public function idsFrom(Request $request): array
@@ -58,12 +41,6 @@ class FacultyDesignationService
     }
 
     /**
-     * Refuses a list that cannot be held: unknown or archived, a
-     * heading that has sub-designations, an inactive one the instructor does
-     * not already hold (an inactive designation cannot be newly assigned, but
-     * saving an instructor who still holds one must not fail), or deloads that
-     * add up to more than the instructor's maximum units.
-     *
      * @param  list<int>  $ids
      * @param  int|null  $maxUnits  the instructor's maximum; null skips the load check
      */
@@ -95,9 +72,6 @@ class FacultyDesignationService
             }
         }
 
-        // The deloads may not add up to more than the maximum, which would
-        // leave a negative Basic Load. Re-saving what the instructor already
-        // holds never fails, even if their maximum has since been lowered.
         $deload = (int) $designations->sum('deload_units');
         if ($maxUnits !== null && $deload > $maxUnits && array_diff($ids, $alreadyHeld) !== []) {
             throw ValidationException::withMessages([
@@ -107,8 +81,6 @@ class FacultyDesignationService
     }
 
     /**
-     * Writes the instructor's designations and the deload derived from them.
-     *
      * @param  list<int>  $ids
      */
     public function sync(Faculty $faculty, array $ids): void
@@ -127,8 +99,6 @@ class FacultyDesignationService
     }
 
     /**
-     * The deload the designations add up to.
-     *
      * @param  list<int>  $ids
      */
     public function deloadFor(array $ids): int
@@ -136,10 +106,6 @@ class FacultyDesignationService
         return $ids === [] ? 0 : (int) Designation::query()->whereIn('id', $ids)->sum('deload_units');
     }
 
-    /**
-     * Recomputes the copied deload of everyone holding the designation, after
-     * its deload changed. Returns how many instructors were rewritten.
-     */
     public function refreshHolders(Designation $designation): int
     {
         $holders = $designation->faculties()->with('designations:id,deload_units')->get();

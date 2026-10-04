@@ -8,17 +8,6 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
-/**
- * Collects what a request (or queued job) changed and announces it once.
- *
- * Writes only record topic names here; nothing is sent until flush() runs at
- * the end of the request or job. A generation run that saves hundreds of
- * meetings therefore still produces a single small broadcast, and the payload
- * carries topic names only -- clients refetch through the normal, authorised
- * API, so a broadcast can never leak another department's records.
- *
- * Topics mirror the frontend's cache groups (wicars-ui/src/lib/cacheGroups.ts).
- */
 class LiveUpdates
 {
     public const TOPICS = [
@@ -26,10 +15,6 @@ class LiveUpdates
         'courses', 'curriculum', 'departments', 'users', 'settings',
     ];
 
-    /**
-     * Backend ApiCache groups -> topics. Writes made through the query builder
-     * fire no model events but do bump these groups, so both sources are used.
-     */
     private const CACHE_GROUP_TOPICS = [
         'initial.data' => ['schedules'],
         'initial.data.schedules' => ['schedules'],
@@ -50,7 +35,6 @@ class LiveUpdates
         'institution.settings' => ['settings'],
     ];
 
-    /** Skip broadcasting for this long after the WebSocket server is unreachable. */
     private const OUTAGE_BACKOFF_SECONDS = 30;
 
     private const OUTAGE_CACHE_KEY = 'live-updates:unreachable';
@@ -91,12 +75,6 @@ class LiveUpdates
         return $this->topics !== [] || $this->notifiedUsers !== [];
     }
 
-    /**
-     * Broadcast everything recorded so far, then reset.
-     *
-     * Never throws: a missing or stopped WebSocket server must not turn a
-     * successful write into a failed request. Clients reconcile on reconnect.
-     */
     public function flush(?string $exceptSocketId = null): void
     {
         if (! $this->hasPending()) {
@@ -129,7 +107,6 @@ class LiveUpdates
         }
     }
 
-    /** Run $callback without recording anything (seeders, bulk maintenance). */
     public function withoutRecording(callable $callback): mixed
     {
         $previous = $this->paused;

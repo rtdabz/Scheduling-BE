@@ -27,9 +27,6 @@ return new class extends Migration
             $table->index(['semester_id', 'department_id', 'year_level', 'curriculum_id'], 'sections_curriculum_lookup_index');
         });
 
-        // Per-course scheduling rules a department sets: a forced day, field
-        // scheduling, and consecutive-day runs. A null section_id applies the
-        // rule to every section of the course.
         Schema::create('department_course_rules', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('department_id')->constrained('departments')->cascadeOnDelete();

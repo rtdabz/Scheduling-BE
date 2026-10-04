@@ -29,10 +29,6 @@ class CoursesController extends Controller
         }
         $deptId = $this->authorization->requestedDepartment($request, $request->query('department_id'));
         $bypassActiveCurriculum = $request->query('all') === 'true' || $request->query('catalog') === 'true';
-        // Callers that know which curriculum a cohort follows say so. Without it
-        // this endpoint can only return the union of the department's active
-        // curricula, which is ambiguous the moment two of them place the same
-        // course at different year levels — see the placements note below.
         $curriculumId = $request->query('curriculum_id') !== null
             ? (int) $request->query('curriculum_id')
             : null;
@@ -50,7 +46,6 @@ class CoursesController extends Controller
 
         return response()->json(Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($request, $deptId, $bypassActiveCurriculum, $curriculumId) {
             if (! $bypassActiveCurriculum) {
-                // 1. Query for active curriculum records scoped to the department if requested
                 $curriculumQuery = Curriculum::where('status', 'active');
 
                 if ($deptId) {
@@ -64,7 +59,6 @@ class CoursesController extends Controller
                 $activeCurriculumIds = $curriculumQuery->pluck('id');
 
                 if ($activeCurriculumIds->isNotEmpty()) {
-                    // 2. Fetch all courses belonging to these active curriculum records
                     $courses = Course::with('department')
                         ->whereHas('curriculum', function ($q) use ($activeCurriculumIds) {
                             $q->whereIn('curriculum.id', $activeCurriculumIds);
@@ -75,12 +69,9 @@ class CoursesController extends Controller
                         })
                         ->get();
 
-                    // 3. Load pivot data for year_level and semester mapping
                     $pivotData = DB::table('curriculum_course')
                         ->join('curriculum', 'curriculum.id', '=', 'curriculum_course.curriculum_id')
                         ->whereIn('curriculum_course.curriculum_id', $activeCurriculumIds)
-                        // Newest curriculum first; the flattening below keeps the
-                        // first placement it sees for each course.
                         ->orderByDesc('curriculum.effective_school_year')
                         ->orderByDesc('curriculum_course.curriculum_id')
                         ->get([
@@ -90,13 +81,6 @@ class CoursesController extends Controller
                             'curriculum_course.semester',
                         ]);
 
-                    // A course can sit at different year levels in an old and a
-                    // new curriculum, so "the" placement only exists once a
-                    // curriculum is named. Every placement stays on the record
-                    // for callers that need to disambiguate; the flattened
-                    // year_level/semester below is the newest curriculum's, and
-                    // is a display default only — the scheduler never reads it,
-                    // it resolves through the section's own curriculum.
                     $placements = [];
                     foreach ($pivotData as $p) {
                         $placements[$p->course_id][] = [
@@ -118,7 +102,6 @@ class CoursesController extends Controller
                         return $course;
                     });
 
-                    // Sort logically: Year Level ASC, Semester ASC, Category (Major first), Course Code ASC
                     $courses = $courses->sort(function ($a, $b) {
                         $yA = (int) ($a->year_level ?? 0);
                         $yB = (int) ($b->year_level ?? 0);
@@ -148,7 +131,6 @@ class CoursesController extends Controller
                 }
             }
 
-            // Fallback: If no active curriculum exists, return courses table records
             $query = Course::with('department');
 
             if ($deptId) {
@@ -213,7 +195,6 @@ class CoursesController extends Controller
 
     public function update(UpdateCourseRequest $request, Course $course)
     {
-        // Department access is checked in UpdateCourseRequest::authorize().
         $validated = $request->validated();
         $validated = $this->clearProgramForNonMajor(
             $validated,
@@ -229,10 +210,6 @@ class CoursesController extends Controller
     }
 
     /**
-     * The program restriction is for majors only: a minor or service course is
-     * taught across programs, so it never carries one. Clearing it here also means
-     * turning a major into a minor drops the program it used to be tied to.
-     *
      * @param  array<string, mixed>  $validated
      * @return array<string, mixed>
      */

@@ -4,28 +4,9 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Schedule;
 
-/**
- * One conflict between two *persisted* meetings, as the conflict inbox shows it.
- *
- * Conflicts are derived, not stored: there is no `conflict_cases` table and
- * `schedules.status` is never used to mark one resolved. The identity of a
- * conflict is therefore its content -- the rule it breaks and the pair of rows
- * it breaks it between -- which is what `id()` encodes. Two scans of unchanged
- * data produce the same ids, and a scan after a successful resolution no longer
- * produces the id that was resolved. That is the only evidence the server
- * accepts that a conflict is gone (see ResolveScheduleConflict).
- *
- * The pair is always stored low id first so the id does not depend on the order
- * the scan happened to visit the rows in.
- */
 final readonly class ScheduleConflictCase
 {
     /**
-     * What the user may do about each rule, in the order the UI offers them.
-     * Every entry is an action ResolveScheduleConflict implements, except
-     * `request_override`, which routes to the override endpoint. Ranked
-     * one-click fixes come from ConflictRecommender, not from this list.
-     *
      * @var array<string, list<string>>
      */
     public const RESOLUTION_OPTIONS = [
@@ -37,9 +18,7 @@ final readonly class ScheduleConflictCase
 
     public function __construct(
         public string $rule,
-        /** Lower of the two schedule ids. */
         public int $scheduleId,
-        /** Higher of the two schedule ids. */
         public int $otherScheduleId,
         public int $semesterId,
         public string $day,
@@ -52,8 +31,6 @@ final readonly class ScheduleConflictCase
     ) {}
 
     /**
-     * Build from a BatchConflict whose row indexes are schedule ids.
-     *
      * @param  array<int, array<string, mixed>>  $rowsById
      */
     public static function fromBatchConflict(BatchConflict $conflict, array $rowsById): self
@@ -75,20 +52,12 @@ final readonly class ScheduleConflictCase
         );
     }
 
-    /**
-     * Readable rather than hashed: the id ends up in audit metadata, and a
-     * reviewer reading `room_conflict:42:77` a term later should not need the
-     * scan that produced it to know what it meant.
-     */
     public function id(): string
     {
         return "{$this->rule}:{$this->scheduleId}:{$this->otherScheduleId}";
     }
 
     /**
-     * The rule and the ordered pair carried by a conflict id, or null when the
-     * id is not one this class could have produced.
-     *
      * @return array{rule: string, schedule_id: int, other_schedule_id: int}|null
      */
     public static function parseId(string $id): ?array
@@ -117,10 +86,6 @@ final readonly class ScheduleConflictCase
     }
 
     /**
-     * The departments and sections on either side, recorded with a resolution
-     * so the Resolved list can be scoped the way the open list is: a room
-     * clash with another college belongs to both.
-     *
      * @return array{department_ids: list<int>, section_ids: list<int>}
      */
     public function owners(): array
@@ -134,9 +99,6 @@ final readonly class ScheduleConflictCase
     }
 
     /**
-     * What an audit row keeps about a conflict a change cleared: enough for
-     * the Resolved list to show it after both rows have moved or gone.
-     *
      * @return array<string, mixed>
      */
     public function toResolutionRecord(): array

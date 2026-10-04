@@ -5,23 +5,9 @@ namespace App\Services\Scheduling\Support;
 use App\Models\RoomRequest;
 use Illuminate\Support\Facades\DB;
 
-/**
- * Which rooms a department may schedule into, and when.
- *
- * A department always reaches its own rooms and the shared ones (no owner).
- * A room owned by another department is reachable only through an approved
- * room request, and then only inside the weekly windows the VPAA approved for
- * that semester.
- *
- * Every placement path -- the validator, the generator's room domain and the
- * alternative-room search -- asks this class, so none of them can offer a room
- * another would refuse.
- */
 class RoomAccessPolicy
 {
     /**
-     * Approved grant windows for a department in a semester, keyed by room id.
-     *
      * @return array<int, list<array{day: string, start_time: string, end_time: string, start_minutes: int, end_minutes: int}>>
      */
     public function grantWindowsFor(int $departmentId, int $semesterId): array
@@ -58,10 +44,6 @@ class RoomAccessPolicy
     }
 
     /**
-     * Approved windows the department has lent out of its own rooms for the
-     * semester, keyed by room id. A lent window belongs to the borrower: the
-     * owner may not book its room inside it.
-     *
      * @return array<int, list<array{day: string, start_time: string, end_time: string, start_minutes: int, end_minutes: int, borrower: string|null}>>
      */
     public function lentWindowsFor(int $departmentId, int $semesterId): array
@@ -70,8 +52,6 @@ class RoomAccessPolicy
             return [];
         }
 
-        // Ownership is read from the room, not the request, so a room moved to
-        // another department after approval stays guarded for its new owner.
         $rows = DB::table('room_request_windows')
             ->join('room_requests', 'room_requests.id', '=', 'room_request_windows.room_request_id')
             ->join('rooms', 'rooms.id', '=', 'room_requests.room_id')
@@ -104,10 +84,7 @@ class RoomAccessPolicy
     }
 
     /**
-     * The first window the meeting overlaps, if any.
-     *
      * @template T of array{day: string, start_minutes: int, end_minutes: int}
-     *
      * @param  list<T>  $windows
      * @return T|null
      */
@@ -126,8 +103,6 @@ class RoomAccessPolicy
     }
 
     /**
-     * Refusal shown when the owner tries to book inside a window it lent out.
-     *
      * @param  array{day: string, start_time: string, end_time: string, borrower?: string|null}  $window
      */
     public static function lentRefusal(string $roomCode, array $window): string
@@ -141,8 +116,6 @@ class RoomAccessPolicy
     }
 
     /**
-     * Rooms with at least one approved window for the department in the semester.
-     *
      * @return list<int>
      */
     public function grantedRoomIds(int $departmentId, ?int $semesterId): array
@@ -163,10 +136,6 @@ class RoomAccessPolicy
     }
 
     /**
-     * Narrows a rooms query to what the department may reach: its own rooms,
-     * shared rooms, and rooms granted to it for the semester. Whether a granted
-     * room fits a particular meeting is still the RuleEngine's call.
-     *
      * @param  \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder  $query
      */
     public function scopeReachableRooms($query, int $departmentId, ?int $semesterId, string $column = 'department_id', string $idColumn = 'id'): void
@@ -199,8 +168,6 @@ class RoomAccessPolicy
     }
 
     /**
-     * True when the meeting sits entirely inside one granted window.
-     *
      * @param  list<array{day: string, start_minutes: int, end_minutes: int}>  $windows
      */
     public static function fitsWindows(array $windows, string $day, string $startTime, string $endTime): bool
@@ -218,10 +185,6 @@ class RoomAccessPolicy
     }
 
     /**
-     * The parts of each day that fall outside the granted windows, as
-     * minute ranges. The generator books these as occupied so it never builds
-     * a candidate the validator would refuse.
-     *
      * @param  list<array{day: string, start_minutes: int, end_minutes: int}>  $windows
      * @param  list<string>  $days
      * @return array<string, list<array{start_minutes: int, end_minutes: int}>>

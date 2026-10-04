@@ -19,10 +19,6 @@ return new class extends Migration
             $table->softDeletes();
         });
 
-        // Generated columns that go null when the rule does not apply, so a
-        // unique index enforces it: one live row per year and semester, and a
-        // single active semester. MySQL/MariaDB only; the in-memory SQLite test
-        // database skips them.
         if (DB::getDriverName() !== 'mysql') {
             return;
         }

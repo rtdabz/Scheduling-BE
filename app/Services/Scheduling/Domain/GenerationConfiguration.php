@@ -129,8 +129,6 @@ final readonly class GenerationConfiguration implements SchedulingContract
             'throw_on_empty_domain' => $this->throwOnEmptyDomain,
             'allow_room_tba_fallback' => $this->allowRoomTbaFallback,
             'allow_online_fallback' => $this->allowOnlineFallback,
-            // Only present when set, so every configuration that does not use
-            // it keeps the fingerprint it had before the field existed.
             ...($this->searchFromDay !== null ? ['search_from_day' => $this->searchFromDay] : []),
         ];
     }

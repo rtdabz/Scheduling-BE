@@ -50,9 +50,6 @@ class InstructorAssignmentController extends Controller
             return response()->json(['message' => 'Your account must belong to a department.'], 422);
         }
 
-        // Program heads operate inside one program even when several programs
-        // share the same college. A missing program assignment intentionally
-        // produces no faculty candidates instead of widening to the department.
         $programId = $request->user()?->role === 'program_head'
             ? (int) ($request->user()?->program_id ?? 0)
             : null;
@@ -60,9 +57,6 @@ class InstructorAssignmentController extends Controller
         $cacheKey = ApiCache::key('instructor_assignments.index', [
             'department_id' => $departmentId,
             'program_id' => $programId,
-            // The payload includes delegated courses and source-department timetable
-            // rows; bump this when that dataset changes so old empty responses cannot
-            // hide a newly assigned cross-department course.
             'version' => 4,
         ]);
 
@@ -93,11 +87,6 @@ class InstructorAssignmentController extends Controller
                 ->where('semester_id', $activeSemester->id)
                 ->whereIn('status', self::VISIBLE_STATUSES)
                 ->whereHas('course', fn ($query) => $query->where('status', 'active'))
-                // Own offerings, plus anything another college has delegated to this
-                // one: IT owns GEC 101 but CAS teaches it, so the CAS workspace has
-                // to show IT's GEC 101 offerings for CAS to be able to assign them.
-                // Only an explicit override widens this — a GEC course owned by this
-                // department already matches on `department_id`.
                 ->where(function ($query) use ($departmentId) {
                     $query->where('department_id', $departmentId)
                         ->orWhereHas(
@@ -125,17 +114,10 @@ class InstructorAssignmentController extends Controller
                 ->orderBy('first_name')
                 ->get();
 
-            // The picker shows each instructor's live load so an overload is
-            // visible before Save is pressed, and the tier badge needs the same
-            // numbers the confirmation gate projects from.
             $this->facultyLoad->decorateMany($faculties, (int) $activeSemester->id);
 
             $courses = $schedules->pluck('course')->filter()->unique('id')->values();
 
-            // Only the department cards show the logo, a ~26 KB data URI. Nested
-            // on every schedule, course and instructor it made this payload ~14 MB,
-            // so the cards get their own query and the nested copies drop it.
-            // (Eager-loaded relations share instances, hence the separate query.)
             $departments = Departments::query()
                 ->whereIn('id', $schedules->pluck('department_id')->filter()->unique())
                 ->orderBy('id')
@@ -166,8 +148,6 @@ class InstructorAssignmentController extends Controller
         ]);
 
         $departmentId = (int) ($request->user()?->department_id ?? 0);
-        // For a major the offering department is the only one that can assign; a GEC
-        // service course is assigned by the college that offers it.
         $teachingDepartmentId = $schedule->course
             ? (SchedulingPolicy::isMajorCourse($schedule->course)
                 ? SchedulingPolicy::majorTeachingDepartmentId($schedule->course, (int) $schedule->department_id)
@@ -225,8 +205,6 @@ class InstructorAssignmentController extends Controller
             ], 422);
         }
 
-        // Checked here as well as in the rule engine so the workspace can say why
-        // the instructor is ineligible instead of reporting a generic conflict.
         $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
         if ($faculty !== null && $requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
             $schedule->course->loadMissing(['program', 'teachingProgram']);
@@ -254,8 +232,6 @@ class InstructorAssignmentController extends Controller
             $violations = array_merge($violations, $this->ruleEngine->validateInstructorAssignment($attempt));
         }
 
-        // The instructor's own clashes may be assigned over on purpose; anything
-        // else still refuses. Both sides of an overridden clash are marked below.
         $overriddenIds = [];
         if ($violations !== []) {
             if (
@@ -272,9 +248,6 @@ class InstructorAssignmentController extends Controller
             $overriddenIds = array_merge($linkedScheduleIds, FacultyConflictOverride::partnerIds($violations));
         }
 
-        // Assignment continues past the Basic Load into the overload allowance
-        // and then pro bono, so this asks rather than refuses — but it asks
-        // before the write, so answering No leaves the schedule untouched.
         $activeSemesterId = $this->activeSemesterId();
         if ($faculty !== null) {
             $incoming = array_values(array_filter([$this->loadPairForSchedule($schedule)]));
@@ -303,9 +276,6 @@ class InstructorAssignmentController extends Controller
             $overriddenIds,
         ) {
             $before = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
-            // A bulk update fires no model events, so the Schedule hook cannot clear
-            // a stale override here. Only meetings whose instructor actually changes
-            // lose it: re-saving the same instructor keeps the override standing.
             Schedule::query()
                 ->whereIn('id', $linkedScheduleIds)
                 ->where(fn ($query) => $facultyId === null
@@ -353,8 +323,6 @@ class InstructorAssignmentController extends Controller
             $this->notifications->notifyInstructorAssignmentProgress($updatedSchedules->first(), $request->user());
         }
 
-        // Projected with nothing incoming, so it reports what the instructor
-        // carries now that the assignment is committed.
         $load = $faculty === null
             ? null
             : $this->facultyLoad->projectLoad($faculty->refresh(), $activeSemesterId, []);
@@ -362,20 +330,11 @@ class InstructorAssignmentController extends Controller
         return response()->json([
             'schedule' => $updatedSchedules->first(),
             'schedules' => $updatedSchedules,
-            // Past the allowances is pro bono rather than a breach, so there is
-            // nothing left to warn about after the save.
             'warnings' => [],
             'load' => $load,
         ]);
     }
 
-    /**
-     * GET /api/instructor-assignments/{schedule}/recommendations
-     *
-     * Instructors the caller may assign who are free for every meeting of the
-     * class, best first. Offered when the chosen instructor clashes, so the
-     * user can pick someone free instead of assigning over the conflict.
-     */
     public function recommendations(Request $request, Schedule $schedule): JsonResponse
     {
         $validated = $request->validate([
@@ -392,8 +351,6 @@ class InstructorAssignmentController extends Controller
             return response()->json(['options' => []]);
         }
 
-        // The same pool update() accepts: active, this college, the caller's
-        // program for a Program Head, and the course's program when it has one.
         $programId = $request->user()?->role === 'program_head'
             ? (int) ($request->user()?->program_id ?? 0)
             : SchedulingPolicy::requiredTeachingProgramId($schedule->course);
@@ -421,13 +378,6 @@ class InstructorAssignmentController extends Controller
         return $this->clearSectionInstructors($request, collect([$section]));
     }
 
-    /**
-     * POST /api/instructor-assignments/clear
-     *
-     * The department-wide "clear all instructors". Clearing one section at a
-     * time left every other section's assignments -- and so each instructor's
-     * load -- in place, which read as a clear that had not worked.
-     */
     public function clearSections(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -487,7 +437,6 @@ class InstructorAssignmentController extends Controller
             static fn (Schedule $schedule): array => [(string) $schedule->id => (int) $schedule->faculty_id]
         )->all();
 
-        // A course taught in several sections is one assignment per section.
         $coursesCleared = $targetSchedules
             ->map(static fn (Schedule $schedule): string => $schedule->section_id.'-'.$schedule->course_id)
             ->unique()
@@ -566,14 +515,6 @@ class InstructorAssignmentController extends Controller
         ]);
     }
 
-    /**
-     * Every meeting block of the same course in the same section, so assigning an
-     * instructor to one block assigns the whole class.
-     *
-     * `schedules` has no `subject_id` column — the name is a legacy alias for
-     * `course_id` elsewhere in the codebase — so matching on it silently selected
-     * nothing and the assignment then failed on an empty collection.
-     */
     private function linkedMeetingBlocks(Schedule $schedule)
     {
         $hybridComponents = $this->manualHybridAssignments->resolve($schedule)

@@ -3,13 +3,6 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 
-/**
- * Field Course is no longer a saved department setting: a generation run
- * passes its own, and one class meets in the field by its delivery mode.
- * The saved flags are cleared, and a rule row left holding no other rule
- * (Required Day, Consecutive Days) is removed. Not reversible: nothing reads
- * the flag any more.
- */
 return new class extends Migration
 {
     public function up(): void
@@ -27,6 +20,5 @@ return new class extends Migration
 
     public function down(): void
     {
-        // The cleared flags are not restored.
     }
 };

@@ -19,12 +19,8 @@ class RoomsController extends Controller
         private readonly ScheduleAuthorizationService $authorization,
     ) {}
 
-    /**
-     * Display a listing of the resource.
-     */
     public function index(Request $request)
     {
-        // A Program Head does not see rooms homed to a sibling program.
         $programId = $this->authorization->programScope($request);
         $rooms = Cache::remember(
             ApiCache::key('rooms.index', ['program_id' => $programId]),
@@ -35,9 +31,6 @@ class RoomsController extends Controller
         return response()->json($rooms);
     }
 
-    /**
-     * Store a newly created resource in storage.
-     */
     public function store(StoreRoomRequest $request)
     {
         $validated = $request->validated();
@@ -58,9 +51,6 @@ class RoomsController extends Controller
         ], 201);
     }
 
-    /**
-     * Display the specified resource.
-     */
     public function show(Request $request, $id)
     {
         $room = $this->authorization->scopeRoomsToProgram(Rooms::with('department'), $request)->findOrFail($id);
@@ -68,9 +58,6 @@ class RoomsController extends Controller
         return response()->json($room);
     }
 
-    /**
-     * Update the specified resource in storage.
-     */
     public function update(UpdateRoomRequest $request, $id)
     {
         $room = Rooms::findOrFail($id);
@@ -80,9 +67,6 @@ class RoomsController extends Controller
             $validated['allow_lecture_usage'] = false;
         }
 
-        // Closing a room must not leave this semester's classes booked in it;
-        // generation and validation skip unavailable rooms, so they would
-        // never be flagged. Past semesters do not block it.
         $closing = array_key_exists('status', $validated)
             && $validated['status'] !== 'available'
             && $room->status === 'available';
@@ -112,9 +96,6 @@ class RoomsController extends Controller
         ]);
     }
 
-    /**
-     * Remove the specified resource from storage.
-     */
     public function destroy($id)
     {
         $room = Rooms::findOrFail($id);
@@ -135,11 +116,6 @@ class RoomsController extends Controller
         ]);
     }
 
-    /**
-     * Rename a building: every active room that names it moves to the new
-     * name. Another building's name is refused so two buildings never merge;
-     * changing only the case or spacing of its own name is allowed.
-     */
     public function renameBuilding(Request $request)
     {
         $validated = $request->validate([
@@ -179,10 +155,6 @@ class RoomsController extends Controller
         ]);
     }
 
-    /**
-     * Archive a building: all of its rooms, or none of them. Like a single
-     * room, it is refused while any of its rooms has classes scheduled.
-     */
     public function archiveBuilding(Request $request)
     {
         $validated = $request->validate([
@@ -227,9 +199,6 @@ class RoomsController extends Controller
             ->get();
     }
 
-    /**
-     * Assign a department to a room.
-     */
     public function assign(Request $request, $id)
     {
         $room = Rooms::findOrFail($id);

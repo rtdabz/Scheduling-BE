@@ -18,9 +18,7 @@ final readonly class ScheduleRequirement
         public array $allowedDeliveryModes,
         public bool $allowLectureLaboratoryFallback = false,
         public bool $isSplitComponent = false,
-        // Set when Setup Courses chose this length instead of the course's own.
         public bool $customDuration = false,
-        // A soft ranking preference; never a room restriction.
         public ?int $preferredRoomId = null,
     ) {}
 

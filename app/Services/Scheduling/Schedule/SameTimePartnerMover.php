@@ -11,24 +11,8 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 
-/**
- * A Split Session or Hybrid Split meets at one time on both days
- * (MeetingGroupRule's `split_group_same_time`), so moving one meeting to a new
- * time carries its partner to that time, on the partner's own day. Other linked
- * groups keep their own times and are only checked as a group.
- *
- * A Consecutive Days run moves as a whole: the other days take the new time
- * and shift by the same number of days, so Thursday-Saturday dragged a day
- * later is Friday-Sunday. A run with ticked meeting days stays on them.
- *
- * Extracted from ScheduleController so the drag-relocate path and the conflict
- * resolution path move a pair the same way. A second implementation of this
- * would let one path write a pair to two different times, which is precisely
- * the state the rule exists to prevent.
- */
 final class SameTimePartnerMover
 {
-    /** Statuses whose timetable placement may still be edited. */
     public const EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
 
     private const TIME_FIELDS = ['day', 'start_time', 'end_time'];
@@ -36,9 +20,6 @@ final class SameTimePartnerMover
     public function __construct(private readonly RuleEngine $ruleEngine) {}
 
     /**
-     * The linked meetings a relocation must be judged with, or an empty
-     * collection when nothing about the placement's timing is changing.
-     *
      * @param  array<string, mixed>  $changes
      * @return Collection<int, Schedule>
      */
@@ -59,10 +40,6 @@ final class SameTimePartnerMover
     }
 
     /**
-     * The other days of a Consecutive Days run that is moving. The moved day
-     * is judged without them: shifted one day, it lands where one of them
-     * stands now, and they move with it.
-     *
      * @param  Collection<int, Schedule>  $partners
      * @return list<int>
      */
@@ -133,15 +110,10 @@ final class SameTimePartnerMover
     }
 
     /**
-     * The run's other days at the new time, each shifted by as many days as
-     * the moved meeting was. A shift past the end of the week is refused
-     * here; a day the department does not teach is the Rule Engine's.
-     *
      * @param  array<string, mixed>  $attemptData
      * @param  list<array<string, mixed>>  $partnerRows
      * @param  array{start_time: mixed, end_time: mixed}  $time
      * @return list<array<string, mixed>>
-     *
      * @throws ScheduleConflictException
      */
     private function shiftedRun(array $attemptData, array $partnerRows, array $time): array
@@ -173,13 +145,8 @@ final class SameTimePartnerMover
     }
 
     /**
-     * A run whose rule has ticked meeting days (Setup Courses) keeps to them,
-     * the way a Required Day holds a single meeting: it may change time or
-     * room, not days.
-     *
      * @param  array<string, mixed>  $attemptData
      * @param  list<string>  $days
-     *
      * @throws ScheduleConflictException
      */
     private function assertOnTickedDays(array $attemptData, array $days): void

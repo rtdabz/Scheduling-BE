@@ -12,9 +12,6 @@ class ScheduleSplitController extends Controller
 {
     public function __construct(private readonly ScheduleAuthorizationService $authorization) {}
 
-    /**
-     * Display a listing of the resource.
-     */
     public function index(Request $request): JsonResponse
     {
         $query = ScheduleSplit::query()->with('schedule');
@@ -30,9 +27,6 @@ class ScheduleSplitController extends Controller
         return response()->json($query->get());
     }
 
-    /**
-     * Store a newly created resource in storage.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -50,17 +44,11 @@ class ScheduleSplitController extends Controller
         return response()->json($split->load('schedule'), 201);
     }
 
-    /**
-     * Display the specified resource.
-     */
     public function show(ScheduleSplit $scheduleSplit): JsonResponse
     {
         return response()->json($scheduleSplit->load('schedule'));
     }
 
-    /**
-     * Update the specified resource in storage.
-     */
     public function update(Request $request, ScheduleSplit $scheduleSplit): JsonResponse
     {
         $validated = $request->validate([
@@ -78,9 +66,6 @@ class ScheduleSplitController extends Controller
         return response()->json($scheduleSplit->load('schedule'));
     }
 
-    /**
-     * Remove the specified resource from storage.
-     */
     public function destroy(Request $request, ScheduleSplit $scheduleSplit): JsonResponse
     {
         if (! $this->authorization->scheduleIdsWritable($request, [(int) $scheduleSplit->schedule_id])) {

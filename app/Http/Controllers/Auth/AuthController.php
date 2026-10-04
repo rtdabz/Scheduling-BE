@@ -114,9 +114,6 @@ class AuthController extends Controller
                 ->throw()
                 ->json();
         } catch (ConnectionException $exception) {
-            // Google was never reached -- DNS, proxy, or a dropped link. That is
-            // an operator problem, not a rejected sign-in, and saying so saves
-            // the user from re-entering credentials that were never at fault.
             report($exception);
 
             return $this->googleErrorRedirect($frontendUrl, 'Could not reach Google. Check the server network connection and try again.');
@@ -223,8 +220,6 @@ class AuthController extends Controller
             'password' => ['required', 'confirmed', PasswordRule::min(10)->letters()->mixedCase()->numbers()],
             'invite' => 'sometimes|boolean',
         ]);
-        // Each broker only accepts tokens from its own table, so the flag picks
-        // the expiry window but cannot turn a reset token into an invite.
         $isInvite = $request->boolean('invite');
         $credentials = collect($validated)->except('invite')->all();
 
@@ -234,7 +229,6 @@ class AuthController extends Controller
                 'remember_token' => Str::random(60),
             ])->save();
             $user->tokens()->delete();
-            // Whichever link was used, the other one must stop working too.
             Password::broker($isInvite ? null : 'invites')->deleteToken($user);
             event(new PasswordReset($user));
             $this->audit->record($request, $isInvite ? 'invitation_accepted' : 'password_reset', $user);
@@ -265,7 +259,6 @@ class AuthController extends Controller
     private function authenticatedResponse(Request $request, User $user, string $method): JsonResponse
     {
         $user->forceFill(['last_login_at' => now()])->save();
-        // Single active session: signing in here signs every other device out.
         $token = $this->sessions->start($user, "wicars-{$method}")->plainTextToken;
         $this->audit->record($request, 'login_succeeded', $user, ['method' => $method]);
 

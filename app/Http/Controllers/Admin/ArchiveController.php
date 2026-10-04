@@ -75,8 +75,6 @@ class ArchiveController extends Controller
 
         $record = $modelClass::onlyTrashed()->findOrFail($id);
 
-        // Restoring under an archived parent would bring back a record that
-        // points at a department or program nobody can see or select.
         if (($blocked = $this->archivedParent($record)) !== null) {
             return response()->json([
                 'message' => "Restore the {$blocked} from Archives first.",
@@ -95,8 +93,6 @@ class ArchiveController extends Controller
             return response()->json(['message' => $message], 422);
         }
 
-        // A role slot holds one active account. If someone filled it while
-        // this account was archived, it stays archived until the slot frees.
         if ($record instanceof User) {
             $holder = User::activeRoleHolder(
                 (string) $record->role,
@@ -117,19 +113,15 @@ class ArchiveController extends Controller
             $clash = null;
             DB::transaction(function () use ($record, &$clash): void {
                 $record->restore();
-                // Archiving an account cleared its role from the linked profile.
                 if ($record instanceof User) {
                     $this->facultyProfiles->sync($record);
                 }
 
-                // A class returns into a timetable that kept changing. It must
-                // not bring back a room, instructor or section clash.
                 if ($record instanceof Schedule) {
                     $cases = $this->conflicts->scan((int) $record->semester_id, onlyScheduleIds: [(int) $record->id]);
                     if ($cases !== []) {
                         $clash = str_replace('_', ' ', (string) $cases[0]->rule);
 
-                        // Undo the restore; nothing else has been written.
                         throw new \RuntimeException('restore_clash');
                     }
                 }
@@ -165,10 +157,6 @@ class ArchiveController extends Controller
         return response()->json(['message' => 'Record restored successfully.']);
     }
 
-    /**
-     * A designation returns under its parent, and its name is unique among
-     * siblings only while live -- so a live sibling may have taken the name.
-     */
     private function designationRestoreBlock(Designation $designation): ?string
     {
         if ($designation->parent_id !== null && Designation::onlyTrashed()->whereKey($designation->parent_id)->exists()) {
@@ -187,7 +175,6 @@ class ArchiveController extends Controller
         return $nameTaken ? 'A designation with this name already exists here. Rename it first.' : null;
     }
 
-    /** A label for the archived department or program the record belongs to, if any. */
     private function archivedParent(Model $record): ?string
     {
         $departmentId = $record->getAttribute('department_id');
@@ -209,7 +196,6 @@ class ArchiveController extends Controller
         return null;
     }
 
-    /** Why a class cannot come back yet, or null when its parts are all live. */
     private function scheduleRestoreBlock(Schedule $schedule): ?string
     {
         $semester = Semester::find($schedule->semester_id);
@@ -254,9 +240,6 @@ class ArchiveController extends Controller
     }
 
     /**
-     * Names for the schedules being listed. Their course, room and section may
-     * themselves be archived, so the live relations would come back empty.
-     *
      * @param  Collection<int, Model>  $rows
      * @return array<string, Collection<int|string, mixed>>
      */

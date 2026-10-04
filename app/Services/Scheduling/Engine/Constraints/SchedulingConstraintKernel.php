@@ -18,19 +18,8 @@ use App\Services\Scheduling\Engine\Constraints\Families\RoomAvailabilityConstrai
 use App\Services\Scheduling\Engine\Constraints\Families\RoomTypeConstraints;
 use App\Services\Scheduling\Engine\Constraints\Families\SectionLoadConstraints;
 
-/**
- * Runs the constraint families against a snapshot and reports their violations
- * in RULE_PRIORITY order. The rules themselves live in Families/, one class per
- * family, named after the Engine/Rules class each mirrors (DeliveryModeRule ->
- * DeliveryModeConstraints), so each can be read and tested on its own; this
- * class only decides which families apply and in what order they are reported.
- */
 final class SchedulingConstraintKernel
 {
-    /**
-     * Explicit order for the constraint families migrated in Phase 3.
-     * Lower values are reported first.
-     */
     public const RULE_PRIORITY = [
         'hybrid_mode' => 100,
         'hybrid_eligibility' => 110,
@@ -109,8 +98,6 @@ final class SchedulingConstraintKernel
             return [];
         }
 
-        // Called once per candidate slot by AvailableSlotFinder, so the
-        // semester's rows are only copied when some of them are ignored.
         $persisted = $ignoreScheduleIds === []
             ? $snapshot->persistedSchedules
             : array_filter(
@@ -143,9 +130,6 @@ final class SchedulingConstraintKernel
     }
 
     /**
-     * Stable sort by RULE_PRIORITY: rules without a priority go last, and ties
-     * keep the order the families reported them in.
-     *
      * @param  list<ConstraintViolation>  $violations
      * @return list<ConstraintViolation>
      */

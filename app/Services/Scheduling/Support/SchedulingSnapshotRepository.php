@@ -39,12 +39,6 @@ final class SchedulingSnapshotRepository
     }
 
     /**
-     * Capture the immutable database state required by current scheduling rules.
-     *
-     * Persisted schedules are intentionally semester-wide. A target department may
-     * collide with another department through a shared room, online subject, or
-     * previously assigned instructor.
-     *
      * @param  list<int>  $sectionIds
      * @param  list<int>  $courseIds
      * @param  list<array{0: int, 1: int}>|null  $replacedClasses  the exact [section id, course id] pairs a
@@ -79,18 +73,11 @@ final class SchedulingSnapshotRepository
         }
         $sections = $sectionsQuery->get();
 
-        // Which curricula this run spans is a property of the target sections,
-        // not of the department. A year level mid-transition can hold sections
-        // on the old curriculum and sections on the new one at the same time.
         $curriculumIdBySectionId = [];
         foreach ($sections as $section) {
             try {
                 $curriculumIdBySectionId[(int) $section->id] = (int) $this->curricula->forSection($section)->id;
             } catch (InvalidArgumentException) {
-                // A section with no resolvable curriculum is left out rather
-                // than failing the capture. The snapshot is also taken for
-                // read-only diagnostics, and the generation path has already
-                // refused this section by name long before reaching here.
             }
         }
 
@@ -106,10 +93,6 @@ final class SchedulingSnapshotRepository
 
         $scopedPeriods = $this->curricula->periodsForMany($curriculumIds, $courseIds);
 
-        // A collapsed course-keyed view, kept for consumers that legitimately do
-        // not have a section in hand. Within one run this is unambiguous: every
-        // contributing curriculum places these courses at the run's own year
-        // level and semester, or resolveCourseIds would not have selected them.
         $curriculumPeriods = $scopedPeriods
             ->keyBy(static fn (object $period): int => (int) $period->course_id);
 
@@ -127,24 +110,12 @@ final class SchedulingSnapshotRepository
         $schedules = Schedule::query()
             ->with('split')
             ->where('semester_id', $semesterId)
-            // A generation snapshot represents the state outside what is being
-            // regenerated. Draft/completed/revision rows of the target sections'
-            // target courses are replaced on commit, so they must not consume
-            // room or online capacity while the batch is rebuilt. Only those
-            // courses: commit deletes nothing else, so the section's other
-            // courses still occupy their time and must stay visible, or a run
-            // can double-book the section against its own classes. (A
-            // year-level run passes the union of its sections' courses.)
-            // Finalized workflow rows remain authoritative.
-            // (An empty list of replaced classes replaces nothing.)
             ->when($sectionIds !== [] && $replacedClasses !== [], function ($query) use ($sectionIds, $courseIds, $replacedClasses): void {
                 $query->where(function ($scope) use ($sectionIds, $courseIds, $replacedClasses): void {
                     $scope
                         ->whereNotIn('section_id', $sectionIds)
                         ->orWhereNotIn('status', ['draft', 'completed', 'revision']);
                     if ($replacedClasses !== null) {
-                        // A draft review knows exactly which classes the save
-                        // deletes: every other row of a target section stays.
                         $scope->orWhere(function ($kept) use ($replacedClasses): void {
                             foreach ($replacedClasses as [$sectionId, $courseId]) {
                                 $kept->where(static fn ($pair) => $pair
@@ -165,9 +136,6 @@ final class SchedulingSnapshotRepository
             ]);
 
         $referencedRoomIds = $schedules->pluck('room_id')->filter()->map('intval')->unique()->values()->all();
-        // Rooms another department lent this one for the semester. Their windows
-        // ride on the room records, so a grant approved or revoked after the
-        // capture changes the fingerprint and no cached run is replayed.
         $grantWindows = app(RoomAccessPolicy::class)->grantWindowsFor($departmentId, $semesterId);
         $grantedRoomIds = array_keys($grantWindows);
         $rooms = Rooms::query()
@@ -195,8 +163,6 @@ final class SchedulingSnapshotRepository
             ->mapWithKeys(static fn (string $day, int|string $courseId): array => [(int) $courseId => $day])
             ->all();
 
-        // Every saved rule for the run's courses, course-wide and per section;
-        // SchedulingSnapshot::consecutiveDayRulesFor() resolves a section's.
         $consecutiveDayRules = DepartmentCourseRules::query($departmentId)
             ->whereNotNull('consecutive_day_count')
             ->when($courseIds !== [], fn ($query) => $query->whereIn('course_id', $courseIds))
@@ -215,15 +181,11 @@ final class SchedulingSnapshotRepository
         $fieldCourseCodes = DepartmentCourseRules::fieldCourseCodes($departmentId);
 
         $roomRecords = $this->withVirtualRooms($this->roomRecords($rooms, $grantWindows));
-        // Which program owns each divided room per day, on the room records like
-        // the grant windows, so a change to the division changes the fingerprint.
         foreach (app(ProgramRoomShares::class)->forDepartment($departmentId, $semesterId) as $roomId => $days) {
             if (isset($roomRecords[$roomId])) {
                 $roomRecords[$roomId]['program_days'] = $days;
             }
         }
-        // Windows this department lent out of its own rooms; the borrower holds
-        // them, so the owner's runs treat them as booked.
         foreach (app(RoomAccessPolicy::class)->lentWindowsFor($departmentId, $semesterId) as $roomId => $windows) {
             if (isset($roomRecords[$roomId])) {
                 $roomRecords[$roomId]['lent_windows'] = array_map(static fn (array $window): array => [
@@ -265,9 +227,6 @@ final class SchedulingSnapshotRepository
                 'is_enabled' => (bool) $semester->is_enabled,
             ],
             'metadata' => [
-                // The curricula the target sections actually follow. The old
-                // "active_curriculum_id" singular is retained only so existing
-                // readers keep working; it is meaningless once a run spans two.
                 'active_curriculum_id' => $curriculumIds === [] ? null : $curriculumIds[0],
                 'active_curriculum_ids' => $curriculumIds,
                 'curriculum_names_by_id' => $curricula
@@ -390,8 +349,6 @@ final class SchedulingSnapshotRepository
     }
 
     /**
-     * Match the effective ONLINE and FIELD resources synthesized by the legacy CSP.
-     *
      * @param  array<int, array<string, mixed>>  $rooms
      * @return array<int, array<string, mixed>>
      */
@@ -443,13 +400,6 @@ final class SchedulingSnapshotRepository
             'meeting_index' => $schedule->meeting_index,
             'status' => (string) $schedule->status,
         ])
-            // Identity is where and when a section meets, not which run created
-            // the row. split_group_id is a fresh UUID per generation, so keying
-            // on it let repeated saves of the same meeting through as separate
-            // bookings: the live database holds one meeting duplicated fourteen
-            // times, and the solver counted all fourteen against room capacity.
-            // Meetings of one split course still differ by day, time or type, so
-            // dropping the run identifier does not merge them.
             ->unique(static fn (array $schedule): string => implode('|', [
                 $schedule['semester_id'],
                 $schedule['section_id'],
@@ -509,9 +459,6 @@ final class SchedulingSnapshotRepository
     }
 
     /**
-     * Placements keyed "curriculumId:courseId" — the form that stays correct
-     * when one run spans an old and a new curriculum.
-     *
      * @return array<string, array<string, mixed>>
      */
     private function scopedCurriculumPeriodRecords(Collection $periods): array

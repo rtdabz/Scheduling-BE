@@ -10,13 +10,6 @@ use InvalidArgumentException;
 
 final readonly class SchedulingSnapshot implements SchedulingContract
 {
-    /**
-     * 2: sections carry curriculum_id and placements are keyed per curriculum.
-     *
-     * The bump matters as much as the fields: the fingerprint feeds a cache, and
-     * a version-1 payload would otherwise be replayed against curriculum-aware
-     * code that expects the new keys.
-     */
     public const SCHEMA_VERSION = 2;
 
     /**
@@ -56,8 +49,6 @@ final readonly class SchedulingSnapshot implements SchedulingContract
         public array $semester = [],
         public array $metadata = [],
         public int $schemaVersion = self::SCHEMA_VERSION,
-        // Consecutive Days rules as saved: course-wide (section_id null) and
-        // per section. consecutiveDayRulesFor() resolves them for a section.
         public array $consecutiveDayRules = [],
     ) {
         if ($this->fingerprint === '' || $this->semesterId <= 0 || $this->departmentId <= 0) {
@@ -121,9 +112,6 @@ final readonly class SchedulingSnapshot implements SchedulingContract
     }
 
     /**
-     * The Consecutive Days rule each course follows in this section, as
-     * course id => {day_count, preferred_start_day}.
-     *
      * @return array<int, array{day_count: int, preferred_start_day: string|null}>
      */
     public function consecutiveDayRulesFor(int $sectionId): array
@@ -137,13 +125,6 @@ final readonly class SchedulingSnapshot implements SchedulingContract
     }
 
     /**
-     * Where a course sits in the curriculum *this section* follows.
-     *
-     * A run can span curricula when a year level is mid-transition, and the same
-     * course can sit at different year levels in each, so asking by course id
-     * alone is not a well-formed question. The course-keyed map remains as the
-     * fallback for snapshots captured before placements were curriculum-scoped.
-     *
      * @return array<string, mixed>|null
      */
     public function periodFor(int $sectionId, int $courseId): ?array

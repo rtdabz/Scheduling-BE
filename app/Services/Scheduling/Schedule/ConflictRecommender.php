@@ -12,34 +12,12 @@ use App\Services\Scheduling\Manual\AvailableSlotFinder;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 
-/**
- * A few ranked, one-click fixes for one detected conflict.
- *
- * Candidates come from AvailableSlotFinder (every placement the constraint
- * kernel allows for the class) and from the department's active instructors.
- * The finder does not know who teaches the class, so each candidate is then
- * put through the same RuleEngine check ResolveScheduleConflict runs before it
- * writes: an option listed here is one the resolve endpoint should accept. It
- * is still a suggestion, not a reservation -- resolve re-checks under the lock.
- *
- * Every option carries `payload`, the exact body for
- * POST /api/conflicts/{id}/resolve, so the client applies it without mapping.
- *
- * Read-only: no locks, no writes.
- */
 final class ConflictRecommender
 {
     public const DEFAULT_LIMIT = 5;
 
-    /**
-     * Candidates checked against the RuleEngine before giving up, shared out
-     * evenly between the conflict's classes. Each check queries, and a busy
-     * instructor can refuse most of a room's free week -- one class must not
-     * spend the whole allowance and leave the other with no options.
-     */
     private const MAX_VALIDATIONS = 60;
 
-    /** Candidates per (class, action) kept before merging, so one kind cannot fill the list. */
     private const PER_BUCKET = 2;
 
     public function __construct(
@@ -90,10 +68,6 @@ final class ConflictRecommender
     }
 
     /**
-     * Free placements for the class, split by the action that would use them
-     * and ranked within each: the same time in another room first, then the
-     * same day, then days further from the one it clashed on.
-     *
      * @param  list<string>  $allowed
      * @return array<string, list<array<string, mixed>>>
      */
@@ -102,8 +76,6 @@ final class ConflictRecommender
         $wanted = array_intersect($allowed, ['change_room', 'change_delivery_mode', 'move_schedule']);
         if ($wanted === []
             || ! in_array($schedule->status, SameTimePartnerMover::EDITABLE_STATUSES, true)
-            // A Consecutive Days run moves as a block; one day of it has no
-            // free slot of its own to offer.
             || SchedulingPolicy::consecutiveDayCount($schedule->preferred_pattern) !== null) {
             return [];
         }
@@ -150,8 +122,6 @@ final class ConflictRecommender
                 continue;
             }
 
-            // One move per day and time: the best room for it is enough, and
-            // five rooms at the same hour are not five different fixes.
             if ($action === 'move_schedule') {
                 $key = $slot['day'].'@'.$slot['start_time'];
                 $keepsRoom = $slot['room_id'] === $roomId && $slot['mode'] === $mode;
@@ -200,8 +170,6 @@ final class ConflictRecommender
                 ['Same day and time', $modeChange],
             ],
             default => [
-                // Nearer the original day and hour is less disruptive; keeping
-                // the room and the delivery mode more so.
                 70
                     - 6 * SchedulingPolicy::searchDayRank((string) $slot['day'], (string) $schedule->day)
                     - intdiv(abs(SchedulingPolicy::timeToMinutes((string) $slot['start_time']) - $currentStart), 60)
@@ -236,9 +204,6 @@ final class ConflictRecommender
     }
 
     /**
-     * Why a move ranks where it does, in the terms its score uses: the day,
-     * how far the start shifts, and whether the room and delivery stay.
-     *
      * @param  array<string, mixed>  $slot
      * @return list<string>
      */
@@ -274,8 +239,6 @@ final class ConflictRecommender
     }
 
     /**
-     * The first candidates the RuleEngine accepts, in their ranked order.
-     *
      * @param  list<array<string, mixed>>  $candidates
      * @return list<array<string, mixed>>
      */
@@ -292,8 +255,6 @@ final class ConflictRecommender
                 continue;
             }
 
-            // A split meeting whose partner must share its time would drag the
-            // partner along on resolve; this candidate only checked itself.
             $partners = $this->splitPartners($candidate['attempt']);
             if ($partners !== [] && collect($this->ruleEngine->validateConfiguredMeetingGroups([$candidate['attempt'], ...$partners]))
                 ->contains('rule', 'split_group_same_time')) {
@@ -325,11 +286,6 @@ final class ConflictRecommender
     }
 
     /**
-     * Active instructors of the class's department who are free for it (and
-     * for any meeting that is assigned with it), ranked by InstructorRecommender.
-     * One that would land in pro bono is still offered, ranked last and flagged:
-     * the resolve endpoint will ask for confirmation.
-     *
      * @return list<array<string, mixed>>
      */
     private function instructorOptions(Schedule $schedule, int $semesterId, int $take): array
@@ -346,8 +302,6 @@ final class ConflictRecommender
             'schedule_id' => (int) $schedule->id,
             'summary' => "Assign {$option['faculty_name']} to {$this->label($schedule)}.",
             'reasons' => ['Timetable unchanged', ...$option['reasons']],
-            // Below every same-time room change, above most moves: a new
-            // instructor leaves the timetable alone.
             'score' => $option['score'],
             'faculty_id' => $option['faculty_id'],
             'faculty_name' => $option['faculty_name'],

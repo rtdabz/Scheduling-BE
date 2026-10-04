@@ -13,33 +13,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 
-/**
- * Institution-wide figures for the VPAA dashboard.
- *
- * Everything here is an aggregate over *every* schedule row in the active semester.
- * That is the whole reason this endpoint exists: `/initial-data` caps its
- * `schedules` array at 500 rows (2,000 on request) because it feeds the Schedule
- * Builder, and a truncated list silently understates campus-wide utilisation.
- * Counting on the server also keeps the payload to a few kilobytes instead of
- * shipping thousands of meeting rows to the browser.
- *
- * There is deliberately no clash detection here. RuleEngine's room, faculty and
- * section checks are already global rather than department-scoped, they run on
- * every write path, and concurrent saves are serialised by a semester-wide lock — so
- * a standing double-booking cannot be produced through the application, and a
- * panel reporting them would only ever read zero.
- */
 class VpaaDashboardController extends Controller
 {
-    /**
-     * Rows this dashboard counts: the meetings the VPAA has approved.
-     *
-     * Drafts, submissions with the Dean and cohorts still awaiting VPAA action
-     * are excluded along with rejected and withdrawn rows - the VPAA portal
-     * reports the approved timetable, not a department's work in progress, so
-     * utilisation and coverage here describe schedules that are actually in
-     * force. See SchedulingPolicy::VPAA_VISIBLE_STATUSES.
-     */
     private const LIVE_STATUSES = SchedulingPolicy::VPAA_VISIBLE_STATUSES;
 
     public function __invoke(): JsonResponse
@@ -80,13 +55,6 @@ class VpaaDashboardController extends Controller
         ];
     }
 
-    /**
-     * Every live meeting in the semester, flattened to plain rows.
-     *
-     * Deliberately a query-builder select rather than Eloquent with relations:
-     * this walks the entire semester, and hydrating models plus relations for a few
-     * thousand rows costs far more than the handful of columns actually read.
-     */
     private function meetings(?int $semesterId): Collection
     {
         if ($semesterId === null) {
@@ -94,9 +62,6 @@ class VpaaDashboardController extends Controller
         }
 
         return Schedule::query()
-            // `rooms` is joined for room_type, which decides whether a row counts
-            // towards the physical room inventory; `courses` for the course code
-            // that makes a section's meetings groupable into classes.
             ->leftJoin('courses', 'schedules.course_id', '=', 'courses.id')
             ->leftJoin('rooms', 'schedules.room_id', '=', 'rooms.id')
             ->where('schedules.semester_id', $semesterId)
@@ -123,7 +88,6 @@ class VpaaDashboardController extends Controller
         return in_array(strtolower(trim((string) $roomType)), ['online', 'field'], true);
     }
 
-    /** "07:30:00" -> 450. Minutes since midnight, for cheap overlap maths. */
     private function minutes(?string $time): int
     {
         $parts = explode(':', (string) $time);
@@ -135,12 +99,6 @@ class VpaaDashboardController extends Controller
     }
 
     /**
-     * Room usage across the campus, per room and rolled up per building.
-     *
-     * Utilisation is measured in booked minutes against the institution's own
-     * operating window rather than a flat 24 hours, so "62% utilised" means 62%
-     * of the hours the campus actually runs.
-     *
      * @return array<string, mixed>
      */
     private function utilization(Collection $meetings, Collection $physicalRooms): array
@@ -149,9 +107,6 @@ class VpaaDashboardController extends Controller
             0,
             $this->minutes(SchedulingPolicy::closingTime()) - $this->minutes(SchedulingPolicy::openingTime()),
         );
-        // Monday-Saturday, plus Sunday where it can be booked: a room whose
-        // department has Sunday classes enabled, or a shared room while any
-        // department does.
         $sundayDepartmentIds = Departments::query()
             ->where('sunday_classes_enabled', true)
             ->pluck('id')
@@ -235,21 +190,12 @@ class VpaaDashboardController extends Controller
     }
 
     /**
-     * Campus load as a day x hour matrix — how many classes are running in each
-     * hour of each teaching day.
-     *
-     * This is the chart that shows the 9-11am crush no single department can see
-     * on its own, which is what makes a room shortage a scheduling problem rather
-     * than a building problem.
-     *
      * @return array<string, mixed>
      */
     private function peakLoad(Collection $meetings): array
     {
         $days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
         $openHour = intdiv($this->minutes(SchedulingPolicy::openingTime()), 60);
-        // A class ending at 17:30 still occupies the 17:00 hour, so round the
-        // closing edge up before deriving the last column.
         $closeHour = (int) ceil($this->minutes(SchedulingPolicy::closingTime()) / 60);
         $hours = range($openHour, max($openHour, $closeHour - 1));
 
@@ -297,13 +243,6 @@ class VpaaDashboardController extends Controller
     }
 
     /**
-     * Gaps that stop a semester from opening: classes with nobody assigned to teach
-     * them, and sections with no timetable at all.
-     *
-     * `schedules.day` is one row per meeting, so an MWF class is three rows;
-     * every count here is grouped by section or by section+course first, which
-     * is why it does not simply count rows.
-     *
      * @return array<string, mixed>
      */
     private function coverage(Collection $meetings): array

@@ -14,9 +14,6 @@ use Illuminate\Support\Facades\Cache;
 
 class DepartmentsController extends Controller
 {
-    /**
-     * Display a listing of departments.
-     */
     public function index()
     {
         $departments = Cache::remember(ApiCache::key('departments.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Departments::query()
@@ -33,9 +30,6 @@ class DepartmentsController extends Controller
         return response()->json($departments);
     }
 
-    /**
-     * Store a newly created department in the database.
-     */
     public function store(StoreDepartmentRequest $request)
     {
         $validated = $request->validated();
@@ -51,9 +45,6 @@ class DepartmentsController extends Controller
         ]), 201);
     }
 
-    /**
-     * Display the specified department.
-     */
     public function show(Departments $department)
     {
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
@@ -64,9 +55,6 @@ class DepartmentsController extends Controller
         ]));
     }
 
-    /**
-     * Update the specified department in the database.
-     */
     public function update(UpdateDepartmentRequest $request, Departments $department)
     {
         $validated = $request->validated();
@@ -80,10 +68,6 @@ class DepartmentsController extends Controller
         }
 
         if (($validated['scheduling_profile'] ?? null) === 'standard') {
-            // Otherwise these stay true forever: SchedulingSettingsController
-            // refuses to *enable* them on a standard department and the Settings
-            // page greys the toggles out, while CspSolver still reads them
-            // (audit finding #37).
             $validated += [
                 'lecture_lab_schedule_override_enabled' => false,
                 'custom_lab_duration_override_enabled' => false,
@@ -104,13 +88,8 @@ class DepartmentsController extends Controller
         ]));
     }
 
-    /**
-     * Soft delete the specified department.
-     */
     public function destroy(Departments $department)
     {
-        // Archiving is a soft delete, so no foreign key rule fires: anything
-        // still attached would keep pointing at an archived department.
         if ($department->programs()->exists() || $department->sections()->exists()
             || $department->faculties()->exists() || $department->users()->exists()
             || $department->rooms()->exists()) {
@@ -125,15 +104,6 @@ class DepartmentsController extends Controller
         return response()->json(['message' => 'Department archived successfully']);
     }
 
-    /**
-     * Whether any curriculum this department runs still teaches a laboratory.
-     *
-     * Every active curriculum counts, not just the first one the query
-     * returns. A department running two curricula would otherwise be allowed
-     * onto the standard profile whenever its laboratories happened to live in
-     * the curriculum that sorted second, and every section on that curriculum
-     * would then fail preflight with department_profile_mismatch.
-     */
     private function hasLaboratoryCourses(Departments $department): bool
     {
         $activeCurriculumIds = Curriculum::query()

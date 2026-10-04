@@ -10,12 +10,6 @@ use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
 
-/**
- * room_conflict, faculty_conflict, section_conflict, subject_section_time_conflict.
- * Kernel counterpart of Rules\OverlapConflict: one resource (room,
- * instructor, section) cannot hold two overlapping classes. Field and online
- * rooms are shared without a limit.
- */
 final class OverlapConflict
 {
     /**
@@ -27,9 +21,6 @@ final class OverlapConflict
         $violations = [];
 
         $room = $row->roomId === null ? null : ($snapshot->roomsById[$row->roomId] ?? null);
-        // Any row holding the room occupies it, whatever its mode. Online saves
-        // clear room_id, so an online row that still has one is legacy data;
-        // RuleEngine and the solver's index both count it, and so does this.
         $roomHeld = is_array($room)
             && $row->mode !== 'online'
             && ! Rooms::isSharedType((string) ($room['room_type'] ?? ''));

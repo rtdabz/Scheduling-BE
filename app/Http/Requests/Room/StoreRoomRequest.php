@@ -10,10 +10,6 @@ class StoreRoomRequest extends FormRequest
 {
     public const BUILDING_RULE = 'nullable|string|max:100';
 
-    /**
-     * A room code is one room however it is typed: case and spacing do not
-     * make another one ("rm 101" is RM 101).
-     */
     public static function uniqueRoomCode(?int $ignoreRoomId = null): \Closure
     {
         return static function (string $attribute, mixed $value, \Closure $fail) use ($ignoreRoomId): void {
@@ -28,7 +24,6 @@ class StoreRoomRequest extends FormRequest
         };
     }
 
-    /** Leading, trailing and repeated spaces never make a different code. */
     public static function normalizeRoomCode(mixed $code): mixed
     {
         return is_string($code) ? trim((string) preg_replace('/\s+/', ' ', $code)) : $code;
@@ -41,7 +36,6 @@ class StoreRoomRequest extends FormRequest
         }
     }
 
-    /** Access is enforced by the route's capability middleware. */
     public function authorize(): bool
     {
         return true;

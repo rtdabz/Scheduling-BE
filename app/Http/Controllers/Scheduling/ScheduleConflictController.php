@@ -25,18 +25,6 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
-/**
- * The conflict inbox and the transactional resolution workflow behind it.
- *
- * Conflicts are derived on every read rather than stored, so there is no
- * `conflict_cases` table and no `resolved` schedule status. What persists is
- * the evidence: a schedule history version and a `conflict_resolved` (or
- * `conflict_overridden`) entry in `scheduling_audit_logs`, both written in the
- * same transaction as the schedule change they describe.
- *
- * Recommended fixes (ConflictRecommender) are ordinary resolve requests: each
- * option carries the exact body for POST /api/conflicts/{id}/resolve.
- */
 class ScheduleConflictController extends Controller
 {
     use ConfirmsFacultyOverload;
@@ -51,9 +39,6 @@ class ScheduleConflictController extends Controller
         private readonly StandingRuleScanner $standingRules,
     ) {}
 
-    /**
-     * GET /api/conflicts — every open conflict in the caller's scope.
-     */
     public function index(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -89,12 +74,6 @@ class ScheduleConflictController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/conflicts/{conflict}/recommendations — ranked fixes that clear it.
-     *
-     * Each option's `payload` is the body for the resolve endpoint. Options the
-     * caller may not apply are left out, so every one listed is one click.
-     */
     public function recommendations(Request $request, string $conflict): JsonResponse
     {
         $validated = $request->validate([
@@ -141,13 +120,6 @@ class ScheduleConflictController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/conflicts/rule-issues — saved classes in the caller's scope that
-     * no longer satisfy a rule on their own (see StandingRuleScanner).
-     *
-     * Separate from the conflict list because it re-runs every single-class
-     * rule on every row: read when asked for, not on each timetable change.
-     */
     public function ruleIssues(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -178,10 +150,6 @@ class ScheduleConflictController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/conflicts/resolved — how conflicts in the caller's scope ended,
-     * newest first, read back from the audit trail (see ConflictResolutionLog).
-     */
     public function resolved(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -202,7 +170,6 @@ class ScheduleConflictController extends Controller
         $departmentId = $this->authorization->requestedDepartment($request, $validated['department_id'] ?? null);
         $sectionId = isset($validated['section_id']) ? (int) $validated['section_id'] : null;
 
-        // Scanned so an entry whose conflict has come back says so.
         $openIds = array_map(
             static fn (ScheduleConflictCase $case): string => $case->id(),
             $this->scanner->scan($semesterId, $departmentId, $sectionId),
@@ -215,9 +182,6 @@ class ScheduleConflictController extends Controller
         ]);
     }
 
-    /**
-     * POST /api/conflicts/{conflict}/resolve — apply a manual fix, then prove it worked.
-     */
     public function resolve(Request $request, string $conflict): JsonResponse
     {
         $validated = $request->validate([
@@ -240,8 +204,6 @@ class ScheduleConflictController extends Controller
             return $guard;
         }
 
-        // Moving a class needs a whole placement, not a stray field: a new day
-        // with the old times is not a move anyone asked for.
         if ($action === 'move_schedule'
             && (! isset($validated['day']) || ! isset($validated['start_time']) || ! isset($validated['end_time']))) {
             return response()->json([
@@ -275,9 +237,6 @@ class ScheduleConflictController extends Controller
         ));
     }
 
-    /**
-     * POST /api/conflicts/{conflict}/override — let a permitted clash stand, on the record.
-     */
     public function override(Request $request, string $conflict): JsonResponse
     {
         $validated = $request->validate([
@@ -290,9 +249,6 @@ class ScheduleConflictController extends Controller
             return response()->json(['message' => 'That is not a conflict identifier.'], 404);
         }
 
-        // An override changes nothing about the placement, so both sides of the
-        // clash must be the caller's to allow. Flagging another college's class
-        // would silence a conflict its own department never agreed to.
         if (! $this->authorization->scheduleIdsBelongToDepartment(
             $request,
             [$parsed['schedule_id'], $parsed['other_schedule_id']],
@@ -323,9 +279,6 @@ class ScheduleConflictController extends Controller
         } catch (ConflictResolutionException $exception) {
             return response()->json($exception->payload(), $exception->status());
         } catch (ScheduleConflictException $exception) {
-            // Same refusal shape the manual edit endpoints use, so the client
-            // renders violations -- and offers "allow anyway" where the rules
-            // permit it -- without a second decoder.
             return response()->json(
                 FacultyConflictOverride::refusal($exception->getMessage(), $exception->violations()),
                 422,
@@ -333,11 +286,6 @@ class ScheduleConflictController extends Controller
         }
     }
 
-    /**
-     * The row being changed must be the caller's, and the action must be one
-     * their role may take: reassignment answers to instructor assignment, every
-     * other fix to schedule editing.
-     */
     private function authorizeAction(Request $request, int $scheduleId, string $action): ?JsonResponse
     {
         if ($action === 'reassign_instructor') {
@@ -366,10 +314,6 @@ class ScheduleConflictController extends Controller
             ], 403);
     }
 
-    /**
-     * The same 409 the assignment endpoints answer with when a reassignment
-     * would push the instructor past their Basic Load.
-     */
     private function overloadGate(Request $request, int $scheduleId, mixed $facultyId): ?JsonResponse
     {
         if ($facultyId === null || $request->boolean('confirm_overload')) {

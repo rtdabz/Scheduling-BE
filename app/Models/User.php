@@ -3,7 +3,6 @@
 namespace App\Models;
 
 use App\Notifications\ResetPasswordNotification;
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -18,12 +17,9 @@ class User extends Authenticatable
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes;
 
-    /** Spatie roles and permissions are API-authenticated resources. */
     protected string $guard_name = 'api';
 
     /**
-     * The attributes that are mass assignable.
-     *
      * @var list<string>
      */
     protected $fillable = [
@@ -47,16 +43,6 @@ class User extends Authenticatable
         'program_id',
     ];
 
-    /**
-     * Keeps the Spatie role in step with the `role` column.
-     *
-     * Authorization reads Spatie's tables (CapabilityMiddleware ->
-     * hasCapability -> hasPermissionTo), but the column is what the rest of the
-     * application writes and reads. Only UserController synced the two, so a
-     * user created by any other path carried the column with no Spatie role
-     * and was denied every capability-guarded route. Syncing here makes the
-     * column the single source of truth and removes the drift for good.
-     */
     protected static function booted(): void
     {
         static::saved(function (User $user): void {
@@ -69,18 +55,12 @@ class User extends Authenticatable
                 return;
             }
 
-            // users.role is the one place a role is written. The linked faculty
-            // profile's administrative_role and the Spatie assignment below are
-            // copies, kept in step here so no save path can leave them behind.
             Faculty::query()
                 ->where('user_id', $user->id)
                 ->whereNotNull('administrative_role')
                 ->where('administrative_role', '!=', $role)
                 ->update(['administrative_role' => $role]);
 
-            // A role row is missing only when the seeder has not run (or the
-            // column holds a value that is not a real role). Syncing would
-            // throw; leaving the roles untouched keeps the save itself intact.
             if (! Role::query()->where('name', $role)->where('guard_name', 'api')->exists()) {
                 return;
             }
@@ -104,11 +84,6 @@ class User extends Authenticatable
         return $this->hasOne(Faculty::class);
     }
 
-    /**
-     * The active account already filling a role slot -- Dean and Secretary per
-     * department, Program Head per program -- or null when the slot is free.
-     * Every other role has no slot.
-     */
     public static function activeRoleHolder(string $role, ?int $departmentId, ?int $programId, ?int $ignoreUserId = null): ?self
     {
         if (! in_array($role, ['dean', 'secretary', 'program_head'], true)) {
@@ -129,9 +104,6 @@ class User extends Authenticatable
     }
 
     /**
-     * "First M. Last Jr." from the structured name fields, the form the
-     * account list and the profile header both show.
-     *
      * @param  array{first_name: string, middle_initial?: ?string, last_name: string, suffix?: ?string}  $parts
      */
     public static function composeDisplayName(array $parts): string
@@ -147,8 +119,6 @@ class User extends Authenticatable
     }
 
     /**
-     * The attributes that should be hidden for serialization.
-     *
      * @var list<string>
      */
     protected $hidden = [
@@ -157,8 +127,6 @@ class User extends Authenticatable
     ];
 
     /**
-     * Get the attributes that should be cast.
-     *
      * @return array<string, string>
      */
     protected function casts(): array

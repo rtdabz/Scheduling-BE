@@ -11,8 +11,6 @@ class EnsureUserIsActive
 {
     public function handle(Request $request, Closure $next): Response
     {
-        // Legacy callers may hold an Eloquent instance created before the DB
-        // default was refreshed. Only an explicit false disables access.
         if ($request->user()?->is_active === false) {
             $request->user()?->tokens()->delete();
 

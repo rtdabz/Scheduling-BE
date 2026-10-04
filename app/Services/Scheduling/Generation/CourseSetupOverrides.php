@@ -13,24 +13,6 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
-/**
- * The per-course choices made in the Setup Courses "Configure" panel that
- * change what the Generator places: a Custom Time Duration and a Preferred
- * Room. (Required Day is a department rule and travels as `forced_day_rules`.)
- *
- * A section config carries them already normalised:
- *
- *   duration_slots_by_course_id:  {courseId: weekly slots}
- *   component_slots_by_course_id: {courseId: {lecture: slots, laboratory: slots}}
- *   preferred_rooms_by_course_id: {courseId: roomId}
- *
- * The second map is Integrated's (On-site or Hybrid): its lecture and
- * laboratory are separate sessions, each with its own user-chosen length.
- *
- * The requirement builders copy them onto each course's requirements, which is
- * the one per-course contract the solver, its domain cache and the retry
- * ladder already carry end to end.
- */
 final class CourseSetupOverrides
 {
     public const DURATIONS_KEY = 'duration_slots_by_course_id';
@@ -48,8 +30,6 @@ final class CourseSetupOverrides
     }
 
     /**
-     * An Integrated Hybrid component's chosen length, 'lecture' or 'laboratory'.
-     *
      * @param  array<string, mixed>  $options
      */
     public static function componentSlots(array $options, int $courseId, string $component): ?int
@@ -60,19 +40,10 @@ final class CourseSetupOverrides
     }
 
     /**
-     * Integrated's (On-site or Hybrid) lecture and laboratory lengths, in
-     * minutes, into slots. Either may be left out to keep the course's own
-     * length for it (one hour per lecture unit; three hours per laboratory
-     * unit or the department's Custom Lab Duration). A length that is given is
-     * used exactly: each must only be whole half-hours and fit the teaching
-     * day, with no unit-derived total over the pair. A length sent for a
-     * course that is not Integrated in this section is dropped, not refused.
-     *
      * @param  array<int|string, mixed>  $minutesByCourseId  courseId => {lecture?, laboratory?}
      * @param  list<int>  $courseIds
      * @param  array<string, mixed>  $sectionConfig
      * @return array<int, array{lecture: int, laboratory: int}>
-     *
      * @throws ValidationException
      */
     public static function normalizeComponents(Sections $section, array $minutesByCourseId, array $courseIds, array $sectionConfig): array
@@ -104,8 +75,6 @@ final class CourseSetupOverrides
             $laboratory = self::componentMinutesToSlots($code, 'laboratory', $minutes['laboratory'] ?? null)
                 ?? SchedulingPolicy::laboratoryComponentSlots($course, $section->department);
 
-            // Each is the user's exact length: no unit-derived total caps the
-            // pair (class_duration judges an Integrated session on its own).
             self::assertFitsTheDay($code, 'lecture', $lecture);
             self::assertFitsTheDay($code, 'laboratory', $laboratory);
 
@@ -116,19 +85,11 @@ final class CourseSetupOverrides
     }
 
     /**
-     * A course with a Required Day outside Step 1's Preferred Days can never
-     * be placed. Say so before the search, naming both settings, instead of
-     * letting the run fail on an empty candidate list.
-     *
      * @param  list<int>  $courseIds
      * @param  list<string>|null  $allowedDays
-     *
      * @throws ValidationException
      */
     /**
-     * Preferred Days may name Sunday only once the department secretary has
-     * enabled Sunday classes; otherwise the solver would drop it silently.
-     *
      * @param  list<string>|null  $allowedDays
      */
     public static function assertSundayAllowed(Sections $section, ?array $allowedDays): void
@@ -192,20 +153,10 @@ final class CourseSetupOverrides
     }
 
     /**
-     * Turn the request's weekly minutes into slots, and refuse a length the
-     * Generator cannot place or the validator would refuse at save time.
-     *
-     * This total applies to a single block or an on-site Split Session.
-     * Hybrid Split is fixed at 1.5 h + 1.5 h by business rule, and Integrated
-     * Hybrid sets its two sessions separately through {@see normalizeComponents}.
-     * A total sent for either Hybrid is dropped, not refused, so switching a
-     * course's shape never turns an earlier choice into an error.
-     *
      * @param  array<int|string, mixed>  $minutesByCourseId
      * @param  list<int>  $courseIds
      * @param  array<string, mixed>  $sectionConfig
      * @return array<int, int>
-     *
      * @throws ValidationException
      */
     public static function normalizeDurations(Sections $section, array $minutesByCourseId, array $courseIds, array $sectionConfig): array
@@ -245,15 +196,12 @@ final class CourseSetupOverrides
             $slots = intdiv($minutes, SchedulingPolicy::SLOT_MINUTES);
 
             if (in_array($courseId, $balancedSplitIds, true)) {
-                // `minor_split_duration` caps a Split Session at the course's units.
                 self::assertWithinCeiling($code, $minutes, SchedulingPolicy::unitMinutes($course->units ?? 0));
                 if ($slots % 2 !== 0) {
                     self::fail("{$code}: the two Split Session meetings must be the same length, so each must be a whole number of half-hours.");
                 }
                 self::assertFitsTheDay($code, 'meeting', intdiv($slots, 2));
             } else {
-                // One class may run as long as the teaching day
-                // (`class_duration` raises the course's ceiling to it).
                 self::assertFitsTheDay($code, 'class', $slots);
             }
 
@@ -264,22 +212,10 @@ final class CourseSetupOverrides
     }
 
     /**
-     * Validate each chosen room against the course's face-to-face meeting,
-     * with the same rules the save applies: the room must be available, one
-     * this department can reach in the section's semester (RoomAccessPolicy),
-     * and of a type RoomTypeRule accepts for that meeting. Time conflicts and
-     * concurrent-use limits stay the solver's job, because the preference only
-     * ranks; a busy room is simply not the one chosen.
-     *
-     * A field course (or a course set to meet in the field) takes a field
-     * room. A course that meets online uses no room, so a choice sent for one
-     * is dropped rather than refused.
-     *
      * @param  array<int|string, mixed>  $raw
      * @param  list<int>  $courseIds
      * @param  array<string, mixed>  $sectionConfig
      * @return array<int, int>
-     *
      * @throws ValidationException
      */
     public static function normalizePreferredRooms(Sections $section, array $raw, array $courseIds, array $sectionConfig = []): array
@@ -328,7 +264,6 @@ final class CourseSetupOverrides
                 self::failRoom("{$code}: {$room->room_code} is not a room this department can use this semester.");
             }
 
-            // Integrated Hybrid's only face-to-face meeting is its laboratory.
             $needsLaboratory = ! $isField
                 && (in_array($courseId, $hybridLaboratoryIds, true) || SchedulingPolicy::isLaboratoryCourse($course));
             $fits = match (true) {

@@ -25,24 +25,14 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
 
     public int $timeout = 180;
 
-    /**
-     * A preview run is claimed exactly once: handle() flips the durable run
-     * from queued to running, so every later attempt short-circuits and does
-     * no work. Retrying therefore never re-runs generation - it only keeps the
-     * caller watching a "queued" spinner through the whole backoff ladder when
-     * a job fails before handle() is entered (a container or boot error).
-     * Fail on the first attempt so failed() records the real cause at once.
-     */
     public int $tries = 1;
 
-    /** A timeout is a terminal generation failure, not a retryable preview. */
     public bool $failOnTimeout = true;
 
     public function __construct(
         public readonly string $runId,
         public readonly array $sectionIds,
         public readonly array $configsBySectionId,
-        /** This run's own Required Day, Consecutive Days and Field Course rules; never saved. */
         public readonly ?array $ruleOverrides = null,
     ) {}
 
@@ -58,8 +48,6 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
                 'error_message' => null,
             ]);
 
-        // The polling endpoint may have already finalized an unclaimed run.
-        // Do not revive stale, cancelled, or otherwise terminal requests.
         if ($claimed === 0) {
             return;
         }
@@ -101,9 +89,6 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
                     ->where('run_id', $this->runId)
                     ->where('status', 'cancelled')
                     ->exists()),
-                // A run still searching after the interim mark publishes what it
-                // would recommend so far. It stays "running": the final outcome
-                // overwrites this, and a cancelled run is never written to.
                 fn (array $report) => ScheduleGenerationRun::query()
                     ->where('run_id', $this->runId)
                     ->where('status', 'running')
@@ -115,8 +100,6 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
                 'error_message' => null,
             ]);
         } catch (GenerationCancelledException) {
-            // The cancel endpoint already made the run terminal. Unwind
-            // without reporting a generation failure the user did not hit.
             ScheduleGenerationRun::query()
                 ->where('run_id', $this->runId)
                 ->whereNull('finished_at')
@@ -140,10 +123,6 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
     }
 
     /**
-     * Write a terminal outcome only while the run is still active. A run the
-     * cancel endpoint already finalized must not be revived as completed or
-     * failed by work that was in flight when the user stopped it.
-     *
      * @param  array<string, mixed>  $attributes
      */
     private function finalize(array $attributes): void
@@ -154,11 +133,6 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
             ->update($attributes + ['finished_at' => now()]);
     }
 
-    /**
-     * Laravel invokes this after worker-level failures, including timeouts
-     * that never reach handle()'s catch blocks. Keep the durable run record
-     * from remaining in the misleading running state.
-     */
     public function failed(?Throwable $exception): void
     {
         ScheduleGenerationRun::query()

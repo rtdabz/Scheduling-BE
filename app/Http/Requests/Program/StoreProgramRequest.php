@@ -7,7 +7,6 @@ use Illuminate\Validation\Rule;
 
 class StoreProgramRequest extends FormRequest
 {
-    /** Access is enforced by the route's middleware. */
     public function authorize(): bool
     {
         return true;
@@ -19,8 +18,6 @@ class StoreProgramRequest extends FormRequest
             $this->merge(['code' => strtoupper(trim((string) $this->input('code')))]);
         }
 
-        // The major is part of the program's identity, so it is stored as ''
-        // rather than NULL and every comparison can stay a plain equality.
         $this->merge(['major' => trim((string) $this->input('major'))]);
     }
 

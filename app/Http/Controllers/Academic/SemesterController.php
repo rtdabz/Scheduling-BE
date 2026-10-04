@@ -16,9 +16,6 @@ use Illuminate\Support\Facades\DB;
 
 class SemesterController extends Controller
 {
-    /**
-     * Display a listing of the resource.
-     */
     public function index()
     {
         $semesters = Cache::remember(ApiCache::key('semesters.index'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Semester::orderBy('academic_year', 'desc')
@@ -28,9 +25,6 @@ class SemesterController extends Controller
         return response()->json($semesters);
     }
 
-    /**
-     * Store a newly created resource in storage.
-     */
     public function store(StoreSemesterRequest $request)
     {
         $academicYear = $request->academic_year;
@@ -40,7 +34,6 @@ class SemesterController extends Controller
             $academicYear = $currentYear.'-'.$nextYear;
         }
 
-        // Check for duplicates
         $exists = Semester::where('academic_year', $academicYear)
             ->where('semester', $request->semester)
             ->exists();
@@ -70,10 +63,6 @@ class SemesterController extends Controller
         ], 201);
     }
 
-    /**
-     * Update an existing semester. Only the academic year and the enabled flag are
-     * editable -- changing the semester would collide with the sibling rows.
-     */
     public function update(UpdateSemesterRequest $request, $id)
     {
         $semester = Semester::findOrFail($id);
@@ -121,9 +110,6 @@ class SemesterController extends Controller
         ]);
     }
 
-    /**
-     * Display the specified resource.
-     */
     public function show($id)
     {
         $semester = Semester::findOrFail($id);
@@ -131,9 +117,6 @@ class SemesterController extends Controller
         return response()->json($semester);
     }
 
-    /**
-     * Remove the specified resource from storage.
-     */
     public function destroy($id)
     {
         $semester = Semester::findOrFail($id);
@@ -158,9 +141,6 @@ class SemesterController extends Controller
         ]);
     }
 
-    /**
-     * Activate the specified semester.
-     */
     public function activate($id, ScheduleSemesterArchiver $archiver)
     {
         $actor = request()->user();
@@ -181,12 +161,6 @@ class SemesterController extends Controller
                 $previous->is_active = false;
                 $previous->save();
 
-                // Semester rows are reused as semesters and academic years change.
-                // Remove both operational section cycles so changing semesters
-                // starts the newly active semester as a clean workspace and the
-                // ended semester cannot reappear with stale sections later.
-                // Their classes go with them (the foreign key cascades); the
-                // approved ones were snapshotted into history above.
                 $resetSectionCount = Sections::query()
                     ->whereIn('semester_id', [$previous->id, $semester->id])
                     ->delete();
@@ -229,9 +203,6 @@ class SemesterController extends Controller
         ]);
     }
 
-    /**
-     * Get the active semester.
-     */
     public function active()
     {
         $semester = Cache::remember(ApiCache::key('semesters.active'), ApiCache::LOOKUP_TTL_SECONDS, fn () => Semester::where('is_active', true)->first());
@@ -243,9 +214,6 @@ class SemesterController extends Controller
         return response()->json($semester);
     }
 
-    /**
-     * Return the durable semester activation history used by the VPAA settings table.
-     */
     public function activationHistory()
     {
         $logs = SchedulingAuditLog::query()

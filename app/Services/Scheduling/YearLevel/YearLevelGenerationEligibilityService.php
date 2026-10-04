@@ -15,9 +15,6 @@ final class YearLevelGenerationEligibilityService
     private const PLOTTING_STATUSES = ['draft', 'completed'];
 
     /**
-     * Ordinary plotting rows remain replaceable. Once withdrawal has started,
-     * regeneration requires every active section to be fully in revision.
-     *
      * @param  Collection<int, Sections>  $sections
      */
     public function canGenerate(Collection $sections, int $semesterId): bool

@@ -4,15 +4,6 @@ namespace App\Exceptions;
 
 use RuntimeException;
 
-/**
- * Raised inside a schedule write transaction when the candidate operations
- * conflict with persisted rows or with each other.
- *
- * Conflict validation runs inside the same transaction that performs the write
- * so that the snapshot it reads cannot change before the write commits. Because
- * a 422 cannot be returned from inside the transaction closure, violations are
- * carried out through this exception, which also rolls the transaction back.
- */
 class ScheduleConflictException extends RuntimeException
 {
     /** @param list<array<string, mixed>> $violations */

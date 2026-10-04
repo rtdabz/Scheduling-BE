@@ -7,19 +7,6 @@ use App\Models\Sections;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
-/**
- * Plans the retry ladder used after a year-level search failure.
- *
- * Raising the iteration limit does not help here: the same ordering explores the
- * same dead end more slowly. What helps is changing the shape of the problem, so
- * every strategy either re-orders the search or relaxes exactly one *user
- * preference* — a chosen MW/TTh pattern, a lecture/lab or Split Session toggle,
- * the Friday + Saturday pairing, a forced delivery mode. Preferred Days are
- * never widened here: that is offered as a recommendation for the user to
- * apply, not something a retry does behind their back. Institutional rules (room types, forced day rules, operating
- * hours, conflict checks) are never touched, and each applied relaxation is
- * reported back so the user sees what changed.
- */
 class YearLevelRetryStrategyPlanner
 {
     /**
@@ -94,9 +81,6 @@ class YearLevelRetryStrategyPlanner
     }
 
     /**
-     * Re-order the sections and re-seed candidate exploration. No configured
-     * preference changes, so this is always tried first when it is available.
-     *
      * @param  list<Sections>  $sections
      * @return array<string, mixed>|null
      */
@@ -236,7 +220,6 @@ class YearLevelRetryStrategyPlanner
 
         $adjustments = $this->clearPatternAdjustments($configsBySectionId, $courses, $sectionNames, [$focusSectionId]);
         if (count($adjustments) < 2) {
-            // A single pattern is already covered by clear_bottleneck_pattern.
             return null;
         }
 
@@ -342,11 +325,6 @@ class YearLevelRetryStrategyPlanner
     }
 
     /**
-     * Let a Split Session course meet once instead of twice. The solver can
-     * already fall back to one meeting on its own, but only for some shapes;
-     * when the bottleneck is the two-meeting pair itself, dropping the split
-     * is the one change that removes it.
-     *
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
      * @param  array<int, string>  $sectionNames
@@ -398,11 +376,6 @@ class YearLevelRetryStrategyPlanner
     }
 
     /**
-     * Open Friday + Saturday as a third pair of days for Split Sessions. The
-     * wizard sets it for the whole year level, so the retry does the same.
-     * Only a split with generator-chosen days can use it: a fixed MW/TTh
-     * pattern never lands on Friday + Saturday.
-     *
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  array<int, string>  $sectionNames
      * @return array<string, mixed>|null
@@ -588,10 +561,6 @@ class YearLevelRetryStrategyPlanner
     }
 
     /**
-     * The bottleneck section first, then the rest, so a relaxation stays as
-     * narrow as possible while still being available when the bottleneck could
-     * not be attributed to a single section.
-     *
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @return list<int>
      */

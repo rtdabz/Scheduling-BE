@@ -27,16 +27,8 @@ use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Support\Facades\Event;
 
-/**
- * Wires LiveUpdates into the places data actually changes.
- *
- * Recording is an array write, so it is safe on hot paths such as a
- * generation run saving every meeting; the broadcast happens once, after the
- * response has been built or the queued job has finished.
- */
 final class LiveUpdateRecorder
 {
-    /** Model -> topics its writes affect. */
     private const MODEL_TOPICS = [
         Schedule::class => ['schedules', 'assignments', 'faculty', 'rooms'],
         ScheduleSplit::class => ['schedules'],
@@ -58,7 +50,6 @@ final class LiveUpdateRecorder
         Semester::class => ['settings'],
     ];
 
-    /** Bookkeeping columns whose changes nobody else needs to see live. */
     private const QUIET_USER_COLUMNS = ['last_login_at', 'remember_token', 'updated_at'];
 
     private const SOCKET_ID_PATTERN = '/^\d+\.\d+$/';
@@ -72,7 +63,6 @@ final class LiveUpdateRecorder
 
             $model::created($touch);
             $model::deleted($touch);
-            // `updated` only fires when a dirty model was actually written.
             $model::updated(static function (Model $record) use ($touch): void {
                 if (! self::onlyQuietColumnsChanged($record)) {
                     $touch();
@@ -84,8 +74,6 @@ final class LiveUpdateRecorder
             $app->make(LiveUpdates::class)->notifyUser((int) $notification->user_id);
         });
 
-        // HTTP: after the controller has committed its work. The acting tab
-        // already refreshed itself, so its own socket is excluded.
         $app->terminating(static function () use ($app): void {
             if (! $app->resolved(LiveUpdates::class)) {
                 return;
@@ -97,7 +85,6 @@ final class LiveUpdateRecorder
             $app->make(LiveUpdates::class)->flush($socketId);
         });
 
-        // Queue workers never terminate between jobs, so flush per job.
         $flushJob = static function () use ($app): void {
             if ($app->resolved(LiveUpdates::class)) {
                 $app->make(LiveUpdates::class)->flush();
@@ -107,7 +94,6 @@ final class LiveUpdateRecorder
         Event::listen(JobFailed::class, $flushJob);
     }
 
-    /** A sign-in only stamps `last_login_at`; that is not worth waking every open tab for. */
     private static function onlyQuietColumnsChanged(Model $record): bool
     {
         return $record instanceof User

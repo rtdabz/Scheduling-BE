@@ -15,24 +15,8 @@ use App\Support\ApiCache;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
-/**
- * Turns a chosen fix for a detected conflict into one transactional write.
- *
- * It takes the scheduling scope lock, reloads the affected rows inside the
- * transaction, applies the change, revalidates against what is now persisted,
- * and refuses the whole thing if anything hard remains. Nothing here decides what a conflict
- * *is* -- RuleEngine judges the changed row against persisted rows and
- * ScheduleConflictScanner re-derives the conflict set -- so there is no second
- * conflict engine to keep in step with the first.
- *
- * A conflict is resolved only when a fresh scan no longer produces its id. The
- * client asking for a resolution is a request, not an outcome, and nothing is
- * written to `schedules.status` to mark one: that field is an operational
- * workflow status, not a conflict lifecycle.
- */
 final class ResolveScheduleConflict
 {
-    /** Manual actions this service applies. */
     public const ACTIONS = [
         'move_schedule',
         'change_room',
@@ -41,9 +25,6 @@ final class ResolveScheduleConflict
     ];
 
     /**
-     * Which schedule columns each action may write. Anything else in the
-     * payload is a caller mistake, not an edit.
-     *
      * @var array<string, list<string>>
      */
     public const ACTION_FIELDS = [
@@ -63,11 +44,8 @@ final class ResolveScheduleConflict
     ) {}
 
     /**
-     * Apply a manual fix and prove the conflict is gone.
-     *
      * @param  array<string, mixed>  $action  validated payload: action, schedule_id, the action's fields, reason
      * @return array<string, mixed>
-     *
      * @throws ConflictResolutionException|ScheduleConflictException
      */
     public function resolve(string $conflictId, array $action, ?int $actorUserId = null): array
@@ -97,8 +75,6 @@ final class ResolveScheduleConflict
                 );
             }
 
-            // Assignment follows the whole hybrid/component group, exactly as the
-            // manual assignment path does, so a pair cannot end up half reassigned.
             $assignmentGroup = $instructorOnly
                 ? $this->hybridAssignments->resolve($target)
                 : collect([$target]);
@@ -107,8 +83,6 @@ final class ResolveScheduleConflict
             $partners = $instructorOnly
                 ? collect()
                 : $this->sameTimePartners->partnersFor($target, $changes);
-            // A Consecutive Days run moves together, so the moved day is not
-            // checked against the days that move with it.
             $runPartnerIds = $this->sameTimePartners->runPartnerIds($target, $partners);
 
             $attempt = array_merge($target->toArray(), $changes, [
@@ -153,23 +127,13 @@ final class ResolveScheduleConflict
                 'action' => $name,
                 'schedule_id' => (int) $target->id,
                 'changes' => $changes,
-                // Whether the fix was a ranked recommendation applied as offered
-                // or a change the user entered; the Resolved list shows which.
                 'source' => ($action['source'] ?? null) === 'recommendation' ? 'recommendation' : 'manual',
             ], $reason, $actorUserId, 'conflict_resolved');
         });
     }
 
     /**
-     * Let a permitted instructor clash stand on purpose, with a reason.
-     *
-     * The override itself is the existing one: FacultyConflictOverride flags
-     * both meetings, and the flag stands only while each keeps the instructor,
-     * day and time it was approved with. This adds the conflict-inbox entry
-     * point and the audit trail.
-     *
      * @return array<string, mixed>
-     *
      * @throws ConflictResolutionException
      */
     public function override(string $conflictId, string $reason, ?int $actorUserId = null): array
@@ -197,9 +161,6 @@ final class ResolveScheduleConflict
     }
 
     /**
-     * Locate the conflict, take the semester's scheduling scope lock, and run
-     * the change in one transaction against a scan taken inside it.
-     *
      * @param  callable(ScheduleConflictCase, list<ScheduleConflictCase>): array<string, mixed>  $apply
      * @return array<string, mixed>
      */
@@ -220,9 +181,6 @@ final class ResolveScheduleConflict
 
         $result = $this->lock->execute([$semesterId], function () use ($conflictId, $semesterId, $apply): array {
             return DB::transaction(function () use ($conflictId, $semesterId, $apply): array {
-                // Re-derived inside the lock and the transaction: a resolution
-                // decided against the list the user was looking at would act on
-                // a conflict someone else may already have fixed or moved.
                 $before = $this->scanner->scan($semesterId);
                 $case = $this->find($before, $conflictId);
 
@@ -247,8 +205,6 @@ final class ResolveScheduleConflict
     }
 
     /**
-     * Re-scan, refuse anything still or newly broken, and record what happened.
-     *
      * @param  list<ScheduleConflictCase>  $before
      * @param  list<int>  $affectedIds
      * @param  Collection<int, Schedule>  $beforeRows
@@ -275,9 +231,6 @@ final class ResolveScheduleConflict
             );
         }
 
-        // Only conflicts this change created, and only on the rows it touched.
-        // A pre-existing clash elsewhere in the semester is not this edit's to
-        // answer for, and blocking on it would make some conflicts unfixable.
         $introduced = array_values(array_filter(
             ScheduleConflictScanner::introduced($before, $after),
             static function (ScheduleConflictCase $open) use ($affectedIds): bool {
@@ -442,7 +395,6 @@ final class ResolveScheduleConflict
             return $changes;
         }
 
-        // An online meeting holds no room, matching every other write path.
         if (($changes['mode'] ?? null) === 'online') {
             $changes['room_id'] = null;
         }

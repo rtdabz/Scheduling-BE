@@ -10,19 +10,6 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 
-/**
- * How a department shares its physical rooms between its sections: per-section
- * targets for regular and laboratory physical meetings and for online ones,
- * scaled by how scarce rooms are, and the soft penalty for a solution that
- * drifts from them. Soft only -- it ranks solutions, it never refuses one.
- *
- * The solver owns the per-section delivery counts of already-placed meetings
- * (it builds them while indexing existing schedules) and passes them in.
- * prepare() reads department-wide demand live; that data is not in the
- * scheduling snapshot (see docs/architecture.md).
- *
- * Extracted from CspSolver unchanged apart from names.
- */
 final class DepartmentRoomFairness
 {
     /** @var array{active_sections: int, physical_rooms: int, target_physical_ratio: float, scarcity_multiplier: float, section_regular_physical_targets?: array<int, int>, section_lab_physical_targets?: array<int, int>, section_online_targets?: array<int, int>} */
@@ -38,13 +25,11 @@ final class DepartmentRoomFairness
         'section_online_targets' => [],
     ];
 
-    /** Back to no targets, as before any prepare(). */
     public function reset(): void
     {
         $this->targets = self::NEUTRAL;
     }
 
-    /** The current targets, for year-level diagnostics. */
     public function toArray(): array
     {
         return $this->targets;
@@ -121,10 +106,6 @@ final class DepartmentRoomFairness
             return $demand;
         }
 
-        // Room demand is per cohort, so it has to be counted against the
-        // curriculum each section actually follows. Counting the whole
-        // department against one curriculum understates lab demand for every
-        // section still on the old one, and the solver then over-commits rooms.
         $curriculumIds = $sections
             ->pluck('curriculum_id')
             ->filter()
@@ -176,9 +157,6 @@ final class DepartmentRoomFairness
             }
 
             $roomType = (string) ($course->room_type_required ?? 'lecture');
-            // A field course needs no classroom. Field is the course record or
-            // the department's field list -- never the course's name, so an
-            // NSTP course the department schedules in classrooms counts.
             if (SchedulingPolicy::isFieldCourse((array) $course, $departmentId)) {
                 continue;
             }
@@ -210,9 +188,6 @@ final class DepartmentRoomFairness
         }
 
         $roomShare = $roomCount / max(1, $sectionCount);
-        // Estimate meeting capacity from the actual operating window and the
-        // shortest standard schedulable block. This is a fairness heuristic,
-        // not a per-section daily course limit.
         $teachingDays = count(SchedulingPolicy::WEEKDAYS_AND_SATURDAY);
         $minimumBlockSlots = min(SchedulingPolicy::CLASSROOM_SCHEDULABLE_BLOCK_SLOTS);
         $meetingsPerRoomDay = max(1, intdiv(SchedulingPolicy::totalSlots(), $minimumBlockSlots));
@@ -258,13 +233,6 @@ final class DepartmentRoomFairness
     }
 
     /**
-     * Soft cost of how a solution spreads online delivery and laboratory use.
-     *
-     * Every term here charges online meetings or laboratory overuse, never a
-     * face-to-face lecture: a room that is free is used. The forecast targets
-     * used to charge "excess" physical meetings too, which ranked a solution
-     * that moved a lecture online above one that kept it in a free room.
-     *
      * @param  array<int, array{physical: int, online: int, protected_physical: int}>  $generatedDeliveryCountsBySection
      */
     public function penalty(array $generatedDeliveryCountsBySection, array $existingSectionDeliveryCounts): int

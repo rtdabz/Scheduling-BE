@@ -81,8 +81,6 @@ class TimeslotController extends Controller
     }
 
     /**
-     * Reusable method for schedule generation flows.
-     *
      * @return array<int, string>
      */
     public function getAvailableSlots(int $duration): array
@@ -107,10 +105,6 @@ class TimeslotController extends Controller
         return Carbon::createFromFormat('g:i A', strtoupper($normalized));
     }
 
-    /**
-     * A field class must be able to end at the field end time, so it sits after
-     * opening, no later than closing, and on the 30-minute scheduling grid.
-     */
     private function validateFieldEndTime(array $validated): void
     {
         $opening = $this->parseUserTime($validated['opening_time']);

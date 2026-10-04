@@ -11,39 +11,12 @@ use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use InvalidArgumentException;
 
-/**
- * Every placement the rules actually allow for one meeting of one course.
- *
- * The CSP solver answers "give me a good timetable" and stops at a handful of
- * ranked solutions; this answers "where could this class go at all", which is
- * what the placement dialog needs when the suggested slot collides. It walks
- * Monday to Sunday, every start on the generated grid and every room the
- * department can reach, and keeps the combinations the constraint kernel
- * accepts -- the same kernel the save path validates against, so a slot offered
- * here is a slot that will save.
- *
- * Pure apart from the snapshot it is handed: no queries, so the whole week
- * across every room costs one snapshot capture rather than one per candidate.
- */
 final class AvailableSlotFinder
 {
-    /**
-     * Hard ceiling on returned slots. A wide-open week across many rooms can
-     * reach a few thousand; past this the list stops being something a person
-     * reads and starts being a payload. Callers are told when it bit.
-     */
     public const MAX_SLOTS = 2000;
 
     public function __construct(private readonly SchedulingConstraintKernel $kernel) {}
 
-    /**
-     * Every delivery a meeting may legally use. All three are walked and the
-     * kernel throws out the ones this course cannot take -- a laboratory course
-     * has no online candidates, a field course no on-site ones -- so the caller
-     * never has to work out in advance which modes to ask about. Locking this
-     * to the meeting's current mode hid Online entirely from a split whose
-     * second meeting was online.
-     */
     public const MODES = ['on-site', 'online', 'field'];
 
     /**
@@ -87,19 +60,12 @@ final class AvailableSlotFinder
             return ['slots' => [], 'rooms' => [], 'total' => 0, 'truncated' => false];
         }
 
-        // RoomTypeRule accepts any course in a field room, so the kernel alone
-        // would offer the field to a laboratory course. ValidateGenerationConfiguration
-        // refuses that combination, and so does the dialog's Field button, so
-        // the list must not be the one place it looks available.
         if (SchedulingConstraintPredicates::isLaboratoryCourse($course)) {
             $modes = array_values(array_filter($modes, static fn (string $mode): bool => $mode !== 'field'));
         }
 
         $candidateRows = $this->toCandidateRows($tentativeSchedules, $ignoreScheduleIds);
 
-        // Times are resolved once per start rather than once per room-day:
-        // slotToTime() is pure, and this loop would otherwise call it for every
-        // candidate in the week.
         $totalSlots = SchedulingPolicy::totalSlots();
         $starts = [];
         foreach (SchedulingPolicy::generatedStartSlotsForDuration($durationSlots) as $startSlot) {
@@ -120,7 +86,6 @@ final class AvailableSlotFinder
         $slots = [];
         $countsByRoom = [];
         $truncated = false;
-        // A run is listed only once every one of its days is known to be free.
         $freeByPlacement = [];
 
         foreach ($this->candidateRooms($snapshot, $modes) as $room) {
@@ -135,11 +100,6 @@ final class AvailableSlotFinder
                 'slot_count' => 0,
             ];
 
-            // Monday through Sunday: the day rules decide which of them survive,
-            // rather than this loop assuming a five- or six-day week. The
-            // caller excludes the day a linked meeting already holds, because
-            // split_group_day_separation refuses two meetings of one course on
-            // the same day and such a slot could only ever fail on save.
             foreach ($days as $day) {
                 foreach ($starts as ['start_slot' => $startSlot, 'end_slot' => $endSlot, 'start_time' => $startTime, 'end_time' => $endTime]) {
                     $row = new ScheduleRow(
@@ -200,9 +160,6 @@ final class AvailableSlotFinder
             [$slots, $truncated] = $this->runSlots($freeByPlacement, $starts, $runs, $countsByRoom);
         }
 
-        // Days are listed from the day the placement collided on, so the other
-        // times on that day come first, then the next weekday, and the weekend
-        // only after every weekday.
         $dayOrder = static fn (array $slot): int => $searchFromDay !== null
             ? SchedulingPolicy::searchDayRank($slot['day'], $searchFromDay)
             : $slot['day_index'];
@@ -225,10 +182,6 @@ final class AvailableSlotFinder
     }
 
     /**
-     * Consecutive Days: each start and room free on every day of a run, as
-     * one slot on the run's first day that also names its days. The rooms'
-     * counts become counts of runs.
-     *
      * @param  array<string, array<string, true>>  $freeByPlacement  "roomKey@startSlot" => free days
      * @param  list<array{start_slot: int, end_slot: int, start_time: string, end_time: string}>  $starts
      * @param  list<list<string>>  $runs  the day sets the run may take
@@ -278,11 +231,6 @@ final class AvailableSlotFinder
     }
 
     /**
-     * One entry per (mode, room) pair to walk. Online is a single virtual room
-     * -- it holds any number of classes, so enumerating real rooms for it would
-     * repeat the same week once per room. Field is the department's field
-     * rooms, which the kernel still checks for capacity.
-     *
      * @param  list<string>  $modes
      * @return list<array{room_id: int|null, room_code: string, room_type: string, mode: string}>
      */
@@ -326,9 +274,6 @@ final class AvailableSlotFinder
     }
 
     /**
-     * The dialog's unsaved rows, as the kernel's overlap family expects them.
-     * A row this placement replaces is dropped: it is the thing being moved.
-     *
      * @param  list<array<string, mixed>>  $tentativeSchedules
      * @param  list<int>  $ignoreScheduleIds
      * @return list<ScheduleRow>
@@ -347,9 +292,6 @@ final class AvailableSlotFinder
             try {
                 $rows[] = ScheduleRow::fromArray($schedule);
             } catch (InvalidArgumentException) {
-                // A malformed unsaved row is context, not the subject of the
-                // query: skipping it offers a slot the save may still refuse,
-                // which is better than refusing to answer at all.
                 continue;
             }
         }
@@ -357,7 +299,6 @@ final class AvailableSlotFinder
         return $rows;
     }
 
-    /** Online and field both carry a null room id, so the mode disambiguates. */
     private function roomKey(string $mode, ?int $roomId): string
     {
         return $mode.':'.($roomId ?? 'virtual');

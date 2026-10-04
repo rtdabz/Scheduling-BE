@@ -12,11 +12,6 @@ class ScheduleHistoryVersion extends Model
 
     protected $casts = ['change_summary' => 'array'];
 
-    /**
-     * Compatibility accessor for consumers that previously read a single
-     * schedule_id from the legacy history row. Aggregate versions keep the
-     * authoritative IDs on history items, so this returns the first item ID.
-     */
     public function getScheduleIdAttribute(): ?int
     {
         if ($this->relationLoaded('items')) {
@@ -26,7 +21,6 @@ class ScheduleHistoryVersion extends Model
         return $this->items()->value('original_schedule_id');
     }
 
-    /** Legacy-compatible alias for the old history model's changes payload. */
     public function getChangesAttribute(): array
     {
         return $this->change_summary ?? [];
@@ -52,7 +46,6 @@ class ScheduleHistoryVersion extends Model
         return $this->belongsTo(Departments::class, 'department_id');
     }
 
-    /** Named apart from the legacy `semester` label column. */
     public function semesterRecord()
     {
         return $this->belongsTo(Semester::class, 'semester_id');

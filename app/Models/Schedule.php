@@ -11,22 +11,8 @@ class Schedule extends Model
 
     protected $table = 'schedules';
 
-    /**
-     * Rows outside every live approval stage. A submitted, approved or
-     * finalized row belongs to a submission or an instructor's load, so
-     * anything that would delete or restructure it -- the row itself, or the
-     * section it hangs from -- is refused until the submission is recalled.
-     */
     public const UNLOCKED_STATUSES = ['draft', 'completed', 'revision', 'rejected', 'rejected_by_dean'];
 
-    /**
-     * Relations returned with any schedule response (batch save, listings, update,
-     * status and faculty changes, recommendation accept/apply), trimmed to
-     * the columns the timetable views read (the same set /initial-data uses).
-     * Loading them whole repeated unbounded columns — departments.logo,
-     * faculties.profile_picture — once per meeting row, so saving a year level
-     * sent megabytes back to the grid.
-     */
     public const RESPONSE_RELATIONS = [
         'academicSemester:id,academic_year,semester',
         'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
@@ -49,8 +35,6 @@ class Schedule extends Model
     protected $fillable = [
         'semester_id',
         'section_id',
-        // Which curriculum this row was generated from. Recorded rather than
-        // derived: curricula are editable and a section can be re-pointed later.
         'curriculum_id',
         'course_id',
         'faculty_id',
@@ -134,11 +118,6 @@ class Schedule extends Model
 
     protected static function booted()
     {
-        // An instructor-conflict override was approved for this instructor at
-        // this day and time. Once any of those change it no longer describes the
-        // meeting, so it is cleared and the new placement is checked afresh.
-        // Bulk query-builder updates fire no events; those paths set the column
-        // themselves (see FacultyConflictOverride).
         static::updating(function (Schedule $schedule): void {
             if (
                 $schedule->faculty_conflict_override
@@ -151,8 +130,6 @@ class Schedule extends Model
 
         static::saved(function (Schedule $schedule) {
             if ($schedule->tempSplitGroupId !== null || $schedule->tempMeetingType !== null || $schedule->tempMeetingIndex !== null) {
-                // A row inserted by this save cannot own a split yet; asking
-                // the relation cost a query per created meeting.
                 $split = ($schedule->wasRecentlyCreated && ! $schedule->relationLoaded('split'))
                     ? new ScheduleSplit
                     : ($schedule->split ?: new ScheduleSplit);
@@ -171,12 +148,6 @@ class Schedule extends Model
             }
         });
 
-        // The split row carries this schedule's meeting-type metadata and means
-        // nothing without it. The database cascade only fires on a hard delete,
-        // so a soft delete has to be carried across or the split is left live
-        // behind a deleted owner, where it still surfaces in the split listing.
-        // This covers single-model deletes; bulk deletes go through the query
-        // builder and fire no model events, so those call retireSplitsFor().
         static::deleted(function (Schedule $schedule): void {
             if ($schedule->isForceDeleting()) {
                 return;
@@ -190,11 +161,6 @@ class Schedule extends Model
         });
     }
 
-    /**
-     * Whether this pending update changes the instructor, day or time. Times are
-     * compared as HH:MM because a save may send "07:00" for a stored "07:00:00",
-     * which is the same meeting and must not clear an override.
-     */
     public function movesInstructorOrTime(): bool
     {
         if ((int) $this->getOriginal('faculty_id') !== (int) $this->faculty_id) {
@@ -215,11 +181,6 @@ class Schedule extends Model
     }
 
     /**
-     * Soft-deletes the split rows belonging to the given schedules.
-     *
-     * Bulk soft deletes go through the query builder, which fires no model
-     * events, so every such path has to retire the splits explicitly.
-     *
      * @param  \Illuminate\Contracts\Database\Query\Builder|array<int, int>|\Illuminate\Support\Collection  $scheduleIds
      */
     public static function retireSplitsFor($scheduleIds): void

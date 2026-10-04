@@ -14,10 +14,6 @@ use Illuminate\Database\Query\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
-/**
- * Centralizes schedule ownership and teaching-assignment authorization.
- * Ownership controls timetable mutations; teaching department controls faculty assignment.
- */
 final class ScheduleAuthorizationService
 {
     public function departmentHasProgram(int $departmentId): bool
@@ -34,22 +30,9 @@ final class ScheduleAuthorizationService
         return (int) $user->department_id;
     }
 
-    /** Statuses awaiting the VPAA's own decision; readable only on the approval queue. */
     private const PENDING_VPAA_STATUSES = ['approved_by_dean', 'conditionally_approved'];
 
     /**
-     * The schedule statuses the requester may read, or null for no restriction.
-     *
-     * Only the VPAA is restricted: its portal shows the approved timetable, so
-     * anything the VPAA has not approved yet - a department draft, a submission
-     * with the Dean, a Dean-approved cohort awaiting VPAA action - is not
-     * readable there. Department users keep seeing their own work in progress.
-     *
-     * The one exception is the Schedule Approval screen, which has to show the
-     * VPAA what it is being asked to approve. It opts in explicitly with
-     * `?approval_queue=1`, and only an account that may actually approve gets
-     * the pending rows; the flag is inert for everyone else.
-     *
      * @return list<string>|null
      */
     public function visibleScheduleStatuses(Request $request): ?array
@@ -73,11 +56,6 @@ final class ScheduleAuthorizationService
         return $scope === null || $scope === $departmentId;
     }
 
-    /**
-     * The one program a Program Head works in, or null for department-wide
-     * users. A Program Head without a program gets 0, which matches nothing,
-     * rather than falling back to the whole department.
-     */
     public function programScope(Request $request): ?int
     {
         $user = $request->user();
@@ -95,10 +73,6 @@ final class ScheduleAuthorizationService
         return $scope === null || ($programId !== null && $programId !== '' && $scope === (int) $programId);
     }
 
-    /**
-     * Curricula a Program Head may see and use: its program's own plus the
-     * department-wide ones (no program). A sibling program's are hidden.
-     */
     public function scopeCurriculaToProgram(EloquentBuilder $curricula, Request $request): EloquentBuilder
     {
         $scope = $this->programScope($request);
@@ -113,10 +87,6 @@ final class ScheduleAuthorizationService
         return $curriculumProgramId === null || $this->payloadBelongsToProgram($request, $curriculumProgramId);
     }
 
-    /**
-     * Rooms a Program Head may see: its program's home rooms and the shared
-     * ones (no home program). Rooms homed to a sibling program are hidden.
-     */
     public function scopeRoomsToProgram(Builder|EloquentBuilder $rooms, Request $request): Builder|EloquentBuilder
     {
         $scope = $this->programScope($request);
@@ -126,11 +96,6 @@ final class ScheduleAuthorizationService
         );
     }
 
-    /**
-     * Meetings a Program Head may see: its own program's (written into its
-     * sections, or its program's and delegated courses), plus any meeting held
-     * in a shared room, whichever program it belongs to.
-     */
     public function scopeSchedulesToProgram(EloquentBuilder $schedules, Request $request): EloquentBuilder
     {
         $scope = $this->programScope($request);
@@ -165,7 +130,6 @@ final class ScheduleAuthorizationService
             && (int) $requestedDepartmentId !== $scope;
     }
 
-    /** True for unscoped users, or when the instructor is in the requester's department. */
     public function facultyBelongsToDepartment(Request $request, int $facultyId): bool
     {
         $scope = $this->departmentScope($request);
@@ -210,15 +174,6 @@ final class ScheduleAuthorizationService
     public const PROGRAM_FORBIDDEN_MESSAGE = 'This program\'s schedule is managed by its Program Head. You can view it, but only the program\'s owner can change it.';
 
     /**
-     * The programs whose timetable the requester may write, inside the
-     * department scope checked above.
-     *
-     * A program with an active Program Head is written by that Program Head
-     * alone; the department Secretary writes every program that has none, so
-     * authority moves back to the Secretary the moment a Program Head is
-     * deactivated or unassigned, and away again when one is assigned. The Dean
-     * and the VPAA review and approve -- they write no program.
-     *
      * @return list<int>
      */
     public function writableProgramIds(Request $request): array
@@ -228,9 +183,6 @@ final class ScheduleAuthorizationService
             return [];
         }
 
-        // Cached on the request, not the service: a controller (and the
-        // service it holds) outlives one request, and a Program Head assigned
-        // between two requests must change the answer.
         $cacheKey = 'writable_program_ids.'.$user->id;
         if (! $request->attributes->has($cacheKey)) {
             $request->attributes->set($cacheKey, $this->writableProgramIdsFor($user));
@@ -253,7 +205,6 @@ final class ScheduleAuthorizationService
                     : [],
             'secretary' => Program::query()
                 ->where('department_id', $user->department_id)
-                // Same slot test as User::activeRoleHolder('program_head', ...).
                 ->whereNotIn('id', User::query()
                     ->where('role', 'program_head')
                     ->where('is_active', true)
@@ -277,11 +228,6 @@ final class ScheduleAuthorizationService
         return $this->scheduleIdsWritable($request, [(int) $schedule->id]);
     }
 
-    /**
-     * Every listed schedule row belongs to a program the requester owns. A
-     * row's program is its own, or its section's when the row has none (rows
-     * written before programs were recorded, or whose program was deleted).
-     */
     public function scheduleIdsWritable(Request $request, array $scheduleIds): bool
     {
         return $this->rowsWritable($request, DB::table('schedules')
@@ -290,7 +236,6 @@ final class ScheduleAuthorizationService
             ->selectRaw('COALESCE(schedules.program_id, sections.program_id) as program_id, schedules.department_id as department_id'));
     }
 
-    /** Every listed section belongs to a program the requester owns. */
     public function sectionIdsWritable(Request $request, array $sectionIds): bool
     {
         return $this->rowsWritable($request, DB::table('sections')
@@ -307,8 +252,6 @@ final class ScheduleAuthorizationService
                 return $this->programIsWritable($request, (int) $row->program_id);
             }
 
-            // A row no program claims is department-level work, which is the
-            // Secretary's.
             return $user?->role === 'secretary'
                 && $user->is_active
                 && $user->department_id !== null
@@ -322,9 +265,6 @@ final class ScheduleAuthorizationService
         return array_values(array_unique(array_map('intval', array_filter($ids, static fn ($id) => $id !== null && $id !== ''))));
     }
 
-    /**
-     * Assignment follows the course teaching department, not always timetable ownership.
-     */
     public function scheduleIdsAssignableByDepartment(Request $request, array $scheduleIds): bool
     {
         $scope = $this->departmentScope($request);

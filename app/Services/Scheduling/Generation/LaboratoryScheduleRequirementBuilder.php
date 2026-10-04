@@ -29,9 +29,6 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
             $preferredRoomId = CourseSetupOverrides::preferredRoomId($options, $courseId);
 
             if ($hasLectureAndLaboratory) {
-                // Integrated: two separate sessions, each either the length
-                // chosen in Setup Courses or the course's own. On-site keeps
-                // the lecture face-to-face; Hybrid moves it online.
                 $lectureOnSite = SchedulingPolicy::isIntegratedOnSite($deliveryModes, $courseId);
                 $lectureSlots = CourseSetupOverrides::componentSlots($options, $courseId, 'lecture');
                 $laboratorySlots = CourseSetupOverrides::componentSlots($options, $courseId, 'laboratory');
@@ -53,7 +50,6 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                         allowedDeliveryModes: ['on-site'],
                         isSplitComponent: true,
                         customDuration: $laboratorySlots !== null,
-                        // Preferred Room names the laboratory, the scarcer room.
                         preferredRoomId: $preferredRoomId,
                     ))->toArray(),
                 ];
@@ -78,9 +74,6 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
             $roomTypes = match ($componentType) {
                 'online' => ['online'],
                 'field' => ['field'],
-                // A laboratory component uses the rooms the Default LAB Room
-                // Requirement allows, the same list RoomTypeRule accepts at
-                // save time, so no preview offers a room the save refuses.
                 'laboratory' => SchedulingPolicy::labRoomTypes((int) $section->department_id),
                 default => in_array('online', $allowedModes, true)
                     ? ['lecture', 'laboratory', 'online']

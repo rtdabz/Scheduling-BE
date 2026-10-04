@@ -47,16 +47,12 @@ class SchedulingSettingsController extends Controller
             'gec_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'major_lecture_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'sunday_classes_enabled' => 'sometimes|required|boolean',
-            // Default LAB Room Requirement: where every course's laboratory meetings may meet.
             'lab_room_type' => 'sometimes|required|string|in:'.implode(',', SchedulingPolicy::LAB_ROOM_TYPES),
         ]);
 
         $department = $this->resolveDepartment($request);
         $section = $this->resolveSection($request, $department);
 
-        // Sunday is an overflow day the dean agrees to verbally; the department
-        // secretary is the one who records it here. Resending the current value
-        // is harmless, so only an actual change is refused to other roles.
         $sundayClassesEnabled = array_key_exists('sunday_classes_enabled', $validated)
             ? (bool) $validated['sunday_classes_enabled']
             : (bool) $department->sunday_classes_enabled;
@@ -91,15 +87,10 @@ class SchedulingSettingsController extends Controller
             }
             $department->lecture_lab_schedule_override_enabled = (bool) $validated['lecture_lab_schedule_override_enabled'];
             if (! $department->lecture_lab_schedule_override_enabled) {
-                // Nothing left for a laboratory length to describe.
                 $department->custom_lab_duration_override_enabled = false;
             }
         }
         if (array_key_exists('custom_lab_duration_override_enabled', $validated)) {
-            // Custom Lab Duration only ever changes the laboratory half of a
-            // lecture/laboratory split, so without that override there is no
-            // component for it to resize. Refusing here keeps the setting from
-            // being stored in a state where it silently does nothing.
             $wantsCustomLab = (bool) $validated['custom_lab_duration_override_enabled'];
             $splitEnabled = array_key_exists('lecture_lab_schedule_override_enabled', $validated)
                 ? (bool) $validated['lecture_lab_schedule_override_enabled']
@@ -114,10 +105,6 @@ class SchedulingSettingsController extends Controller
         if (array_key_exists('custom_lab_duration_minutes', $validated)) {
             $department->custom_lab_duration_minutes = $validated['custom_lab_duration_minutes'];
         }
-        // The three presets are stored separately but describe a single
-        // choice of laboratory length, and SchedulingPolicy resolves them in a
-        // fixed order. Enabling one therefore clears the other two, so what the
-        // generator uses is always the option the secretary just picked.
         $durationChoiceKeys = [
             'custom_lab_duration_6_hours_enabled',
             'custom_lab_duration_5_hours_enabled',
@@ -136,10 +123,6 @@ class SchedulingSettingsController extends Controller
             }
         }
 
-        // Whatever turned the override off -- this request, or the split
-        // being switched off above -- no preset survives it. The audit and the
-        // standard-profile guard both read these flags, so a preset left true
-        // under a disabled override reads as a laboratory setting still in use.
         if (! (bool) $department->custom_lab_duration_override_enabled) {
             foreach ($durationChoiceKeys as $key) {
                 $department->{$key} = false;
@@ -157,9 +140,6 @@ class SchedulingSettingsController extends Controller
             $department->gec_split_schedule_override_enabled = (bool) $validated['gec_split_schedule_override_enabled'];
         }
         if (array_key_exists('major_lecture_split_schedule_override_enabled', $validated)) {
-            // Refused rather than stored when the department runs no lecture-only
-            // major: the setting would be on with nothing for it to apply to, and
-            // the audit would report a split policy the generator never uses.
             if ((bool) $validated['major_lecture_split_schedule_override_enabled']
                 && ! $this->hasMajorLectureOnlyCourses($department)) {
                 return response()->json([
@@ -171,14 +151,9 @@ class SchedulingSettingsController extends Controller
         if (array_key_exists('lab_room_type', $validated)) {
             $department->lab_room_type = (string) $validated['lab_room_type'];
         }
-        // Turning Sunday off leaves classes already on Sunday in place; the
-        // sunday_classes rule only refuses new Sunday placements.
         $department->sunday_classes_enabled = $sundayClassesEnabled;
         $department->save();
         SchedulingPolicy::clearFieldCourseCache();
-
-        // Required Day, Consecutive Days and Field Course are not saved: each
-        // applies to one generation run, which passes its own.
 
         ApiCache::forgetGroup('initial.data');
 
@@ -195,10 +170,6 @@ class SchedulingSettingsController extends Controller
         return $request->user()?->role === 'secretary';
     }
 
-    /**
-     * Classes this department already holds on Sunday in the active semester,
-     * so turning Sunday off can say how many stay behind.
-     */
     private function sundayClassCount(Departments $department): int
     {
         $semesterId = Semester::query()->where('is_active', true)->value('id');
@@ -252,11 +223,6 @@ class SchedulingSettingsController extends Controller
     }
 
     /**
-     * The physical rooms a Setup Courses "Preferred Room" may name: the ones
-     * this department can reach in the section's semester, per
-     * RoomAccessPolicy. A borrowed room is still only usable inside its grant
-     * windows; the generator applies those, the preference only ranks.
-     *
      * @return list<array{id: int, room_code: string, room_type: string, building: ?string, allow_lecture_usage: bool}>
      */
     private function preferredRoomOptions(Departments $department, ?Sections $section): array
@@ -306,10 +272,6 @@ class SchedulingSettingsController extends Controller
 
     private function hasLectureLabCourses(Departments $department): bool
     {
-        // A department-wide capability question: if *any* curriculum it runs
-        // has a lecture+lab major, the setting is relevant. Checking only the
-        // first active curriculum hid the setting from departments whose
-        // lecture+lab majors live in the curriculum that happened to sort second.
         $activeCurriculumIds = Curriculum::query()
             ->where('department_id', $department->id)
             ->where('status', 'active')
@@ -327,12 +289,6 @@ class SchedulingSettingsController extends Controller
             ->exists();
     }
 
-    /**
-     * Whether any active curriculum this department runs has a major course that
-     * is pure lecture. Those are the only majors a balanced split can apply to:
-     * once laboratory units are folded into the unit count, the split's
-     * total-duration rule no longer describes the lecture load.
-     */
     private function hasMajorLectureOnlyCourses(Departments $department): bool
     {
         $activeCurriculumIds = Curriculum::query()
@@ -352,13 +308,6 @@ class SchedulingSettingsController extends Controller
             ->exists();
     }
 
-    /**
-     * When a section is in hand, its own curriculum is the answer — that is the
-     * course list the user is configuring against. Only the department-wide
-     * question (no section) falls back to scanning the department's active
-     * curricula, and then any of them will do because the caller is asking
-     * whether such a course exists at all, not where it sits.
-     */
     private function activeCurriculum(Departments $department, ?Sections $section = null): ?Curriculum
     {
         if ($section?->curriculum_id !== null) {
@@ -398,11 +347,6 @@ class SchedulingSettingsController extends Controller
             ->all();
     }
 
-    /**
-     * Derived from whether the department has any field courses configured, so
-     * removing the last one turns the behaviour off again. The stored flag it
-     * replaced could only ever be set to true (audit finding #35).
-     */
     private function fieldCourseAssignmentEnabled(Departments $department): bool
     {
         return SchedulingPolicy::fieldCourseSettingEnabled((int) $department->id);
@@ -474,9 +418,6 @@ class SchedulingSettingsController extends Controller
     }
 
     /**
-     * Every Consecutive Days rule for the courses in scope: course-wide
-     * (section_id null) and per section.
-     *
      * @return list<array{course_id: int, section_id: int|null, day_count: int, preferred_start_day: string|null, meeting_days: list<string>|null}>
      */
     private function consecutiveDayRules(Departments $department, ?Sections $section = null): array

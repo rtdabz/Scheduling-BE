@@ -13,34 +13,16 @@ use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
-/**
- * Reviews an unsaved generated timetable as a whole.
- *
- * A generated draft is edited before it is saved: the user applies fixes to
- * several courses and only then commits. Every review therefore re-checks the
- * entire draft -- each row against the saved schedules the save would keep and
- * against every other draft row -- and reports the courses that still need
- * attention: those the generator could not place, and those whose rows break a
- * rule. A course a fix resolved simply is not found again; nothing is stored.
- *
- * Each reported course carries up to five ranked placements, every one found
- * by AvailableSlotFinder against the same draft, so an option offered here is
- * valid alongside every other row the draft holds.
- */
 final class GenerationDraftReviewer
 {
     public const MAX_OPTIONS = 5;
 
-    /** Courses given options in one review; the rest are listed without. */
     private const MAX_COURSES_WITH_OPTIONS = 40;
 
-    /** Online Split options offered beside a course's own shape. */
     private const MAX_ALTERNATIVE_OPTIONS = 2;
 
-    /** Placements considered for a course's first meeting. */
     private const SEED_CANDIDATES = 12;
 
-    /** Day priority of a placement, lowest first. */
     private const TIER_SAME_DAY = 0;
 
     private const TIER_WEEKDAY = 1;
@@ -49,7 +31,6 @@ final class GenerationDraftReviewer
 
     private const TIER_SUNDAY = 3;
 
-    /** Day pairs a two-meeting class conventionally takes. */
     private const PAIRED_DAYS = [
         'Monday' => 'Wednesday',
         'Wednesday' => 'Monday',
@@ -92,11 +73,6 @@ final class GenerationDraftReviewer
             }
         }
 
-        // The save deletes the target sections' replaceable rows of exactly
-        // the classes the draft holds or leaves unplaced, so only those are
-        // out of the way. The generator's wider cut (every target course in
-        // every target section) would hide a class the save keeps -- another
-        // section's own class in the room an option then offers.
         $snapshot = $this->snapshots->capture(
             semesterId: $semesterId,
             departmentId: $departmentId,
@@ -155,8 +131,6 @@ final class GenerationDraftReviewer
                 'problems' => array_slice($problemsByClass[$key], 0, 3),
                 'shape' => $this->shapeOf($rowsByClass[$key] ?? []),
                 'meetings' => array_map(
-                    // An Online Split is one meeting on site and one online;
-                    // a moved meeting keeps its side of that.
                     fn (array $row): array => $this->shapeOf($rowsByClass[$key] ?? []) === 'online_split'
                         ? [...$this->meetingFromRow($row), 'modes' => [(string) ($row['mode'] ?? 'on-site')]]
                         : $this->meetingFromRow($row),
@@ -241,11 +215,6 @@ final class GenerationDraftReviewer
     }
 
     /**
-     * Ranked placements for the course: its own shape first, and -- for a
-     * three-unit lecture course that is not already one -- an Online Split
-     * (one meeting on site, one online), which needs half the room time; and
-     * when neither finds a room, a Fully Online class (both meetings online).
-     *
      * @param  array<string, mixed>  $issue
      * @param  list<array<string, mixed>>  $draft
      * @param  list<string>|null  $preferredDays
@@ -269,7 +238,6 @@ final class GenerationDraftReviewer
                 'shape' => 'online_split',
                 'label' => 'Online Split',
                 'label_reason' => 'One meeting on site, one online',
-                // The whole class is re-shaped, so every row it holds goes.
                 'replaces' => [...$issue['replaces'], ...$issue['keeps']],
                 'keeps' => [],
                 'meetings' => [
@@ -279,9 +247,6 @@ final class GenerationDraftReviewer
             ], $draft, $preferredDays);
         }
 
-        // Last resort, when no room is left for either shape: the class meets
-        // online on two days at one time (MW, TTh, FS...), which needs no
-        // room at all. The course keeps its hours; only its delivery changes.
         if ($configured === [] && $alternative === [] && is_array($course)
             && ($halfSlots = $this->fullyOnlineMeetingSlots($course)) !== null) {
             $alternative = $this->shapeOptions($snapshot, [
@@ -298,9 +263,6 @@ final class GenerationDraftReviewer
             ], $draft, $preferredDays);
         }
 
-        // Up to two alternative-shape options sit beside the course's own shape;
-        // either fills the list when the other runs short.
-        // (A Fully Online fallback stands alone, so it fills the whole list.)
         $altCount = $configured === []
             ? count($alternative)
             : min(self::MAX_ALTERNATIVE_OPTIONS, count($alternative));
@@ -317,10 +279,6 @@ final class GenerationDraftReviewer
     }
 
     /**
-     * Each of the two meetings a Fully Online class holds: half its weekly
-     * hours. Only a lecture-only course may go online, and only one whose
-     * hours halve onto the slot grid; null otherwise.
-     *
      * @param  array<string, mixed>  $course
      */
     private function fullyOnlineMeetingSlots(array $course): ?int
@@ -334,8 +292,6 @@ final class GenerationDraftReviewer
     }
 
     /**
-     * Placements for one shape of the course, best first, unranked.
-     *
      * @param  array<string, mixed>  $issue  its meetings, the rows they replace and keep, and its shape
      * @param  list<array<string, mixed>>  $draft
      * @param  list<string>|null  $preferredDays
@@ -350,7 +306,6 @@ final class GenerationDraftReviewer
             $draft,
             static fn (array $row): bool => ! in_array($row, $replaces, true),
         ));
-        // A split meeting may not share a day with the one that stays.
         $keptDays = array_values(array_unique(array_map(
             static fn (array $row): string => (string) $row['day'],
             $issue['keeps'],
@@ -363,9 +318,6 @@ final class GenerationDraftReviewer
             }
         }
 
-        // One finder walk per day, against only the rows that day could clash
-        // with. The kernel compares a candidate with every row it is handed,
-        // and a semester holds hundreds; a week-wide walk took seconds.
         $dayScopes = [];
         foreach (array_diff(SchedulingPolicy::PERSISTABLE_DAYS, $keptDays) as $day) {
             $relevant = fn (array $row): bool => (int) ($row['section_id'] ?? 0) === $sectionId
@@ -400,9 +352,6 @@ final class GenerationDraftReviewer
                 );
                 $slots = [...$slots, ...$found['slots']];
             }
-            // A Split Session and an Online Split meet at one time on both
-            // days (split_group_same_time): a moved meeting takes the time of
-            // the one that stays.
             if ($sameTime && $issue['keeps'] !== []) {
                 $keptStart = SchedulingPolicy::timeToMinutes((string) $issue['keeps'][0]['start_time']);
                 $keptEnd = SchedulingPolicy::timeToMinutes((string) $issue['keeps'][0]['end_time']);
@@ -453,27 +402,18 @@ final class GenerationDraftReviewer
                 $usedDays[$best['slot']['day']] = true;
                 $score += $best['score'];
                 $tier = max($tier, $best['tier']);
-                // The first meeting's reasons describe the option; the others
-                // add only how they pair with it, or the list contradicts
-                // itself ("Another weekday", "Same day").
                 $reasons = [...$reasons, ...$bestReasons];
                 if ($best['tier'] >= self::TIER_SATURDAY) {
                     $reasons[] = $best['reasons'][0];
                 }
             }
 
-            // One meeting on site and one online is an Online Split, offered
-            // under that name with its hybrid link; unlabelled here it would
-            // be the same placement saved as something else.
             $modes = array_unique(array_map(static fn (array $candidate): string => (string) $candidate['slot']['mode'], $chosen));
-            // (An Integrated class's online lecture and on-site laboratory
-            // are a different shape and stay.)
             $lectureOnly = ! in_array('laboratory', array_column($issue['meetings'], 'meeting_type'), true);
             if (($issue['shape'] ?? null) !== 'online_split' && $lectureOnly && count($chosen) > 1 && count($modes) > 1) {
                 continue;
             }
 
-            // Order-free: Monday + Friday is the same option as Friday + Monday.
             $parts = array_map(
                 static fn (array $candidate): string => $candidate['slot']['day'].$candidate['slot']['start_time'].($candidate['slot']['room_id'] ?? $candidate['slot']['mode']),
                 $chosen,
@@ -487,7 +427,6 @@ final class GenerationDraftReviewer
             $options[$signature] = [
                 'tier' => $tier,
                 'score' => (int) round($score / count($chosen)),
-                // Names a shape other than the course's own, e.g. "Online Split".
                 'label' => $issue['label'] ?? null,
                 'summary' => implode(' · ', array_map(
                     fn (array $candidate): string => $this->describeSlot($candidate['slot']),
@@ -522,9 +461,6 @@ final class GenerationDraftReviewer
         $end = SchedulingPolicy::timeToMinutes((string) $slot['end_time']);
         $current = $meeting['current'] ?? null;
 
-        // The day decides first: another time on the class's own day, then
-        // the other weekdays, then Saturday, then Sunday. The score only
-        // orders placements within the same tier.
         $tier = match (true) {
             is_array($current) && (string) $current['day'] === $day => self::TIER_SAME_DAY,
             $day === 'Saturday' => self::TIER_SATURDAY,
@@ -560,7 +496,6 @@ final class GenerationDraftReviewer
         }
 
         if (is_array($current)) {
-            // Nearer the original hour is less disruptive.
             $shift = abs($start - SchedulingPolicy::timeToMinutes((string) $current['start_time']));
             $score -= min(12, intdiv($shift, 30));
             if ($shift === 0) {
@@ -576,8 +511,6 @@ final class GenerationDraftReviewer
     }
 
     /**
-     * Day tier first, then score.
-     *
      * @param  array{tier: int, score: int}  $left
      * @param  array{tier: int, score: int}  $right
      */
@@ -587,11 +520,6 @@ final class GenerationDraftReviewer
     }
 
     /**
-     * The first-meeting placements options are built from, in priority order.
-     * Each is a distinct day and start, and no day supplies more than a few,
-     * so the options are genuine alternatives rather than the same hour in
-     * five rooms or five back-to-back starts.
-     *
      * @param  list<array{slot: array<string, mixed>, tier: int, score: int, reasons: list<string>}>  $candidates  in priority order
      * @return list<array{slot: array<string, mixed>, tier: int, score: int, reasons: list<string>}>
      */
@@ -644,10 +572,6 @@ final class GenerationDraftReviewer
     }
 
     /**
-     * Every row the course holds once the option is applied -- the meetings
-     * it keeps and the ones it moves -- in the draft's own row shape, so the
-     * caller replaces the course's rows with these and nothing else.
-     *
      * @param  array<string, mixed>  $issue
      * @param  list<array{slot: array<string, mixed>, score: int, reasons: list<string>}>  $chosen
      * @return list<array<string, mixed>>
@@ -663,7 +587,6 @@ final class GenerationDraftReviewer
             $reshaped => (string) Str::uuid(),
             default => (string) ($issue['keeps'][0]['split_group_id'] ?? $issue['replaces'][0]['split_group_id'] ?? Str::uuid()),
         };
-        // An Online Split is linked as a hybrid group, as the generator writes it.
         $isHybrid = ($issue['shape'] ?? null) === 'online_split';
 
         $rows = $issue['keeps'];
@@ -698,10 +621,6 @@ final class GenerationDraftReviewer
     }
 
     /**
-     * A class's shape as its rows show it: two lecture meetings, one of them
-     * online and linked as hybrid, are an Online Split; two lecture meetings
-     * otherwise a Split Session. Anything else keeps no shared time.
-     *
      * @param  list<array<string, mixed>>  $rows
      */
     private function shapeOf(array $rows): ?string
@@ -737,8 +656,6 @@ final class GenerationDraftReviewer
                 SchedulingPolicy::timeToMinutes((string) $row['end_time']) - SchedulingPolicy::timeToMinutes((string) $row['start_time']),
                 SchedulingPolicy::SLOT_MINUTES,
             )),
-            // A class keeps its delivery unless nothing else fits: online is
-            // offered for an on-site class, ranked below every room.
             'modes' => $mode === 'field' ? ['field'] : ($mode === 'online' ? ['online', 'on-site'] : ['on-site', 'online']),
             'current' => $row,
         ];
@@ -758,7 +675,6 @@ final class GenerationDraftReviewer
         );
     }
 
-    /** "13:00:00" as "1:00 PM", the way the rest of the app shows times. */
     private function clockTime(string $time): string
     {
         $minutes = SchedulingPolicy::timeToMinutes($time);

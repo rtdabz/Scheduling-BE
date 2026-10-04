@@ -5,19 +5,6 @@ namespace App\Services\Scheduling\Engine\Rules;
 use App\Models\Rooms;
 use App\Models\Schedule;
 
-/**
- * room_conflict, faculty_conflict, section_conflict, subject_section_time_conflict.
- *
- * One resource cannot be in two places at once: a lecture or laboratory room
- * holds one class, an instructor teaches one class, a section attends one
- * class. Field and online rooms are shared without a limit, so they never
- * conflict on booking. Online sections taking the same course must also use
- * different time windows.
- *
- * Every clashing meeting is reported, so a faculty override can mark all of
- * them; a clash someone chose to override is filtered out afterwards by
- * FacultyConflictOverride.
- */
 final class OverlapConflict
 {
     public function __construct(private readonly RuleLookupCache $lookups) {}
@@ -73,9 +60,6 @@ final class OverlapConflict
     }
 
     /**
-     * Every schedule holding `$column = $value` that overlaps the attempt,
-     * folded into one violation.
-     *
      * @param  array<string, mixed>  $attempt
      * @param  callable(Schedule, string, string): string  $message  first clash, day, " and N more"
      * @return array<string, mixed>|null

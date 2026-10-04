@@ -39,9 +39,6 @@ class ActivityLogController extends Controller
         $status = $validated['status'] ?? null;
         $search = isset($validated['search']) ? mb_strtolower(trim($validated['search'])) : null;
 
-        // Keep the merge bounded. The two audit tables are intentionally kept
-        // separate, so filtering is done in SQL and only a bounded recent window
-        // is hydrated before the final cross-source sort.
         $candidateLimit = min(10000, max(500, ($page * $perPage) + $perPage));
 
         $scheduling = SchedulingAuditLog::query()
@@ -292,7 +289,6 @@ class ActivityLogController extends Controller
             'review_approval' => ['approval'],
             'schedule_workflow' => ['approval'],
             'faculty_assignment' => ['instructor_assignment'],
-            // Reversed mapping:
             'account_access' => ['authentication', 'user_management'],
             'institutional_setup' => ['user_management'],
             'academic_setup' => ['schedule_management'],

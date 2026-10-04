@@ -6,14 +6,6 @@ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 
-/**
- * A department may run several curricula at once.
- *
- * A college mid-transition teaches its incoming cohort from the new curriculum
- * while the upper years finish on the old one, so "active" is not exclusive.
- * Which curriculum applies to a given cohort is recorded on the section
- * (sections.curriculum_id), not inferred here.
- */
 class Curriculum extends Model
 {
     protected $table = 'curriculum';
@@ -22,8 +14,6 @@ class Curriculum extends Model
 
     protected static function booted(): void
     {
-        // Activating, retiring or re-dating a curriculum can change which one
-        // is newest for its courses; see Course::curriculumPlacements().
         static::updated(function (self $curriculum): void {
             if ($curriculum->wasChanged(['status', 'effective_school_year'])) {
                 Course::syncPlacementFromCurricula($curriculum->courses()->pluck('courses.id'));
@@ -31,21 +21,12 @@ class Curriculum extends Model
         });
     }
 
-    /** The newest active curriculum of its department/program group. */
     public const LIFECYCLE_NEW = 'new';
 
-    /** An active curriculum that a newer one has superseded — still teaching upper years. */
     public const LIFECYCLE_OLD = 'old';
 
-    /** The only active curriculum in its group; an old/new badge would say nothing. */
     public const LIFECYCLE_ONLY = 'only';
 
-    /**
-     * Out of service — either not published yet or withdrawn.
-     *
-     * There is deliberately no separate "draft": a curriculum is in service or it
-     * is not, and both cases offer the same next step, which is to activate it.
-     */
     public const LIFECYCLE_DEACTIVATED = 'deactivated';
 
     public const LIFECYCLE_ARCHIVED = 'archived';
@@ -65,19 +46,6 @@ class Curriculum extends Model
         return $this->hasMany(Sections::class, 'curriculum_id');
     }
 
-    /**
-     * Cohorts that do not merely point at this curriculum but have a timetable
-     * plotted from it.
-     *
-     * Assignment alone is undone with a dropdown and strands nothing, so it is
-     * not a reason to refuse retirement. Generated schedule rows are: they were
-     * built from this curriculum's course list and would outlive it.
-     *
-     * The nested clause is correlated to the section rather than to a literal
-     * curriculum id so the relation also works under withCount(), where no
-     * parent key is bound yet. Rows predating schedules.curriculum_id carry
-     * null; fall back to the cohort's own assignment for those.
-     */
     public function scheduledSections()
     {
         return $this->sections()->whereHas('schedules', function ($schedules): void {
@@ -95,7 +63,6 @@ class Curriculum extends Model
             ->withTimestamps();
     }
 
-    // Alias for subjects to support legacy calls/tests
     public function subjects()
     {
         return $this->courses();
@@ -106,10 +73,6 @@ class Curriculum extends Model
         return $query->where('status', 'active');
     }
 
-    /**
-     * The curricula a section may be pointed at: same department, and either
-     * program-wide or scoped to the section's own program.
-     */
     public function scopeSelectableFor($query, int $departmentId, ?int $programId)
     {
         return $query
@@ -124,13 +87,6 @@ class Curriculum extends Model
     }
 
     /**
-     * Tags each curriculum as new/old within its own department+program group so
-     * the UI can label a transition without anybody maintaining a flag by hand.
-     *
-     * The ranking is by effective school year, newest first, with the id as the
-     * tie-breaker. Only active curricula are ranked: a deactivated or archived
-     * one is out of service, so neither can be "the new one".
-     *
      * @param  EloquentCollection<int, self>|Collection<int, self>  $curricula
      * @return EloquentCollection<int, self>|Collection<int, self> the same instances, with `lifecycle` and `lifecycle_label` appended
      */

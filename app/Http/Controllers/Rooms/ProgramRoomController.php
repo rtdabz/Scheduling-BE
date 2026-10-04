@@ -16,16 +16,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
-/**
- * How a department's programs share its rooms. Each lecture or laboratory room
- * the department owns may name a home program; a room with none is shared by
- * every program. The department's room_sharing_policy says what a home program
- * means (see 2026_09_25_000001_add_program_room_sharing). Field and online
- * rooms hold any number of classes, so there is nothing to divide there.
- *
- * Anyone in the department may read the arrangement; only `room.assign_program`
- * (the secretary) changes it.
- */
 class ProgramRoomController extends Controller
 {
     public function show(Request $request): JsonResponse
@@ -97,8 +87,6 @@ class ProgramRoomController extends Controller
     {
         $programs = $this->programs($department)->get(['id', 'code', 'name']);
         $programIds = $programs->pluck('id')->map('intval')->all();
-        // The division the generator and the validator actually use, for the
-        // active semester (which decides whether an owner's days are lendable).
         $activeSemesterId = (int) Semester::query()->where('is_active', true)->value('id');
         $shares = app(ProgramRoomShares::class)->forDepartment((int) $department->id, $activeSemesterId);
 
@@ -115,7 +103,6 @@ class ProgramRoomController extends Controller
                 ->orderBy('room_code')
                 ->get(['id', 'room_code', 'building', 'room_type', 'status', 'home_program_id'])
                 ->map(static fn (Rooms $room): array => [
-                    // Owning program per weekday; null when the rooms are not divided.
                     'days' => isset($shares[(int) $room->id])
                         ? array_map(static fn (array $share): array => [
                             'program_id' => $share['program_id'],
@@ -127,7 +114,6 @@ class ProgramRoomController extends Controller
                     'building' => $room->building === null ? null : (string) $room->building,
                     'room_type' => (string) $room->room_type,
                     'status' => (string) $room->status,
-                    // A program archived since it was chosen leaves the room shared.
                     'home_program_id' => in_array((int) $room->home_program_id, $programIds, true)
                         ? (int) $room->home_program_id
                         : null,
@@ -135,7 +121,6 @@ class ProgramRoomController extends Controller
         ];
     }
 
-    /** Lecture and laboratory rooms the department owns: one class at a time each. */
     private function divisibleRooms(Departments $department): Builder
     {
         return Rooms::query()

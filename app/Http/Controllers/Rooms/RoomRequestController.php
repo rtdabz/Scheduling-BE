@@ -19,23 +19,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
-/**
- * A department borrowing another department's vacant room for a semester.
- *
- * The secretary asks for weekly windows in one room; the secretary of the
- * department that owns the room approves, rejects or later revokes; either
- * side can end an approved grant at any time. Program
- * heads take no part. The VPAA takes no action either and is only notified of
- * each step.
- * Approval is what RoomAccessPolicy reads, so a grant takes effect in the validator and
- * the generator at the same moment.
- */
 class RoomRequestController extends Controller
 {
-    /**
-     * Only lecture rooms can be lent. Laboratories stay with their department;
-     * ONLINE and FIELD are shared already.
-     */
     private const LENDABLE_ROOM_TYPES = ['lecture'];
 
     public function __construct(private readonly SystemNotificationService $notifications) {}
@@ -48,7 +33,6 @@ class RoomRequestController extends Controller
             'status' => ['nullable', Rule::in($this->statuses())],
         ]);
 
-        // A department sees the requests it sent and the ones for its rooms.
         $departmentId = (int) $user->department_id;
 
         $requests = RoomRequest::query()
@@ -66,10 +50,6 @@ class RoomRequestController extends Controller
         return response()->json($requests->map(fn (RoomRequest $roomRequest): array => $this->present($roomRequest))->values());
     }
 
-    /**
-     * What already occupies a room in a semester, so the request form can show
-     * the vacant windows instead of letting the secretary guess.
-     */
     public function occupancy(Request $request, int $room): JsonResponse
     {
         $roomModel = Rooms::query()->with('department')->findOrFail($room);
@@ -198,7 +178,6 @@ class RoomRequestController extends Controller
             $this->assertOwnerReviewer($model, $user);
             $this->assertStatus($model, [RoomRequest::STATUS_PENDING]);
 
-            // Lock the room so two approvals for the same slot serialize.
             /** @var Rooms $room */
             $room = Rooms::query()->lockForUpdate()->findOrFail($model->room_id);
             $this->assertLendable($room, (int) $model->requesting_department_id);
@@ -266,11 +245,6 @@ class RoomRequestController extends Controller
     }
 
     /**
-     * Ends a request. Ending an approved grant is allowed at any time, by the
-     * borrower (give back) or the owner (revoke): the borrower's class meetings
-     * held in the room under this grant lose their room and become Room TBA,
-     * so nothing is left booked in a room the department can no longer use.
-     *
      * @param  list<string>  $allowedFrom
      */
     private function close(RoomRequest $model, User $user, string $status, ?string $remarks, array $allowedFrom): JsonResponse
@@ -322,7 +296,6 @@ class RoomRequestController extends Controller
         ]);
     }
 
-    /** Only the department that owns the room decides whether to lend it. */
     private function assertOwnerReviewer(RoomRequest $model, User $user): void
     {
         if ($model->owner_department_id === null || (int) $model->owner_department_id !== (int) $user->department_id) {
@@ -358,9 +331,6 @@ class RoomRequestController extends Controller
     }
 
     /**
-     * Refuses windows that overlap a class already in the room or another
-     * department's approved grant.
-     *
      * @param  list<array{day: string, start_time: string, end_time: string}>  $windows
      */
     private function assertVacant(Rooms $room, int $semesterId, array $windows, ?int $ignoreRequestId = null): void
@@ -484,10 +454,6 @@ class RoomRequestController extends Controller
     }
 
     /**
-     * Clears the room from the borrower's class meetings held in it under this
-     * grant (those overlapping its windows), leaving them Room TBA. Saved one
-     * by one so the usual model events (live refresh) fire.
-     *
      * @return Collection<int, Schedule>
      */
     private function releaseDependentSchedules(RoomRequest $model): Collection
@@ -644,10 +610,6 @@ class RoomRequestController extends Controller
         );
     }
 
-    /**
-     * The VPAA takes no part in the decision; they are only told what happened:
-     * a request sent, rejected or cancelled, or a room lent or handed back.
-     */
     private function notifyVpaa(RoomRequest $model, User $actor, string $type): void
     {
         $requester = $model->requestingDepartment?->department_code ?? 'A department';
@@ -672,7 +634,6 @@ class RoomRequestController extends Controller
             (int) $model->requesting_department_id,
             (int) $model->semester_id,
             null,
-            // The VPAA has no Room Requests page; the facility list shows the room.
             ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/facilities'],
         );
     }

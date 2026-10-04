@@ -8,7 +8,6 @@ use Illuminate\Validation\Rule;
 
 class UpdateProgramRequest extends FormRequest
 {
-    /** Access is enforced by the route's middleware. */
     public function authorize(): bool
     {
         return true;
@@ -31,8 +30,6 @@ class UpdateProgramRequest extends FormRequest
         /** @var Program $program */
         $program = $this->route('program');
 
-        // Code and major identify the program together, so the uniqueness check
-        // has to use whichever major this request will leave in place.
         $major = $this->has('major') ? (string) $this->input('major') : (string) $program->major;
         $code = $this->has('code') ? (string) $this->input('code') : (string) $program->code;
 

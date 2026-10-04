@@ -5,13 +5,6 @@ namespace App\Services\Scheduling\Schedule;
 use App\Models\Course;
 use App\Models\Rooms;
 
-/**
- * Conflict rules between candidate schedule rows saved together.
- *
- * RuleEngine validates one row against persisted rows; this validates the
- * candidate set against itself, which RuleEngine cannot see. Field and online
- * are shared without a limit, so every rule here is a pairwise clash.
- */
 class BatchConflictValidator
 {
     /**
@@ -24,8 +17,6 @@ class BatchConflictValidator
             return [];
         }
 
-        // Normalize once. The pairwise pass is O(n²) over indexes, so parsing
-        // times inside the loops would parse each row n times.
         $normalized = [];
         $standingOverrides = FacultyConflictOverride::standingIds($rows);
         foreach ($rows as $index => $row) {
@@ -51,8 +42,6 @@ class BatchConflictValidator
     }
 
     /**
-     * Pairwise rules: two candidate rows that overlap in the same semester and day.
-     *
      * @param  array<int|string, array<string, mixed>>  $rows  already normalized
      * @param  array<int, string>  $courses
      * @param  array<int, string>  $roomTypes
@@ -104,8 +93,6 @@ class BatchConflictValidator
                     $add(BatchConflict::RULE_SECTION);
                 }
 
-                // The same course cannot run online for two different sections at
-                // once — one online session cannot serve both.
                 if (
                     $left['course_id'] > 0
                     && $left['course_id'] === $right['course_id']
@@ -120,8 +107,6 @@ class BatchConflictValidator
                     $add(BatchConflict::RULE_ROOM);
                 }
 
-                // A clash both meetings were deliberately assigned over stays allowed
-                // while neither has moved (see FacultyConflictOverride).
                 if (
                     $left['faculty_id'] !== null
                     && $left['faculty_id'] === $right['faculty_id']
@@ -136,9 +121,6 @@ class BatchConflictValidator
     }
 
     /**
-     * True when both rows occupy the same lecture or laboratory room. Field and
-     * online rooms are shared without a limit.
-     *
      * @param  array<string, mixed>  $left
      * @param  array<string, mixed>  $right
      * @param  array<int, string>  $roomTypes

@@ -99,7 +99,6 @@ final class ValidateGenerationConfiguration
             );
         }
 
-        // Same check RuleEngine makes on every manual save (CurriculumPlacementRule).
         if (! (bool) ($snapshot->semester['is_enabled'] ?? true)) {
             $violations[] = $this->violation(
                 'semester_enabled',
@@ -191,10 +190,6 @@ final class ValidateGenerationConfiguration
                 $recommendations[] = $this->removeCourseRecommendation($configuration, $courseId, $course, 'The selected course is inactive.');
             }
 
-            // Resolve the placement through the section's own curriculum. Reading
-            // the course-keyed map directly would validate an old-curriculum
-            // cohort against the new curriculum's placement for the same course,
-            // rejecting courses the generator had every right to select.
             $period = $snapshot->periodFor((int) ($section['id'] ?? 0), $courseId);
             if (! is_array($period)
                 || (int) ($period['year_level'] ?? 0) !== (int) ($section['year_level'] ?? 0)
@@ -258,8 +253,6 @@ final class ValidateGenerationConfiguration
                 );
             }
 
-            // Consecutive Days is a shape of its own, so the run cannot also
-            // split the course or pin it to a two-day pattern.
             $consecutiveRule = $snapshot->consecutiveDayRulesFor((int) ($section['id'] ?? 0))[$courseId] ?? null;
             if ($consecutiveRule !== null
                 && ($isLectureLabSplit || $isMinorSplit || $isHybridSplit || ! empty($configuration->preferredPatternsByCourseId[$courseId]))) {
@@ -275,10 +268,6 @@ final class ValidateGenerationConfiguration
                 );
             }
 
-            // A course cannot be two kinds of split at once. The lecture-only
-            // restriction on a major's balanced split already makes this
-            // unreachable, so reaching it means one of the two eligibility gates
-            // was widened without the other being reconsidered.
             if (($isMinorSplit && $isLectureLabSplit) || ($isHybridSplit && $isLectureLabSplit)) {
                 $violations[] = $this->violation(
                     'minor_split_eligibility',
@@ -374,7 +363,6 @@ final class ValidateGenerationConfiguration
                 && (($room['department_id'] ?? null) === null || (int) $room['department_id'] === $snapshot->departmentId),
         ));
         $hasLectureRoom = collect($availableRooms)->contains(static fn (array $room): bool => ($room['room_type'] ?? null) === 'lecture');
-        // A room a laboratory meeting may use, per the Default LAB Room Requirement.
         $labRoomTypes = SchedulingPolicy::labRoomTypes($snapshot->departmentId);
         $hasLaboratoryRoom = collect($availableRooms)->contains(static fn (array $room): bool => in_array($room['room_type'] ?? null, $labRoomTypes, true));
         $hybridSplitIds = array_map('intval', $configuration->hybridSplitCourseIds);
@@ -399,8 +387,6 @@ final class ValidateGenerationConfiguration
                     'No eligible lecture room is available for an on-site course.',
                     $this->courseContext($course),
                 );
-                // Online only clears this when the course may meet online;
-                // otherwise it would trade this violation for room_type_match.
                 $recommendations[] = SchedulingConstraintPredicates::allowsOnline($course, $snapshot->fieldCourseCodes)
                     ? $this->deliveryModeRecommendation($configuration, $course, 'online')
                     : $this->recommendation(
@@ -471,7 +457,6 @@ final class ValidateGenerationConfiguration
 
             $singleMeetingIds = [];
             foreach ($courseIds as $courseId) {
-                // A null pattern is "let the Generator choose", not a second day.
                 $hasMultipleMeetings = ! empty($configuration->preferredPatternsByCourseId[$courseId])
                     || in_array($courseId, $configuration->selectedSplitSessionCourseIds, true)
                     || in_array($courseId, $configuration->balancedSplitCourseIds, true)
@@ -520,28 +505,6 @@ final class ValidateGenerationConfiguration
     }
 
     /**
-     * The capacity check above asks whether the forced courses fit in the day's
-     * clock. This one asks whether they fit in its rooms.
-     *
-     * The section's own demand is never enough to exhaust a room type on its
-     * own: a section meets in one room at a time, so the check above already
-     * caps its demand at one day's length, which is exactly what a single room
-     * supplies. What makes a forced day run out of rooms is everyone else --
-     * the sections already placed on that day, competing for the same pool. So
-     * supply is (rooms of a type) x (slots in the operating window), and demand
-     * is this section's forced-day load plus the room-time those existing
-     * schedules have already taken.
-     *
-     * When demand exceeds supply the run still succeeds -- the solver sends the
-     * overflow online or to Room TBA -- but that degradation is invisible until
-     * the timetable comes back, so it is raised here as a warning the user must
-     * acknowledge first.
-     *
-     * This bounds room-time, it does not simulate placement: it ignores whether
-     * the competing meetings actually overlap the hours this section needs. A
-     * configuration that clears the check can still produce fallbacks; one that
-     * fails it cannot avoid them.
-     *
      * @param  list<int>  $courseIds
      * @param  list<ConstraintViolation>  $violations
      * @param  list<GenerationConfigurationRecommendation>  $recommendations
@@ -569,8 +532,6 @@ final class ValidateGenerationConfiguration
                 continue;
             }
 
-            // Online delivery consumes no room, and a field course draws on
-            // department-scoped field capacity rather than these room pools.
             $mode = $configuration->deliveryModesByCourseId[$courseId] ?? $configuration->deliveryMode;
             if ($mode === 'online' || SchedulingConstraintPredicates::isFieldCourse($course, $snapshot->fieldCourseCodes)) {
                 continue;
@@ -595,12 +556,6 @@ final class ValidateGenerationConfiguration
                 continue;
             }
 
-            // The two room types degrade differently. A laboratory has no
-            // substitute delivery mode, so its overflow can only become Room
-            // TBA. A lecture is never left unresolved: it goes online, and a
-            // lecture pinned to on-site delivery has nowhere to go at all --
-            // it fails the section rather than degrading, which is the more
-            // urgent thing to say here.
             $fallback = $roomType === 'laboratory'
                 ? 'Room TBA'
                 : 'online delivery, and any lecture pinned to on-site delivery will fail to generate';
@@ -645,11 +600,6 @@ final class ValidateGenerationConfiguration
     }
 
     /**
-     * Room-time already booked on one day, per room type, by everyone except
-     * the section being generated. The section's own rows are excluded because
-     * this run replaces them -- counting them would charge it twice for the
-     * meetings it is about to regenerate.
-     *
      * @return array<string, int>
      */
     private function committedRoomSlotsByType(
@@ -667,8 +617,6 @@ final class ValidateGenerationConfiguration
                 continue;
             }
 
-            // Only a real physical room booking consumes this pool. An online
-            // or field meeting, or one already sitting on Room TBA, does not.
             $roomId = $row['room_id'] ?? null;
             if ($roomId === null || in_array((string) ($row['mode'] ?? 'on-site'), ['online', 'field'], true)) {
                 continue;

@@ -38,10 +38,6 @@ class Program extends Model
         return $this->hasMany(Course::class, 'program_id');
     }
 
-    /**
-     * "BSED-English", or just "BEED" without a major. One college can run several
-     * programs under one code, so the code alone does not say which one is meant.
-     */
     public function shortLabel(): string
     {
         $major = trim((string) $this->major);

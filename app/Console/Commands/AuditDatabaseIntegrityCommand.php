@@ -33,10 +33,6 @@ class AuditDatabaseIntegrityCommand extends Command
             'generation_run_statuses' => DB::table('schedule_generation_runs')->select('status', DB::raw('COUNT(*) AS count'))->groupBy('status')->pluck('count', 'status')->all(),
             'history_versions' => DB::table('schedule_history_versions')->count(),
             'history_items' => DB::table('schedule_history_items')->count(),
-            // An account created before accounts could link to an existing
-            // instructor got its own profile, leaving the same person on the
-            // roster twice. Reported, never merged: which row holds the real
-            // schedules and loads is a human call.
             'account_faculty_duplicating_roster_entry' => DB::table('faculties AS linked')
                 ->join('faculties AS roster', function ($join) {
                     $join->on('roster.department_id', '=', 'linked.department_id')
@@ -52,24 +48,19 @@ class AuditDatabaseIntegrityCommand extends Command
                 ->get()->map(fn ($r) => (array) $r)->values()->all(),
             'unlinked_scheduling_audits' => DB::table('scheduling_audit_logs')->whereNull('history_version_id')->count(),
 
-            // Uniqueness rules. The database enforces these on MySQL since
-            // 2026_09_23_000004; the checks cover SQLite and older copies.
             'active_semesters' => DB::table('semesters')->where('is_active', true)->whereNull('deleted_at')->count(),
             'duplicate_section_names' => DB::table('sections')
                 ->select('department_id', 'semester_id', DB::raw('UPPER(TRIM(section_name)) AS section_name'), DB::raw('COUNT(*) AS count'))
                 ->groupBy('department_id', 'semester_id', DB::raw('UPPER(TRIM(section_name))'))
                 ->havingRaw('COUNT(*) > 1')->get()->map(fn ($r) => (array) $r)->values()->all(),
-            // Every course belongs to one department (2026_09_29_000001).
             'courses_without_department' => DB::table('courses')->whereNull('department_id')->whereNull('deleted_at')
                 ->pluck('course_code')->values()->all(),
 
-            // Links held as text or copies that can drift from their source.
             'course_rules_on_archived_course' => DB::table('department_course_rules AS rules')
                 ->join('courses', 'courses.id', '=', 'rules.course_id')
                 ->whereNotNull('courses.deleted_at')
                 ->pluck('rules.id')->all(),
             'live_schedules_without_curriculum' => DB::table('schedules')->whereNull('deleted_at')->whereNull('curriculum_id')->count(),
-            // courses.year_level/semester mirrors the newest active curriculum.
             'course_placement_differs_from_curriculum' => (function (): array {
                 $placements = Course::curriculumPlacements();
 
@@ -79,7 +70,6 @@ class AuditDatabaseIntegrityCommand extends Command
                         || (string) $c->semester !== $placements[$c->id]['semester'])
                     ->pluck('id')->values()->all();
             })(),
-            // users.role, the Spatie role assignment, and faculties.administrative_role.
             'users_role_not_assigned' => DB::table('users')
                 ->whereNotExists(fn ($q) => $q->from('model_has_roles')
                     ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')

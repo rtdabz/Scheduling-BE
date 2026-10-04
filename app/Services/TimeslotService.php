@@ -8,9 +8,6 @@ use Carbon\Carbon;
 class TimeslotService
 {
     /**
-     * Return available start times for a class duration: from opening time,
-     * stepping by the duration, while the class still ends by closing time.
-     *
      * @return array<int, string>
      */
     public function generateStartTimes(int $durationMinutes): array

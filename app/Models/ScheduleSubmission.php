@@ -53,7 +53,6 @@ class ScheduleSubmission extends Model
         return $this->belongsTo(self::class, 'parent_submission_id');
     }
 
-    /** The frozen copy of the meetings as they were sent, kept after recall or return. */
     public function snapshotVersion()
     {
         return $this->belongsTo(ScheduleHistoryVersion::class, 'snapshot_version_id');

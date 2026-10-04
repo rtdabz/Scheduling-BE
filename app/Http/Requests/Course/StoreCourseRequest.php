@@ -8,21 +8,11 @@ use Illuminate\Validation\Rule;
 
 class StoreCourseRequest extends CourseRequest
 {
-    /**
-     * The department check needs the validated department_id, so it stays in
-     * the controller, after validation.
-     */
     public function authorize(): bool
     {
         return true;
     }
 
-    /**
-     * Every course belongs to exactly one department, so the same code in two
-     * departments is two separate records. A department user's own department
-     * is filled in when the payload leaves it out; the controller still rejects
-     * one naming another department.
-     */
     protected function prepareForValidation(): void
     {
         parent::prepareForValidation();
@@ -52,8 +42,6 @@ class StoreCourseRequest extends CourseRequest
             'units' => 'required|integer|min:0',
             'course_category' => 'required|in:major,minor',
             'room_type_required' => 'required|in:lecture,laboratory,field,online',
-            // Required: the columns are not nullable, so a missing value
-            // must be a validation error rather than a failed insert.
             'year_level' => 'required|in:1,2,3,4',
             'semester' => 'required|in:1st,2nd,summer',
             'department_id' => 'required|integer|exists:departments,id',

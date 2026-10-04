@@ -5,11 +5,6 @@ use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
 
-/**
- * Program heads now author their own program's curriculum alongside the
- * department secretary (config/capabilities.php `role_defaults`). Grants are
- * held by the stored role, so the existing role row has to pick it up.
- */
 return new class extends Migration
 {
     public function up(): void

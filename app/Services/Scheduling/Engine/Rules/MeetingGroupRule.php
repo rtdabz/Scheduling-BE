@@ -8,16 +8,6 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * hybrid_component_count, hybrid_components, minor_split_component_count,
- * minor_split_eligibility, minor_split_pattern, minor_split_duration,
- * consecutive_day_count, consecutive_days, consecutive_mode,
- * split_group_same_time, split_group_day_separation.
- *
- * Linked meetings (one split_group_id) that cannot be judged one row at a time.
- * The shape rules cover the explicit Generator configurations -- Hybrid, Split
- * Session and Consecutive Days; day separation applies to every linked group.
- */
 final class MeetingGroupRule
 {
     public function __construct(private readonly RuleLookupCache $lookups) {}
@@ -81,10 +71,6 @@ final class MeetingGroupRule
     }
 
     /**
-     * A batch may edit one day of a saved Consecutive Days run (its room, say)
-     * without resending the others. The run is judged as it will stand after
-     * the batch, so the saved meetings the batch does not touch are added.
-     *
      * @param  list<array<string, mixed>>  $rows
      * @return list<array<string, mixed>>
      */
@@ -115,15 +101,6 @@ final class MeetingGroupRule
     }
 
     /**
-     * The meeting-group decision for one linked group. The one implementation;
-     * the constraint kernel calls it too with snapshot rows and settings.
-     *
-     * $kind is 'hybrid', 'minor_split', 'consecutive' (a Consecutive Days run,
-     * whose $pattern is `consecutive:N`) or 'linked' (any other linked group,
-     * which is only held to day separation). $rows need day, start_time,
-     * end_time, mode and meeting_type. A course is required for 'hybrid' and
-     * 'minor_split'.
-     *
      * @param  Course|array<string, mixed>|null  $course
      * @param  list<array<string, mixed>>  $rows
      * @param  array<string, mixed>|Departments|null  $splitSettings  Split Session settings (minor_split only)
@@ -160,7 +137,6 @@ final class MeetingGroupRule
             if ($count !== 2) {
                 $mismatches[] = ['rule' => 'minor_split_component_count', 'message' => 'Split Session scheduling requires exactly two linked meetings.'];
             } elseif (! SchedulingPolicy::balancedSplitEligible($course, $splitSettings)) {
-                // An ineligible course has no Split Session shape to judge.
                 $mismatches[] = ['rule' => 'minor_split_eligibility', 'message' => 'Split Session is available only for minor courses or majors with lecture or laboratory units.'];
             } else {
                 if (SchedulingPolicy::isFixedMeetingPattern($pattern)) {
@@ -174,9 +150,6 @@ final class MeetingGroupRule
                     static fn (array $row): int => max(0, SchedulingPolicy::timeToMinutes((string) ($row['end_time'] ?? '00:00')) - SchedulingPolicy::timeToMinutes((string) ($row['start_time'] ?? '00:00'))),
                     $rows,
                 ));
-                // A ceiling, not an exact total: Setup Courses may shorten a
-                // Split Session (Custom Time Duration), but never stretch it
-                // past the course's contact hours.
                 $units = is_array($course) ? ($course['units'] ?? 0) : ($course->units ?? 0);
                 if ($totalMinutes <= 0 || $totalMinutes > max(1, SchedulingPolicy::unitMinutes($units))) {
                     $mismatches[] = ['rule' => 'minor_split_duration', 'message' => 'Split Session meeting durations must not add up to more than the course contact hours.'];
@@ -184,9 +157,6 @@ final class MeetingGroupRule
             }
         }
 
-        // The days themselves are the rule's (Setup Courses ticks them, and
-        // they need not be back-to-back); repeated days are
-        // split_group_day_separation's to report.
         if ($kind === 'consecutive') {
             $dayCount = SchedulingPolicy::consecutiveDayCount($pattern) ?? 0;
             if ($count !== $dayCount) {
@@ -203,10 +173,6 @@ final class MeetingGroupRule
             }
         }
 
-        // Hybrid Split, Split Session and Consecutive Days are one class met on
-        // several days, so every meeting keeps one time slot. Only Integrated
-        // Hybrid's lecture and laboratory have lengths -- and so times -- of
-        // their own.
         $sameTimeShape = $count > 1 && match ($kind) {
             'consecutive' => true,
             'minor_split' => $course !== null && $count === 2,

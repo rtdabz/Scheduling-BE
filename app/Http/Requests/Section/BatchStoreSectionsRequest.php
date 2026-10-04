@@ -7,10 +7,6 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class BatchStoreSectionsRequest extends FormRequest
 {
-    /**
-     * The department check needs every validated department_id, so it stays in
-     * the controller, after validation.
-     */
     public function authorize(): bool
     {
         return true;

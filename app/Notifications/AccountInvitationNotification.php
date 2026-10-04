@@ -7,12 +7,6 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-// Queued so account creation does not hold the HTTP response open for the
-// SMTP session. A send to smtp.gmail.com measured ~4s of round trips, which
-// was ~85% of the POST /api/user request time.
-//
-// The email carries a one-time setup link, never a password: the user chooses
-// their own on the login page, and the VPAA never sees it.
 class AccountInvitationNotification extends Notification implements ShouldQueue
 {
     use Queueable;

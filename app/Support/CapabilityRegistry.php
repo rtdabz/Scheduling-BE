@@ -26,19 +26,12 @@ class CapabilityRegistry
         return is_array($definition) ? $definition : null;
     }
 
-    /**
-     * Whether the capability can only be exercised once the holder's department
-     * owns a program. Declared per capability in config/capabilities.php.
-     */
     public function requiresProgram(string $name): bool
     {
         return (bool) ($this->definition($name)['requires_program'] ?? false);
     }
 
     /**
-     * The capabilities this one cannot be exercised without, declared as
-     * `requires` in config/capabilities.php.
-     *
      * @return list<string>
      */
     public function prerequisites(string $name): array
@@ -49,13 +42,6 @@ class CapabilityRegistry
     }
 
     /**
-     * The given grant plus every capability it depends on, transitively.
-     *
-     * Saving a grant through this is what keeps `schedule.view` from being
-     * dropped out from under the screens that read the timetable. Unknown
-     * names pass through untouched so validating them stays the caller's job,
-     * and the original order is kept with prerequisites appended.
-     *
      * @param  iterable<string>  $names
      * @return list<string>
      */
@@ -96,11 +82,6 @@ class CapabilityRegistry
     }
 
     /**
-     * The capability catalog as it applies to a role rather than a saved user.
-     *
-     * Assignability is a property of the role, so this answers it without
-     * needing a saved account.
-     *
      * @return list<array<string, mixed>>
      */
     public function catalogForRole(string $role): array
@@ -125,8 +106,6 @@ class CapabilityRegistry
     }
 
     /**
-     * The module tree for a role, marking which capabilities are already held.
-     *
      * @param  list<string>  $grantedCapabilities
      * @return list<array<string, mixed>>
      */

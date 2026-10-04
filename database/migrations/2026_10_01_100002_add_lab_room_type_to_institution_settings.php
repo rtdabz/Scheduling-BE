@@ -4,10 +4,6 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-/**
- * The room a laboratory meeting may use, for every course: 'laboratory'
- * (today's rule), 'lecture' (a regular classroom) or 'either'.
- */
 return new class extends Migration
 {
     public function up(): void

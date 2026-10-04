@@ -12,31 +12,13 @@ use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
-/**
- * Capacity feasibility pre-check for a whole year-level generation run.
- *
- * ScheduleGenerationPreflightService already validates one section's *data* —
- * course status, curriculum period, whether a room of the required type exists at
- * all. This answers the different question the year-level flow needs before it
- * spends two minutes searching: across every section in the run, is there
- * physically enough room-time for what has been asked for?
- *
- * Only provable shortfalls are reported. Demand must exceed supply arithmetically
- * for a constraint to block; anything that merely looks tight is left to the
- * solver, because refusing a feasible run is worse than searching and failing.
- */
 class YearLevelFeasibilityService
 {
-    /** Statuses whose existing schedules will be replaced by this run. */
     private const REPLACEABLE_STATUSES = ['draft', 'completed', 'revision'];
 
-    /** The run's semester, so rooms granted to the department count as supply. */
     private ?int $semesterId = null;
 
     /**
-     * Step 1's Preferred Days for the run, or null when every day is open.
-     * Every weekly supply below counts only these days.
-     *
      * @var list<string>|null
      */
     private ?array $allowedDays = null;
@@ -54,7 +36,6 @@ class YearLevelFeasibilityService
 
         $department = $this->resolveDepartment($sections);
         $this->semesterId = (int) $sections[array_key_first($sections)]->semester_id ?: null;
-        // One choice for the whole year level; every section carries the same.
         $this->allowedDays = SchedulingPolicy::normalizeAllowedDays(
             $configsBySectionId[(int) $sections[array_key_first($sections)]->id]['allowed_days'] ?? null,
         );
@@ -63,8 +44,6 @@ class YearLevelFeasibilityService
 
         $blocking = [];
         $blocking = [...$blocking, ...$this->checkPhysicalRoomCapacity($sections, $configsBySectionId, $courses, $department, $slotsPerDay)];
-        // Laboratory capacity is advisory: the CSP may place a laboratory
-        // meeting on-site with Room TBA when no compatible lab slot exists.
         $blocking = [...$blocking, ...$this->checkFixedPatternCapacity($sections, $configsBySectionId, $courses, $department)];
         $blocking = [...$blocking, ...$this->checkForcedDayCapacity($sections, $configsBySectionId, $courses, $department)];
         $blocking = [...$blocking, ...$this->checkComponentDurationsFitTheDay($sections, $configsBySectionId, $courses, $department)];
@@ -74,16 +53,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * A meeting longer than the teaching day can never be placed.
-     *
-     * Laboratory units are converted at three hours each, so a six-unit
-     * laboratory becomes one eighteen-hour block against a day that is open for
-     * thirteen and a half. The generator produces no start time for it, the
-     * course's domain is empty before the search begins, and because year-level
-     * generation does not throw on an empty domain the whole run fails with the
-     * blame landing on some other course in the same section. Catching it here
-     * names the real course and says why.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
@@ -176,18 +145,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * A course pinned to one day can only be placed as many times as that day
-     * has room for it. Pinning is per department and per course, so this reads
-     * whatever has been configured and does nothing when nothing is pinned.
-     *
-     * The arithmetic is exact rather than heuristic. A course of a given
-     * duration has a fixed set of legal start times (the generator steps the
-     * start grid by the meeting length), and its room type has a fixed
-     * concurrency. Multiply the two, subtract what other year levels already
-     * hold on that day, and the result is the hard ceiling on how many sections
-     * can take that course. Without this the solver discovers the shortfall one
-     * section at a time and spends the whole run budget rediscovering it.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
@@ -278,13 +235,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * Start slots the generator will actually offer this course.
-     *
-     * The start grid alone is not the answer: a field course must finish by the
-     * institution's field end time, so a three-hour field course loses its late
-     * start even though the grid lists it. Counting the grid without that rule overstates supply and lets an
-     * impossible configuration through the pre-check.
-     *
      * @return list<int>
      */
     private function legalStartSlots(Course $course, Departments $department, int $durationSlots): array
@@ -303,11 +253,6 @@ class YearLevelFeasibilityService
         ));
     }
 
-    /**
-     * How many sections can hold this course at the same time: one per usable
-     * room of its type. Null for a field course -- the field is shared without
-     * a limit, so a pinned day never runs out of room for it.
-     */
     private function forcedDayConcurrency(Course $course, Departments $department): ?int
     {
         if (SchedulingPolicy::isFieldCourse($course, (int) $department->id)) {
@@ -320,9 +265,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * Placements on the pinned day already held by schedules this run will not
-     * replace, so a partly-scheduled semester is measured against what is left.
-     *
      * @param  list<Sections>  $sections
      */
     private function occupiedForcedDaySlots(array $sections, int $courseId, string $day): int
@@ -341,9 +283,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * Total on-site slot demand against the department's usable lecture and
-     * laboratory rooms for the week.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
@@ -367,8 +306,6 @@ class YearLevelFeasibilityService
         }
 
         if ($demand === 0) {
-            // Nothing needs a physical room, so the absence of one is not a
-            // shortfall — a fully online year level is a valid request.
             return [];
         }
 
@@ -382,9 +319,6 @@ class YearLevelFeasibilityService
             ]];
         }
 
-        // The demand above is lecture time (laboratories may fall back to Room
-        // TBA), so it is measured against the rooms a lecture can use: lecture
-        // rooms, and a laboratory only where it is opened to lectures.
         $lectureRooms = $rooms
             ->filter(static fn (Rooms $room): bool => $room->room_type === 'lecture' || (bool) $room->allow_lecture_usage)
             ->values();
@@ -418,17 +352,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * The fewest course changes that free enough room time to close the
-     * shortfall: a Hybrid Split option (one meeting online) and an Online
-     * option, each applied to a course in every section that takes it.
-     *
-     * Only a regular, on-site lecture course is offered: a split, a
-     * laboratory, a field course or one already online frees nothing more,
-     * and an On-site Split frees nothing at all -- it is the same room time on
-     * two days. A course pinned to a mode in Setup Courses is the user's
-     * choice and is left alone. Minors go first, majors only when minors are
-     * not enough; within each, the course that frees the most.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
@@ -521,9 +444,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * Fixed MW/TTh patterns concentrate demand onto two days, which is where a
-     * year-level run most often becomes infeasible.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
@@ -559,8 +479,6 @@ class YearLevelFeasibilityService
                 }
 
                 $key = (string) $pattern;
-                // A pattern splits the course across its days, so each day carries
-                // roughly half the course's slots.
                 $demandByPattern[$key] = ($demandByPattern[$key] ?? 0)
                     + (int) ceil($this->configuredSlots($course, $config) / count($days));
                 $sectionsByPattern[$key][(int) $section->id] = (string) $section->section_name;
@@ -677,8 +595,6 @@ class YearLevelFeasibilityService
                 continue;
             }
             if (SchedulingPolicy::isLaboratoryCourse($course)) {
-                // Laboratory placements may use Room TBA when no compatible
-                // laboratory slot is available; do not hard-block generation.
                 continue;
             }
             if ($mode === 'field' || SchedulingPolicy::isFieldCourse($course, $departmentId)) {
@@ -692,10 +608,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * The weekly slots this section will actually spend on the course: its
-     * Setup Courses Custom Time Duration when one was chosen, otherwise the
-     * contact-hour estimate below.
-     *
      * @param  array<string, mixed>  $config
      */
     private function configuredSlots(Course $course, array $config): int
@@ -705,9 +617,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * Integrated Hybrid's two sessions: the lengths chosen in Setup Courses,
-     * else the course's own.
-     *
      * @param  array<string, mixed>  $config
      * @return array{lecture: int, laboratory: int}
      */
@@ -723,12 +632,8 @@ class YearLevelFeasibilityService
         ];
     }
 
-    /** Slot count a course occupies for the week, derived from its contact hours. */
     private function courseSlots(Course $course): int
     {
-        // The Generator's single block is `units × 2` slots. Summing
-        // `lecture_hours + lab_hours` as hours read laboratory units as one
-        // hour each, when one laboratory unit meets for three.
         $units = (float) ($course->units ?? 0);
         if ($units <= 0) {
             $units = (float) ($course->lecture_hours ?? 0) + (float) ($course->lab_hours ?? 0);
@@ -738,8 +643,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * Room-slots already committed by schedules this run will not replace.
-     *
      * @param  list<Sections>  $sections
      * @param  list<int>  $roomIds
      */
@@ -784,14 +687,10 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * Weekly room-slot supply, counting a room's configured concurrency so a
-     * shared room is not undercounted into a false shortfall.
-     *
      * @param  Collection<int, Rooms>  $rooms
      */
     private function weeklyRoomSlotSupply(Collection $rooms, int $slotsPerDay, Departments $department): int
     {
-        // Sunday counts when the department teaches on it.
         return $this->concurrentRoomCapacity($rooms)
             * $slotsPerDay
             * SchedulingPolicy::countAllowedDays(
@@ -801,14 +700,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * Provable conflicts with Step 1's Preferred Days, named per course.
-     *
-     * Both Hybrid shapes are two meetings on two different days, so they need
-     * at least two allowed days. A Split Session can fall back to one meeting,
-     * so it is left to the solver, as is a course whose Required Day leaves it
-     * nothing among the chosen days -- the solver names that course and the
-     * Preferred Days in its error.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
@@ -830,8 +721,6 @@ class YearLevelFeasibilityService
             return [];
         }
 
-        // One blocking entry per course, but every section that configured it
-        // is a target, so applying the fix clears the whole block at once.
         $indexByCourseId = [];
         foreach ($sections as $section) {
             $config = $configsBySectionId[(int) $section->id] ?? [];
@@ -851,8 +740,6 @@ class YearLevelFeasibilityService
                     'section_name' => (string) $section->section_name,
                     'course_id' => $courseId,
                     'course_code' => $code,
-                    // The two-day shape comes from a different toggle in each
-                    // case, so the fix that removes it differs too.
                     'adjustment_type' => $isLectureLab ? 'disable_lecture_lab_split' : 'disable_hybrid_split',
                 ];
 
@@ -888,8 +775,6 @@ class YearLevelFeasibilityService
     }
 
     /**
-     * Classes the rooms can hold at once: a lecture or laboratory room holds one.
-     *
      * @param  Collection<int, Rooms>  $rooms
      */
     private function concurrentRoomCapacity(Collection $rooms): int
@@ -905,8 +790,6 @@ class YearLevelFeasibilityService
     {
         return Rooms::query()
             ->whereIn('room_type', $roomTypes)
-            // A granted room counts in full even though it is open only in its
-            // windows: overstating supply never refuses a feasible run.
             ->tap(fn ($query) => app(RoomAccessPolicy::class)->scopeReachableRooms($query, (int) $department->id, $this->semesterId))
             ->where(function ($query): void {
                 $query->where('status', 'available')->orWhereNull('status');

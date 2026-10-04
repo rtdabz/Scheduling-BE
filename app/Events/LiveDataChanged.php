@@ -6,13 +6,6 @@ use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 
-/**
- * "These areas of the system changed" -- topic names only, no records.
- *
- * Broadcast synchronously: the scheduling queue can be busy with a
- * multi-minute generation run, and an update delayed behind it is no longer
- * live. The payload is a few bytes, so sending it inline costs milliseconds.
- */
 class LiveDataChanged implements ShouldBroadcastNow
 {
     use InteractsWithSockets;

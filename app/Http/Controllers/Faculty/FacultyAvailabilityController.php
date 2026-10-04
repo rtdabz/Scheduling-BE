@@ -10,14 +10,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 
-/**
- * The weekly windows an instructor is available to teach in.
- *
- * `faculty_availabilities` was already read by the rule engine and by the
- * timetable conflict checks, but nothing could write to it: every instructor had
- * an empty window set, so both fell back to a hardcoded guess about when a
- * part-timer could teach. These endpoints give the table its write path.
- */
 class FacultyAvailabilityController extends Controller
 {
     private const DAY_LABELS = [
@@ -45,11 +37,6 @@ class FacultyAvailabilityController extends Controller
         ]);
     }
 
-    /**
-     * Replaces the whole weekly set in one call. The editor is a weekly grid, so
-     * a whole-week replace keeps the stored windows exactly what the user sees
-     * and avoids per-row add/remove races between two open editors.
-     */
     public function replace(Request $request, Faculty $faculty): JsonResponse
     {
         if ($response = $this->guardDepartment($request, $faculty)) {
@@ -171,9 +158,6 @@ class FacultyAvailabilityController extends Controller
             return response()->json(['message' => 'Instructor not found in your department.'], 404);
         }
 
-        // A Program Head sees one program's roster, so their availability
-        // writes are scoped the same way FacultyController::guardDepartment
-        // scopes their roster writes.
         if ($user->role === 'program_head' && (int) $faculty->program_id !== (int) ($user->program_id ?? 0)) {
             return response()->json(['message' => 'Instructor not found in your program.'], 404);
         }

@@ -9,11 +9,6 @@ use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Rules\MeetingDayRule;
 
-/**
- * preferred_pattern, sunday_classes, forced_course_day. Kernel counterpart of
- * Rules\MeetingDayRule, whose static checks make each decision. valid_day needs
- * no kernel version: ScheduleRow refuses an unsupported day when it is built.
- */
 final class MeetingDayConstraints
 {
     /**

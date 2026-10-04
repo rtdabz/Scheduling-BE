@@ -30,90 +30,37 @@ class YearLevelScheduleGenerationService
 
     private const SECTION_SOLUTIONS_PER_ATTEMPT = 3;
 
-    /**
-     * Step budget of a section's first search; each restart doubles it. A
-     * depth-first search that commits to a poor early placement can spend its
-     * whole budget under it: one BSIT 3E search ran 24 seconds and ~190,000
-     * steps without a result, while a different seed placed the same section
-     * in 56 steps. Short, reseeded restarts leave such a dead end quickly, and
-     * the doubling still gives a genuinely hard section long searches.
-     */
     private const RESTART_INITIAL_ITERATIONS = 2000;
 
-    /** Seed stride between restarts, apart from the attempt stride (7919). */
     private const RESTART_SEED_STRIDE = 104729;
 
-    /**
-     * Per-attempt cap for a section while the previous section still has
-     * other arrangements to try. An arrangement can leave the next section no
-     * timetable at all -- BSIT 3D taking the last Monday/Wednesday lecture-room
-     * pairs BSIT 3E needed -- and the search cannot prove that quickly; trying
-     * the previous section's next arrangement is far cheaper than spending the
-     * full attempt on it. The last arrangement keeps the full budget.
-     */
     private const SIBLING_ATTEMPT_SECONDS = 6.0;
 
     private const MAX_SECTION_ORDER_CANDIDATES = 2;
 
     private const MAX_COMPLETE_CANDIDATES_PER_ORDER = 6;
 
-    /**
-     * The whole run, draft pass included: about a minute after Generate the
-     * user has either a timetable or a draft with recommendations. Searching
-     * longer rarely helped -- a run still unsolved here was almost always an
-     * over-constrained setup (e.g. more split lecture-room hours than the
-     * rooms have) that only a settings change fixes.
-     */
     private const PREVIEW_TIME_BUDGET_SECONDS = 60.0;
 
     private const RESERVED_SECONDS_PER_REMAINING_SECTION = 4.0;
 
-    /**
-     * Share of the run budget the unmodified configuration gets before the retry
-     * ladder starts. Grinding the same over-constrained ordering for the whole
-     * budget is what the retry ladder exists to replace, so the remainder is
-     * reserved for strategies that change the shape of the search.
-     *
-     * About 27 seconds. Recorded runs that fit as configured almost all
-     * finished within 30; a run still searching past this point is far more
-     * likely to need a retry, and every second kept here is one the retry
-     * ladder (starting with a plain reordering) no longer has.
-     */
     private const BASELINE_BUDGET_SHARE = 0.45;
 
-    /**
-     * Seconds kept back from the search for the best-effort draft: when no
-     * complete timetable is found, every course that does fit is still placed
-     * and the rest are reported, so the user fixes them all in one review
-     * instead of one bottleneck per generation.
-     */
     private const DRAFT_RESERVE_SECONDS = 18.0;
 
-    /** A draft-pass solve of one section, before its blocking course is set aside. */
     private const DRAFT_SECTION_SECONDS = 4.0;
 
-    /** A retry below this is not worth starting. */
     private const MIN_RETRY_SECONDS = 8.0;
 
     private const MAX_RETRY_STRATEGIES = 4;
 
-    /**
-     * Seconds after the run starts at which a still-unsolved run publishes a
-     * provisional failure report. The search keeps going; the report lets the
-     * user see recommendations within 30 seconds of clicking Generate, with
-     * room left for the queue pickup, the report write and the next poll.
-     */
     private const INTERIM_REPORT_AFTER_SECONDS = 20.0;
 
     /**
-     * Courses in the current run, kept so the deep recursion can name the
-     * failing course without re-querying at every backtrack.
-     *
      * @var Collection<int, Course>
      */
     private Collection $loadedCourses;
 
-    /** Candidate rows currently selected in the recursive in-memory search. */
     private array $tentativeSchedules = [];
 
     private float $metricsStartedAt = 0.0;
@@ -127,18 +74,12 @@ class YearLevelScheduleGenerationService
     /** @var array<string, int> */
     private array $aggregateFallbackUsage = [];
 
-    /** The physical-only search stopped before proving infeasibility. */
     private bool $physicalSearchIncomplete = false;
 
-    /**
-     * The current attempt stopped at a time or step limit somewhere, so its
-     * failure is inconclusive: a timetable may still exist.
-     */
     private bool $searchCutShort = false;
 
     private ?SchedulingSnapshot $generationSnapshot = null;
 
-    /** Cooperative cancellation for the run in progress. */
     private GenerationCancellationToken $cancellation;
 
     /** @var (callable(array<string, mixed>): void)|null receives the provisional failure report once */
@@ -149,10 +90,6 @@ class YearLevelScheduleGenerationService
     private float $interimReportAfterSeconds = self::INTERIM_REPORT_AFTER_SECONDS;
 
     /**
-     * What the provisional report is built from: the user's own configuration
-     * (never a retry's relaxed copy), the failures seen so far, and the section
-     * being solved when the report came due.
-     *
      * @var array{sections: list<Sections>, configs: array<int, array<string, mixed>>, courses: Collection<int, Course>}|null
      */
     private ?array $interimContext = null;
@@ -164,9 +101,6 @@ class YearLevelScheduleGenerationService
     private ?array $sectionInProgress = null;
 
     /**
-     * Solver dead ends, per course, over every solve of the section being
-     * placed. A failed section names the course its searches stalled on most.
-     *
      * @var array<int, int>
      */
     private array $sectionDeadEnds = [];
@@ -217,10 +151,6 @@ class YearLevelScheduleGenerationService
 
         $courses = $this->loadedCourses = $this->loadCourses($configsBySectionId);
         $configsBySectionId = $this->decorateConfigs($configsBySectionId, $courses);
-        // Capture every course requested by the section configurations. Do
-        // not derive this list from the keyed load result: queued payloads
-        // may normalize collection keys differently while preserving the
-        // authoritative course_ids arrays.
         $snapshotCourseIds = [];
         foreach ($configsBySectionId as $config) {
             foreach (($config['course_ids'] ?? []) as $courseId) {
@@ -238,8 +168,6 @@ class YearLevelScheduleGenerationService
             courseIds: array_values($snapshotCourseIds),
         );
 
-        // Feasibility pre-check: refuse only provable shortfalls, before spending
-        // two minutes searching for something that cannot exist.
         $blocking = $this->feasibility()->check($sections, $configsBySectionId);
         if ($blocking !== []) {
             throw new YearLevelGenerationException(
@@ -255,9 +183,7 @@ class YearLevelScheduleGenerationService
 
         $startedAt = microtime(true);
         $draftDeadline = $startedAt + self::PREVIEW_TIME_BUDGET_SECONDS;
-        // The search stops early enough to leave the draft pass its time.
         $hardDeadline = $draftDeadline - self::DRAFT_RESERVE_SECONDS;
-        // Only a re-ordering retry can follow, and only across sections.
         $retryPossible = count($sections) > 1;
         $baselineDeadline = $retryPossible
             ? $startedAt + (self::PREVIEW_TIME_BUDGET_SECONDS * self::BASELINE_BUDGET_SHARE)
@@ -265,17 +191,12 @@ class YearLevelScheduleGenerationService
 
         $attempts = [];
         $failures = [];
-        // The configuration as entered failed only because a search stopped at
-        // its time or step limit, not because nothing fits.
         $searchIncomplete = false;
         $this->interimContext = ['sections' => $sections, 'configs' => $configsBySectionId, 'courses' => $courses];
 
         $patternFailure = $this->preflightPatternFeasibility($sections, $configsBySectionId, $courses);
         if ($patternFailure !== null) {
             $this->observedFailures[] = $patternFailure;
-            // A fixed pattern with no section-level candidate at all: skip the
-            // baseline search and go straight to the retry ladder, which is
-            // where alternative patterns live.
             $failures[] = $patternFailure;
             $attempts[] = $this->attemptRecord(
                 'preflight_pattern',
@@ -314,10 +235,6 @@ class YearLevelScheduleGenerationService
             0,
             self::MAX_RETRY_STRATEGIES,
         );
-        // Only retries that re-order the search run on their own. A strategy
-        // that changes a setting is the user's decision: it is offered as a
-        // recommendation instead of being applied, and the courses it would
-        // have helped reach the draft review with fixes of their own.
         $strategies = array_values(array_filter(
             $plannedStrategies,
             static fn (array $strategy): bool => ($strategy['adjustments'] ?? []) === [],
@@ -365,8 +282,6 @@ class YearLevelScheduleGenerationService
                 $retryFailures,
             );
             $cutShort = $candidate === null && $this->searchCutShort;
-            // A retry that only re-orders the search runs the configuration as
-            // entered, so its being cut short also leaves that one unproven.
             if ($cutShort && ($strategy['adjustments'] ?? []) === []) {
                 $searchIncomplete = true;
             }
@@ -402,9 +317,6 @@ class YearLevelScheduleGenerationService
 
         $draft = $this->bestEffortDraft($sections, $configsBySectionId, $courses, $draftDeadline);
         if ($draft !== null && $draft['unplaced_courses'] === []) {
-            // The draft pass placed everything: a complete timetable as
-            // configured, so there is nothing to review and the search's
-            // advice no longer applies.
             unset($draft['unplaced_courses']);
 
             return $this->decorateResult($draft, null, $attempts, $configsBySectionId, $sections);
@@ -425,8 +337,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * Best complete candidate across the section orderings this attempt may use.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  list<array<string, mixed>>  $failures
@@ -451,14 +361,6 @@ class YearLevelScheduleGenerationService
             $failure = null;
             $candidate = $this->generateForOrder($order, $configsBySectionId, $deadline, $seedOffset, $failure);
             if ($candidate !== null) {
-                // Alternative orderings exist to recover from an ordering that
-                // could not be completed, not to shop for a marginally better
-                // score. Each one costs a full set of section solves, so
-                // continuing past the first success doubled the wall time of
-                // every run that was going to succeed anyway. generateForOrder
-                // has already ranked every complete candidate this ordering
-                // produced, so the quality choice is still made - just within
-                // the ordering the heuristic put first.
                 return $candidate;
             }
 
@@ -522,15 +424,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * The whole year level placed as far as it goes, with every course that
-     * would not fit set aside rather than failing the run on the first one.
-     *
-     * Sections are placed in the usual resource-heavy-first order, each
-     * against everything already placed. A section that has no timetable gives
-     * up the course its search stalled on and is solved again without it, so
-     * one hard course costs only itself. The configuration is the user's own:
-     * nothing is relaxed here.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
@@ -631,9 +524,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * A course the draft left out, with the meetings it still needs so the
-     * review can look for places to put them.
-     *
      * @param  array<string, mixed>  $config  the section's configuration as the user set it
      * @param  Collection<int, Course>  $courses
      * @return array<string, mixed>
@@ -656,9 +546,6 @@ class YearLevelScheduleGenerationService
         $isIn = static fn (string $key): bool => in_array($courseId, array_map('intval', (array) ($config[$key] ?? [])), true);
         $pattern = SchedulingPolicy::normalizePreferredPattern($config['preferred_patterns'][$courseId] ?? null);
 
-        // A Split Session is one requirement the solver halves, and an Online
-        // Split is two fixed meetings, one online: report the meetings the
-        // course is configured to have, not one full-length block.
         $shape = null;
         if ($isIn('hybrid_split_course_ids')) {
             $shape = 'online_split';
@@ -742,10 +629,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * Report only actual flexible-minor split relaxations. A requested split
-     * remains a split whenever two rows with a split group were selected.
-     * Fixed lecture/lab split settings are intentionally excluded here.
-     *
      * @param list<array<string, mixed>> $schedules
      * @param array<int, array<string, mixed>> $configsBySectionId
      * @return list<array<string, mixed>>
@@ -789,13 +672,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * Suggestions for a valid timetable. These are deliberately separate from
-     * applied adjustments: a successful preview must never mutate the
-     * selected Preferred Days automatically, only offer to.
-     *
-     * Preferred Days are one choice for the whole year level, so a restriction
-     * is one suggestion naming the day to add, not one notice per section.
-     *
      * @param array<int, array<string, mixed>> $configsBySectionId
      * @return list<array<string, mixed>>
      */
@@ -816,7 +692,6 @@ class YearLevelScheduleGenerationService
         );
     }
 
-    /** Cancellation, plus the interim report once it is due. */
     private function checkpoint(): void
     {
         $this->cancellation->abortIfCancelled();
@@ -835,13 +710,10 @@ class YearLevelScheduleGenerationService
                 $reporter($report);
             }
         } catch (\Throwable $exception) {
-            // The report is a courtesy; the search it describes must not fail
-            // because of it.
             report($exception);
         }
     }
 
-    /** A timeout no later than the interim report, while one is still due. */
     private function untilInterimReport(float $timeout): float
     {
         if ($this->interimReporter === null) {
@@ -852,10 +724,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * The failure report the run would give if it stopped now. The bottleneck
-     * is read from the failures seen so far, or failing that from the section
-     * the search is stuck on.
-     *
      * @return array<string, mixed>|null
      */
     private function interimReport(): ?array
@@ -905,10 +773,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * The day to suggest adding when Preferred Days leave teaching days out:
-     * the one existing schedules book least, so the new room-time is the
-     * emptiest the department has. Ties go to the earlier day in the week.
-     *
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      */
     private function suggestedPreferredDay(array $configsBySectionId): ?string
@@ -932,7 +796,6 @@ class YearLevelScheduleGenerationService
             }
         }
 
-        // asort keeps the calendar order of equal counts.
         asort($load);
 
         return (string) array_key_first($load);
@@ -986,8 +849,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * Recompute the derived demand fields the section ordering heuristics read.
-     *
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  Collection<int, Course>  $courses
      * @return array<int, array<string, mixed>>
@@ -1017,12 +878,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * Apply a retry strategy's adjustments to a copy of the configuration.
-     *
-     * Only user-selected preferences are touched. Requirements are rebuilt and
-     * the section is re-validated, so a relaxation that would breach a rule is
-     * discarded (null) instead of producing an invalid schedule.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @param  list<array<string, mixed>>  $adjustments
@@ -1036,7 +891,6 @@ class YearLevelScheduleGenerationService
         Collection $courses,
     ): ?array {
         if ($adjustments === []) {
-            // Ordering-only strategy: nothing configured changes.
             return $configsBySectionId;
         }
 
@@ -1139,8 +993,6 @@ class YearLevelScheduleGenerationService
                 if (! in_array($courseId, $balancedIds, true)) {
                     return null;
                 }
-                // A Hybrid Split is a Split Session with one meeting online, so
-                // it goes with the split, and so does the split's day pattern.
                 $config['balanced_split_course_ids'] = array_values(array_diff($balancedIds, [$courseId]));
                 $config['hybrid_split_course_ids'] = array_values(array_diff(
                     array_map('intval', $config['hybrid_split_course_ids'] ?? []),
@@ -1305,10 +1157,6 @@ class YearLevelScheduleGenerationService
         return $evaluated[0];
     }
 
-    /**
-     * Count only online rows that were not explicitly configured online.
-     * Physical placement must win whenever a valid alternative exists.
-     */
     private function unnecessaryOnlineCount(array $candidate, array $configsBySectionId): int
     {
         $count = 0;
@@ -1447,10 +1295,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * A failure record rich enough for bottleneck detection: which of the
-     * section's courses carry a fixed pattern, a lecture/lab split, a laboratory
-     * requirement, or a forced physical placement.
-     *
      * @param  array<string, mixed>  $config
      * @param  Collection<int, Course>  $courses
      * @return array<string, mixed>
@@ -1545,10 +1389,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * The course the section's searches stalled on most: every candidate it
-     * had clashed with what was already placed. Ties keep the course the
-     * search reached first.
-     *
      * @param  Collection<int, Course>  $courses
      * @return array{course_id: int, course_code: string, dead_ends: int}|null
      */
@@ -1569,9 +1409,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * The days this department books: Sunday only once its secretary has
-     * enabled Sunday classes.
-     *
      * @return list<string>
      */
     private function teachingDays(): array
@@ -1581,11 +1418,6 @@ class YearLevelScheduleGenerationService
         );
     }
 
-    /**
-     * Check the captured room/schedule snapshot for at least one vacant 1.5-hour
-     * physical slot. This gates the Hybrid Split suggestion; it is not a solver
-     * placement and therefore does not change generation outcomes.
-     */
     private function hasVacantHybridSplitSlot(Course $course, Sections $section, array $config): bool
     {
         if ((int) ($course->lab_hours ?? 0) > 0 || $this->generationSnapshot === null) {
@@ -1667,15 +1499,9 @@ class YearLevelScheduleGenerationService
             $this->solver->setInputSnapshot($this->generationSnapshot);
             $solutions = $this->solver->solveRankedFromSchema(array_merge($config, [
                 'section_id' => (int) $section->id,
-                // An empty domain here means this branch is infeasible under
-                // the earlier sections' tentative placements. Let the
-                // year-level search backtrack instead of aborting the run.
                 'throw_on_empty_domain' => false,
                 'max_solutions' => 1,
                 'max_iterations' => $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 120000 : 60000,
-                // Clipped at the interim report so it is not held up behind a
-                // pre-check. A clipped probe used iterations, so it is never
-                // mistaken for the zero-candidate conflict tested below.
                 'timeout_seconds' => $this->untilInterimReport($splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD ? 8.0 : 4.0),
                 'seed' => (int) ($config['seed'] ?? 1),
             ]));
@@ -1712,9 +1538,6 @@ class YearLevelScheduleGenerationService
         $isSplitHeavy = $splitCount >= self::SPLIT_HEAVY_COURSE_THRESHOLD;
         $attempts = $isSplitHeavy ? self::SPLIT_HEAVY_SECTION_ATTEMPTS : self::SECTION_ATTEMPTS;
         $deadline = microtime(true) + max(1.0, $timeBudget);
-        // Whether the section's search ended without covering every candidate:
-        // the last attempt stopped at its limit, or time ran out before the
-        // remaining attempts ran.
         $cutShort = false;
 
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
@@ -1724,10 +1547,6 @@ class YearLevelScheduleGenerationService
                 break;
             }
 
-            // The attempt keeps its old time and step limits; within them it
-            // restarts with a fresh seed and twice the steps whenever a search
-            // stops at its limit. The first restart uses the attempt's own
-            // seed, so a section that solves quickly is placed exactly as before.
             $attemptDeadline = microtime(true) + min($isSplitHeavy ? 24 : 6, $maxAttemptSeconds ?? INF, $remainingSeconds);
             $iterationBudget = $isSplitHeavy ? 400000 : 250000;
             $restartIterations = self::RESTART_INITIAL_ITERATIONS;
@@ -1739,9 +1558,6 @@ class YearLevelScheduleGenerationService
                 if ($restart > 0 && $restartTimeout < 0.3) {
                     break;
                 }
-                // A solve that would run past the interim report is cut there
-                // and resumed as the next restart, so one long solve cannot
-                // hold the report back.
                 $clippedTimeout = $this->untilInterimReport($restartTimeout);
                 $clipped = $clippedTimeout < $restartTimeout;
                 $restartTimeout = $clippedTimeout;
@@ -1749,12 +1565,7 @@ class YearLevelScheduleGenerationService
                 $this->solver->setInputSnapshot($this->generationSnapshot);
                 $solutions = $this->solver->solveRankedFromSchema(array_merge($config, [
                     'section_id' => (int) $section->id,
-                    // Branch-local infeasibility must be returned to the
-                    // coordinator so it can try another section ordering/slot.
                     'throw_on_empty_domain' => false,
-                    // Exhaust every physical room/laboratory combination before
-                    // allowing TBA. A later retry can still use TBA when the
-                    // physical-only pass proves that no complete arrangement exists.
                     'allow_room_tba_fallback' => $allowRoomTbaFallback && $attempt > 0,
                     'max_solutions' => self::SECTION_SOLUTIONS_PER_ATTEMPT,
                     'max_iterations' => min($restartIterations, $iterationBudget),
@@ -1773,14 +1584,10 @@ class YearLevelScheduleGenerationService
                     ));
                 }
 
-                // Cut for the interim report, not exhausted: carry on without
-                // counting it as a failed restart.
                 if ($clipped && $solutions === [] && $iterationBudget > 0) {
                     continue;
                 }
 
-                // A search that ended before its limit tried every candidate:
-                // another seed would only repeat it.
                 if ($solutions !== [] || ! $limitReached || $iterationBudget <= 0) {
                     break;
                 }
@@ -1789,10 +1596,6 @@ class YearLevelScheduleGenerationService
             }
 
             if (! $allowRoomTbaFallback && $solutions === [] && $limitReached) {
-                // An iteration/timeout stop is not proof that every valid
-                // laboratory placement was exhausted. Do not open Room TBA
-                // for an inconclusive physical search; let the year-level
-                // retry/order ladder try again instead.
                 $this->physicalSearchIncomplete = true;
             }
 
@@ -1899,9 +1702,6 @@ class YearLevelScheduleGenerationService
     }
 
     /**
-     * Section orderings this run may explore. `offset` rotates the list so a
-     * retry starts from an ordering the baseline attempt never reached.
-     *
      * @param  list<Sections>  $sections
      * @param  array<int, array<string, mixed>>  $configsBySectionId
      * @return list<list<Sections>>
@@ -1966,7 +1766,6 @@ class YearLevelScheduleGenerationService
         $courseCount = count(array_unique(array_map('intval', $config['course_ids'] ?? [])));
         $splitLabCount = count(array_unique(array_map('intval', $config['selected_split_session_course_ids'] ?? [])));
         $modes = $config['delivery_modes_by_course_id'] ?? [];
-        // An Online Split Session's second meeting takes no room either.
         $gecSplitCount = count(array_filter(
             array_unique(array_map('intval', $config['balanced_split_course_ids'] ?? [])),
             static fn (int $courseId): bool => ($modes[$courseId] ?? null) !== 'online',

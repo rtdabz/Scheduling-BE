@@ -20,7 +20,6 @@ return new class extends Migration
             $table->timestamps();
         });
 
-        // InstitutionSetting::current() reads this single row.
         DB::table('institution_settings')->insert([
             'created_at' => now(),
             'updated_at' => now(),

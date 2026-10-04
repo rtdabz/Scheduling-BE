@@ -8,7 +8,6 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class StoreSemesterRequest extends FormRequest
 {
-    /** Access is enforced by the route's middleware. */
     public function authorize(): bool
     {
         return true;
@@ -19,7 +18,6 @@ class StoreSemesterRequest extends FormRequest
     {
         return [
             'semester' => SchedulingPolicy::allowedSemestersRule('required'),
-            // Same shape the edit form enforces: two consecutive years.
             'academic_year' => ['nullable', 'string', 'regex:/^\d{4}-\d{4}$/'],
         ];
     }

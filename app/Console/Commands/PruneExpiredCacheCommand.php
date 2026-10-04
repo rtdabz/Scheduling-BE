@@ -7,18 +7,6 @@ use Illuminate\Support\Facades\Config;
 use SplFileInfo;
 use Symfony\Component\Finder\Finder;
 
-/**
- * Garbage-collects the "file" cache store.
- *
- * Laravel's file driver only evicts an expired entry when that exact key is
- * requested again. ApiCache invalidates by bumping a version counter into the
- * key, so a superseded key is never requested again and its file is orphaned
- * permanently. Left alone this grows without bound — an audit of this project
- * found 71.4 MB of expired entries against 0.3 MB of live ones.
- *
- * Redis/Memcached expire entries themselves and need none of this, so the
- * command is a no-op on those stores.
- */
 class PruneExpiredCacheCommand extends Command
 {
     protected $signature = 'cache:prune-expired
@@ -57,13 +45,10 @@ class PruneExpiredCacheCommand extends Command
             /** @var SplFileInfo $file */
             $expiresAt = $this->expiryOf($file->getPathname());
 
-            // A file we cannot read an expiry from is either mid-write by another
-            // request or corrupt. Leave it; the next writer will overwrite it.
             if ($expiresAt === null) {
                 continue;
             }
 
-            // Laravel writes an expiry of 9999999999 for "forever" entries.
             if ($expiresAt > $now) {
                 $kept++;
                 $keptBytes += $file->getSize();
@@ -94,9 +79,6 @@ class PruneExpiredCacheCommand extends Command
         return self::SUCCESS;
     }
 
-    /**
-     * The file store writes the expiry as the first 10 bytes of each file.
-     */
     private function expiryOf(string $path): ?int
     {
         $handle = @fopen($path, 'rb');
@@ -126,7 +108,6 @@ class PruneExpiredCacheCommand extends Command
             false,
         );
 
-        // Deepest first, so a parent emptied by its children is removed too.
         usort($directories, fn ($a, $b) => substr_count($b->getPathname(), DIRECTORY_SEPARATOR)
             <=> substr_count($a->getPathname(), DIRECTORY_SEPARATOR));
 

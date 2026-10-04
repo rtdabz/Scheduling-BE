@@ -124,13 +124,6 @@ class ScheduleGenerationPreflightService
         return $issues;
     }
 
-    /**
-     * Placements as the *section's own* curriculum defines them.
-     *
-     * This used to read the department's first active curriculum, which silently
-     * validated an old-curriculum cohort against the new course list once a
-     * department ran both.
-     */
     private function curriculumPeriods(Sections $section, Collection $courses): Collection
     {
         if ($courses->isEmpty()) {
@@ -205,22 +198,9 @@ class ScheduleGenerationPreflightService
     {
         $issues = [];
 
-        // Missing laboratory rooms are handled by the solver's Room TBA
-        // fallback and must not block generation at preflight.
-
         return $issues;
     }
 
-    /**
-     * Whether some course in this batch needs a physical lecture room.
-     *
-     * A standard department is held to a stricter rule than a laboratory one
-     * on purpose: its lectures have only online to fall back on, so a run with
-     * no lecture room at all is reported here rather than quietly generating
-     * an all-online timetable nobody asked for. ValidateGenerationConfiguration
-     * raises the same case as `no_physical_rooms` and offers the switch to
-     * online delivery as a recommendation.
-     */
     private function requiresPhysicalLectureRoom(Collection $courses, array $options, int $departmentId): bool
     {
         $defaultMode = (string) ($options['mode'] ?? 'on-site');

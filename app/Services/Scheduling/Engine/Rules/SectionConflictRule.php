@@ -4,13 +4,6 @@ namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Models\Schedule;
 
-/**
- * section_conflict, subject_section_time_conflict.
- *
- * A section cannot attend two classes at once, and online sections taking the
- * same course must use different time windows. Physical and field delivery of
- * the same course are governed by their room and capacity rules instead.
- */
 final class SectionConflictRule
 {
     /**

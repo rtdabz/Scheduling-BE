@@ -2,18 +2,8 @@
 
 namespace App\Services\Scheduling\Department;
 
-/**
- * Collapses many schedule statuses into the one status a section, cohort or
- * department is shown as.
- *
- * Extracted from DepartmentScheduleController so the All Schedules overview
- * reports the same stage the submission workflow acts on. Two copies of this
- * rule would let a department card read "approved" while Submit still treats
- * it as drafting.
- */
 class DepartmentScheduleStatusDeriver
 {
-    /** Canonical stages, ordered by how far through approval they are. */
     private const RANK = [
         'draft' => 0,
         'revision' => 0,
@@ -25,17 +15,11 @@ class DepartmentScheduleStatusDeriver
     ];
 
     /**
-     * The least advanced status wins: a cohort is not submitted until all of it
-     * is.
-     *
      * @param  list<string>  $statuses  Raw `schedules.status` values, or already
      *                                  derived section statuses.
      */
     public function derive(array $statuses): string
     {
-        // A finalized meeting belongs to a completed approval cohort. Legacy
-        // duplicate draft rows must not pull that section back into drafting or
-        // cause it to be included in a later revision submission.
         if (in_array('finalized', $statuses, true)) {
             return 'approved';
         }
@@ -60,7 +44,6 @@ class DepartmentScheduleStatusDeriver
         return $result;
     }
 
-    /** Folds the extended `schedules.status` enum onto the canonical stages. */
     private function normalise(string $status): string
     {
         return match (true) {
@@ -71,7 +54,6 @@ class DepartmentScheduleStatusDeriver
             $status === 'submitted' => 'submitted',
             $status === 'completed' => 'completed',
             $status === 'revision' => 'revision',
-            // draft, rejected, rejected_by_dean
             default => 'draft',
         };
     }

@@ -3,11 +3,6 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 
-/**
- * An archived room no longer reserves its code. Uniqueness now applies to live
- * rooms only, through a generated column that is NULL for archived rows (a
- * unique index treats NULLs as distinct). SQLite (tests) uses a partial index.
- */
 return new class extends Migration
 {
     public function up(): void

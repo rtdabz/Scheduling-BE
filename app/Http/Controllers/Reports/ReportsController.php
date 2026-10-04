@@ -18,28 +18,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
-/**
- * The two printed records the college issues: the Department Schedule and the
- * instructors' Teaching Load.
- *
- * Both are official documents, so only VPAA-approved schedules reach them. A
- * section prints only once every one of its meetings is approved -- a section
- * half-way through a withdrawal would otherwise print with classes missing.
- *
- * Unlike `/initial-data`, nothing here is capped at a row limit: a truncated
- * printout would look complete while silently dropping classes. Nor is it tied
- * to the active semester: every semester's approved schedules are included.
- */
 class ReportsController extends Controller
 {
     public function __construct(private readonly FacultyLoadService $facultyLoad) {}
 
-    /**
-     * GET /api/reports
-     *
-     * One entry per department the viewer may report on, with a per-program
-     * breakdown of how many sections and instructors have something to print.
-     */
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
@@ -75,8 +57,6 @@ class ReportsController extends Controller
                     'code' => $program->code,
                     'name' => $program->name,
                     'complete_section_count' => $sections->where('program_id', $program->id)->count(),
-                    // The program's own instructors plus department-wide ones
-                    // teaching its sections -- the same set its printout lists.
                     'instructor_count' => $faculty->filter(fn ($member): bool => (int) $member->program_id === (int) $program->id
                         || ($member->program_id === null && in_array((int) $member->id, $programTeachers[(int) $program->id] ?? [], true)))->count(),
                 ])
@@ -86,8 +66,6 @@ class ReportsController extends Controller
                 'id' => (int) $department->id,
                 'code' => $department->department_code,
                 'name' => $department->department_name,
-                // A Program Head sees only their own program, so the
-                // department-wide totals would reveal rows they cannot print.
                 'can_print_department' => $programScope === null,
                 'complete_section_count' => $sections->count(),
                 'instructor_count' => $faculty->count(),
@@ -100,12 +78,6 @@ class ReportsController extends Controller
         ]);
     }
 
-    /**
-     * GET /api/reports/departments/{department}?program_id=
-     *
-     * Everything both printouts need for one department (or one of its
-     * programs), in the `/initial-data` shape the PDF builders already read.
-     */
     public function show(Request $request, int $department): JsonResponse
     {
         $user = $request->user();
@@ -135,9 +107,6 @@ class ReportsController extends Controller
             ->when($programId !== null, fn (Builder $query) => $query->where('program_id', $programId))
             ->get();
 
-        // The schedule printout needs its sections' meetings; each load sheet
-        // needs every approved class its instructor teaches, including ones
-        // delegated to them from another department's sections.
         $schedules = Schedule::query()
             ->with([
                 'academicSemester:id,academic_year,semester',
@@ -157,9 +126,6 @@ class ReportsController extends Controller
             ->whereIn('id', $schedules->pluck('department_id')->push($department)->unique()->values())
             ->get();
 
-        // Signatories: this department's Program Head, Secretary and Dean, plus
-        // the VPAA, who signs for every department and holds none. A program's
-        // printout is prepared by that program's head, not another program's.
         $users = User::query()
             ->where('is_active', true)
             ->where(fn (Builder $scope) => $scope
@@ -172,7 +138,6 @@ class ReportsController extends Controller
 
         SchedulingAuditLog::create([
             'user_id' => $user->id,
-            // Reports span every semester, so the log names none.
             'semester_id' => null,
             'department_id' => $department,
             'action' => 'schedule_report_generated',
@@ -184,7 +149,6 @@ class ReportsController extends Controller
         ]);
 
         return response()->json([
-            // The PDFs label themselves with this; null keeps them semester-free.
             'active_semester' => null,
             'time_grid' => [
                 'opening_time' => substr(SchedulingPolicy::openingTime(), 0, 5),
@@ -202,11 +166,6 @@ class ReportsController extends Controller
         ]);
     }
 
-    /**
-     * POST /api/reports/log-download
-     *
-     * Log when a user downloads or prints an official report.
-     */
     public function logDownload(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -244,7 +203,6 @@ class ReportsController extends Controller
         return Semester::query()->where('is_active', true)->first();
     }
 
-    /** A Program Head reports on one program; everyone else on the whole department. */
     private function viewerProgramId(User $user): ?int
     {
         return $user->role === 'program_head' && $user->program_id !== null
@@ -253,8 +211,6 @@ class ReportsController extends Controller
     }
 
     /**
-     * Sections whose every meeting has cleared VPAA approval.
-     *
      * @param  array<int, int>  $departmentIds
      * @return array<int, int>
      */

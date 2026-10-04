@@ -17,11 +17,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
-/**
- * The signed-in account's own profile. Every role may change its name and
- * photo here; username, email, role and department stay with the VPAA's
- * Users page, since they decide what the account can reach.
- */
 class ProfileController extends Controller
 {
 
@@ -56,8 +51,6 @@ class ProfileController extends Controller
                 'suffix' => $validated['suffix'] ?? null,
                 'profile_picture' => array_key_exists('profile_picture', $validated) ? $validated['profile_picture'] : $user->profile_picture,
             ]);
-            // Keeps the instructor record's name and photo in step, so
-            // timetables and the Instructors page show the same person.
             $synced = $this->facultyProfiles->sync($user);
 
             $this->audit->record($request, 'profile_updated', $user, [
@@ -90,9 +83,6 @@ class ProfileController extends Controller
     }
 
     /**
-     * The account's teaching load for the active semester, or null when the
-     * account has no instructor record (a non-teaching secretary, say).
-     *
      * @return array<string, mixed>|null
      */
     private function teaching(User $user): ?array
@@ -103,8 +93,6 @@ class ProfileController extends Controller
         }
 
         $semester = Semester::query()->where('is_active', true)->first(['id', 'academic_year', 'semester']);
-        // Totals come from the same service as the Instructors page so the two
-        // never disagree about a person's load.
         $this->loads->decorate($faculty, $semester?->id);
         $assigned = (int) $faculty->assigned_units;
         $tier = SchedulingPolicy::facultyLoadTier($faculty, $assigned);
@@ -128,8 +116,6 @@ class ProfileController extends Controller
     }
 
     /**
-     * One entry per section and course, with every meeting it holds.
-     *
      * @return list<array<string, mixed>>
      */
     private function classes(int $facultyId, int $semesterId): array

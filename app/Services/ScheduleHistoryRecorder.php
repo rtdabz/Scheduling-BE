@@ -7,7 +7,6 @@ use App\Models\ScheduleHistoryItem;
 use App\Models\ScheduleHistoryVersion;
 use Illuminate\Support\Collection;
 
-/** Records one immutable history version for a single user operation. */
 class ScheduleHistoryRecorder
 {
     public function record(
@@ -20,15 +19,11 @@ class ScheduleHistoryRecorder
         ?string $source = null,
         ?string $reason = null,
         array $changeSummary = [],
-        /** Per schedule id; kept beside each snapshot, e.g. the names the ids resolved to then. */
         array $itemMetadata = [],
     ): ScheduleHistoryVersion {
         $beforeRows = $this->keyById($before);
         $afterRows = $this->keyById($after);
         if ($beforeRows->isEmpty() && $afterRows->isNotEmpty()) {
-            // Bulk workflow callers run after the UPDATE. Recover the latest
-            // durable snapshot for each schedule as the before-state when one
-            // exists; first-ever transitions correctly remain null.
             $previous = ScheduleHistoryItem::query()
                 ->whereIn('original_schedule_id', $afterRows->keys())
                 ->orderByDesc('id')

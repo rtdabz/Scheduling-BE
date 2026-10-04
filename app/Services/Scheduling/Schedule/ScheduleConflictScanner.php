@@ -6,32 +6,11 @@ namespace App\Services\Scheduling\Schedule;
 
 use Illuminate\Support\Facades\DB;
 
-/**
- * Derives the conflicts that currently exist between *persisted* meetings.
- *
- * This is not a second conflict engine. BatchConflictValidator already decides
- * what makes two rows clash -- same section, same exclusive room, same
- * instructor, one online course serving two sections -- and it is the same
- * class the batch save path uses. All this adds is the scope query and the
- * pairing of results back to schedule ids, so a saved timetable can be asked
- * the question the save path asks of candidate rows.
- *
- * A scan is the only thing that can declare a conflict resolved: the client
- * clicking "Apply" proves nothing, and `schedules.status` is an operational
- * workflow field that must never carry a conflict lifecycle.
- */
 final class ScheduleConflictScanner
 {
     public function __construct(private readonly BatchConflictValidator $batchConflicts) {}
 
     /**
-     * Every conflict in a semester that touches the given scope.
-     *
-     * The *comparison* is always semester-wide even when a department is given:
-     * a room clash with another college's class is exactly the kind the owning
-     * department cannot see on its own timetable, and narrowing the query would
-     * hide it. Narrowing happens after pairing, on the conflicts themselves.
-     *
      * @param  list<int>  $onlyScheduleIds  when set, only conflicts touching one of these rows
      * @return list<ScheduleConflictCase>
      */
@@ -51,9 +30,6 @@ final class ScheduleConflictScanner
         }
 
         $cases = [];
-        // Two rows can only clash on the same day, and the validator's pass is
-        // O(n^2) over whatever it is handed. Feeding it one day at a time keeps
-        // a semester-wide scan from comparing Monday against Friday.
         foreach ($this->groupByDay($rowsById) as $dayRows) {
             if (count($dayRows) < 2) {
                 continue;
@@ -61,8 +37,6 @@ final class ScheduleConflictScanner
 
             foreach ($this->batchConflicts->validate($dayRows) as $conflict) {
                 $case = ScheduleConflictCase::fromBatchConflict($conflict, $rowsById);
-                // One pair can break several rules at once; each is its own case
-                // with its own id, but the same rule must not appear twice.
                 $cases[$case->id()] = $case;
             }
         }
@@ -77,11 +51,6 @@ final class ScheduleConflictScanner
     }
 
     /**
-     * The conflicts a resolution introduced: present after the change and not
-     * before it. Used to refuse a "fix" that only moved the problem, without
-     * refusing it over a pre-existing conflict elsewhere that the user was
-     * never asked about.
-     *
      * @param  list<ScheduleConflictCase>  $before
      * @param  list<ScheduleConflictCase>  $after
      * @return list<ScheduleConflictCase>
@@ -97,15 +66,6 @@ final class ScheduleConflictScanner
     }
 
     /**
-     * The conflicts a write cleared: in `$before`, gone from `$after`.
-     *
-     * A conflict whose rows were all kept is cleared once its id is gone. A
-     * row that was removed (replaced by a new one) takes every conflict it
-     * was in with it, so that alone proves nothing: if a new row lands on the
-     * same clash with the class that stayed, the conflict only changed ids.
-     * Those count as cleared only when no new conflict of the same rule
-     * involves the class that stayed.
-     *
      * @param  list<ScheduleConflictCase>  $before  conflicts touching the rows the write changed
      * @param  list<ScheduleConflictCase>  $after  conflicts touching the rows as they now are
      * @param  list<int>  $removedIds  rows the write deleted or replaced
@@ -175,10 +135,6 @@ final class ScheduleConflictScanner
     }
 
     /**
-     * Read with the query builder and explicit columns. Hydrating models here
-     * would pull the `split` relation on every row for a scan that never reads
-     * it, and joining labels is cheaper than a second pass of lookups.
-     *
      * @return array<int, array<string, mixed>>
      */
     private function rows(int $semesterId): array
@@ -189,10 +145,6 @@ final class ScheduleConflictScanner
             ->leftJoin('rooms', 'rooms.id', '=', 'schedules.room_id')
             ->leftJoin('faculties', 'faculties.id', '=', 'schedules.faculty_id')
             ->where('schedules.semester_id', $semesterId)
-            // The query builder does not carry the model's SoftDeletes scope,
-            // so an archived meeting would be scanned as if it were still on
-            // the timetable -- and reported as a conflict against a class the
-            // grid does not even show.
             ->whereNull('schedules.deleted_at')
             ->orderBy('schedules.id')
             ->get([

@@ -7,7 +7,6 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateRoomRequest extends FormRequest
 {
-    /** Access is enforced by the route's capability middleware. */
     public function authorize(): bool
     {
         return true;

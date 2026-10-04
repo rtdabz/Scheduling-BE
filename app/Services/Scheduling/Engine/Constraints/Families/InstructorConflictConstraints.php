@@ -8,7 +8,6 @@ use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
 
-/** faculty_conflict. Kernel counterpart of Rules\InstructorConflictRule. */
 final class InstructorConflictConstraints
 {
     /**

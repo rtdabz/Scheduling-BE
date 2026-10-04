@@ -4,13 +4,6 @@ namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * faculty_active, part_time_faculty_availability.
- *
- * Whether the chosen instructor can teach at all, and — for part-time
- * instructors — whether the meeting falls inside one of their availability
- * windows. Full-time instructors have no windows to check.
- */
 final class InstructorAvailabilityRule
 {
     public const DAY_INDEX = [
@@ -60,8 +53,6 @@ final class InstructorAvailabilityRule
                 ->values()
                 ->all();
 
-            // A part-timer with no windows recorded at all is unrestricted: no
-            // availability has been declared, so there is nothing to fall outside.
             if ($recorded->isNotEmpty() && ! self::coveredContinuously($windows, $start, $end)) {
                 $violations[] = [
                     'rule' => 'part_time_faculty_availability',
@@ -74,10 +65,6 @@ final class InstructorAvailabilityRule
     }
 
     /**
-     * The meeting must be covered from start to end with no gap. Back-to-back
-     * windows (08:00-10:00, 10:00-12:00) count as one, so a 09:00-11:00 class
-     * inside them fits; requiring a single window refused it.
-     *
      * @param  list<array{0: string, 1: string}>  $windows  normalized HH:MM:SS pairs
      */
     public static function coveredContinuously(array $windows, string $start, string $end): bool

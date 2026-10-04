@@ -57,9 +57,6 @@ class SystemNotificationService
             $remarks,
             $metadata,
         ): void {
-            // Bursts of the same event (one edit per schedule, one assignment per
-            // row, a completion reported by two paths) would otherwise stack up
-            // identical unread entries. Skip repeats within a short window.
             $duplicate = SystemNotification::query()
                 ->where('user_id', $user->id)
                 ->where('type', $type)
@@ -221,9 +218,6 @@ class SystemNotificationService
             ->pluck('id');
         if ($courseIds->isEmpty()) return;
 
-        // A Done action represents the exact schedules shown in the receiving
-        // department's timetable. Use that batch when supplied so unrelated
-        // schedules cannot suppress or delay the completion notification.
         if ($completedScheduleIds !== null) {
             $completed = Schedule::query()
                 ->whereIn('id', $completedScheduleIds)

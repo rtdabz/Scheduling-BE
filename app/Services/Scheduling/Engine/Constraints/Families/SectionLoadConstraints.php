@@ -9,13 +9,6 @@ use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * class_duration. Kernel counterpart of Rules\ClassDurationRule.
- *
- * Unlike RuleEngine, which sees one meeting against what is persisted, the
- * kernel sees the whole candidate set, so a plan's own meetings count against
- * each other. Context is course-level so the per-row findings dedupe into one.
- */
 final class SectionLoadConstraints
 {
     /**
@@ -42,12 +35,7 @@ final class SectionLoadConstraints
      */
     private function classDuration(ScheduleRow $row, array $course, array $sameSection, SchedulingSnapshot $snapshot): ?ConstraintViolation
     {
-        // Same decision as RuleEngine: an Integrated session's length is the
-        // user's to set, so it counts only the section's other linked meetings
-        // of that session, against one teaching day.
         $isIntegratedSession = SchedulingPolicy::isIntegratedSession($course, $row->meetingType, $row->splitGroupId);
-        // Read only when a meeting needs it: it falls back to the institution's
-        // settings when the snapshot carries no operating hours.
         $dayMinutes = static fn (): int => SchedulingPolicy::integratedSessionCeilingMinutes(
             isset($snapshot->operatingHours['opening_time']) ? (string) $snapshot->operatingHours['opening_time'] : null,
             isset($snapshot->operatingHours['closing_time']) ? (string) $snapshot->operatingHours['closing_time'] : null,
@@ -69,9 +57,6 @@ final class SectionLoadConstraints
             }
         }
 
-        // Same decision as RuleEngine: a Consecutive Days run meets for the
-        // class's full length every day, and one class may run as long as the
-        // teaching day.
         if ($isIntegratedSession) {
             $allowed = $dayMinutes();
         } else {
@@ -87,8 +72,6 @@ final class SectionLoadConstraints
             return null;
         }
 
-        // Same leniency as RuleEngine: data already over the ceiling before
-        // this change must not block it unless the change adds time.
         $before = 0;
         foreach ($snapshot->persistedSchedules as $persisted) {
             if ((int) ($persisted['section_id'] ?? 0) === $row->sectionId

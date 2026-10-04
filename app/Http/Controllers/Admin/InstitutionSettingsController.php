@@ -11,10 +11,6 @@ use Illuminate\Support\Facades\Cache;
 
 class InstitutionSettingsController extends Controller
 {
-    /**
-     * Readable by every signed-in role: the print builders that stamp these
-     * names run from the Dean, Secretary and Program Head screens too.
-     */
     public function show(): JsonResponse
     {
         $settings = Cache::remember(
@@ -26,7 +22,6 @@ class InstitutionSettingsController extends Controller
         return response()->json($settings);
     }
 
-    /** VPAA-only, enforced by the route group. */
     public function update(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -49,7 +44,6 @@ class InstitutionSettingsController extends Controller
         ]);
     }
 
-    /** The row also holds the operating hours, which TimeslotController serves. */
     private function signatory(InstitutionSetting $settings): array
     {
         return $settings->only(['id', 'president_name', 'president_title', 'created_at', 'updated_at']);

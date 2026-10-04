@@ -9,6 +9,6 @@ class Authenticate extends Middleware
 {
     protected function redirectTo(Request $request): ?string
     {
-        return null; // Prevents redirect to 'login' route, returns JSON instead
+        return null;
     }
 }

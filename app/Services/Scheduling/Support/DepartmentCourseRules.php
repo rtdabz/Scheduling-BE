@@ -5,23 +5,6 @@ namespace App\Services\Scheduling\Support;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 
-/**
- * The department's per-course scheduling rules, one row per department,
- * course and section (null = course-wide):
- *
- * - Required Day (`forced_day`) and Field Course (`is_field`) are course-wide.
- * - Consecutive Days (`consecutive_day_count`, `preferred_start_day`,
- *   `meeting_days`) is course-wide or per section; a section's own row wins.
- *
- * Each rule's columns are cleared and set independently, and a row left with
- * no rule is removed. Readers filter on their own columns, so they never see
- * another rule's row.
- *
- * Nothing in the app saves rules any more: each one is a generation run's
- * own choice ({@see withOverride}). The settings endpoint no longer writes
- * them, so manual scheduling is never held to a rule from an earlier run
- * (a department's NSTP 1 "on Saturday", or PATH-FIT as a field course).
- */
 final class DepartmentCourseRules
 {
     public const TABLE = 'department_course_rules';
@@ -32,33 +15,23 @@ final class DepartmentCourseRules
 
     public const RULE_CONSECUTIVE = 'consecutive';
 
-    /** Each rule's columns, at their "not set" value. */
     private const RULE_COLUMNS = [
         self::RULE_REQUIRED_DAY => ['forced_day' => null],
         self::RULE_FIELD => ['is_field' => false],
         self::RULE_CONSECUTIVE => ['consecutive_day_count' => null, 'preferred_start_day' => null, 'meeting_days' => null],
     ];
 
-    /** The columns a rule reader may select, in the order an override row lists them. */
     private const COLUMNS = [
         'department_id', 'course_id', 'section_id', 'forced_day', 'is_field',
         'consecutive_day_count', 'preferred_start_day', 'meeting_days',
     ];
 
     /**
-     * Rules that apply to one generation run only, never saved. While set,
-     * every reader of this department sees them in place of the saved rules of
-     * the courses in scope; other courses keep their saved rules.
-     *
      * @var array{department_id: int, scope: list<int>, rows: list<array<string, mixed>>}|null
      */
     private static ?array $override = null;
 
     /**
-     * Runs the callback with a run's own Required Day, Consecutive Days and
-     * Field Course rules standing in for the saved ones, then puts the saved
-     * ones back. A null or empty override leaves the saved rules in force.
-     *
      * @param  array{forced_day_rules?: list<array<string, mixed>>, consecutive_day_rules?: list<array<string, mixed>>, field_course_codes?: list<string>, scope_course_ids?: list<int>}|null  $rules
      */
     public static function withOverride(int $departmentId, ?array $rules, \Closure $callback): mixed
@@ -89,7 +62,6 @@ final class DepartmentCourseRules
         return self::savedQuery($departmentId);
     }
 
-    /** The saved rules, which every write goes to. */
     private static function savedQuery(int $departmentId): Builder
     {
         return DB::table(self::TABLE)->where(self::TABLE.'.department_id', $departmentId);
@@ -148,8 +120,6 @@ final class DepartmentCourseRules
             $sectionId = isset($rule['section_id']) ? (int) $rule['section_id'] : null;
             $courseId = (int) $rule['course_id'];
             $row($courseId, $sectionId);
-            // Ticked days decide the length and the first day, the way the
-            // saved rule does, so the three columns can never disagree.
             $meetingDays = SchedulingPolicy::parseMeetingDays($rule['meeting_days'] ?? null);
             $rows[$courseId.':'.($sectionId ?? 'all')] = [
                 ...$rows[$courseId.':'.($sectionId ?? 'all')],
@@ -177,9 +147,6 @@ final class DepartmentCourseRules
     }
 
     /**
-     * Field-course codes for a department, normalized, one per code. Read
-     * through the course, so a renamed code carries its setting with it.
-     *
      * @return list<string>
      */
     public static function fieldCourseCodes(int $departmentId): array
@@ -197,9 +164,6 @@ final class DepartmentCourseRules
     }
 
     /**
-     * Unsets one rule for the given courses, on every row (course-wide and
-     * per section), then drops rows that hold no rule any more.
-     *
      * @param  list<int>  $courseIds
      */
     public static function clear(int $departmentId, string $rule, array $courseIds): void
@@ -222,9 +186,6 @@ final class DepartmentCourseRules
     }
 
     /**
-     * Sets rule columns on the (course, section) row, creating it if needed.
-     * Other rules on the row are left alone.
-     *
      * @param  array<string, mixed>  $values
      */
     public static function put(int $departmentId, int $courseId, ?int $sectionId, array $values): void
@@ -255,12 +216,6 @@ final class DepartmentCourseRules
         ]);
     }
 
-    /**
-     * The unique index does not hold for a null section_id (NULLs never
-     * collide), so writers lock the department row: inside the caller's
-     * transaction, a concurrent save waits instead of inserting a second
-     * course-wide row.
-     */
     private static function lockDepartment(int $departmentId): void
     {
         DB::table('departments')->where('id', $departmentId)->lockForUpdate()->value('id');

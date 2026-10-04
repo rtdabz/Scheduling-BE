@@ -8,13 +8,6 @@ use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
-/**
- * semester_enabled, section_semester_alignment, section_semester_period_alignment,
- * subject_section_semester_alignment, subject_section_year_alignment.
- *
- * Whether the course belongs in this section's semester and year level, read
- * from the curriculum the section follows.
- */
 final class CurriculumPlacementRule
 {
     public function __construct(private readonly RuleLookupCache $lookups) {}
@@ -66,15 +59,6 @@ final class CurriculumPlacementRule
     }
 
     /**
-     * The year level and semester a course holds for this section's cohort.
-     *
-     * The curriculum comes from the section (SectionCurriculumResolver), never
-     * from "the department's active curriculum": a department mid-transition
-     * runs several. When the section has no usable curriculum, or the curriculum
-     * does not place the course, the course row's catalogue default applies, as
-     * it always did. The cached Course model is never written to, because the
-     * same instance is reused for sections that follow a different curriculum.
-     *
      * @return array{0: string, 1: string}
      */
     private function placement(Sections $section, Course $course): array

@@ -33,11 +33,6 @@ use Illuminate\Support\Str;
 
 class DepartmentScheduleController extends Controller
 {
-    /**
-     * Rows Submit sends to the Dean. There is no separate Done step: a section
-     * still being plotted goes straight into review. 'completed' stays for rows
-     * marked Done before that step was removed, and for generated rows.
-     */
     private const SUBMITTABLE_STATUSES = ['draft', 'revision', 'completed', 'rejected', 'rejected_by_dean'];
 
     public function __construct(
@@ -51,12 +46,6 @@ class DepartmentScheduleController extends Controller
     ) {}
 
     /**
-     * Open conflicts on the classes a submission covers, checked again at
-     * approval. A package is conflict-free when it is sent, but it can stop
-     * being so before the Dean or VPAA reaches it (an instructor shared with
-     * another department, a recall and edit), and approving it would carry
-     * the clash forward. Instructor clashes allowed to stand are not open.
-     *
      * @param  list<int>  $sectionIds
      * @return list<ScheduleConflictCase>
      */
@@ -80,9 +69,6 @@ class DepartmentScheduleController extends Controller
     }
 
     /**
-     * The refusal an approval answers with while the package has open
-     * conflicts: the approver can return it, not wave it through.
-     *
      * @param  list<ScheduleConflictCase>  $conflicts
      */
     private function openConflictsResponse(array $conflicts): JsonResponse
@@ -127,17 +113,6 @@ class DepartmentScheduleController extends Controller
         return $query;
     }
 
-    /**
-     * The submission a review acts on.
-     *
-     * A department can hold several submissions at the same stage -- one per
-     * program, or a revision beside a partially recalled cohort -- so a review
-     * names the submission it acts on. Without that the newest one was taken,
-     * and a Dean returning one program's schedule returned another's.
-     *
-     * A named `partially_withdrawn` submission is reviewable while the sections
-     * it still includes have meetings at this stage.
-     */
     private function submissionForStage(
         int $departmentId,
         array $submissionStatuses,
@@ -207,8 +182,6 @@ class DepartmentScheduleController extends Controller
     }
 
     /**
-     * Sections a review acts on: a recalled section left the submission.
-     *
      * @return list<int>
      */
     private function includedSectionIds(ScheduleSubmission $submission): array
@@ -233,13 +206,6 @@ class DepartmentScheduleController extends Controller
             ->exists();
     }
 
-    /**
-     * Lock the submission for this review and confirm no concurrent review or
-     * recall moved it first. Two reviewers acting at once used to both pass
-     * the stage check; the second then overwrote the first's decision on the
-     * submission (an approved submission marked returned, or the reverse) while
-     * its meetings stayed where the first review put them.
-     */
     private function lockSubmissionAtStage(ScheduleSubmission $submission, array $scheduleStatuses): bool
     {
         $status = ScheduleSubmission::query()
@@ -247,8 +213,6 @@ class DepartmentScheduleController extends Controller
             ->lockForUpdate()
             ->value('status');
 
-        // A partially recalled submission keeps its status through review, so
-        // for it the stage is read from its meetings instead.
         return $status === $submission->status
             && ($status !== 'partially_withdrawn'
                 || $this->submissionHasMeetingsAtStage($submission, $scheduleStatuses, lock: true));
@@ -263,18 +227,6 @@ class DepartmentScheduleController extends Controller
     }
 
     /**
-     * Drop the cached reads a workflow transition invalidates.
-     *
-     * Every approval screen is built from `/initial-data`, which caches its
-     * encoded payload for five minutes. Without this, a Dean approval returned
-     * "approved" while the very next load of the queue replayed the cached
-     * payload -- the submission still `pending_dean`, its meetings still
-     * `submitted` -- so an approved schedule sat in the Pending tab until the
-     * entry expired.
-     *
-     * Only the two collections a transition actually rewrites are bumped;
-     * `rooms`/`courses`/`users` keep their cached payloads.
-     *
      * @param  bool  $affectsAssignments  True when the transition moves meetings
      *                                    into or out of the instructor-assignable
      *                                    statuses, which the assignment
@@ -303,35 +255,11 @@ class DepartmentScheduleController extends Controller
         return null;
     }
 
-    /**
-     * Derive a single "section-level status" from all schedule rows
-     * belonging to that section. Uses the most conservative (lowest-ranked)
-     * status present. If the section has no schedules at all it is 'draft'.
-     *
-     * Status rank (0 = earliest / most conservative):
-     *   draft < completed < submitted < approved_by_dean < approved
-     */
     private function deriveStatus(array $scheduleStatuses): string
     {
         return $this->statusDeriver->derive($scheduleStatuses);
     }
 
-    /**
-     * GET /api/departments/{id}/schedule-status
-     *
-     * Returns every section in the department together with its derived
-     * schedule status, grouped so the frontend can build the 4-stage counts
-     * and per-year-level checklist without extra round-trips.
-     */
-    /**
-     * Submitting sends the department's schedules to its Dean for approval, so
-     * there has to be one. Without this the submission succeeds, the schedules
-     * move to "submitted", and they sit there with nobody able to act on them --
-     * a dead end that can only be undone by withdrawing.
-     *
-     * A Dean is a user account, not a column: role "dean", assigned to this
-     * department, active, and not soft-deleted.
-     */
     private function departmentHasDean(int $departmentId): bool
     {
         return User::query()
@@ -341,14 +269,6 @@ class DepartmentScheduleController extends Controller
             ->exists();
     }
 
-    /**
-     * The meetings a submission sent, as they were at submit.
-     *
-     * A recalled or returned version stays readable after the department edits,
-     * resets or regenerates the working copy, and each resubmission keeps its
-     * own. `available` is false for submissions made before snapshots were
-     * linked; callers then fall back to the live meetings.
-     */
     public function submissionSnapshot(Request $request, ScheduleSubmission $submission): JsonResponse
     {
         $user = $request->user();
@@ -359,8 +279,6 @@ class DepartmentScheduleController extends Controller
         $version = $submission->snapshot_version_id === null
             ? null
             : ScheduleHistoryVersion::query()->find($submission->snapshot_version_id);
-        // The sections recorded with the snapshot, as well as the live links: a
-        // deleted section loses its link but not its place in what was sent.
         $sectionIds = collect($version?->change_summary['selected_section_ids'] ?? [])
             ->merge($submission->sections()->pluck('sections.id'))
             ->map('intval')->unique()->values()->all();
@@ -391,11 +309,6 @@ class DepartmentScheduleController extends Controller
         ]);
     }
 
-    /**
-     * What happened to a recalled or rejected version's working copy since:
-     * meetings added, removed or changed, sections deleted and course details
-     * edited, each with the state before and after.
-     */
     public function submissionChanges(Request $request, ScheduleSubmission $submission): JsonResponse
     {
         $user = $request->user();
@@ -454,13 +367,6 @@ class DepartmentScheduleController extends Controller
         return response()->json(['data' => $data]);
     }
 
-    /**
-     * What a resubmitted version changed from the recalled or rejected version
-     * before it, section by section, read from both submit snapshots so later
-     * edits to the working copy never change the answer. Meetings match on
-     * SubmissionStatusResolver::meetingKey(), so an instructor change alone is
-     * not a change; same-course leftovers pair up as moved meetings.
-     */
     public function submissionRevisionDiff(Request $request, ScheduleSubmission $submission, SubmissionStatusResolver $resolver): JsonResponse
     {
         $user = $request->user();
@@ -530,9 +436,6 @@ class DepartmentScheduleController extends Controller
             static fn (array $a, array $b): int => strcmp((string) ($a['start_time'] ?? ''), (string) ($b['start_time'] ?? '')),
         ])->values();
 
-        // Identical meetings cancel out, one for one. is_hybrid describes the
-        // pair, not one meeting: moving a Hybrid Split's on-site half online
-        // clears it on both rows, and the untouched half is not a change.
         $meetingKey = static fn (array $row): string => SubmissionStatusResolver::meetingKey(['is_hybrid' => false] + $row);
         $removed = $sort($before)->all();
         $added = [];
@@ -568,10 +471,6 @@ class DepartmentScheduleController extends Controller
     }
 
     /**
-     * Snapshot rows with the section, course, room and instructor they named
-     * when recorded. Snapshots from before those names were kept resolve them
-     * now instead, archived records included.
-     *
      * @param  Collection<int, ScheduleHistoryItem>  $items
      * @param  'before'|'after'  $side
      * @return Collection<int, array>
@@ -656,32 +555,15 @@ class DepartmentScheduleController extends Controller
             'department_name' => $department->department_name,
             'sections' => $result->values(),
             'department_status' => $this->deriveStatus($result->pluck('status')->toArray()),
-            // Lets the UI disable Submit and explain why, instead of letting the
-            // request fail. The backend still enforces it on submit.
             'has_dean' => $this->departmentHasDean((int) $department->id),
-            // Delegated work the dashboard cannot see: these classes sit in other
-            // departments' sections, so they are absent from the schedule rows the
-            // dashboard loads for its own department.
             'cross_department_pending' => $this->crossDepartmentPendingCount(
                 (int) $department->id,
                 $activeSemesterId,
-                // A program head only sees courses assigned to their program on the
-                // Cross-Department page, so the badge must count the same set. No
-                // program means nothing is assigned to them, hence no indicator.
                 $request->user()?->role === 'program_head' ? (int) ($request->user()?->program_id ?? 0) : null,
             ),
         ]);
     }
 
-    /**
-     * Classes another department owns that this one has to staff, still without
-     * an instructor.
-     *
-     * Counted over distinct section + course pairs rather than schedule rows: a
-     * row is one meeting, so an MWF class would otherwise read as three items of
-     * outstanding work. A class counts as pending while any of its meetings is
-     * unassigned.
-     */
     private function crossDepartmentPendingCount(int $departmentId, ?int $activeSemesterId, ?int $programId = null): int
     {
         if ($activeSemesterId === null) {
@@ -692,8 +574,6 @@ class DepartmentScheduleController extends Controller
             ->where('semester_id', $activeSemesterId)
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES)
             ->whereNull('faculty_id')
-            // Another college's classes, or — for a course handed to a sibling
-            // program — this college's own classes of that course.
             ->where(fn ($owner) => $owner
                 ->where('department_id', '!=', $departmentId)
                 ->orWhereHas('course', fn ($course) => $course->where('department_id', $departmentId)))
@@ -705,25 +585,6 @@ class DepartmentScheduleController extends Controller
             ->count();
     }
 
-    /**
-     * GET /api/departments/schedule-overview
-     *
-     * Every department's schedule rolled up for the All Schedules screen, with
-     * its sections nested so the drill-down needs no second request.
-     *
-     * This exists because the screen used to build the same numbers by counting
-     * the schedule rows `/initial-data` happened to return, which is capped.
-     * The counts here are aggregated in SQL over the whole active semester.
-     *
-     * Only a VPAA sees the institution. Everyone else is scoped to the
-     * department they are assigned to, and an unassigned account sees nothing
-     * rather than everything.
-     *
-     * The VPAA's own counts cover approved meetings only: work still in a
-     * department's hands, or awaiting VPAA action, is not part of the portal's
-     * timetable. Pending submissions are reviewed on the Schedule Approval
-     * screen instead.
-     */
     public function scheduleOverview(Request $request): JsonResponse
     {
         $user = $request->user();
@@ -745,16 +606,6 @@ class DepartmentScheduleController extends Controller
         return response()->json($this->scheduleOverviews->overview($departmentId));
     }
 
-    /**
-     * POST /api/departments/{id}/submit-schedules
-     *
-     * Initial submission requires every active section to be ready. After a
-     * partial withdrawal, only the completed revision cohort is submitted;
-     * finalized and already-approved cohorts remain at their current stage.
-     *
-     * Capability middleware decides who may submit. Organizational assignment
-     * decides which department and, for Program Heads, which program is in scope.
-     */
     public function submitSchedules(int $id, Request $request): JsonResponse
     {
         $user = $request->user();
@@ -767,7 +618,6 @@ class DepartmentScheduleController extends Controller
             return response()->json(['message' => 'Program Head accounts must be assigned to a program.'], 403);
         }
 
-        // Each owner submits only the programs they schedule.
         $namedSectionIds = Sections::query()
             ->whereIn('id', array_map('intval', array_filter((array) $request->input('section_ids', []), 'is_numeric')))
             ->where('department_id', $id)
@@ -841,9 +691,6 @@ class DepartmentScheduleController extends Controller
                 continue;
             }
 
-            // A finalized or already-approved section belongs to an earlier
-            // approval cohort. It remains intact while withdrawn sections go
-            // through their own revision submission.
             if ($statuses->contains(
                 static fn (string $status): bool => in_array($status, $protectedStatuses, true)
             )) {
@@ -852,7 +699,6 @@ class DepartmentScheduleController extends Controller
                 continue;
             }
 
-            // Nothing plotted yet.
             $blockedYears[] = (int) $section->year_level;
         }
 
@@ -872,9 +718,6 @@ class DepartmentScheduleController extends Controller
             ], 422);
         }
 
-        // Initial submission still requires the complete department. Partial
-        // submission is allowed only when another cohort is already protected
-        // by an active/finalized approval state.
         if ($protectedSectionIds->isEmpty() && ! empty($blockedYears)) {
             $blockedYears = array_values(array_unique($blockedYears));
             sort($blockedYears);
@@ -908,8 +751,6 @@ class DepartmentScheduleController extends Controller
                 'parent_submission_id' => $parentSubmission?->id,
                 'revision_number' => $revisionNumber,
                 'status' => 'pending_dean',
-                // Kept as sent, so the history does not read 0 once these
-                // sections' meetings are later regenerated or deleted.
                 'section_count' => count($sectionIds),
                 'subject_count' => Schedule::whereIn('section_id', $sectionIds)
                     ->where('semester_id', $activeSemesterId)
@@ -928,9 +769,6 @@ class DepartmentScheduleController extends Controller
                     'updated_at' => now(),
                 ]);
             if ($updated > 0) {
-                // The snapshot is this version's frozen content: recall and
-                // return leave the meetings as the working copy, which the
-                // department may then edit, reset or regenerate.
                 $snapshotVersionId = $this->recordWorkflowAudit($request, 'schedule_submitted', $department->id, $activeSemesterId, [
                     'schedules_updated' => $updated,
                     'selected_section_ids' => $sectionIds,
@@ -1009,9 +847,6 @@ class DepartmentScheduleController extends Controller
             return $this->openConflictsResponse($openConflicts);
         }
 
-        // Room TBA is decided here, not by the page: a stale queue used to
-        // approve Room TBA meetings as a clean approval, or label a schedule
-        // with every room assigned as conditional.
         $hasRoomTba = $this->departmentScheduleQuery($id)
             ->whereIn('section_id', $targetSectionIds)
             ->where('status', 'submitted')
@@ -1212,8 +1047,6 @@ class DepartmentScheduleController extends Controller
             'reassignment',
         ];
 
-        // Withdrawal is section-scoped: finalized schedules in other sections
-        // must not prevent an eligible selected section from being revised.
         if ((clone $query)
             ->whereIn('section_id', $sectionIds)
             ->where('status', 'finalized')
@@ -1222,11 +1055,6 @@ class DepartmentScheduleController extends Controller
                 'message' => 'Finalized schedules cannot be recalled. Use Reassignment to reopen them first.',
             ], 422);
         }
-
-        // A section under Reassignment is recalled like any other approved
-        // section. Recalling releases every instructor on it (below), so it no
-        // longer has to be cleared first -- which a department could not do
-        // anyway for a delegated course whose instructor another college chose.
 
         $currentStatuses = (clone $query)
             ->whereIn('section_id', $sectionIds)
@@ -1320,10 +1148,6 @@ class DepartmentScheduleController extends Controller
 
         $semesterId = $this->activeSemesterId();
         $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses, $affectedSubmissions, $submissionSections, $user, $semesterId) {
-            // A recalled section keeps its instructors: the meetings come back
-            // for revision with their assignments intact and are revalidated
-            // when the schedule changes. Only the
-            // "done" handoff from the last round is reopened.
             $this->departmentScheduleQuery($id)
                 ->whereIn('section_id', $sectionIds)
                 ->whereIn('status', $withdrawableStatuses)
@@ -1371,8 +1195,6 @@ class DepartmentScheduleController extends Controller
             ];
         });
 
-        // The assignment workspace and the faculty loads cache their payloads;
-        // withdrawn rows leave the assignment statuses and lose their instructors.
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         $semester = Semester::query()->find($this->activeSemesterId());
@@ -1476,9 +1298,6 @@ class DepartmentScheduleController extends Controller
         if ($updated === null) {
             return $this->staleReviewResponse();
         }
-        // VPAA approval is what moves meetings into `faculty_assignment`, the
-        // first instructor-assignable status, so the assignment workspace's own
-        // cached payload has to go with it.
         $this->forgetWorkflowCaches(affectsAssignments: true);
 
         if ($updated > 0) {
@@ -1612,10 +1431,6 @@ class DepartmentScheduleController extends Controller
         $metadata['history_group_id'] = $historyGroupId;
         $schedules = collect();
 
-        // Workflow transitions use bulk updates and therefore do not fire
-        // Schedule model events. Capture the resulting rows explicitly so
-        // approvals, returns, submissions, and withdrawals are visible in
-        // schedule history as well as the activity log.
         if ($semesterId !== null) {
             $targetSectionIds = collect($metadata['selected_section_ids'] ?? [])
                 ->map('intval')
@@ -1652,8 +1467,6 @@ class DepartmentScheduleController extends Controller
                 'department_workflow',
                 null,
                 $metadata,
-                // The names as they were sent: a course edited or a section
-                // deleted later must not rewrite this version.
                 $this->descriptors->for($schedules),
             );
         }

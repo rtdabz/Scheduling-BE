@@ -7,15 +7,6 @@ use App\Services\Scheduling\Support\ProgramRoomShares;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * schedule_department_alignment, room_department_alignment,
- * major_department_alignment, major_faculty_department_alignment,
- * service_subject_faculty_department_alignment, major_faculty_program_alignment,
- * service_subject_faculty_program_alignment.
- *
- * Whether the schedule, its room, its course and its instructor all belong to
- * (or are granted to) the department and program doing the scheduling.
- */
 final class DepartmentAssignmentRule
 {
     public function __construct(private readonly RuleLookupCache $lookups) {}
@@ -59,10 +50,6 @@ final class DepartmentAssignmentRule
     }
 
     /**
-     * Another department's room is reachable only through an approved room
-     * request, and only inside its granted windows. The owner, in turn, may
-     * not book its own room inside a window it lent out.
-     *
      * @param  array<string, mixed>  $attempt
      * @return array<string, mixed>|null
      */
@@ -119,10 +106,6 @@ final class DepartmentAssignmentRule
     }
 
     /**
-     * In a department with several programs, each of its rooms belongs to one
-     * program per weekday (ProgramRoomShares). A section may use another
-     * program's day only once that program is done, and never under `strict`.
-     *
      * @param  array<string, mixed>  $attempt
      * @return array<string, mixed>|null
      */
@@ -150,12 +133,6 @@ final class DepartmentAssignmentRule
     }
 
     /**
-     * A minor or service course with no assigned teaching department is open to
-     * any department: shared minors such as PATH FIT are taught by instructors
-     * from outside the section's department, which is what the external
-     * instructor assignment path is for. Majors are restricted by their own
-     * department and program.
-     *
      * @return list<array<string, mixed>>
      */
     private function instructorDepartment(AttemptRecords $records): array
@@ -170,9 +147,6 @@ final class DepartmentAssignmentRule
         $isMajor = SchedulingPolicy::isMajorCourse($course);
 
         if ($isMajor) {
-            // A major belongs to the department — and, when recorded, the
-            // program — that offers it, so it is taught from inside that
-            // program rather than delegated like a service course.
             $majorDepartmentId = SchedulingPolicy::majorTeachingDepartmentId($course, $records->departmentId());
 
             if ($majorDepartmentId !== null && (int) $faculty->department_id !== $majorDepartmentId) {
@@ -191,8 +165,6 @@ final class DepartmentAssignmentRule
             }
         }
 
-        // One program check for every course; majors and service courses keep
-        // their own rule IDs because the UI and reports key on them.
         $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($course);
         if ($requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
             $program = $this->lookups->remember('program:'.$requiredProgramId, fn () => Program::find($requiredProgramId));

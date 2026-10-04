@@ -5,7 +5,6 @@ namespace App\Events;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 
-/** Tells one user's open tabs to refresh their notification bell. */
 class UserNotificationsChanged implements ShouldBroadcastNow
 {
     public function __construct(public int $userId) {}

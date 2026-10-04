@@ -8,20 +8,6 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
-/**
- * Adds conditional-GET (ETag / 304) support to read-only JSON API responses.
- *
- * The server-side cache already makes a repeat /initial-data cheap to produce,
- * but the payload was still serialised over the wire in full every time — and
- * the client re-parsed it — even when nothing had changed. Navigating between
- * modules refetches the same data repeatedly, so revalidation is where the
- * remaining wall-clock time goes.
- *
- * Responses are marked `private` and vary on Authorization: this is per-user
- * data and must never be held by a shared cache. `no-cache` does not mean "do
- * not store" — it means "revalidate before reuse", which is exactly the
- * behaviour we want: the browser always asks, and usually gets a bodyless 304.
- */
 class ConditionalGetJson
 {
     public function handle(Request $request, Closure $next): Response
@@ -33,8 +19,6 @@ class ConditionalGetJson
         }
 
         $response->headers->set('Cache-Control', 'private, no-cache, must-revalidate');
-        // Two users' responses for the same URL differ, and the token is what
-        // distinguishes them.
         $response->setVary('Authorization', false);
 
         $etag = '"'.md5($response->getContent()).'"';
@@ -53,8 +37,6 @@ class ConditionalGetJson
             return false;
         }
 
-        // getContent() on these either returns false or would consume the
-        // stream before it reaches the client.
         if ($response instanceof StreamedResponse || $response instanceof BinaryFileResponse) {
             return false;
         }
@@ -63,8 +45,6 @@ class ConditionalGetJson
             return false;
         }
 
-        // A response that already carries validators was deliberately configured
-        // by its controller; leave it alone.
         if ($response->headers->has('ETag') || $response->headers->has('Last-Modified')) {
             return false;
         }
@@ -72,15 +52,6 @@ class ConditionalGetJson
         return str_contains((string) $response->headers->get('Content-Type'), 'json');
     }
 
-    /**
-     * If-None-Match is a comma-separated list and may be "*". Weak validators
-     * (W/"...") compare equal to their strong form for our purposes.
-     *
-     * Apache's mod_deflate rewrites an outgoing ETag to "...-gzip" (and brotli
-     * to "...-br"), and the browser echoes that form back. Without stripping
-     * the suffix, enabling compression would quietly turn every 304 into a
-     * full 200 download.
-     */
     private function matches(?string $ifNoneMatch, string $etag): bool
     {
         if ($ifNoneMatch === null || $ifNoneMatch === '') {

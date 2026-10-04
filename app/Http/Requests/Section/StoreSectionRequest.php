@@ -8,10 +8,6 @@ use Illuminate\Validation\Rule;
 
 class StoreSectionRequest extends FormRequest
 {
-    /**
-     * The department check needs the validated department_id, so it stays in
-     * the controller, after validation.
-     */
     public function authorize(): bool
     {
         return true;

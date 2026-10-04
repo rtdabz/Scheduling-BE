@@ -12,10 +12,6 @@ use App\Services\Scheduling\Domain\SchedulingSnapshot;
 interface SchedulingSolver
 {
     /** @return list<ScheduleCandidate> */
-    /**
-     * Solve only against the caller-provided immutable snapshot. Snapshot
-     * capture belongs to the application boundary, never to the solver.
-     */
     public function solve(GenerationConfiguration $configuration, SchedulingSnapshot $snapshot): array;
 
     public function iterationsUsed(): int;

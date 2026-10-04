@@ -35,21 +35,15 @@ class Departments extends Model
         'custom_lab_duration_other_enabled' => 'boolean',
         'gec_split_schedule_override_enabled' => 'boolean',
         'major_lecture_split_schedule_override_enabled' => 'boolean',
-        // Deliberately not fillable: only the department secretary changes it,
-        // through SchedulingSettingsController.
         'sunday_classes_enabled' => 'boolean',
-        // Also not fillable: set by the secretary through ProgramRoomController.
         'room_sharing_policy' => 'string',
         'scheduling_profile' => 'string',
     ];
 
-    /** Rooms are one pool shared by every program (the default). */
     public const ROOM_SHARING_OPEN = 'open';
 
-    /** Home room, then a shared room, then another program's vacant room as a suggestion. */
     public const ROOM_SHARING_HOME_FIRST = 'home_first';
 
-    /** Home rooms and shared rooms only. */
     public const ROOM_SHARING_STRICT = 'strict';
 
     public const ROOM_SHARING_POLICIES = [

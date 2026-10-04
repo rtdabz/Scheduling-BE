@@ -9,7 +9,6 @@ use Illuminate\Support\Collection;
 
 class ScheduleSemesterArchiver
 {
-    /** These states are reached only after VPAA approval. */
     public const VPAA_APPROVED_STATUSES = ['approved', 'faculty_assignment', 'reassignment', 'finalized'];
 
     public function archive(Collection $schedules, int $actorUserId, int $semesterId): Collection

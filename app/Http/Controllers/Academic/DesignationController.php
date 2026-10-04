@@ -12,21 +12,12 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
-/**
- * CRUD for the administrative designations an instructor may hold.
- *
- * The list is institution data, not a fixed enum -- a school adds Program
- * Chairperson, Laboratory Head, Research Coordinator and so on over time, each
- * carrying its own deload. Nothing here hardcodes a designation name.
- */
 class DesignationController extends Controller
 {
     public function __construct(private readonly FacultyDesignationService $holdings) {}
 
     public function index(Request $request): JsonResponse
     {
-        // Pickers want only what can still be assigned; the management screen
-        // wants the inactive ones too, so it asks for them explicitly.
         $activeOnly = $request->boolean('active_only');
 
         $designations = Designation::query()
@@ -44,11 +35,6 @@ class DesignationController extends Controller
         return response()->json($designation->load('parent:id,name')->loadCount(['faculties', 'children']));
     }
 
-    /**
-     * The instructors holding a designation, across every department. Behind
-     * the manage capability rather than the roster read gate, since the roster
-     * itself is department-scoped.
-     */
     public function holders(Designation $designation): JsonResponse
     {
         $holders = $designation->faculties()
@@ -95,11 +81,6 @@ class DesignationController extends Controller
             return $refusal;
         }
 
-        // The deload an instructor carries is a copy of their designation's, so
-        // that SchedulingPolicy reads one column rather than a join. Changing
-        // the designation's figure therefore has to rewrite the holders, or the
-        // number on the management screen stops matching the Basic Load the
-        // scheduler actually places against.
         $deloadChanged = array_key_exists('deload_units', $payload)
             && (int) $payload['deload_units'] !== (int) $designation->deload_units;
 
@@ -108,8 +89,6 @@ class DesignationController extends Controller
         DB::transaction(function () use ($designation, $payload, $deloadChanged, &$holdersUpdated): void {
             $designation->update($payload);
 
-            // A holder's deload is the sum across every designation they hold,
-            // so it is recomputed rather than overwritten with this one figure.
             if ($deloadChanged) {
                 $holdersUpdated = $this->holdings->refreshHolders($designation);
             }
@@ -126,10 +105,6 @@ class DesignationController extends Controller
 
     public function destroy(Designation $designation): JsonResponse
     {
-        // Soft-deleting would leave the holders pointing at a row nothing can
-        // see while their deload stayed in place, so the holders have to be
-        // released first -- deliberately the caller's decision, not a silent
-        // side effect that changes someone's Basic Load without warning.
         $holders = $designation->faculties()->count();
 
         if ($holders > 0) {
@@ -155,10 +130,6 @@ class DesignationController extends Controller
         return response()->json(['message' => 'Designation archived successfully.']);
     }
 
-    /**
-     * Refuses a parent that would break the one-level hierarchy, or a move that
-     * would turn a designation instructors hold into a heading nobody can hold.
-     */
     private function refuseParent(?int $parentId, ?Designation $designation = null): ?JsonResponse
     {
         if ($parentId === null) {
@@ -184,8 +155,6 @@ class DesignationController extends Controller
         if ($designation !== null && $designation->children()->exists()) {
             return $refuse("{$designation->name} has sub-designations of its own, so it cannot become one.");
         }
-        // Once it has sub-designations the parent is a heading, which no
-        // instructor may hold -- so it has to be released from its holders first.
         if ($parent->faculties_count > 0 && ! $parent->children()->exists()) {
             return $refuse("{$parent->name} is held by {$parent->faculties_count} instructor(s). Clear it from them before adding sub-designations under it.");
         }
@@ -231,10 +200,6 @@ class DesignationController extends Controller
         return $payload;
     }
 
-    /**
-     * A designation change moves an instructor's deload, which every cached
-     * roster and the initial-data payload carry.
-     */
     private function flush(): void
     {
         ApiCache::forgetGroups(['faculty.index', 'initial.data']);

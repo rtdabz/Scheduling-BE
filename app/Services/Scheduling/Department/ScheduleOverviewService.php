@@ -10,25 +10,10 @@ use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
-/**
- * Read model behind the All Schedules overview.
- *
- * The screen used to derive its institution-wide numbers from the first N rows
- * of `/initial-data`, which is capped. Every count below is aggregated in SQL
- * over the whole semester instead, so a department card never reports a subset of
- * its own schedule as the whole of it.
- *
- * Meetings are rolled up into the shapes the UI actually shows: a "class" is a
- * section/course pair, a "meeting" is one `schedules` row (an MWF class is
- * three), and a conflict count is the number of meetings involved in an
- * overlap rather than the number of overlapping pairs.
- */
 class ScheduleOverviewService
 {
-    /** Rooms that stand in for "no physical room"; two meetings may share them. */
     private const VIRTUAL_ROOM_CODES = ['ONLINE', 'FIELD'];
 
-    /** Delivery modes that need no room, so a null room is not a gap. */
     private const ROOMLESS_MODES = ['online', 'field'];
 
     public function __construct(
@@ -73,8 +58,6 @@ class ScheduleOverviewService
                 $byDepartment->get($department->id, collect()),
             ))
             ->sortBy([
-                // Departments needing attention first: the screen exists to
-                // find them, not to rank by size.
                 fn (array $row) => $row['conflicts']['total'] > 0 ? 0 : 1,
                 fn (array $row) => $row['sections_total'] > 0 && $row['sections_scheduled'] < $row['sections_total'] ? 0 : 1,
                 fn (array $row) => $row['code'],
@@ -118,9 +101,6 @@ class ScheduleOverviewService
     }
 
     /**
-     * Per-section meeting totals. `classes` counts section/course pairs so the
-     * card reports classes rather than the meeting rows they expand into.
-     *
      * @param  list<int>  $sectionIds
      * @return Collection<int, object>
      */
@@ -145,8 +125,6 @@ class ScheduleOverviewService
     }
 
     /**
-     * Meetings per weekday, for the density strip on a section card.
-     *
      * @param  list<int>  $sectionIds
      * @return Collection<int, array<string, int>>
      */
@@ -184,13 +162,6 @@ class ScheduleOverviewService
     }
 
     /**
-     * Meetings involved in an overlap, counted per section and per kind.
-     *
-     * Overlap is evaluated across the whole semester, not per department: a faculty
-     * member or a room double-booked by two colleges is a conflict for both.
-     * `total` counts each meeting once however many kinds it trips, which is
-     * what the card's single "conflicts" figure means.
-     *
      * @param  list<int>  $sectionIds
      * @return Collection<int, array<string, int>>
      */
@@ -211,8 +182,6 @@ class ScheduleOverviewService
                 $this->overlapExists($semesterId, $visibleStatuses)
                     ->whereColumn('other.faculty_id', 'schedules.faculty_id')
                     ->whereNotNull('schedules.faculty_id')
-                    // A clash both meetings were deliberately assigned over is not
-                    // an open conflict; it is counted as overridden below.
                     ->where(fn ($query) => $query
                         ->where('schedules.faculty_conflict_override', false)
                         ->orWhere('other.faculty_conflict_override', false))
@@ -265,19 +234,9 @@ class ScheduleOverviewService
             ]);
     }
 
-    /**
-     * A correlated sub-query matching any *other* meeting of the same semester that
-     * overlaps this one in time. Callers add the column that makes the overlap
-     * a conflict (same faculty, same room, same section).
-     *
-     * The `(semester, key, day, start, end)` indexes added for the solver cover
-     * exactly this shape, so it stays an index lookup per row.
-     */
     private function overlapExists(?int $semesterId, ?array $visibleStatuses): QueryBuilder
     {
         return DB::table('schedules AS other')
-            // A meeting the viewer cannot see cannot be the other half of a
-            // conflict they are shown.
             ->when($visibleStatuses !== null, fn ($query) => $query->whereIn('other.status', $visibleStatuses))
             ->whereColumn('other.id', '!=', 'schedules.id')
             ->whereColumn('other.day', 'schedules.day')
@@ -355,8 +314,6 @@ class ScheduleOverviewService
                 'total' => (int) $sections->sum(fn (array $section) => $section['conflicts']['total']),
                 'overridden' => (int) $sections->sum(fn (array $section) => $section['conflicts']['overridden']),
             ],
-            // A department is only as far along as its least advanced section,
-            // the same rule the submission workflow applies.
             'status' => $this->statuses->derive(
                 $sections->pluck('status')->all(),
             ),

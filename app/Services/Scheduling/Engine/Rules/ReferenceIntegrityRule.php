@@ -9,13 +9,6 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * semester_exists, section_exists, subject_exists, room_exists, faculty_exists,
- * section_active, subject_active.
- *
- * Resolves the records an attempt points at. When one is missing it reports
- * that and returns no records, because every later record-based rule needs them.
- */
 final class ReferenceIntegrityRule
 {
     public function __construct(private readonly RuleLookupCache $lookups) {}
@@ -68,8 +61,6 @@ final class ReferenceIntegrityRule
             ];
         }
 
-        // No room chosen at all is room_type_match's "a physical room is required";
-        // this rule is only for a room ID that points at nothing.
         if ($roomId !== null && ! $room && $mode !== 'online' && ! $allowsLabTba) {
             $violations[] = [
                 'rule' => 'room_exists',

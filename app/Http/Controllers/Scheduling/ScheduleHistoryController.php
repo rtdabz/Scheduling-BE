@@ -11,7 +11,6 @@ use Illuminate\Validation\Rule;
 
 class ScheduleHistoryController extends Controller
 {
-    /** The review decisions the history page lists, by filter type. */
     private const TYPES = [
         'approved' => ['schedule_approved_by_dean', 'schedule_approved_by_vpaa'],
         'rejected' => ['schedule_returned_by_dean', 'schedule_returned_by_vpaa'],
@@ -55,8 +54,6 @@ class ScheduleHistoryController extends Controller
             ->when($validated['schedule_id'] ?? null, fn ($q, $id) => $q->whereHas('items', fn ($items) => $items->where('original_schedule_id', $id)))
             ->latest('created_at')->latest('id');
         $paginator = $query->paginate($perPage, ['*'], 'page', $page);
-        // The print's signatories, as the approval preview resolves them: the
-        // department's secretary, program heads and dean, plus the VPAA.
         $departmentIds = collect($paginator->items())->pluck('department_id')->filter()->unique()->values();
         $signatories = User::query()
             ->where(fn ($q) => $q

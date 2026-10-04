@@ -4,14 +4,6 @@ namespace App\Exceptions;
 
 use RuntimeException;
 
-/**
- * Raised when a year-level generation run cannot produce a valid timetable.
- *
- * Unlike a bare RuntimeException this carries the diagnostic report the
- * Recommended Adjustment UI needs: which section/course is the bottleneck, what
- * the generator detected as the cause, every retry strategy that was tried, and
- * the concrete adjustments the user can apply before retrying.
- */
 class YearLevelGenerationException extends RuntimeException
 {
     public const STAGE_FEASIBILITY = 'feasibility';
@@ -79,8 +71,6 @@ class YearLevelGenerationException extends RuntimeException
             'attempts' => $this->attempts,
             'recommendations' => $this->recommendations,
             'generation_metrics' => $this->generationMetrics,
-            // The search stopped at a time or step limit: the failure is not
-            // proof that nothing fits, so running it again is worth trying.
             'search_incomplete' => $this->searchIncomplete,
         ];
     }

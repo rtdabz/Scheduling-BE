@@ -4,10 +4,8 @@ namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/** Small parsing helpers the rule classes share. */
 final class RuleSupport
 {
-    /** Minutes since midnight, or null when the value is not a valid HH:MM time. */
     public static function timeToMinutes(string $time): ?int
     {
         $parts = explode(':', SchedulingPolicy::normalizeTime($time));
@@ -30,16 +28,12 @@ final class RuleSupport
         return ($hours * 60) + $minutes;
     }
 
-    /** Length of a start/end pair in minutes; an unparsable time counts as zero. */
     public static function durationMinutes(string $startTime, string $endTime): int
     {
         return (int) (self::timeToMinutes($endTime) ?? 0) - (int) (self::timeToMinutes($startTime) ?? 0);
     }
 
     /**
-     * The schedule ids an update must not collide with: itself, or every row of
-     * a batch being moved together.
-     *
      * @return list<int>
      */
     public static function ignoreIds(int|array|null $ignoreScheduleId): array

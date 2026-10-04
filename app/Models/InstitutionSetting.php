@@ -4,7 +4,6 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-/** The single global settings row: the signatory and the operating hours. */
 class InstitutionSetting extends Model
 {
     protected $table = 'institution_settings';
@@ -18,10 +17,6 @@ class InstitutionSetting extends Model
         'slot_interval',
     ];
 
-    /**
-     * The single settings row, created on demand so a fresh database (or one
-     * migrated before this table existed) still answers.
-     */
     public static function current(): self
     {
         return static::query()->firstOrCreate([], [

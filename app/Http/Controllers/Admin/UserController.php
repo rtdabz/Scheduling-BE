@@ -34,7 +34,6 @@ class UserController extends Controller
         $this->ensureRoleSlotAvailable($validated, (bool) ($validated['is_active'] ?? true));
         $facultyMode = $validated['faculty_mode'] ?? UserFacultyProfileService::MODE_CREATE;
         $designationIds = app(FacultyDesignationService::class)->idsFrom($request);
-        // A new profile starts at the default 21 units; a linked one keeps its own.
         $maxUnits = match ($facultyMode) {
             UserFacultyProfileService::MODE_LINK => Faculty::query()->whereKey((int) ($validated['faculty_id'] ?? 0))->value('max_units'),
             UserFacultyProfileService::MODE_CREATE => UserFacultyProfileService::DEFAULT_MAX_UNITS,
@@ -51,11 +50,9 @@ class UserController extends Controller
                 'suffix' => $validated['suffix'] ?? null,
                 'username' => $this->availableUsername($validated['username']),
                 'email' => strtolower(trim($validated['email'])),
-                // Unusable until the user opens their setup link and chooses one.
                 'password' => Str::random(64),
                 'role' => $validated['role'],
                 'is_active' => $validated['is_active'] ?? true,
-                // Google login is enabled automatically for every account.
                 'allow_google_login' => true,
                 'department_id' => $validated['department_id'],
                 'profile_picture' => $validated['profile_picture'] ?? null,
@@ -77,14 +74,6 @@ class UserController extends Controller
             return $user;
         });
         $this->sendInvitation($request, $user);
-        // A brand-new account cannot appear on an existing timetable, so the
-        // `schedules`/`courses`/`sections` portions of the initial-data payload
-        // are untouched and only the sections below need rebuilding.
-        //
-        // `has_dean` is the exception: it sits outside OPTIONAL_SECTIONS and so
-        // ships in *every* initial-data response, including the ones that ask
-        // for no user data at all. An active dean therefore still has to
-        // invalidate the whole group.
         $initialDataGroups = $user->role === 'dean' && $user->is_active
             ? ['initial.data']
             : ['initial.data.users', 'initial.data.faculties', 'initial.data.departments'];
@@ -98,7 +87,6 @@ class UserController extends Controller
 
     public function update(UpdateUserRequest $request, User $user): JsonResponse
     {
-        // The VPAA account is refused in UpdateUserRequest::authorize().
         $validated = $request->validated();
         $this->ensureRoleDepartmentHierarchy($validated['role'], (int) $validated['department_id']);
         $this->ensureRoleSlotAvailable($validated, (bool) $validated['is_active'], $user->id);
@@ -108,8 +96,6 @@ class UserController extends Controller
 
         DB::transaction(function () use ($validated, $request, $user, $emailChanged) {
             if ($emailChanged) {
-                // Drops any setup token still keyed to the old address, and the
-                // Google link, which was tied to the old address.
                 /** @var \Illuminate\Auth\Passwords\PasswordBroker $broker */
                 $broker = Password::broker('invites');
                 $broker->deleteToken($user);
@@ -125,7 +111,6 @@ class UserController extends Controller
                 'email' => strtolower(trim($validated['email'])),
                 'role' => $validated['role'],
                 'is_active' => $validated['is_active'],
-                // Google login is enabled automatically for every account.
                 'allow_google_login' => true,
                 'department_id' => $validated['department_id'],
                 'profile_picture' => array_key_exists('profile_picture', $validated) ? $validated['profile_picture'] : $user->profile_picture,
@@ -145,8 +130,6 @@ class UserController extends Controller
         });
         ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
-        // Sent after commit so the queued job sees the saved address. The
-        // notification is routed to the user's current (new) email.
         $message = 'User updated successfully.';
         if ($emailChanged && $user->is_active
             && $this->sendInvitation($request, $user) === Password::RESET_LINK_SENT) {
@@ -173,8 +156,6 @@ class UserController extends Controller
             $this->audit->record($request, 'user_archived', $user, [
                 'faculty_profile_preserved' => $user->facultyProfile()->exists(),
             ]);
-            // The profile keeps its user_id so restoring the account reconnects
-            // it, but it stops carrying the archived account's role.
             $user->facultyProfile?->update(['administrative_role' => null]);
             $user->tokens()->delete();
             $user->delete();
@@ -205,10 +186,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Emails a fresh one-time setup link, e.g. when the first one expired or
-     * the user forgot their password and asked the VPAA office for help.
-     */
     public function resendInvitation(Request $request, User $user): JsonResponse
     {
         if ($user->role === 'vpaa') {
@@ -226,10 +203,6 @@ class UserController extends Controller
         return response()->json(['message' => "A setup link has been sent to {$user->email}."]);
     }
 
-    /**
-     * Unlinked instructors in a department, so the Create User form can attach
-     * an account to an existing roster entry instead of duplicating it.
-     */
     public function linkableFaculty(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -262,11 +235,6 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * Each role slot (Dean and Secretary per department, Program Head per
-     * program) holds at most one active account. Deactivated holders do not
-     * count, so a replacement can be added once the previous one is turned off.
-     */
     private function ensureRoleSlotAvailable(array $validated, bool $isActive, ?int $ignoreUserId = null): void
     {
         if (! $isActive) {
@@ -299,16 +267,10 @@ class UserController extends Controller
         ]);
     }
 
-    /**
-     * The requested username, or the first numbered variant still free
-     * (ccssecretary, ccssecretary2, ...). Archived accounts keep their names
-     * so audit history never points at two people.
-     */
     private function availableUsername(string $requested): string
     {
         $base = strtolower(trim($requested));
         $taken = User::withTrashed()
-            // A `_` in the base may widen the match; the exact check is below.
             ->whereRaw('LOWER(username) LIKE ?', [$base.'%'])
             ->pluck('username')
             ->map(fn (string $name) => strtolower($name))

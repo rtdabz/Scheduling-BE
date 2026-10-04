@@ -8,11 +8,6 @@ use App\Models\Rooms;
 use App\Models\Sections;
 use App\Models\Semester;
 
-/**
- * The records a schedule attempt refers to, once ReferenceIntegrityRule has
- * confirmed they exist. Rules that need the real section, course or room take
- * this instead of looking them up again.
- */
 final class AttemptRecords
 {
     public function __construct(

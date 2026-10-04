@@ -27,10 +27,6 @@ final class SchedulingConstraintPredicates
             );
     }
 
-    // Course classification lives in SchedulingPolicy, shared with RuleEngine
-    // and the solver. These keep the kernel call sites short; the snapshot's
-    // field-course codes stand in for the database lookup.
-
     /**
      * @param  array<string, mixed>  $course
      * @param  list<string>  $fieldCourseCodes

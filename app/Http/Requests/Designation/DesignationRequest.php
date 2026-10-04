@@ -6,28 +6,15 @@ use App\Models\Designation;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
-/**
- * Shared rules for creating and editing a designation. The update request is
- * the same set, with the route's designation as the existing record.
- */
 abstract class DesignationRequest extends FormRequest
 {
-    /** Access is enforced by the route's capability middleware. */
     public function authorize(): bool
     {
         return true;
     }
 
-    /** The designation being edited, or null when creating one. */
     abstract protected function existing(): ?Designation;
 
-    /**
-     * Canonicalize the values the controller persists before validation runs.
-     *
-     * The controller also trims these fields as a final persistence guard, but
-     * duplicate checks must use that same representation. Otherwise a value
-     * such as "Dean " passes validation and is later stored as "Dean".
-     */
     protected function prepareForValidation(): void
     {
         if ($this->has('name')) {
@@ -40,8 +27,6 @@ abstract class DesignationRequest extends FormRequest
     {
         $existing = $this->existing();
 
-        // Names are unique among siblings: "Coordinator" may exist under two
-        // different parents.
         $parentId = $this->has('parent_id')
             ? ($this->input('parent_id') === null || $this->input('parent_id') === '' ? null : (int) $this->input('parent_id'))
             : $existing?->parent_id;
@@ -57,9 +42,6 @@ abstract class DesignationRequest extends FormRequest
                     ->where(fn ($query) => $parentId === null ? $query->whereNull('parent_id') : $query->where('parent_id', $parentId)),
             ],
             'code' => ['sometimes', 'nullable', 'string', 'max:50'],
-            // No upper bound is imposed here: a full deload is a real
-            // arrangement, and the ceiling is max_units, which varies per
-            // instructor. FacultyBasicLoad already floors the result at zero.
             'deload_units' => ['sometimes', 'required', 'integer', 'min:0', 'max:100'],
             'description' => ['sometimes', 'nullable', 'string', 'max:255'],
             'status' => ['sometimes', 'required', 'in:active,inactive'],

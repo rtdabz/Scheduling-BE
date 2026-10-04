@@ -11,11 +11,6 @@ use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
 use App\Services\Scheduling\Engine\Rules\DeliveryModeRule;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * hybrid_mode, hybrid_eligibility, hybrid_component_type, hybrid_component_shape.
- * Kernel counterpart of Rules\DeliveryModeRule, whose static checks make each
- * decision; this side supplies the snapshot's course.
- */
 final class DeliveryModeConstraints
 {
     /**

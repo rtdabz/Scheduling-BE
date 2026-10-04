@@ -9,15 +9,6 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use Illuminate\Support\Collection;
 
-/**
- * What a schedule row's ids meant when it was recorded: section, course,
- * room and instructor as named then.
- *
- * History snapshots hold ids only, so a course renamed or re-unitized later, a
- * deleted section, or an archived room used to change -- or blank out -- how an
- * earlier version reads. Kept beside each snapshot, these keep it as it was.
- * Keys match ScheduleSemesterArchiver's snapshot metadata.
- */
 class ScheduleDescriptors
 {
     /**

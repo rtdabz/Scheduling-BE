@@ -40,7 +40,6 @@ class UpdateUserRequest extends FormRequest
         ];
     }
 
-    /** The account being edited (not the signed-in user, which is `user()`). */
     private function targetUser(): User
     {
         return $this->route('user');

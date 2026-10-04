@@ -8,13 +8,6 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Collection;
 use InvalidArgumentException;
 
-/**
- * The solver's input boundary: validates arguments and normalizes every
- * per-course option map (patterns, delivery modes, requirements, time
- * preferences, anchors) into the canonical form the search expects,
- * dropping unknown values and courses outside the requested list.
- * Pure and static; extracted from CspSolver unchanged apart from visibility.
- */
 final class SolverInput
 {
     public static function normalizeInputSchema(array $input): array

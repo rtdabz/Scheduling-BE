@@ -26,18 +26,11 @@ class CapabilityMiddleware
             }
             $held[] = $capability;
 
-            // Which capabilities a program-less department cannot exercise is
-            // declared in config/capabilities.php. Inferring it from the
-            // `schedule.` name prefix withheld capabilities that have nothing
-            // to do with programs -- instructor assignment among them.
             if (! $this->capabilities->requiresProgram($capability) || $this->departmentReady($user)) {
                 return $next($request);
             }
         }
 
-        // The account does hold the capability; its department is simply not
-        // set up yet. Saying so is the difference between "the VPAA never
-        // granted this" and "someone still has to create a program".
         if ($held !== []) {
             return response()->json([
                 'message' => 'Your department has no program yet, so this action is unavailable. '

@@ -4,13 +4,6 @@ namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Models\Schedule;
 
-/**
- * faculty_conflict: the instructor already teaches an overlapping class.
- *
- * Every clashing meeting is reported, so an override can mark all of them; a
- * clash someone chose to override is filtered out afterwards by
- * FacultyConflictOverride.
- */
 final class InstructorConflictRule
 {
     /**

@@ -9,13 +9,10 @@ use Illuminate\Validation\ValidationException;
 
 class UserFacultyProfileService
 {
-    /** A new account gets a fresh instructor profile. */
     public const MODE_CREATE = 'create';
 
-    /** A new account takes over an instructor already on the roster. */
     public const MODE_LINK = 'link';
 
-    /** A new account does not teach, so it gets no instructor profile. */
     public const MODE_NONE = 'none';
 
     public const MODES = [self::MODE_CREATE, self::MODE_LINK, self::MODE_NONE];
@@ -49,9 +46,6 @@ class UserFacultyProfileService
             'profile_picture' => $user->profile_picture,
         ]);
 
-        // Copied rather than joined: SchedulingPolicy::facultyBasicLoad() reads
-        // the deload column, so the designations have to be written through the
-        // service or a dean would be scheduled at a full load.
         if ($designationIds !== []) {
             $this->designations->sync($faculty, $designationIds);
         }
@@ -60,14 +54,6 @@ class UserFacultyProfileService
     }
 
     /**
-     * Attaches the account to an instructor already on the roster instead of
-     * creating a second record for the same person, which the generator would
-     * otherwise treat as two people and double-book.
-     *
-     * The instructor keeps their own name, load and history. Only the account
-     * link, the mirrored role and (when any are chosen) the designations change.
-     * Must run inside the caller's transaction so the row lock holds.
-     *
      * @param  list<int>  $designationIds  empty keeps the instructor's current ones
      */
     public function linkTo(User $user, int $facultyId, array $designationIds = []): Faculty
@@ -97,9 +83,6 @@ class UserFacultyProfileService
     }
 
     /**
-     * Instructors in a department that no account has claimed yet: the
-     * candidates the Create User form offers to link.
-     *
      * @return Collection<int, Faculty>
      */
     public function linkableIn(int $departmentId): Collection
@@ -112,11 +95,6 @@ class UserFacultyProfileService
             ->get(['id', 'first_name', 'middle_name', 'last_name', 'employment_type', 'max_units', 'program_id', 'status']);
     }
 
-    /**
-     * Mirrors account details onto an existing profile. It deliberately does
-     * not create one: an account saved as non-teaching must stay that way
-     * through later edits.
-     */
     public function sync(User $user): ?Faculty
     {
         $faculty = $user->facultyProfile;
@@ -126,10 +104,6 @@ class UserFacultyProfileService
 
         [$firstName, $middleName, $lastName, $suffix] = $this->nameParts($user);
 
-        // A deactivated account takes the instructor out of scheduling, and
-        // reactivating it brings them back. Only a change of the account's
-        // state reactivates, so an instructor set inactive on the roster stays
-        // that way through unrelated account edits.
         $status = match (true) {
             ! $user->is_active => ['status' => 'inactive'],
             $user->wasChanged('is_active') => ['status' => 'active'],
@@ -164,9 +138,6 @@ class UserFacultyProfileService
     }
 
     /**
-     * The account's structured name fields when it has them. Older accounts
-     * only carry a display name, which is split on spaces as a fallback.
-     *
      * @return array{0: string, 1: ?string, 2: string, 3: ?string}
      */
     private function nameParts(User $user): array
@@ -179,11 +150,6 @@ class UserFacultyProfileService
     }
 
     /**
-     * Splits "Kay Rejoice C. Waga Jr." or "Waga, Kay Rejoice C. Jr.". First
-     * names may be two or three words, so only a trailing initial ("C" or
-     * "C.") is taken as the middle name; every other given word stays in the
-     * first name.
-     *
      * @return array{0: string, 1: ?string, 2: string, 3: ?string}
      */
     private function splitName(string $name): array
@@ -196,7 +162,6 @@ class UserFacultyProfileService
             [$lastPart, $givenPart] = array_map('trim', explode(',', $name, 2));
             $lastWords = $words($lastPart);
             $given = $words(str_replace(',', ' ', $givenPart));
-            // "Waga Jr., Kay" as well as "Waga, Kay Jr."
             if (count($lastWords) > 1 && $isSuffix(end($lastWords))) {
                 $suffix = array_pop($lastWords);
             }
@@ -207,7 +172,6 @@ class UserFacultyProfileService
                 $suffix = array_pop($given);
             }
             $lastWords = count($given) > 1 ? [array_pop($given)] : [];
-            // Surname particles belong to the last name: "Juan dela Cruz".
             while (count($given) > 1 && preg_match('/^(de|del|dela|della|delos|de\'|des|di|da|du|la|las|los|san|santa|sta\.?|van|von|der|den|y)$/i', end($given))) {
                 array_unshift($lastWords, array_pop($given));
             }

@@ -19,7 +19,6 @@ final class SchedulingPolicy
 {
     public const SLOT_MINUTES = 30;
 
-    /** Field end time used until the VPAA sets one (institution_settings.field_end_time). */
     public const DEFAULT_FIELD_DAY_END_TIME = '17:00:00';
 
     private static ?string $cachedOpeningTime = null;
@@ -28,7 +27,6 @@ final class SchedulingPolicy
 
     private static ?string $cachedFieldDayEndTime = null;
 
-    /** The room a laboratory meeting may use (departments.lab_room_type). */
     public const LAB_ROOM_TYPES = ['laboratory', 'lecture', 'either'];
 
     /** @var array<int, string> */
@@ -51,11 +49,6 @@ final class SchedulingPolicy
         'Sunday',
     ];
 
-    /**
-     * Mon-Fri. A preference only: no course is limited to these days any more,
-     * so this is used for ordering and for callers that ask for a working week,
-     * never to refuse a placement.
-     */
     public const WEEKDAYS = [
         'Monday',
         'Tuesday',
@@ -64,7 +57,6 @@ final class SchedulingPolicy
         'Friday',
     ];
 
-    /** Mon-Sat. A preference only; see WEEKDAYS. */
     public const WEEKDAYS_AND_SATURDAY = [
         'Monday',
         'Tuesday',
@@ -111,14 +103,6 @@ final class SchedulingPolicy
         'conditionally_approved',
     ];
 
-    /**
-     * Status changes a department makes by hand: Done, Edit, unlocking a
-     * returned schedule, Finalize and Reassignment. Every move into or out of
-     * an approval stage belongs to the submit, review and recall endpoints,
-     * which keep the submission record and the instructors in step with the
-     * meetings. A direct status change used to pull submitted rows out of a
-     * pending submission, or approve a draft outright.
-     */
     public const MANUAL_STATUS_TRANSITIONS = [
         'draft' => ['completed'],
         'revision' => ['completed'],
@@ -131,22 +115,11 @@ final class SchedulingPolicy
         'finalized' => ['reassignment'],
     ];
 
-    /** Staying at the same status is a no-op, not a transition. */
     public static function allowsManualStatusChange(string $from, string $to): bool
     {
         return $from === $to || in_array($to, self::MANUAL_STATUS_TRANSITIONS[$from] ?? [], true);
     }
 
-    /**
-     * Statuses at which a schedule may be given an instructor. Instructor
-     * assignment is a post-VPAA-approval step, so anything earlier in the
-     * workflow — and `finalized`, which is locked — is refused.
-     */
-    /**
-     * The bands an instructor's load climbs through. Assignment is allowed in
-     * every one of them: the bands decide what the user is asked to confirm and
-     * what the load is called, not whether the save is permitted.
-     */
     public const LOAD_TIER_BASIC = 'basic';
 
     public const LOAD_TIER_OVERLOAD = 'overload';
@@ -164,32 +137,11 @@ final class SchedulingPolicy
 
     public const INSTRUCTOR_ASSIGNABLE_STATUSES = ['approved', 'faculty_assignment', 'reassignment'];
 
-    /**
-     * Statuses a VPAA may read a meeting at.
-     *
-     * The VPAA portal shows the approved institutional timetable, not work in
-     * progress: a department's drafts, a submission sitting with the Dean and
-     * even a Dean-approved cohort awaiting VPAA action stay out of it. VPAA
-     * approval is what moves meetings to `faculty_assignment`, so that is the
-     * first status the portal reads. Pending submissions are reviewed on the
-     * Schedule Approval screen, which reads `schedule_submissions` and is
-     * deliberately not filtered by this list.
-     */
     public const VPAA_VISIBLE_STATUSES = ['approved', 'faculty_assignment', 'reassignment', 'finalized'];
 
-    /**
-     * Statuses at which an existing instructor assignment counts as real: it is
-     * listed in the assignment workspace and included in teaching load. A row
-     * that fell back to `draft`, `completed` or `revision` is no longer an
-     * approved assignment, so it must not inflate anyone's load.
-     */
     public const INSTRUCTOR_ASSIGNED_STATUSES = ['approved', 'faculty_assignment', 'reassignment', 'finalized'];
 
     /**
-     * Named two-day patterns a user may choose. FS is selectable, but the
-     * solver only pairs Friday + Saturday on its own when the run allows it
-     * (see AUTO_SPLIT_PATTERNS and CspSolver's allowFridaySaturdaySplit).
-     *
      * @var array<string, array{0: string, 1: string}>
      */
     public const FIXED_MEETING_PATTERNS = [
@@ -198,26 +150,11 @@ final class SchedulingPolicy
         'FS' => ['Friday', 'Saturday'],
     ];
 
-    /** The named patterns the solver picks unprompted. */
     public const AUTO_SPLIT_PATTERNS = ['MW', 'TTh'];
 
-    /**
-     * Days preferred for a single-meeting class that occupies a real lecture
-     * room. Keeping those classes late in the week leaves Monday-Thursday
-     * lecture-room capacity for the MW and TTh split-session patterns above.
-     *
-     * This is a preference, not a restriction: Monday-Thursday stays available
-     * as a fallback, so a section whose single meetings cannot all fit on
-     * Friday and Saturday still generates.
-     */
     public const SINGLE_MEETING_PREFERRED_DAYS = ['Friday', 'Saturday'];
 
     /**
-     * Step 1's Preferred Days, in calendar order, or null when the run may use
-     * every day. Unknown names are dropped; choosing all seven days, or none,
-     * means no restriction. The solver, the feasibility pre-check and the
-     * request validation all read the choice through here.
-     *
      * @return list<string>|null
      */
     public static function normalizeAllowedDays(mixed $days): ?array
@@ -236,8 +173,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * How many of these days a run with Preferred Days may still use.
-     *
      * @param  list<string>  $days
      * @param  list<string>|null  $allowedDays
      */
@@ -246,26 +181,15 @@ final class SchedulingPolicy
         return $allowedDays === null ? count($days) : count(array_intersect($days, $allowedDays));
     }
 
-    /**
-     * Grid slots one unit of each component contributes. A lecture unit is one
-     * hour, a laboratory unit three, which is why a laboratory unit is worth
-     * three times a lecture unit on the timetable.
-     */
     public const LECTURE_SLOTS_PER_UNIT = 2;
 
     public const LABORATORY_SLOTS_PER_UNIT = 6;
 
-    /** A course's units as weekly minutes: one unit is one hour on the timetable. */
     public static function unitMinutes(mixed $units): int
     {
         return (int) round((float) ($units ?? 0) * 60);
     }
 
-    /**
-     * The largest number of units a single component may carry and still fit
-     * inside one teaching day. A component longer than the day has no legal
-     * start time at all, so the course can never be scheduled.
-     */
     public static function maxUnitsPerComponent(int $slotsPerUnit): int
     {
         return max(1, intdiv(self::totalSlots(), max(1, $slotsPerUnit)));
@@ -273,7 +197,6 @@ final class SchedulingPolicy
 
     public const CUSTOM_PATTERN_REGEX = '/^days:([0-6])-([0-6])$/';
 
-    /** A Consecutive Days run's marker on each of its meetings: `consecutive:N`. */
     public const CONSECUTIVE_PATTERN_REGEX = '/^consecutive:([2-7])$/';
 
     public const MIN_CONSECUTIVE_DAYS = 2;
@@ -294,55 +217,23 @@ final class SchedulingPolicy
 
     public const SOFT_ROOM_CHANGE_PENALTY = 1;
 
-    /**
-     * Applied when a major course that prefers a laboratory room is assigned
-     * to a lecture room because no laboratory was available for the department.
-     */
     public const SOFT_LAB_FALLBACK_PENALTY = 15;
 
-    /**
-     * Applied when an on-site course is scheduled online as a fallback.
-     */
     public const SOFT_ONLINE_FALLBACK_PENALTY = 1000;
 
-    /**
-     * Applied per meeting that overlaps another section's meeting of the same
-     * course where one side is online and the other face-to-face. One
-     * instructor often teaches both, so the overlap usually becomes a faculty
-     * conflict once instructors are assigned.
-     */
     public const SOFT_MIXED_MODE_COURSE_OVERLAP_PENALTY = 2000;
 
-    /**
-     * Applied while ranking a Monday-Thursday single meeting in a lecture room
-     * whose pair day (MW, TTh) is free in that room at that time: taking it
-     * leaves the slot on the pair day unusable for a split session. A slot
-     * whose pair day is already booked costs nothing, so single meetings that
-     * cannot go late in the week fill the slots splits could not use anyway.
-     */
     public const SOFT_SPLIT_PAIR_BREAK_PENALTY = 2000;
 
-    /** Prefer a feasible weekday physical placement over a weekend placement. */
     public const SOFT_WEEKDAY_PHYSICAL_MIGRATION_PENALTY = 6000;
 
-    /** Prefer a feasible weekday physical placement over online delivery. */
     public const SOFT_WEEKDAY_ONLINE_MIGRATION_PENALTY = 12000;
 
     /**
-     * Meeting lengths, in slots, that a leftover gap can still be filled with.
-     *
      * @var list<int>
      */
     public const CLASSROOM_SCHEDULABLE_BLOCK_SLOTS = [3, 4, 6];
 
-    /**
-     * Slots left over once a gap is packed with as many schedulable blocks as
-     * it can hold -- the part of the gap no future meeting can ever use.
-     *
-     * Shared because the solver ranks candidates mid-search while the quality
-     * evaluator scores finished plans: if the two disagreed on what counts as
-     * wasted, the plan the search picked would not be the plan scored best.
-     */
     public static function classroomBestRemainderAfterSchedulableBlocks(int $gapSlots): int
     {
         $reachable = array_fill(0, max(0, $gapSlots) + 1, false);
@@ -366,18 +257,6 @@ final class SchedulingPolicy
         return $gapSlots;
     }
 
-    /**
-     * Canonical inventory of scheduling constraints and workflow violations.
-     *
-     * The catalog remains the canonical metadata inventory. Phase 3 introduces a
-     * shadow executable kernel for selected rule families, while current validators
-     * and the solver remain authoritative until their migration phases complete.
-     *
-     * Severity:
-     * - hard: invalid schedules are rejected or pruned from CSP domains.
-     * - warning: generation may proceed only after the user reviews the anomaly.
-     * - soft: valid schedules are ranked lower by the CSP scorer.
-     */
     public const CONSTRAINT_CATALOG = [
         'required_field' => [
             'severity' => 'hard',
@@ -721,11 +600,6 @@ final class SchedulingPolicy
             'description' => 'A configured minor split session must contain exactly two linked meetings.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
-        // The 'minor_split_' prefix is historical: these rules now govern every
-        // balanced two-day split, majors included. The codes
-        // are persisted in violation payloads and in the audit trail, so they
-        // are left alone on purpose -- {@see balancedSplitEligible} is the rule
-        // they actually express.
         'minor_split_eligibility' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
@@ -950,10 +824,6 @@ final class SchedulingPolicy
         return $prefix.'|in:'.implode(',', self::ACTIVE_STATUSES);
     }
 
-    /**
-     * The units an instructor is expected to carry: their maximum less whatever
-     * has been deloaded for administrative or other duties.
-     */
     public static function facultyRequiredUnits(mixed $faculty): int
     {
         $max = (int) ($faculty->max_units ?? 0);
@@ -962,40 +832,17 @@ final class SchedulingPolicy
         return max(0, $max - $deload);
     }
 
-    /**
-     * The highest load an instructor may carry before the assignment counts as
-     * over-ceiling: the required load plus the overload granted to them. Pro
-     * bono is not an allowance anyone grants -- it is whatever passes this
-     * ceiling -- so a leftover `probono_units` value no longer raises it. Kept
-     * soft on purpose: a chair may still need to overload someone, so the
-     * assignment warns instead of refusing.
-     */
     public static function facultyUnitCeiling(mixed $faculty): int
     {
         return self::facultyRequiredUnits($faculty)
             + (int) ($faculty->overload_units ?? 0);
     }
 
-    /**
-     * The instructor's Basic Load: the maximum units they were given, less any
-     * deload. A dean with a 21-unit maximum and 6 units of deload has a 15-unit
-     * Basic Load, and anything past that is an overload.
-     *
-     * Named alias of facultyRequiredUnits() so the tier code reads in the same
-     * vocabulary the scheduling staff use.
-     */
     public static function facultyBasicLoad(mixed $faculty): int
     {
         return self::facultyRequiredUnits($faculty);
     }
 
-    /**
-     * Which band a total load of $units falls in for this instructor. The bands
-     * stack in the order the allowances are granted: Basic Load first, then the
-     * overload allowance. Once both are used up, every further unit is pro bono,
-     * whether or not pro bono units were granted -- there is no ceiling past
-     * which an assignment is refused.
-     */
     public static function facultyLoadTier(mixed $faculty, int $units): string
     {
         $basic = self::facultyBasicLoad($faculty);
@@ -1030,11 +877,6 @@ final class SchedulingPolicy
         return self::$cachedClosingTime;
     }
 
-    /**
-     * The latest time a field class may end: the institution's field end time,
-     * set beside the operating hours. Kept inside operating hours, so a closing
-     * time moved earlier than it simply becomes the limit.
-     */
     public static function fieldDayEndTime(): string
     {
         self::loadOperatingHours();
@@ -1050,13 +892,6 @@ final class SchedulingPolicy
         self::$cachedStartSlotsByDuration = [];
     }
 
-    /**
-     * A department's Default LAB Room Requirement (Generate Schedule Step 2 →
-     * Default Settings): 'laboratory', 'lecture' (a regular classroom) or
-     * 'either'. It applies to every course's laboratory meetings in that
-     * department's schedules, in generation and in every save check. With no
-     * department in scope the original rule, laboratory, stands.
-     */
     public static function labRoomType(?int $departmentId): string
     {
         if ($departmentId === null) {
@@ -1067,8 +902,6 @@ final class SchedulingPolicy
             try {
                 $value = (string) (Departments::query()->whereKey($departmentId)->value('lab_room_type') ?? 'laboratory');
             } catch (QueryException) {
-                // No departments table (a test without a database): the
-                // original rule, uncached so the stored one is read later.
                 return 'laboratory';
             }
             self::$cachedLabRoomTypeByDepartment[$departmentId] = in_array($value, self::LAB_ROOM_TYPES, true) ? $value : 'laboratory';
@@ -1078,8 +911,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * Physical room types a laboratory meeting may use, preferred first.
-     *
      * @return list<string>
      */
     public static function labRoomTypes(?int $departmentId): array
@@ -1091,10 +922,6 @@ final class SchedulingPolicy
         };
     }
 
-    /**
-     * A laboratory meeting in a classroom when a laboratory is preferred
-     * ('either'): allowed, but ranked after a free laboratory.
-     */
     public static function isLabClassroomFallback(string $roomType, ?int $departmentId): bool
     {
         return $roomType === 'lecture' && self::labRoomType($departmentId) === 'either';
@@ -1180,12 +1007,6 @@ final class SchedulingPolicy
         return (int) ($offset / self::SLOT_MINUTES);
     }
 
-    /**
-     * Where $day falls when alternatives are looked for from $fromDay, the day
-     * a placement collided on: that day first (0), then the other weekdays in
-     * week order wrapping round from it, and the weekend only after every
-     * weekday. From Thursday: Thu, Fri, Mon, Tue, Wed, Sat, Sun.
-     */
     public static function searchDayRank(string $day, string $fromDay): int
     {
         if ($day === $fromDay) {
@@ -1199,10 +1020,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * The days a department may book. Sunday is an overflow day the
-     * department secretary opens (`sunday_classes_enabled`); without it the
-     * week is Monday-Saturday.
-     *
      * @return list<string>
      */
     public static function teachingDays(bool $sundayClassesEnabled): array
@@ -1214,8 +1031,6 @@ final class SchedulingPolicy
 
     public static function dayIndex(string $day): int
     {
-        // Called inside solver ranking loops, so resolve through a flipped
-        // lookup rather than scanning DAYS on every call.
         static $indexes = null;
         $indexes ??= array_flip(self::DAYS);
 
@@ -1294,12 +1109,6 @@ final class SchedulingPolicy
         }
     }
 
-    /**
-     * A pattern a saved meeting may carry: a user-chosen two-day pattern, or
-     * the `consecutive:N` marker a Consecutive Days run is stamped with. The
-     * marker is never a Generator choice -- it comes from the course's
-     * Consecutive Days rule -- so only the save path accepts it.
-     */
     public static function isValidRowPattern(mixed $pattern): bool
     {
         return self::consecutiveDayCount($pattern) !== null || self::isValidPreferredPattern($pattern);
@@ -1310,7 +1119,6 @@ final class SchedulingPolicy
         return 'consecutive:'.$dayCount;
     }
 
-    /** The N of a `consecutive:N` pattern, or null for any other pattern. */
     public static function consecutiveDayCount(mixed $pattern): ?int
     {
         if (! is_string($pattern) || preg_match(self::CONSECUTIVE_PATTERN_REGEX, $pattern, $matches) !== 1) {
@@ -1320,45 +1128,23 @@ final class SchedulingPolicy
         return (int) $matches[1];
     }
 
-    /**
-     * How many classes' worth of weekly time a meeting's section may spend on
-     * its course: a Consecutive Days run is a Regular class met for its full
-     * length on each of its N days, so its week holds N; anything else one.
-     * `class_duration` multiplies the course's weekly ceiling by this.
-     */
     public static function weeklyCeilingMeetings(mixed $pattern): int
     {
         return self::consecutiveDayCount($pattern) ?? 1;
     }
 
-    /**
-     * `class_duration`'s weekly allowance for a section's (non-Integrated)
-     * meetings of one course: the course's unit-derived ceiling, raised to its
-     * longest meeting up to one teaching day, times the meetings its pattern
-     * holds. One class may run as long as the day (a department's eight-hour
-     * class), while a duplicated placement still goes over: two meetings add
-     * up past the longest one.
-     */
     public static function classDurationAllowanceMinutes(int $courseCeilingMinutes, int $longestMeetingMinutes, int $dayMinutes, mixed $pattern): int
     {
         return max($courseCeilingMinutes, min($longestMeetingMinutes, $dayMinutes))
             * self::weeklyCeilingMeetings($pattern);
     }
 
-    /** The longest run the department's week allows: Monday-Saturday, or through Sunday. */
     public static function maxConsecutiveDays(bool $sundayClassesEnabled): int
     {
         return count(self::teachingDays($sundayClassesEnabled));
     }
 
     /**
-     * Every run of $dayCount calendar-consecutive teaching days, in week order.
-     *
-     * The week does not wrap: Sunday -> Monday is the next week. A day the run
-     * may not use breaks it rather than being skipped, so with Sunday closed
-     * Saturday -> Monday is not consecutive, and a day left out of Step 1's
-     * Preferred Days ($allowedDays) removes every run through it.
-     *
      * @param  list<string>|null  $allowedDays
      * @return list<list<string>>
      */
@@ -1381,8 +1167,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * Whether $days are distinct and calendar-consecutive, in any order.
-     *
      * @param  list<string>  $days
      */
     public static function isConsecutiveDaySet(array $days): bool
@@ -1398,9 +1182,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * A rule's ticked meeting days -- a comma list as stored, or a list -- as
-     * distinct known days in week order; null when fewer than two remain.
-     *
      * @return list<string>|null
      */
     public static function parseMeetingDays(mixed $value): ?array
@@ -1412,12 +1193,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * The runs a resolved Consecutive Days rule may take. Ticked meeting days
-     * are the one run, whether or not they are back-to-back, while every one
-     * of them is open (Sunday classes, Step 1's Preferred Days). An older rule
-     * without them keeps its calendar-consecutive runs, from its start day
-     * when it has one.
-     *
      * @param  array{day_count: int, preferred_start_day?: string|null, meeting_days?: list<string>|null}  $rule
      * @param  list<string>|null  $allowedDays
      * @return list<list<string>>
@@ -1441,10 +1216,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * The Consecutive Days rule in force for a section's courses, as
-     * course id => {day_count, preferred_start_day, meeting_days}. A
-     * section's own rule overrides the course-wide one (`section_id` null).
-     *
      * @param  iterable<array<string, mixed>|object>  $rules  {course_id, section_id, day_count, preferred_start_day, meeting_days}
      * @return array<int, array{day_count: int, preferred_start_day: string|null, meeting_days: list<string>|null}>
      */
@@ -1532,11 +1303,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * Reads a course attribute from either form a course travels in: the model
-     * (RuleEngine, solver) or the snapshot's array (constraint kernel). Every
-     * course classification below goes through this, so both validators get
-     * one answer for one course.
-     *
      * @param  Course|array<string, mixed>  $course
      */
     private static function courseAttribute(Course|array $course, string $key, ?string $legacyKey = null): mixed
@@ -1550,12 +1316,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * Returns true when the course requires a field room (PATHFIT, NSTP, etc.).
-     *
-     * $fieldCourseCodes, when given, replaces the database lookup: the
-     * constraint kernel passes the codes captured in its snapshot, which the
-     * snapshot already scoped to the scheduling department.
-     *
      * @param  Course|array<string, mixed>  $course
      * @param  list<string>|null  $fieldCourseCodes
      */
@@ -1565,11 +1325,6 @@ final class SchedulingPolicy
             return true;
         }
 
-        // A course's name never makes it a field course: NSTP/ROTC/CWTS used
-        // to be field by keyword, with no way to turn it off. Field is the
-        // department's choice, made by giving the course a field room.
-        // Configured field-course codes are per department, shared minors
-        // included: each department that schedules one sets it for itself.
         $code = self::normalizeCourseCode((string) (self::courseAttribute($course, 'course_code', 'subject_code') ?? ''));
 
         if ($fieldCourseCodes !== null) {
@@ -1598,16 +1353,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * The laboratory half of a lecture/laboratory split, in 30-minute slots.
-     *
-     * The lecture half always follows the curriculum: one hour per lecture
-     * unit. The laboratory half derives from units the same way until a
-     * department turns on Custom Lab Duration, which *replaces* the derived
-     * length with a fixed one rather than scaling it -- a two-unit laboratory
-     * set to five hours meets for five hours, not ten. Only the split
-     * component is affected; an ordinary laboratory course keeps its
-     * unit-derived duration.
-     *
      * @param  array<string, mixed>|Departments|null  $settings
      */
     public static function laboratoryComponentSlots(Course $course, array|Departments|null $settings = null): int
@@ -1623,10 +1368,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * The lecture half of a lecture/laboratory split (Integrated Hybrid): one
-     * hour per lecture unit, read from the course so it is never a fixed length.
-     * Paired with {@see laboratoryComponentSlots}; the two stay separate meetings.
-     *
      * @param  array<string, mixed>|Course  $course
      */
     public static function lectureComponentSlots(array|Course $course): int
@@ -1637,15 +1378,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * The most weekly time a section may spend on one course: the larger of
-     * the Generator's two shapes, one block of `units × 60` minutes or a
-     * lecture/laboratory split. `class_duration` refuses a save past it, so a
-     * custom duration chosen in Setup Courses is capped here too -- except an
-     * Integrated session's, see {@see isIntegratedSession}.
-     *
-     * Accepts the model (RuleEngine) or the snapshot's array form (constraint
-     * kernel) so both validators share one ceiling.
-     *
      * @param  Course|array<string, mixed>  $course
      * @param  array<string, mixed>|Departments|null  $settings
      */
@@ -1665,15 +1397,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * Whether a meeting is one session of an Integrated class (On-site or
-     * Hybrid): a linked lecture or laboratory of a course that has both.
-     *
-     * Its length is the user's to set, in Setup Courses or the drop dialog,
-     * so it is never held to {@see courseWeeklyCeilingMinutes}'s unit-derived
-     * total. `class_duration` judges each session on its own instead, against
-     * {@see integratedSessionCeilingMinutes}. A single block is not linked, so
-     * it keeps the course ceiling even when it carries a meeting type.
-     *
      * @param  Course|array<string, mixed>  $course
      */
     public static function isIntegratedSession(Course|array $course, ?string $meetingType, ?string $splitGroupId): bool
@@ -1684,12 +1407,6 @@ final class SchedulingPolicy
             && (int) (self::courseAttribute($course, 'lab_hours') ?? 0) > 0;
     }
 
-    /**
-     * The most weekly time one Integrated session (all of a section's linked
-     * lecture meetings, or all of its laboratory meetings) may take: one
-     * teaching day. The session is a single meeting, so anything longer is a
-     * duplicated placement, not a longer class.
-     */
     public static function integratedSessionCeilingMinutes(?string $openingTime = null, ?string $closingTime = null): int
     {
         return max(0, self::timeToMinutes($closingTime ?? self::closingTime())
@@ -1697,9 +1414,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * The laboratory half for a course already reduced to an array, as the
-     * snapshot-backed constraint kernel holds it.
-     *
      * @param  array<string, mixed>  $course
      * @param  array<string, mixed>|Departments|null  $settings
      */
@@ -1710,17 +1424,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * The configured Custom Lab Duration in slots, or null when the department
-     * has not set one.
-     *
-     * The three presets are stored as separate booleans for historical reasons
-     * but describe a single choice, so they resolve in a fixed order and the
-     * settings endpoint keeps at most one of them enabled. A length that is not
-     * a whole number of slots cannot be placed on the grid at all and is
-     * ignored; a length that merely exceeds the teaching day is honoured here
-     * and reported against the course by YearLevelFeasibilityService, which
-     * names it, rather than silently generating some other duration.
-     *
      * @param  array<string, mixed>|Departments|null  $settings
      */
     public static function customLaboratoryDurationSlots(array|Departments|null $settings): ?int
@@ -1752,27 +1455,11 @@ final class SchedulingPolicy
     }
 
     /**
-     * The room type a course component requires, in the scheduling department's
-     * semesters.
-     *
-     * $departmentId is required rather than optional on purpose. Field-course
-     * codes are configured per department, while a shared minor carries a NULL
-     * department_id of its own, so resolving field-ness from the course alone
-     * silently misses a department's own configuration: the live data pins
-     * NSTP and PATHFIT as field courses for one department while both courses
-     * are department-less, and this method used to answer "not a field course"
-     * for them while the day rules said the opposite. Passing the scheduling
-     * department keeps one answer for one course in one run.
-     */
-    /**
      * @param  Course|array<string, mixed>  $course
      * @param  list<string>|null  $fieldCourseCodes  see isFieldCourse()
      */
     public static function effectiveRoomType(Course|array $course, ?int $departmentId, ?string $meetingType = null, ?array $fieldCourseCodes = null): string
     {
-        // A field designation is a course-level invariant. Component metadata
-        // must not downgrade a field course to a regular lecture/laboratory
-        // room requirement.
         if (self::isFieldCourse($course, $departmentId, $fieldCourseCodes)) {
             return 'field';
         }
@@ -1786,13 +1473,6 @@ final class SchedulingPolicy
             : ((string) (self::courseAttribute($course, 'room_type_required') ?: 'lecture'));
     }
 
-    /**
-     * Room TBA belongs to laboratories alone. A laboratory has no substitute
-     * delivery mode -- online is not a lab -- so when no laboratory room is
-     * free the meeting stays on campus with the room left for a human to
-     * assign. A lecture is never left unresolved: its fallback is online
-     * delivery, which is a real placement rather than a pending decision.
-     */
     /**
      * @param  Course|array<string, mixed>  $course
      * @param  list<string>|null  $fieldCourseCodes  see isFieldCourse()
@@ -1810,22 +1490,9 @@ final class SchedulingPolicy
     {
         return self::effectiveRoomType($course, $departmentId, $meetingType, $fieldCourseCodes) === 'lecture'
             && ! self::isFieldCourse($course, $departmentId, $fieldCourseCodes)
-            // A split course retains the parent course's laboratory metadata.
-            // When the row explicitly identifies its lecture component, apply
-            // the lecture delivery rule instead of rejecting it because another
-            // component of the same course requires a laboratory.
             && ($meetingType === 'lecture' || ! self::isLaboratoryCourse($course));
     }
 
-    /**
-     * The department whose instructors may teach this course.
-     *
-     * An explicit override on the course wins: a secretary may delegate GEC 101 to
-     * the College of Arts and Sciences even though Information Technology owns it.
-     * With no override the derived rule stands — a GEC subject is taught by the
-     * college that offers it, every other minor is open to any department, and a
-     * major is covered by the own-department and program rules below instead.
-     */
     public static function assignedTeachingDepartmentId(Course $course): ?int
     {
         if ($course->teaching_department_id !== null) {
@@ -1839,21 +1506,11 @@ final class SchedulingPolicy
         return null;
     }
 
-    /**
-     * Whether this is a service or minor course, as opposed to a major — the
-     * `delegable` flag the course list filters on. Majors can be cross-assigned
-     * too; majorDelegationRefusal() holds the one limit on them.
-     */
     public static function isDelegableCourse(Course $course): bool
     {
         return ! self::isMajorCourse($course);
     }
 
-    /**
-     * A major course belongs to the department that offers it, so it is taught by
-     * that department's own instructors — never delegated the way a GEC service
-     * course is handed to the college that offers it.
-     */
     /** @param Course|array<string, mixed> $course */
     public static function isMajorCourse(Course|array $course): bool
     {
@@ -1863,21 +1520,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * Whether this course may be split into two balanced meetings (the group the
-     * engine still labels 'minor_split').
-     *
-     * The one place this question is answered. The generator, the configuration
-     * validator, the rule engine and the constraint kernel all read it, because a
-     * placement one of them allows and another refuses is not a candidate — it is
-     * an unexplained generation failure.
-     *
-     * Every minor is eligible. A major is eligible when it has lecture or
-     * laboratory units -- a laboratory-only (0 LEC + LAB) major included. A
-     * split is one class met on two days, `units * 60` minutes in all
-     * (`minor_split_duration`), so a course with both components may be split
-     * as well as Integrated; Setup Courses picks one shape per course. A split
-     * laboratory course meets in the rooms {@see labRoomTypes} allows.
-     *
      * @param  array<string, mixed>|Course  $course
      * @param  array<string, mixed>  $departmentSettings
      */
@@ -1897,11 +1539,6 @@ final class SchedulingPolicy
         return $lectureHours > 0 || $labHours > 0;
     }
 
-    /**
-     * The department settings shape {@see balancedSplitEligible} expects, read off
-     * a department model. Callers holding a snapshot pass its settings array
-     * directly instead.
-     */
     public static function balancedSplitSettings(?Departments $department): array
     {
         return [
@@ -1910,21 +1547,9 @@ final class SchedulingPolicy
         ];
     }
 
-    /**
-     * Hybrid Split is the fixed shape of one online and one on-site lecture
-     * meeting of this length each. A course qualifies when those two meetings
-     * are exactly its weekly contact time (`units × 60`), so the unit count
-     * that fits follows from this one number rather than being hard-coded.
-     * It is a course property, so departments do not opt in through settings.
-     */
     public const HYBRID_SPLIT_MEETING_MINUTES = 90;
 
     /**
-     * Whether an Integrated course (lecture and laboratory as two sessions)
-     * meets fully face-to-face. Its delivery decides the lecture: On-site
-     * keeps it in a lecture room; otherwise it is Integrated Hybrid and the
-     * lecture is online. The laboratory is on site either way.
-     *
      * @param  array<int|string, mixed>  $deliveryModesByCourseId
      */
     public static function isIntegratedOnSite(array $deliveryModesByCourseId, int $courseId): bool
@@ -1949,15 +1574,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * Whether a laboratory may host this course's lecture meeting: only for a
-     * lecture-only major, and only in a laboratory flagged for lecture use.
-     * RoomTypeRule, the generator, the Preferred Room check and the constraint
-     * kernel (array form, from the snapshot) all ask here.
-     *
-     * A course with no category is not a major: the column is required, so a
-     * missing value means the record was loaded without it, and guessing
-     * "major" let a manual save accept what the kernel refused.
-     *
      * @param  Course|array<string, mixed>  $course
      * @param  Rooms|array<string, mixed>  $room
      */
@@ -1971,10 +1587,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * A major with lecture units, no laboratory units and a lecture room type:
-     * the course shape a lecture-flagged laboratory may host, and the one the
-     * solver schedules right after laboratory majors.
-     *
      * @param  Course|array<string, mixed>  $course
      */
     public static function isLectureOnlyMajor(Course|array $course): bool
@@ -1985,11 +1597,6 @@ final class SchedulingPolicy
             && (string) (self::courseAttribute($course, 'room_type_required') ?? 'lecture') === 'lecture';
     }
 
-    /**
-     * The department whose instructors may teach this major. A cross-assignment
-     * wins; otherwise the owning department, falling back to the section's
-     * department for a course with no owning department of its own.
-     */
     public static function majorTeachingDepartmentId(Course $course, ?int $sectionDepartmentId = null): ?int
     {
         if ($course->teaching_department_id !== null) {
@@ -2003,13 +1610,6 @@ final class SchedulingPolicy
         return $sectionDepartmentId;
     }
 
-    /**
-     * The program an instructor must belong to in order to teach this course, or
-     * null when the course is not tied to one. A major is tied to its own program
-     * unless it was cross-assigned — to a program (Prof Ed of BSED-FIL taught by
-     * BEED) or to a whole college, which leaves any of its programs free to teach
-     * it; a minor only when it was assigned to a program.
-     */
     public static function requiredTeachingProgramId(Course $course): ?int
     {
         if ($course->teaching_program_id !== null) {
@@ -2027,12 +1627,6 @@ final class SchedulingPolicy
         return $course->program_id === null ? null : (int) $course->program_id;
     }
 
-    /**
-     * Why a major cannot be handed to this target, or null when it can. A major
-     * may be cross-assigned to any college or program like a minor; only handing
-     * it to its own college as a whole is refused, since that changes nothing —
-     * inside its own college it moves to a specific sibling program.
-     */
     public static function majorDelegationRefusal(Course $course, ?Program $program, ?int $teachingDepartmentId = null): ?string
     {
         if (! self::isMajorCourse($course) || $program !== null) {
@@ -2046,22 +1640,12 @@ final class SchedulingPolicy
         return null;
     }
 
-    /**
-     * Whether field-course assignment is in effect for a department.
-     *
-     * Derived from whether any codes are configured, rather than stored in a
-     * separate marker row. The stored flag could only ever be set to true — no
-     * caller cleared it — so a department that removed its last field course was
-     * left permanently 'enabled' with an empty list (audit finding #35).
-     */
     public static function fieldCourseSettingEnabled(?int $departmentId = null): bool
     {
         return self::fieldCourseCodeMap($departmentId) !== [];
     }
 
     /**
-     * Configured field-course codes for a department; none without one.
-     *
      * @return array<string, true>
      */
     public static function fieldCourseCodeMap(?int $departmentId = null): array
@@ -2082,12 +1666,6 @@ final class SchedulingPolicy
     }
 
     /**
-     * Courses this department pins to a single day, as course id => day.
-     *
-     * Pinning is entirely per department and per course: a department that
-     * configures none gets an empty map and behaves exactly as before, and two
-     * departments may pin the same course to different days.
-     *
      * @param  list<int>  $courseIds  Optional filter; all pinned courses when empty.
      * @return array<int, string>
      */

@@ -33,8 +33,6 @@ class ScheduleRecommendationController extends Controller
 {
     private const GENERATION_RUN_TIMEOUT_SECONDS = 180;
 
-    // Keep this below the client's 190-second polling deadline so an
-    // unconsumed scheduling job reaches a durable terminal state.
     private const GENERATION_QUEUE_STALE_SECONDS = 180;
 
     private const YEAR_LEVEL_PREVIEW_EXECUTION_SECONDS = 150;
@@ -48,14 +46,6 @@ class ScheduleRecommendationController extends Controller
         private readonly GenerationCourseSelection $courseSelection,
     ) {}
 
-    /**
-     * Every placement the rules allow for one meeting of one course, with a
-     * per-room count for the dialog's room picker.
-     *
-     * This is deliberately not the CSP: the solver answers with a few ranked
-     * timetables, which left the user choosing between three Fridays with no
-     * way to see the rest of the week. See AvailableSlotFinder.
-     */
     public function availableSlots(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -116,12 +106,6 @@ class ScheduleRecommendationController extends Controller
         return response()->json($result);
     }
 
-    /**
-     * Re-checks an unsaved generated timetable as a whole and returns the
-     * courses that still need attention, each with ranked placements. Stateless:
-     * the draft travels with every call, so a course a fix resolved is simply
-     * not reported again.
-     */
     public function reviewDraft(Request $request): JsonResponse
     {
         $time = ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'];
@@ -132,8 +116,6 @@ class ScheduleRecommendationController extends Controller
             'section_ids.*' => 'integer',
             'preferred_days' => 'sometimes|nullable|array',
             'preferred_days.*' => SchedulingPolicy::allowedDaysRule('required'),
-            // References are resolved against the snapshot rather than with an
-            // `exists` rule per row: a year level is several hundred rows.
             'rows' => 'present|array|max:3000',
             'rows.*.section_id' => 'required|integer',
             'rows.*.course_id' => 'required|integer',
@@ -202,9 +184,6 @@ class ScheduleRecommendationController extends Controller
             'year_level' => 'required|integer|min:1|max:4',
             'section_configs' => 'required|array|min:1',
             'section_configs.*.section_id' => 'required|integer|distinct|exists:sections,id',
-            // What the client believed the section follows. Asserted, not
-            // applied: a mismatch means the user is looking at a course list
-            // from a different curriculum than the one now stored.
             'section_configs.*.curriculum_id' => 'sometimes|nullable|integer|exists:curriculum,id',
             'section_configs.*.course_ids' => 'sometimes|array|min:1',
             'section_configs.*.course_ids.*' => 'integer|exists:courses,id',
@@ -254,7 +233,6 @@ class ScheduleRecommendationController extends Controller
             ->where('year_level', (string) $validated['year_level'])
             ->where('semester', (string) $semester->semester)
             ->where('status', 'active')
-            // A year level spans programs; each owner generates only theirs.
             ->whereIn('program_id', $this->authorization->writableProgramIds($request))
             ->orderBy('section_name')
             ->get();
@@ -310,19 +288,14 @@ class ScheduleRecommendationController extends Controller
                         preferredPatterns: $preferredPatterns,
                     ),
                 ];
-                // Step 1's Preferred Days must leave room for every Required Day.
                 CourseSetupOverrides::assertSundayAllowed($section, $sectionConfig['allowed_days']);
                 CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
-                // Setup Courses "Configure" choices, normalised to the shape
-                // each course is generated in; refused here when the validator
-                // would refuse the result at save time.
                 $sectionConfig[CourseSetupOverrides::DURATIONS_KEY] = CourseSetupOverrides::normalizeDurations(
                     $section,
                     $config['duration_minutes_by_course_id'] ?? [],
                     $courseIds,
                     $sectionConfig,
                 );
-                // Integrated Hybrid: lecture and laboratory lengths, set separately.
                 $sectionConfig[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
                     $section,
                     $config['component_minutes_by_course_id'] ?? [],
@@ -390,26 +363,17 @@ class ScheduleRecommendationController extends Controller
         });
     }
 
-    /** Queue the expensive year-level solve and return immediately. */
     public function queueYearLevelPreview(Request $request): JsonResponse
     {
         $request->merge(['async' => false]);
-        // Reuse the same validation and preparation contract as the preview
-        // endpoint without running the solver in this request.
         $validated = $request->validate([
             'semester_id' => 'required|integer|exists:semesters,id',
             'department_id' => 'required|integer|exists:departments,id',
             'year_level' => 'required|integer|min:1|max:4',
-            // Per-section generation: only these sections of the year level are
-            // scheduled. The rest keep their classes, which the snapshot treats
-            // as fixed room, faculty and time occupancy. Omitted: every section.
             'section_ids' => 'sometimes|array|min:1',
             'section_ids.*' => 'integer|distinct',
             'section_configs' => 'required|array|min:1',
             'section_configs.*.section_id' => 'required|integer|distinct|exists:sections,id',
-            // What the client believed the section follows. Asserted, not
-            // applied: a mismatch means the user is looking at a course list
-            // from a different curriculum than the one now stored.
             'section_configs.*.curriculum_id' => 'sometimes|nullable|integer|exists:curriculum,id',
             'section_configs.*.course_ids' => 'sometimes|array|min:1',
             'section_configs.*.course_ids.*' => 'integer|exists:courses,id',
@@ -494,19 +458,14 @@ class ScheduleRecommendationController extends Controller
                 'allow_friday_saturday_split' => (bool) ($config['allow_friday_saturday_split'] ?? false),
                 'seed' => $this->yearLevelConfigSeed((int) $validated['semester_id'], (int) $validated['department_id'], (int) $validated['year_level'], (int) $section->id, $courseIds, $splitIds, $gecIds, $preferredPatterns),
             ];
-            // Step 1's Preferred Days must leave room for every Required Day.
             CourseSetupOverrides::assertSundayAllowed($section, $sectionConfig['allowed_days']);
             CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
-            // Setup Courses "Configure" choices, normalised to the shape
-            // each course is generated in; refused here when the validator
-            // would refuse the result at save time.
             $sectionConfig[CourseSetupOverrides::DURATIONS_KEY] = CourseSetupOverrides::normalizeDurations(
                 $section,
                 $config['duration_minutes_by_course_id'] ?? [],
                 $courseIds,
                 $sectionConfig,
             );
-            // Integrated Hybrid: lecture and laboratory lengths, set separately.
             $sectionConfig[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
                 $section,
                 $config['component_minutes_by_course_id'] ?? [],
@@ -547,14 +506,6 @@ class ScheduleRecommendationController extends Controller
         return response()->json($this->reconcileOrphanedRun($run));
     }
 
-    /**
-     * Stop a run the caller owns.
-     *
-     * Cancellation is cooperative: this marks the durable run terminal, and
-     * the worker notices at its next placement boundary and unwinds. A run
-     * still waiting on the queue is also removed from the queue table so no
-     * worker picks up work whose result is already discarded.
-     */
     public function cancelGenerationRun(Request $request, string $runId): JsonResponse
     {
         $run = ScheduleGenerationRun::query()->where('run_id', $runId)->firstOrFail();
@@ -562,8 +513,6 @@ class ScheduleRecommendationController extends Controller
             return $this->departmentForbiddenResponse();
         }
 
-        // Cancelling a run that already finished is a no-op, not an error: the
-        // user clicked while the last poll was still in flight.
         if (! in_array($run->status, ['queued', 'running'], true)) {
             return response()->json($run);
         }
@@ -578,8 +527,6 @@ class ScheduleRecommendationController extends Controller
                 'finished_at' => now(),
             ]);
 
-        // Only an unreserved job is safe to delete; a reserved one belongs to a
-        // worker that will stop on its own at the next cancellation check.
         if ($cancelled > 0 && $wasQueued) {
             DB::table('jobs')
                 ->where('queue', 'scheduling')
@@ -591,13 +538,6 @@ class ScheduleRecommendationController extends Controller
         return response()->json($run->refresh());
     }
 
-    /**
-     * The newest still-active run the caller owns for a department and semester.
-     *
-     * Progress tracking lives outside the generator modal, so a reload or a
-     * closed panel must be able to find the run again. Ownership matches the
-     * single-run endpoint: a run belongs to whoever requested it.
-     */
     public function activeGenerationRun(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -621,8 +561,6 @@ class ScheduleRecommendationController extends Controller
             return response()->json(['run' => null]);
         }
 
-        // Reconcile before answering: an orphaned run must not be reported as
-        // active work the caller is still waiting on.
         $run = $this->reconcileOrphanedRun($run);
 
         return response()->json([
@@ -630,11 +568,6 @@ class ScheduleRecommendationController extends Controller
         ]);
     }
 
-    /**
-     * A worker can be terminated by its timeout before the queued job's
-     * exception handler runs. Reconcile an orphaned active run on read so the
-     * durable status reflects the actual lifecycle outcome.
-     */
     private function reconcileOrphanedRun(ScheduleGenerationRun $run): ScheduleGenerationRun
     {
         if (! in_array($run->status, ['queued', 'running'], true) || $run->finished_at !== null) {
@@ -659,10 +592,6 @@ class ScheduleRecommendationController extends Controller
             'finished_at' => now(),
         ]);
 
-        // A queued run can outlive its durable status when polling expires it
-        // before a worker claims the job. Remove only the still-unreserved
-        // queue record for this run so the queue and generation-run tables do
-        // not report different lifecycles.
         if ($wasQueued) {
             DB::table('jobs')
                 ->where('queue', 'scheduling')
@@ -696,10 +625,6 @@ class ScheduleRecommendationController extends Controller
     }
 
     /**
-     * Required Day, Consecutive Days and Field Course rules chosen for this run
-     * in Setup Courses. They stand in for the department's saved rules of the
-     * run's courses and are never saved; null leaves the saved rules in force.
-     *
      * @param  array<string, mixed>  $validated
      * @return array<string, mixed>|null
      */
@@ -726,14 +651,6 @@ class ScheduleRecommendationController extends Controller
     }
 
     /**
-     * Refuses a run whose client was looking at a different curriculum than the
-     * one the section now follows.
-     *
-     * Generation is configured against a course list, and that list only means
-     * anything relative to a curriculum. If someone reassigns the year level
-     * while another user has the wizard open, silently generating against the
-     * new curriculum would produce a timetable for courses that user never saw.
-     *
      * @param  Collection<int, Sections>  $sections
      * @param  Collection<int, array<string, mixed>>  $configs
      */
@@ -787,19 +704,6 @@ class ScheduleRecommendationController extends Controller
         return (abs((int) crc32($payload)) % 1000000) + 1;
     }
 
-    /**
-     * Ownership plus the program precondition, for the paths that build or
-     * commit schedules.
-     *
-     * These are two different failures and must not collapse into one answer:
-     * a caller from the wrong department is forbidden, while a caller from the
-     * right department whose department has no program yet is merely missing a
-     * setup step. Folding the second into the ownership check answered it with
-     * "you can only manage schedules for your department", which is misleading
-     * -- the department is correct.
-     *
-     * Returns the response to send, or null when the caller may proceed.
-     */
     private function departmentGuard(Request $request, int $departmentId, array $sectionIds = []): ?JsonResponse
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, $departmentId)) {
@@ -810,8 +714,6 @@ class ScheduleRecommendationController extends Controller
             return $this->departmentMissingProgramResponse();
         }
 
-        // Generating and previewing build a program's timetable,
-        // so they follow program ownership inside the department.
         if (! $this->authorization->sectionIdsWritable($request, $sectionIds)) {
             return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_FORBIDDEN_MESSAGE], 403);
         }

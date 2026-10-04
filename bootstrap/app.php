@@ -14,17 +14,11 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
-    // Channel auth lives under /api and uses the same bearer tokens as every
-    // other API call; the default /broadcasting/auth route expects a session.
     ->withBroadcasting(
         __DIR__.'/../routes/channels.php',
         ['prefix' => 'api', 'middleware' => ['api', 'auth:sanctum', 'active']],
     )
     ->withMiddleware(function (Middleware $middleware) {
-        // Lets repeat GETs of unchanged JSON come back as a bodyless 304
-        // instead of re-sending (and re-parsing) the whole payload. A write
-        // resent with the same Idempotency-Key (a retry after a slow connection
-        // gave up) replays its first outcome instead of running twice.
         $middleware->appendToGroup('api', [
             \App\Http\Middleware\ConditionalGetJson::class,
             \App\Http\Middleware\IdempotentRequests::class,
@@ -46,8 +40,6 @@ return Application::configure(basePath: dirname(__DIR__))
             return $request->expectsJson();
         });
 
-        // A token revoked by a sign-in on another device gets a reason, so the
-        // old device can say why it was signed out.
         $exceptions->render(function (AuthenticationException $e, Request $request) {
             if ($request->is('api/*') && app(SingleActiveSession::class)->wasReplaced($request->bearerToken())) {
                 return response()->json([

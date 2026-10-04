@@ -8,10 +8,6 @@ use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
 
-/**
- * section_conflict, subject_section_time_conflict.
- * Kernel counterpart of Rules\SectionConflictRule.
- */
 final class SectionConflictConstraints
 {
     /**

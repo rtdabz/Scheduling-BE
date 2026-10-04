@@ -7,25 +7,8 @@ namespace App\Services\Scheduling\Schedule;
 use App\Models\Schedule;
 use App\Services\Scheduling\Engine\RuleEngine;
 
-/**
- * Saved classes that no longer satisfy a rule they passed when they were placed.
- *
- * Every write is validated, but the data a rule reads can change afterwards
- * with nothing about the class changing: an instructor's availability edited,
- * a room taken out of service or retyped, operating hours narrowed, a course
- * dropped from the curriculum. The conflict scan cannot see these -- it
- * compares classes with each other -- so this re-runs the rules a class
- * answers to on its own (RuleEngine::validateStanding) against each saved row.
- *
- * Like conflicts, issues are derived on every read and never stored: an issue
- * is gone when the class, or the data it broke, is fixed.
- */
 final class StandingRuleScanner
 {
-    /**
-     * Clashes between two classes; the conflict scan reports these, with the
-     * pair, and they have their own resolution flow.
-     */
     private const PAIRWISE_RULES = ['section_conflict', 'room_conflict', 'faculty_conflict', 'subject_section_time_conflict'];
 
 
@@ -46,11 +29,6 @@ final class StandingRuleScanner
             ->orderBy('id')
             ->get();
 
-        // A fresh engine per scan. Its lookup cache assumes one request, but a
-        // route keeps its controller -- and so this scanner -- for as long as
-        // the application lives, and this scan exists to notice data that
-        // changed: a room or instructor remembered from an earlier scan would
-        // hide exactly the issue it is looking for.
         $ruleEngine = app(RuleEngine::class);
 
         $issues = [];

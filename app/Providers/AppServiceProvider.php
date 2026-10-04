@@ -21,15 +21,10 @@ use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
-    /**
-     * Register any application services.
-     */
     public function register(): void
     {
         $this->app->bind(SchedulingSolver::class, CspSchedulingSolverAdapter::class);
         $this->app->bind(YearLevelSchedulingSolver::class, static function ($app): YearLevelSchedulingSolver {
-            // Container keys are case-sensitive even though PHP class names are
-            // not, so always spell it CspSolver, matching the class and its file.
             return new CspYearLevelSchedulingSolverAdapter($app->make(CspSolver::class));
         });
         $this->app->bind(SchedulingScopeLock::class, DatabaseSchedulingScopeLock::class);
@@ -37,18 +32,10 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(LiveUpdates::class);
     }
 
-    /**
-     * Bootstrap any application services.
-     */
     public function boot(): void
     {
         LiveUpdateRecorder::register($this->app);
 
-        // SchedulingPolicy memoises department settings (field-course codes,
-        // operating hours) in static properties. Saving a setting clears them
-        // only in the web process that saved it; a queue worker lives across
-        // many jobs, so without this it kept generating against the settings
-        // it first read -- a course taken off the field list stayed Field.
         Event::listen(JobProcessing::class, static function (): void {
             SchedulingPolicy::clearFieldCourseCache();
             SchedulingPolicy::clearTimeCache();

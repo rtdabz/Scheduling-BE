@@ -9,33 +9,14 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
-/**
- * Makes a write that carries an `Idempotency-Key` header safe to send twice.
- *
- * On a slow connection the browser can give up on a save the server went on
- * to complete. When the user presses Save again, the client resends the same
- * key (see wicars-ui/src/lib/idempotency.ts), and this middleware replays the
- * first outcome instead of creating a duplicate class, submission or approval.
- *
- * - Only successful (2xx) outcomes are remembered. A 409 or 422 depends on
- *   data other users may change in the meantime, so a retry re-runs it.
- * - A retry that arrives while the original is still running gets a 409 and
- *   can try again; it never runs the write a second time in parallel.
- * - Reusing a key for a different request is a client bug and gets a 422.
- *
- * Keys are scoped to the bearer token, so one user can never replay another
- * user's response. Requests without the header are untouched.
- */
 class IdempotentRequests
 {
     public const HEADER = 'Idempotency-Key';
 
     public const REPLAY_HEADER = 'Idempotent-Replayed';
 
-    /** How long a completed outcome can be replayed, in seconds. */
     private const TTL_SECONDS = 600;
 
-    /** Upper bound on how long one write may hold the in-flight lock. */
     private const LOCK_SECONDS = 120;
 
     public function handle(Request $request, Closure $next): Response
@@ -67,7 +48,6 @@ class IdempotentRequests
                 ], 409);
             }
 
-            // The original may have finished between the read above and the lock.
             $stored = Cache::get($cacheKey);
             if (is_array($stored)) {
                 return $this->replay($stored, $fingerprint);

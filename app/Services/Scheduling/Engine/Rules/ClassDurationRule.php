@@ -6,35 +6,6 @@ use App\Models\Departments;
 use App\Models\Schedule;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * class_duration: a section's meetings for one course may not add up to more
- * weekly time than the course carries.
- *
- * Meetings are judged together, not one at a time. A course may legitimately be
- * one block, an MWF set of shorter meetings, a Split Session pair or a
- * lecture/laboratory split, so no single meeting length is "the" right one; and
- * meetings are placed one by one, so a total still short of the course is
- * normal while a timetable is being built. What is never valid is going over:
- * that is a duplicated placement or a stretched class.
- *
- * Meetings in the same batch are not counted against each other here, the same
- * as every other RuleEngine rule; each is judged against what is persisted.
- *
- * The ceiling is the larger of the Schedule Generator's two shapes — one block
- * of `units × 2` slots, or a lecture/laboratory split of `lecture_hours × 2`
- * slots plus the department's laboratory length — so anything the Generator
- * can produce always fits. (`lecture_hours`/`lab_hours` hold units.)
- *
- * An Integrated class (On-site or Hybrid) is the exception: its lecture and
- * laboratory take whatever lengths the user set, so each session is judged on
- * its own -- the section's linked meetings of that type against one teaching
- * day -- and never against the unit-derived total
- * ({@see SchedulingPolicy::isIntegratedSession}).
- *
- * Every status counts. Rejected (VPAA sent it back) and revision (withdrawn
- * to edit) meetings are live classes that get fixed and resubmitted, and they
- * already hold their room and time in the conflict rules.
- */
 final class ClassDurationRule
 {
     public function __construct(private readonly RuleLookupCache $lookups) {}
@@ -53,27 +24,19 @@ final class ClassDurationRule
             ->where('semester_id', (int) $attempt['semester_id'])
             ->where('section_id', (int) $records->section->id)
             ->where('course_id', (int) $course->id)
-            // meeting_type / split_group_id live on schedule_splits and are read
-            // through the split relation's accessors, not schedules columns.
             ->with('split:id,schedule_id,split_group_id,meeting_type')
             ->get(['id', 'start_time', 'end_time']);
-        // An Integrated session's length is the user's to set, so only the
-        // section's other linked meetings of the same session count against it.
         if ($isIntegratedSession) {
             $rows = $rows->filter(static fn (Schedule $row): bool => $row->meeting_type === $meetingType
                 && SchedulingPolicy::isIntegratedSession($course, $row->meeting_type, $row->split_group_id));
         }
         $minutesOf = static fn (Schedule $row): int => max(0, RuleSupport::durationMinutes((string) $row->start_time, (string) $row->end_time));
 
-        // Before this save: every live meeting, including the ones being edited
-        // or replaced. After: the untouched ones plus this attempt.
         $minutesBefore = $rows->sum($minutesOf);
         $kept = $rows->reject(static fn (Schedule $row): bool => in_array((int) $row->id, $ignoreIds, true));
         $attemptMinutes = max(0, RuleSupport::durationMinutes((string) $attempt['start_time'], (string) $attempt['end_time']));
         $totalMinutes = $kept->sum($minutesOf) + $attemptMinutes;
 
-        // A Consecutive Days run meets for the class's full length every day,
-        // and one class may run as long as the teaching day.
         $dayMinutes = SchedulingPolicy::integratedSessionCeilingMinutes();
         $allowedMinutes = $isIntegratedSession
             ? $dayMinutes
@@ -87,9 +50,6 @@ final class ClassDurationRule
             return null;
         }
 
-        // Only a save that adds time past the ceiling is refused. Data that was
-        // already over must not block unrelated edits such as assigning an
-        // instructor or moving a meeting without lengthening it.
         if ($totalMinutes <= $allowedMinutes || $totalMinutes <= $minutesBefore) {
             return null;
         }
@@ -124,10 +84,6 @@ final class ClassDurationRule
         );
     }
 
-    /**
-     * Only the Custom Lab Duration columns: a department row also carries its
-     * logo inline as base64, which a validation pass has no use for.
-     */
     private function labDurationSettings(int $departmentId): ?Departments
     {
         return $this->lookups->remember('labDurationSettings:'.$departmentId, fn () => Departments::query()

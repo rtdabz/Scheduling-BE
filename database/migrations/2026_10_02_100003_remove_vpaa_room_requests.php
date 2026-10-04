@@ -6,12 +6,6 @@ use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
 
-/**
- * Room borrowing is between the requesting and the owning department; the VPAA
- * takes no part (config/capabilities.php). Grants are held by the stored role
- * and by individual accounts, so both drop `room.request`, and the VPAA-only
- * `room.view_all_requests` capability goes away.
- */
 return new class extends Migration
 {
     public function up(): void

@@ -65,8 +65,6 @@ return new class extends Migration
             $table->softDeletes();
         });
 
-        // One live split row per schedule. MySQL/MariaDB only, like
-        // semesters.semester_key.
         if (DB::getDriverName() !== 'mysql') {
             return;
         }

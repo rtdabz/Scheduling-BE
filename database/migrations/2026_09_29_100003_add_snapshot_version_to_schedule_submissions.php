@@ -5,14 +5,6 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-/**
- * Each submission points at the frozen copy of the meetings it sent.
- *
- * Recall and return only change statuses; the meetings stay the working copy
- * that the department then edits, resets or regenerates. The submit already
- * wrote a history snapshot, but nothing tied it to the submission, so once the
- * working copy changed a recalled or returned version could no longer be seen.
- */
 return new class extends Migration
 {
     public function up(): void
@@ -25,7 +17,6 @@ return new class extends Migration
                 ->nullOnDelete();
         });
 
-        // The submit audit entry already links the submission to its snapshot.
         DB::table('scheduling_audit_logs')
             ->where('action', 'schedule_submitted')
             ->whereNotNull('schedule_submission_id')

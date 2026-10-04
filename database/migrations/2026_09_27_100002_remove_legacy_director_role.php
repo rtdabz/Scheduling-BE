@@ -4,12 +4,6 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Spatie\Permission\PermissionRegistrar;
 
-/**
- * The Director portal was retired, but its Spatie role row stayed behind with
- * no capabilities and no holders. Supported roles come from
- * config/capabilities.php `role_defaults`; `director` is not one of them.
- * Legacy accounts are still refused at login by users.role alone.
- */
 return new class extends Migration
 {
     public function up(): void
@@ -28,6 +22,5 @@ return new class extends Migration
 
     public function down(): void
     {
-        // The role held nothing; there is nothing to restore.
     }
 };

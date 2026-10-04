@@ -6,21 +6,11 @@ use App\Models\Course;
 use App\Models\Rooms;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
-/**
- * room_type_match: the delivery mode and the assigned room suit what the course
- * (or this component of it) requires — a laboratory, a lecture room, a field,
- * or online delivery where that is an allowed fallback.
- */
 final class RoomTypeRule
 {
     public function __construct(private readonly RuleLookupCache $lookups) {}
 
     /**
-     * $departmentId is the scheduling department, not the course's owner. Field
-     * course codes are configured per department and shared minors carry no
-     * department of their own, so the room-type rule must be asked in the same
-     * terms as the day rules or one course gets two answers in one run.
-     *
      * @return array<string, mixed>|null
      */
     public function check(
@@ -45,11 +35,6 @@ final class RoomTypeRule
     }
 
     /**
-     * The room-type decision itself, for a course and room in either form: the
-     * models RuleEngine loads, or the constraint kernel's snapshot arrays. The
-     * kernel passes its snapshot's field-course codes so no database lookup
-     * happens; RuleEngine passes none and the department's list is read.
-     *
      * @param  Course|array<string, mixed>  $course
      * @param  Rooms|array<string, mixed>|null  $room
      * @param  list<string>|null  $fieldCourseCodes
@@ -87,16 +72,11 @@ final class RoomTypeRule
             return $roomType === 'field' ? null : $violation('Field schedules must use a field room assignment.');
         }
 
-        // On-site: reject virtual (online/field) rooms for physical delivery.
         if (in_array($roomType, ['online', 'field'], true)) {
             return $violation("Course {$courseCode} requires a physical room, but '{$roomCode}' is a '{$roomType}' room.");
         }
 
-        // A laboratory meeting takes the rooms the institution's Default LAB
-        // Room Requirement allows: a laboratory, a classroom, or either.
         if ($requiredRoomType === 'laboratory') {
-            // The scheduling department's rule; a course's own department
-            // stands in when no scheduling department was given.
             $courseDepartmentId = is_array($course) ? ($course['department_id'] ?? null) : $course->department_id;
             $labDepartmentId = $departmentId ?? ($courseDepartmentId === null ? null : (int) $courseDepartmentId);
             if (in_array($roomType, SchedulingPolicy::labRoomTypes($labDepartmentId), true)) {

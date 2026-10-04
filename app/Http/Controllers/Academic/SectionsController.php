@@ -24,11 +24,6 @@ class SectionsController extends Controller
 
     private const OTHER_PROGRAM_MESSAGE = 'You can only manage sections for your own program.';
 
-    /**
-     * Fields that decide which classes a section should have. Changing one under
-     * a submitted or approved timetable would leave those classes describing a
-     * cohort that no longer exists. The name is left editable: it is a label.
-     */
     private const STRUCTURAL_FIELDS = ['year_level', 'semester_id', 'department_id', 'program_id', 'curriculum_id', 'status'];
 
     public function __construct(
@@ -36,14 +31,8 @@ class SectionsController extends Controller
         private readonly RevisionChangeRecorder $revisionChanges,
     ) {}
 
-    // Get all sections
     public function index(Request $request)
     {
-        // A department user only ever works with their own sections; sending
-        // every department's (and every semester's) to be filtered in the
-        // browser grew the payload each term. The nested department omits its
-        // base64 logo, which was repeated on every row.
-        // A Program Head only sees their own program's sections.
         $departmentId = $this->authorization->departmentScope($request);
         $programId = $this->authorization->programScope($request);
         $sections = Cache::remember(
@@ -59,13 +48,6 @@ class SectionsController extends Controller
         return response()->json($sections);
     }
 
-    /**
-     * The curricula a section may follow: its own department's active ones,
-     * either program-wide or scoped to the section's program.
-     *
-     * A department mid-transition runs several, so this cannot be answered by
-     * "the active curriculum" — the caller has to choose.
-     */
     private function selectableCurriculumIds(int $departmentId, ?int $programId): \Illuminate\Support\Collection
     {
         return Curriculum::query()
@@ -82,7 +64,6 @@ class SectionsController extends Controller
             ?? Semester::firstOrFail();
     }
 
-    // Create section
     public function store(StoreSectionRequest $request)
     {
         $validated = $request->validated();
@@ -101,9 +82,6 @@ class SectionsController extends Controller
             return response()->json(['message' => 'The selected curriculum is not available to this department and program.'], 422);
         }
 
-        // A null here is deliberate: the Sections model fills it in when the
-        // department runs exactly one curriculum, and leaves it unset when there
-        // is a real choice to make.
         $validated['curriculum_id'] = $curriculumId;
         $validated['semester_id'] = $activeSemester->id;
         $validated['semester'] = $activeSemester->semester;
@@ -125,7 +103,6 @@ class SectionsController extends Controller
         return response()->json($section->load(['department', 'program', 'academicSemester', 'curriculum']), 201);
     }
 
-    // Create batch sections
     public function batchStore(BatchStoreSectionsRequest $request)
     {
         $validated = $request->validated();
@@ -155,8 +132,6 @@ class SectionsController extends Controller
             }
         }
 
-        // A name may appear once per department in the batch, and not at all if a
-        // live section in the active semester already holds it.
         $errors = [];
         $seen = [];
         foreach ($validated['sections'] as $index => $data) {
@@ -199,7 +174,6 @@ class SectionsController extends Controller
         ], 201);
     }
 
-    // Get single section
     public function show(Request $request, Sections $section)
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $section->department_id)
@@ -210,10 +184,8 @@ class SectionsController extends Controller
         return response()->json($section->load(['department', 'program', 'academicSemester', 'curriculum']));
     }
 
-    // Update section
     public function update(UpdateSectionRequest $request, Sections $section)
     {
-        // Access to the section's current department is checked in UpdateSectionRequest::authorize().
         $validated = $request->validated();
 
         if (! $this->authorization->payloadBelongsToProgram($request, $section->program_id)
@@ -221,15 +193,11 @@ class SectionsController extends Controller
             return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
         }
 
-        // The semester label follows the semester row. Accepting it on its own
-        // let a section claim "2nd" while still belonging to a 1st-semester row.
         unset($validated['semester']);
         if (isset($validated['semester_id'])) {
             $validated['semester'] = Semester::query()->whereKey($validated['semester_id'])->value('semester');
         }
 
-        // The edit form resends every field, so only a value that actually
-        // changes counts.
         $changesStructure = collect(self::STRUCTURAL_FIELDS)->contains(
             fn (string $field): bool => array_key_exists($field, $validated)
                 && (string) $validated[$field] !== (string) $section->getAttribute($field),
@@ -275,15 +243,6 @@ class SectionsController extends Controller
         return response()->json($section->load(['department', 'program', 'academicSemester', 'curriculum']));
     }
 
-    /**
-     * Point a whole year level at one curriculum.
-     *
-     * This is the write behind the generator's curriculum step: the user picks
-     * "Year 1 follows the new curriculum" once, rather than editing each section.
-     * It is a separate endpoint from update() so the choice is persisted before
-     * generation runs, which keeps every other consumer — course lists, teaching
-     * assignments, printing — agreeing with what the generator used.
-     */
     public function assignCurriculumToYearLevel(Request $request)
     {
         $validated = $request->validate([
@@ -291,7 +250,6 @@ class SectionsController extends Controller
             'department_id' => 'required|integer|exists:departments,id',
             'year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
             'curriculum_id' => 'required|integer|exists:curriculum,id',
-            // Optional narrowing: a single section moving ahead of its year level.
             'section_ids' => 'sometimes|array|min:1',
             'section_ids.*' => 'integer|exists:sections,id',
         ]);
@@ -324,8 +282,6 @@ class SectionsController extends Controller
             return response()->json(['message' => 'No active sections were found for the selected year level.'], 422);
         }
 
-        // A program-scoped curriculum cannot be handed to a section of another
-        // program, so refuse the whole batch rather than half-applying it.
         if ($curriculum->program_id !== null) {
             $mismatched = $sections->filter(
                 static fn (Sections $section): bool => (int) $section->program_id !== (int) $curriculum->program_id,
@@ -370,7 +326,6 @@ class SectionsController extends Controller
         ]);
     }
 
-    // Delete section
     public function destroy(Request $request, Sections $section)
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $section->department_id)) {
@@ -380,17 +335,10 @@ class SectionsController extends Controller
             return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
         }
 
-        // Deleting a section removes its classes with it (the foreign key
-        // cascades), so a section holding submitted or approved classes would
-        // take them out of the submission. Deleting those classes one by one
-        // is already refused; the section must not be a way around that.
         if ($section->hasLockedSchedules()) {
             return response()->json(['message' => self::LOCKED_SECTION_MESSAGE], 422);
         }
 
-        // The delete cascades to the section's meetings and to its links to the
-        // submissions that sent it; a version that went through approval keeps
-        // them in its history instead.
         DB::transaction(function () use ($request, $section): void {
             $this->revisionChanges->recordSectionDeleted($section, $request->user()?->id);
             $section->delete();
@@ -407,7 +355,6 @@ class SectionsController extends Controller
         return response()->json(['message' => 'Section deleted successfully']);
     }
 
-    // Get sections by semester
     public function bySemester($semesterId)
     {
         $sections = Cache::remember(ApiCache::key('sections.by_semester', ['semester_id' => $semesterId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'curriculum'])
@@ -417,7 +364,6 @@ class SectionsController extends Controller
         return response()->json($sections);
     }
 
-    // Get sections by department
     public function byDepartment($departmentId)
     {
         $sections = Cache::remember(ApiCache::key('sections.by_department', ['department_id' => $departmentId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['program', 'academicSemester', 'curriculum'])

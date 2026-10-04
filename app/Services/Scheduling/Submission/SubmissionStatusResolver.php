@@ -8,22 +8,6 @@ use App\Models\ScheduleSubmission;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 
-/**
- * The two statuses a section's schedule is shown with.
- *
- * Submission status: where the section's latest submitted version stands --
- * draft (never submitted), submitted, dean_approved, vpaa_approved, recalled
- * or rejected. A recalled or rejected version stays so until it is resubmitted,
- * whatever happens to the working copy in between.
- *
- * Revision status: initial, or modified when the working copy (or the version
- * resubmitted from it) differs from the last recalled or rejected version, or
- * reset when the working copy was emptied after one. That
- * version is read from its submit snapshot, so an edit or Reset of the working
- * copy never changes what it is compared against.
- *
- * Both are derived, never stored, so they cannot drift from the workflow.
- */
 class SubmissionStatusResolver
 {
     public const DRAFT = 'draft';
@@ -37,7 +21,6 @@ class SubmissionStatusResolver
     public const MODIFIED = 'modified';
     public const RESET = 'reset';
 
-    /** What makes two versions of a section the same timetable; status and instructors are not content. */
     private const CONTENT_FIELDS = ['course_id', 'day', 'start_time', 'end_time', 'room_id', 'mode', 'is_hybrid'];
 
     /**
@@ -80,10 +63,8 @@ class SubmissionStatusResolver
 
             $revision = self::INITIAL;
             if ($closed !== null && $closed->snapshot_version_id !== null) {
-                // '' is the fingerprint of no meetings at all.
                 $before = $fingerprints[(int) $closed->snapshot_version_id][$sectionId] ?? '';
                 if ($before !== $this->fingerprint($live)) {
-                    // A working copy emptied by Reset is a fresh start, not an edit.
                     $revision = $live->isEmpty() && $before !== '' ? self::RESET : self::MODIFIED;
                 }
             }
@@ -99,17 +80,12 @@ class SubmissionStatusResolver
     }
 
     /**
-     * Whether each submission changed its sections from the recalled or
-     * rejected version before it. Submissions must carry their sections.
-     *
      * @param  Collection<int, ScheduleSubmission>  $submissions
      * @return array<int, string>  Keyed by submission id.
      */
     public function forSubmissions(Collection $submissions): array
     {
         $result = $submissions->mapWithKeys(fn (ScheduleSubmission $submission): array => [$submission->id => self::INITIAL])->all();
-        // A version with no sections left has nothing to compare, and cannot be
-        // the version another one was revised from, so its snapshot is never read.
         $ordered = $submissions
             ->filter(fn (ScheduleSubmission $submission): bool => $submission->sections->isNotEmpty())
             ->sortByDesc('revision_number')
@@ -142,9 +118,6 @@ class SubmissionStatusResolver
     }
 
     /**
-     * For each section of a submission, the recalled or rejected version it was
-     * revised from -- the one forSubmissions() compares it against.
-     *
      * @return array<int, ScheduleSubmission>  Keyed by section id.
      */
     public function previousVersionsFor(ScheduleSubmission $submission): array
@@ -170,9 +143,6 @@ class SubmissionStatusResolver
     }
 
     /**
-     * Sections whose latest submitted version is recalled or rejected -- the
-     * ones now being revised -- with that version.
-     *
      * @param  list<int>  $sectionIds
      * @return array<int, ScheduleSubmission>  Keyed by section id.
      */
@@ -205,7 +175,6 @@ class SubmissionStatusResolver
     private function submissionStatus(?ScheduleSubmission $latest, int $sectionId, array $liveStatuses): string
     {
         if ($latest === null) {
-            // Rows from before submissions were recorded still say where they stand.
             return $this->statusFromRows($liveStatuses) ?? self::DRAFT;
         }
         if ($this->isClosedFor($latest, $sectionId)) {
@@ -219,8 +188,6 @@ class SubmissionStatusResolver
             'pending_dean' => self::SUBMITTED,
             'pending_vpaa' => self::DEAN_APPROVED,
             'approved' => self::VPAA_APPROVED,
-            // A section still included in a partially recalled submission: its
-            // meetings say which stage it reached.
             default => $this->statusFromRows($liveStatuses) ?? self::SUBMITTED,
         };
     }
@@ -259,15 +226,6 @@ class SubmissionStatusResolver
     }
 
     /**
-     * Each submitted version's fingerprint per section, keyed by version id and
-     * then section id; a section with no meetings in the version is absent.
-     *
-     * A submit snapshot is written once and never changed -- later edits go to
-     * the working copy and new versions get new ids -- so a version's
-     * fingerprints are computed once and kept, instead of decoding its snapshot
-     * JSON on every read. Bump the key's `v1` whenever fingerprint(),
-     * meetingKey() or CONTENT_FIELDS changes, so old entries are not reused.
-     *
      * @param  list<int>  $versionIds
      * @return array<int, array<int, string>>
      */
@@ -303,7 +261,6 @@ class SubmissionStatusResolver
         return implode(';', $keys);
     }
 
-    /** What makes two meetings the same: its CONTENT_FIELDS, so never the instructor. */
     public static function meetingKey(array $row): string
     {
         return implode('|', [
