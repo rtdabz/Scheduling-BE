@@ -212,6 +212,15 @@ class CspSolver
     private bool $lateWeekCapacityPreference = true;
 
     /**
+     * Whether single meetings yield Monday-Thursday to split sessions in this
+     * solve. Only when the run has a split to protect: with none (a department
+     * whose split settings are off), the preference only pushed whole sections
+     * onto Friday and Saturday while Monday-Thursday stood empty for them --
+     * CBA's first six BSBA 1st-year sections met only Friday and Saturday.
+     */
+    private bool $protectsSplitCapacity = true;
+
+    /**
      * The day a single-course alternatives list starts from -- the day the
      * user's placement collided on. Alternatives are offered on that day
      * first, then the other weekdays day by day, and the weekend last.
@@ -620,6 +629,7 @@ class CspSolver
             tentativeSchedules: $this->tentativeSchedules,
         );
         $this->blockRoomsOutsideGrantWindows();
+        $this->blockLentWindows();
         $this->blockRoomsOnOtherProgramsDays($section);
 
         $solverSeed = $seed !== null ? (int) $seed : random_int(1, 1000000);
@@ -634,6 +644,11 @@ class CspSolver
             $snapshot->consecutiveDayRulesFor((int) $section->id),
             array_fill_keys(array_map('intval', $courseIds), true),
         );
+
+        $this->protectsSplitCapacity = $this->lateWeekCapacityPreference
+            && ($balancedSplitCourseIds !== []
+                || $hybridSplitCourseIds !== []
+                || ($lectureLabScheduleOverrideEnabled && $selectedLectureLabCourseIds !== []));
 
         $variables = $this->buildVariables(
             courses: $courses,
@@ -1270,7 +1285,7 @@ class CspSolver
         // for these candidates, which the group gate only opens when Friday and
         // Saturday cannot complete the timetable -- so this reorders the search
         // without ever removing a placement.
-        $prefersLateWeek = $this->lateWeekCapacityPreference && $this->prefersLateWeekPlacement($candidate);
+        $prefersLateWeek = $this->protectsSplitCapacity && $this->prefersLateWeekPlacement($candidate);
         // Sunday is the true end of the week, so it serves the same purpose
         // here that Friday and Saturday do.
         $lateWeekDays = [...SchedulingPolicy::SINGLE_MEETING_PREFERRED_DAYS, 'Sunday'];
@@ -1477,7 +1492,7 @@ class CspSolver
      */
     private function candidateSplitPairBreakPenalty(array $candidate, array $assignments): int
     {
-        if (! $this->lateWeekCapacityPreference || ! $this->prefersLateWeekPlacement($candidate)) {
+        if (! $this->protectsSplitCapacity || ! $this->prefersLateWeekPlacement($candidate)) {
             return 0;
         }
 
@@ -4588,7 +4603,7 @@ class CspSolver
      */
     private function isLateWeekSaturdayMeeting(array $candidate): bool
     {
-        return $this->lateWeekCapacityPreference
+        return $this->protectsSplitCapacity
             && ($candidate['blocks'][0]['day'] ?? null) === 'Saturday'
             && $this->prefersLateWeekPlacement($candidate);
     }
@@ -5064,6 +5079,24 @@ class CspSolver
                         'end_minutes' => $range['end_minutes'],
                     ];
                 }
+            }
+        }
+    }
+
+    /**
+     * Books the department's own rooms as occupied inside the windows it lent
+     * to another department, so the generator never places the owner there.
+     */
+    private function blockLentWindows(): void
+    {
+        foreach ($this->snapshot()->roomsById as $roomId => $attributes) {
+            foreach ((array) ($attributes['lent_windows'] ?? []) as $window) {
+                $this->existingScheduleIndex["r:{$roomId}:{$window['day']}"][] = [
+                    'start_time' => '',
+                    'end_time' => '',
+                    'start_minutes' => RoomAccessPolicy::minutes((string) $window['start_time']),
+                    'end_minutes' => RoomAccessPolicy::minutes((string) $window['end_time']),
+                ];
             }
         }
     }

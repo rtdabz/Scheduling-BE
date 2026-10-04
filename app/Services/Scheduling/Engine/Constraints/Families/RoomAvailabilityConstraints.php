@@ -66,8 +66,24 @@ final class RoomAvailabilityConstraints
     private function roomAccess(ScheduleRow $row, array $room): ?ConstraintViolation
     {
         $ownerId = $room['department_id'] ?? null;
-        if ($ownerId === null || (int) $ownerId === $row->departmentId) {
+        if ($ownerId === null) {
             return null;
+        }
+
+        // The owner may not book inside a window it lent to another department.
+        if ((int) $ownerId === $row->departmentId) {
+            $lent = RoomAccessPolicy::overlappingWindow(
+                self::withMinutes((array) ($room['lent_windows'] ?? [])),
+                $row->day,
+                $row->startTime,
+                $row->endTime,
+            );
+
+            return $lent === null ? null : ConstraintSupport::violation(
+                'room_department_alignment',
+                RoomAccessPolicy::lentRefusal((string) ($room['room_code'] ?? $row->roomId), $lent),
+                context: ['room_id' => $row->roomId],
+            );
         }
 
         $windows = $room['grant_windows'] ?? null;
@@ -79,10 +95,7 @@ final class RoomAvailabilityConstraints
             );
         }
 
-        $windows = array_map(static fn (array $window): array => $window + [
-            'start_minutes' => RoomAccessPolicy::minutes((string) $window['start_time']),
-            'end_minutes' => RoomAccessPolicy::minutes((string) $window['end_time']),
-        ], $windows);
+        $windows = self::withMinutes($windows);
 
         if (RoomAccessPolicy::fitsWindows($windows, $row->day, $row->startTime, $row->endTime)) {
             return null;
@@ -93,6 +106,18 @@ final class RoomAvailabilityConstraints
             'Room '.($room['room_code'] ?? $row->roomId).' is granted to your department only on '.RoomAccessPolicy::describe($windows).'.',
             context: ['room_id' => $row->roomId],
         );
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $windows
+     * @return list<array<string, mixed>>
+     */
+    private static function withMinutes(array $windows): array
+    {
+        return array_values(array_map(static fn (array $window): array => $window + [
+            'start_minutes' => RoomAccessPolicy::minutes((string) $window['start_time']),
+            'end_minutes' => RoomAccessPolicy::minutes((string) $window['end_time']),
+        ], $windows));
     }
 
     /**

@@ -96,18 +96,20 @@ class ArchiveController extends Controller
         }
 
         // A role slot holds one active account. If someone filled it while
-        // this account was archived, it comes back switched off rather than
-        // as a second active Dean, Secretary or Program Head.
-        $deactivatedFor = null;
-        if ($record instanceof User && $record->is_active) {
-            $deactivatedFor = User::activeRoleHolder(
+        // this account was archived, it stays archived until the slot frees.
+        if ($record instanceof User) {
+            $holder = User::activeRoleHolder(
                 (string) $record->role,
                 $record->department_id === null ? null : (int) $record->department_id,
                 $record->program_id === null ? null : (int) $record->program_id,
                 (int) $record->id,
             );
-            if ($deactivatedFor !== null) {
-                $record->is_active = false;
+            if ($holder !== null) {
+                $role = str_replace('_', ' ', ucfirst((string) $record->role));
+
+                return response()->json([
+                    'message' => "This account cannot be restored: {$holder->name} is already the active {$role}. Archive or deactivate them first.",
+                ], 422);
             }
         }
 
@@ -148,7 +150,7 @@ class ArchiveController extends Controller
             ], 422);
         }
 
-        $this->audit($request, $type, $record, $deactivatedFor?->name);
+        $this->audit($request, $type, $record);
 
         ApiCache::forgetGroups([
             'departments.index',
@@ -159,12 +161,6 @@ class ArchiveController extends Controller
             'semesters.active',
             'initial.data',
         ]);
-
-        if ($deactivatedFor !== null) {
-            return response()->json([
-                'message' => "Record restored as inactive: {$deactivatedFor->name} is already the active holder of this role.",
-            ]);
-        }
 
         return response()->json(['message' => 'Record restored successfully.']);
     }
@@ -239,7 +235,7 @@ class ArchiveController extends Controller
         return null;
     }
 
-    private function audit(Request $request, string $type, Model $record, ?string $inactiveBecause): void
+    private function audit(Request $request, string $type, Model $record): void
     {
         $department = $record instanceof Departments ? $record->getKey() : $record->getAttribute('department_id');
 
@@ -252,7 +248,6 @@ class ArchiveController extends Controller
                 'type' => $type,
                 'id' => (int) $record->getKey(),
                 'label' => $this->label($type, $record, $this->scheduleLookups($type, collect([$record]))),
-                'restored_inactive' => $inactiveBecause !== null,
             ],
             'created_at' => now(),
         ]);

@@ -42,6 +42,25 @@ class MajorInstructorRestrictionTest extends TestCase
         $this->assertContains('major_faculty_department_alignment', $this->rules($violations));
     }
 
+    /**
+     * Cross-assigned to another college, a major — even one bound to its own
+     * program — is taught by that college, and no longer by the owner.
+     */
+    public function test_a_major_cross_assigned_to_another_college_follows_that_college(): void
+    {
+        $fixture = $this->fixture();
+        $fixture['major']->update([
+            'program_id' => $fixture['program']->id,
+            'teaching_department_id' => $fixture['otherDepartment']->id,
+        ]);
+
+        $this->assertSame([], $this->validate($fixture, $fixture['major'], $fixture['outsideInstructor']));
+        $this->assertContains(
+            'major_faculty_department_alignment',
+            $this->rules($this->validate($fixture, $fixture['major'], $fixture['ownInstructor'])),
+        );
+    }
+
     public function test_a_program_bound_major_refuses_an_instructor_of_another_program(): void
     {
         $fixture = $this->fixture();

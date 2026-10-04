@@ -17,6 +17,8 @@ use Tests\TestCase;
  * and Saturday so Monday-Thursday lecture-room capacity stays available for the
  * MW and TTh split-session patterns. The preference must never make a section
  * unschedulable, and must not disturb laboratory, online or field placements.
+ * It applies only when the run has a split to make room for: with every
+ * course a regular single meeting, classes spread over the whole week.
  */
 class SingleMeetingLateWeekPriorityTest extends TestCase
 {
@@ -29,7 +31,7 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
         $context = $this->scaffold(lectureRooms: 2);
         $courses = $this->lectureCourses($context, ['IT 101', 'IT 102']);
 
-        $rows = $this->generate($context, $courses);
+        $rows = $this->generateWithSplit($context, $courses);
 
         $this->assertCount(2, $rows);
         foreach ($rows as $row) {
@@ -73,7 +75,7 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
 
         $this->bookLectureRoomOn($context, ['Friday']);
 
-        $rows = $this->generate($context, $courses);
+        $rows = $this->generateWithSplit($context, $courses);
 
         $this->assertCount(2, $rows);
         foreach ($rows as $row) {
@@ -131,12 +133,34 @@ class SingleMeetingLateWeekPriorityTest extends TestCase
 
         $this->bookLectureRoomOn($context, ['Thursday', 'Friday', 'Saturday']);
 
-        $rows = $this->generate($context, $courses);
+        $rows = $this->generateWithSplit($context, $courses);
 
         $this->assertCount(2, $rows);
         foreach ($rows as $row) {
             $this->assertSame('Tuesday', $row['day'], "A single meeting on {$row['day']} broke up a free MW pair.");
         }
+    }
+
+    /**
+     * Generates the courses together with a Split Session course, the case the
+     * late-week preference exists for, and returns the single meetings' rows.
+     *
+     * @param  list<Course>  $courses
+     * @return list<array<string, mixed>>
+     */
+    private function generateWithSplit(array $context, array $courses): array
+    {
+        $split = $this->course($context, 'GE 103', [
+            'course_category' => 'minor',
+            'lecture_hours' => 3,
+            'lab_hours' => 0,
+            'units' => 3,
+            'room_type_required' => 'lecture',
+        ]);
+
+        $rows = $this->generate($context, [...$courses, $split], balancedSplitCourseIds: [(int) $split->id]);
+
+        return array_values(array_filter($rows, static fn (array $row): bool => $row['course_id'] !== (int) $split->id));
     }
 
     /** @param list<string> $days */

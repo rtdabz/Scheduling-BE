@@ -23,15 +23,20 @@ use Illuminate\Validation\ValidationException;
  * A department borrowing another department's vacant room for a semester.
  *
  * The secretary asks for weekly windows in one room; the secretary of the
- * department that owns the room approves, rejects or later revokes. The VPAA
- * takes no part in it and is only notified when a room is lent or handed back.
+ * department that owns the room approves, rejects or later revokes; either
+ * side can end an approved grant at any time. Program
+ * heads take no part. The VPAA takes no action either and is only notified of
+ * each step.
  * Approval is what RoomAccessPolicy reads, so a grant takes effect in the validator and
  * the generator at the same moment.
  */
 class RoomRequestController extends Controller
 {
-    /** Only real, bookable rooms can be lent; ONLINE and FIELD are shared already. */
-    private const LENDABLE_ROOM_TYPES = ['lecture', 'laboratory'];
+    /**
+     * Only lecture rooms can be lent. Laboratories stay with their department;
+     * ONLINE and FIELD are shared already.
+     */
+    private const LENDABLE_ROOM_TYPES = ['lecture'];
 
     public function __construct(private readonly SystemNotificationService $notifications) {}
 
@@ -162,6 +167,7 @@ class RoomRequestController extends Controller
 
         $roomRequest->load($this->relations());
         $this->notifySubmitted($roomRequest, $user);
+        $this->notifyVpaa($roomRequest, $user, 'room_request_submitted');
 
         return response()->json([
             'message' => sprintf('Room request sent to %s for approval.', $roomRequest->ownerDepartment?->department_code ?? 'the room\'s department'),
@@ -260,45 +266,29 @@ class RoomRequestController extends Controller
     }
 
     /**
-     * Ends a request. Ending an approved grant is refused while the borrowing
-     * department still has classes in the room: those classes would stop
-     * validating the moment the grant disappeared.
+     * Ends a request. Ending an approved grant is allowed at any time, by the
+     * borrower (give back) or the owner (revoke): the borrower's class meetings
+     * held in the room under this grant lose their room and become Room TBA,
+     * so nothing is left booked in a room the department can no longer use.
      *
      * @param  list<string>  $allowedFrom
      */
     private function close(RoomRequest $model, User $user, string $status, ?string $remarks, array $allowedFrom): JsonResponse
     {
         $wasApproved = false;
+        /** @var Collection<int, Schedule> $released */
+        $released = collect();
 
-        DB::transaction(function () use (&$model, $user, $status, $remarks, $allowedFrom, &$wasApproved): void {
+        DB::transaction(function () use (&$model, $user, $status, $remarks, $allowedFrom, &$wasApproved, &$released): void {
             $model = RoomRequest::query()->lockForUpdate()->findOrFail($model->id);
             $this->assertStatus($model, $allowedFrom);
             $wasApproved = $model->status === RoomRequest::STATUS_APPROVED;
 
             if ($wasApproved) {
-                $dependents = $this->dependentSchedules($model);
-                if ($dependents->isNotEmpty()) {
-                    throw ValidationException::withMessages([
-                        'room_request' => sprintf(
-                            '%s still holds %d class meeting%s in %s under this grant. Move them to another room first: %s.',
-                            $model->requestingDepartment?->department_code ?? 'The department',
-                            $dependents->count(),
-                            $dependents->count() === 1 ? '' : 's',
-                            $model->room?->room_code ?? 'the room',
-                            $dependents->take(5)->map(fn (Schedule $schedule): string => sprintf(
-                                '%s %s %s %s-%s',
-                                $schedule->course?->course_code,
-                                $schedule->section?->section_name,
-                                substr((string) $schedule->day, 0, 3),
-                                substr((string) $schedule->start_time, 0, 5),
-                                substr((string) $schedule->end_time, 0, 5),
-                            ))->implode('; '),
-                        ),
-                    ]);
-                }
+                $released = $this->releaseDependentSchedules($model);
             }
 
-            $model->update([
+        $model->update([
                 'status' => $status,
                 'review_remarks' => $status === RoomRequest::STATUS_CANCELLED ? $model->review_remarks : $remarks,
                 'reviewed_by' => $status === RoomRequest::STATUS_CANCELLED ? $model->reviewed_by : $user->id,
@@ -311,22 +301,23 @@ class RoomRequestController extends Controller
             $this->flushSchedulingCaches();
         }
 
+        $releasedNote = $this->releasedNote($model, $released);
+
         if ($status === RoomRequest::STATUS_CANCELLED) {
             $this->notifyCancelled($model, $user);
         } else {
-            $this->notifyReviewed($model, $user, $status);
+            $this->notifyReviewed($model, $user, $status, $releasedNote);
         }
 
-        if ($wasApproved) {
-            $this->notifyVpaa($model, $user, 'room_request_returned');
-        }
+        $this->notifyVpaa($model, $user, $wasApproved ? 'room_request_returned' : 'room_request_'.$status);
 
         return response()->json([
-            'message' => match ($status) {
+            'message' => trim(match ($status) {
                 RoomRequest::STATUS_REJECTED => 'Room request rejected.',
                 RoomRequest::STATUS_REVOKED => 'Room grant revoked.',
-                default => 'Room request cancelled.',
-            },
+                default => $wasApproved ? 'Room given back.' : 'Room request cancelled.',
+            }.' '.$releasedNote),
+            'released_schedule_count' => $released->count(),
             'data' => $this->present($model),
         ]);
     }
@@ -343,7 +334,7 @@ class RoomRequestController extends Controller
     {
         if (! in_array((string) $room->room_type, self::LENDABLE_ROOM_TYPES, true)) {
             throw ValidationException::withMessages([
-                'room_id' => 'Only lecture rooms and laboratories can be requested.',
+                'room_id' => 'Only lecture rooms can be requested. Laboratories cannot be borrowed.',
             ]);
         }
 
@@ -492,17 +483,66 @@ class RoomRequestController extends Controller
             ]);
     }
 
-    /** @return Collection<int, Schedule> */
-    private function dependentSchedules(RoomRequest $model): Collection
+    /**
+     * Clears the room from the borrower's class meetings held in it under this
+     * grant (those overlapping its windows), leaving them Room TBA. Saved one
+     * by one so the usual model events (live refresh) fire.
+     *
+     * @return Collection<int, Schedule>
+     */
+    private function releaseDependentSchedules(RoomRequest $model): Collection
     {
-        return Schedule::query()
+        $windows = $model->windows->map(fn ($window): array => RoomAccessPolicy::window(
+            (string) $window->day,
+            (string) $window->start_time,
+            (string) $window->end_time,
+        ))->all();
+
+        $schedules = Schedule::query()
             ->with(['course:id,course_code', 'section:id,section_name'])
             ->where('room_id', $model->room_id)
             ->where('semester_id', $model->semester_id)
             ->where('department_id', $model->requesting_department_id)
             ->orderBy('day')
             ->orderBy('start_time')
-            ->get(['id', 'course_id', 'section_id', 'day', 'start_time', 'end_time']);
+            ->get()
+            ->filter(fn (Schedule $schedule): bool => RoomAccessPolicy::overlappingWindow(
+                $windows,
+                (string) $schedule->day,
+                (string) $schedule->start_time,
+                (string) $schedule->end_time,
+            ) !== null)
+            ->values();
+
+        foreach ($schedules as $schedule) {
+            $schedule->room_id = null;
+            $schedule->save();
+        }
+
+        return $schedules;
+    }
+
+    /** @param Collection<int, Schedule> $released */
+    private function releasedNote(RoomRequest $model, Collection $released): string
+    {
+        if ($released->isEmpty()) {
+            return '';
+        }
+
+        return sprintf(
+            '%d class meeting%s in %s moved to Room TBA: %s.',
+            $released->count(),
+            $released->count() === 1 ? '' : 's',
+            $model->room?->room_code ?? 'the room',
+            $released->take(5)->map(fn (Schedule $schedule): string => sprintf(
+                '%s %s %s %s-%s',
+                $schedule->course?->course_code,
+                $schedule->section?->section_name,
+                substr((string) $schedule->day, 0, 3),
+                substr((string) $schedule->start_time, 0, 5),
+                substr((string) $schedule->end_time, 0, 5),
+            ))->implode('; ').($released->count() > 5 ? '; ...' : ''),
+        );
     }
 
     /** @param list<string> $allowed */
@@ -553,7 +593,7 @@ class RoomRequestController extends Controller
         );
     }
 
-    private function notifyReviewed(RoomRequest $model, User $actor, string $outcome): void
+    private function notifyReviewed(RoomRequest $model, User $actor, string $outcome, string $releasedNote = ''): void
     {
         $room = $model->room?->room_code ?? 'the room';
         $windows = RoomAccessPolicy::describe($this->windowArrays($model));
@@ -561,14 +601,14 @@ class RoomRequestController extends Controller
         [$title, $message] = match ($outcome) {
             RoomRequest::STATUS_APPROVED => ['Room request approved', "You may now schedule classes in {$room} during {$windows}."],
             RoomRequest::STATUS_REJECTED => ['Room request rejected', "Your request for {$room} ({$windows}) was rejected."],
-            default => ['Room grant revoked', "Your department can no longer schedule into {$room} ({$windows})."],
+            default => ['Room grant revoked', trim("Your department can no longer schedule into {$room} ({$windows}). {$releasedNote}")],
         };
 
         $recipients = User::query()
             ->where('department_id', $model->requesting_department_id)
-            ->whereIn('role', ['secretary', 'program_head'])
+            ->where('role', 'secretary')
             ->get();
-        if ($model->requester) {
+        if ($model->requester?->role === 'secretary') {
             $recipients->push($model->requester);
         }
 
@@ -605,8 +645,8 @@ class RoomRequestController extends Controller
     }
 
     /**
-     * The VPAA takes no part in the decision; they are only told when a room
-     * starts or stops being lent between departments.
+     * The VPAA takes no part in the decision; they are only told what happened:
+     * a request sent, rejected or cancelled, or a room lent or handed back.
      */
     private function notifyVpaa(RoomRequest $model, User $actor, string $type): void
     {
@@ -615,9 +655,13 @@ class RoomRequestController extends Controller
         $room = $model->room?->room_code ?? 'a room';
         $windows = RoomAccessPolicy::describe($this->windowArrays($model));
 
-        [$title, $message] = $type === 'room_request_borrowed'
-            ? ['Room borrowed', "{$requester} is borrowing {$room} from {$owner} ({$windows})."]
-            : ['Room returned', "{$requester} is no longer borrowing {$room} from {$owner} ({$windows})."];
+        [$title, $message] = match ($type) {
+            'room_request_submitted' => ['Room requested', "{$requester} asked {$owner} to lend {$room} ({$windows})."],
+            'room_request_rejected' => ['Room request rejected', "{$owner} declined to lend {$room} to {$requester} ({$windows})."],
+            'room_request_cancelled' => ['Room request cancelled', "{$requester} withdrew its request for {$room} from {$owner}."],
+            'room_request_borrowed' => ['Room borrowed', "{$requester} is borrowing {$room} from {$owner} ({$windows})."],
+            default => ['Room returned', "{$requester} is no longer borrowing {$room} from {$owner} ({$windows})."],
+        };
 
         $this->notifications->createForUsers(
             User::query()->where('role', 'vpaa')->get(),

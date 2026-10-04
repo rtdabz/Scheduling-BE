@@ -74,9 +74,8 @@ class CourseTeachingAssignmentController extends Controller
         $curriculumIds = $this->activeCurriculumIds($departmentId, $programId);
         $courses = $this->departmentCourses($departmentId, $curriculumIds, $activePeriod);
         $instructorClasses = $this->classesWithInstructor($courses->pluck('id')->map('intval')->all());
-        $incoming = Course::query()->with(['department', 'teachingDepartment', 'teachingProgram', 'program'])
-            ->where('status', 'active')->where('teaching_department_id', $departmentId)
-            ->where(fn ($query) => $query->whereNull('department_id')->orWhere('department_id', '!=', $departmentId))
+        $incoming = Course::query()->with(['department', 'teachingDepartment', 'teachingProgram', 'teachingSourceProgram', 'program'])
+            ->where('status', 'active')->delegatedTo($departmentId, $programId)
             // An incoming course sits in the *owner's* curriculum, so its semester
             // has to be read from wherever it is placed rather than from this
             // department's curriculum, which does not carry it.
@@ -103,12 +102,10 @@ class CourseTeachingAssignmentController extends Controller
             'departments' => Departments::query()
                 ->orderBy('department_name')
                 ->get(['id', 'department_code', 'department_name', 'logo']),
-            // Programs are assignment targets, so they must come from the receiving
-            // colleges rather than the acting user's own department. The UI narrows
-            // this list to whichever responsible department is currently selected.
+            // Programs are assignment targets in every college, the acting user's own
+            // included: a major can only move to a sibling program of its college.
+            // The UI narrows this list to whichever department is currently selected.
             'programs' => Program::query()
-                ->when($request->user()?->role !== 'program_head',
-                    fn ($query) => $query->where('department_id', '!=', $departmentId))
                 ->orderBy('department_id')
                 ->orderBy('code')
                 ->get(['id', 'department_id', 'code', 'name', 'major']),
@@ -327,14 +324,13 @@ class CourseTeachingAssignmentController extends Controller
             : (int) $validated['teaching_department_id'];
 
         $teachingProgramId = empty($validated['teaching_program_id']) ? null : (int) $validated['teaching_program_id'];
-        if ($teachingProgramId !== null) {
-            $teachingDepartmentId = (int) Program::findOrFail($teachingProgramId)->department_id;
+        $teachingProgram = $teachingProgramId === null ? null : Program::findOrFail($teachingProgramId);
+        if ($teachingProgram !== null) {
+            $teachingDepartmentId = (int) $teachingProgram->department_id;
         }
 
-        if ($teachingDepartmentId !== null && ! SchedulingPolicy::isDelegableCourse($course)) {
-            return response()->json([
-                'message' => 'A major course is taught by the department that offers it and cannot be assigned to another college.',
-            ], 422);
+        if ($teachingDepartmentId !== null && ($refusal = SchedulingPolicy::majorDelegationRefusal($course, $teachingProgram, $teachingDepartmentId))) {
+            return response()->json(['message' => $refusal], 422);
         }
 
         if ($locked = $this->refuseIfInstructorAssigned($course, $teachingDepartmentId)) {
@@ -361,12 +357,15 @@ class CourseTeachingAssignmentController extends Controller
         ]);
         $targetId = (int) $validated['teaching_department_id'];
         $targetProgramId = isset($validated['teaching_program_id']) ? (int) $validated['teaching_program_id'] : null;
-        if ($targetProgramId !== null) {
-            $targetId = (int) Program::findOrFail($targetProgramId)->department_id;
+        $targetProgram = $targetProgramId === null ? null : Program::findOrFail($targetProgramId);
+        if ($targetProgram !== null) {
+            $targetId = (int) $targetProgram->department_id;
         }
-        $courses = Course::query()->whereIn('id', $validated['course_ids'])->get();
-        if ($courses->contains(fn (Course $course) => ! SchedulingPolicy::isDelegableCourse($course))) {
-            return response()->json(['message' => 'Major courses cannot be delegated.'], 422);
+        $courses = Course::query()->with('program')->whereIn('id', $validated['course_ids'])->get();
+        foreach ($courses as $course) {
+            if ($refusal = SchedulingPolicy::majorDelegationRefusal($course, $targetProgram, $targetId)) {
+                return response()->json(['message' => "{$course->course_code}: {$refusal}"], 422);
+            }
         }
         $instructorClasses = $this->classesWithInstructor($courses->pluck('id')->map('intval')->all());
         $locked = $courses->filter(fn (Course $course): bool => ($instructorClasses[(int) $course->id] ?? 0) > 0
@@ -379,23 +378,31 @@ class CourseTeachingAssignmentController extends Controller
                 'locked_course_ids' => $locked->pluck('id')->map('intval')->values()->all(),
             ], 422);
         }
-        DB::transaction(fn () => $courses->each(function (Course $course) use ($targetId, $targetProgramId): void {
-            $course->update(['teaching_department_id' => $targetId, 'teaching_program_id' => $targetProgramId]);
-        }));
         $actor = $request->user();
-        $source = $actor?->department?->department_name ?? 'A department';
-        $target = Departments::find($targetId);
+        $sourceProgramIds = $this->sourceProgramIds($courses, $actor);
+        DB::transaction(fn () => $courses->each(function (Course $course) use ($targetId, $targetProgramId, $sourceProgramIds): void {
+            $course->update([
+                'teaching_department_id' => $targetId,
+                'teaching_program_id' => $targetProgramId,
+                'teaching_source_program_id' => $sourceProgramIds[(int) $course->id] ?? null,
+            ]);
+        }));
+        // Same reason as store(): the receiving side's workspace and badge read cached payloads.
+        ApiCache::forgetGroups(['instructor_assignments.index', 'courses.index', 'initial.data']);
+        $courses->load(['teachingSourceProgram', 'department']);
+        $source = $this->sourceLabel($courses, $actor);
+        $target = $targetProgram?->shortLabel() ?? Departments::find($targetId)?->department_name ?? 'your department';
         $count = $courses->count();
         $this->notifications->notifyRoles(
             ['secretary', 'program_head', 'dean'],
             'incoming_cross_department_courses',
             'Cross-department courses assigned',
-            "{$source} assigned {$count} course".($count === 1 ? '' : 's').' to your department. View Cross-Department.',
+            "{$source} assigned {$count} course".($count === 1 ? '' : 's')." to {$target}. View Cross-Department.",
             $actor,
             $targetId,
             null,
             null,
-            ['course_ids' => $courses->pluck('id')->values()->all(), 'source_department_id' => $actor?->department_id, 'teaching_department_id' => $targetId, 'link' => '/secretary/cross-department-assignments'],
+            ['course_ids' => $courses->pluck('id')->values()->all(), 'source_department_id' => $actor?->department_id, 'teaching_department_id' => $targetId, 'teaching_program_id' => $targetProgramId, 'link' => '/secretary/cross-department-assignments'],
         );
 
         return response()->json(['course_ids' => $courses->pluck('id')->values()->all()]);
@@ -492,16 +499,20 @@ class CourseTeachingAssignmentController extends Controller
         $previousTeachingDepartmentId = $course->teaching_department_id === null ? null : (int) $course->teaching_department_id;
         $course->teaching_department_id = $teachingDepartmentId;
         $course->teaching_program_id = $teachingProgramId;
+        $course->teaching_source_program_id = $teachingDepartmentId === null
+            ? null
+            : ($this->sourceProgramIds(collect([$course]), $actor)[(int) $course->id] ?? null);
         $course->save();
 
         if ($teachingDepartmentId !== null && $teachingDepartmentId !== $previousTeachingDepartmentId) {
-            $course->loadMissing(['department', 'teachingDepartment']);
-            $source = $course->department?->department_name ?? 'the source department';
+            $course->load(['department', 'teachingDepartment', 'teachingProgram', 'teachingSourceProgram']);
+            $source = $this->sourceLabel(collect([$course]), $actor);
+            $target = $course->teachingProgram?->shortLabel() ?? $course->teachingDepartment?->department_name;
             $this->notifications->notifyRoles(
                 ['secretary', 'program_head', 'dean'],
                 'incoming_cross_department_course',
                 'Incoming cross-department course',
-                "{$course->course_code} has been assigned to {$course->teachingDepartment?->department_name}. Source department: {$source}.",
+                "{$source} assigned {$course->course_code} to {$target}.",
                 $actor,
                 $teachingDepartmentId,
                 null,
@@ -522,6 +533,52 @@ class CourseTeachingAssignmentController extends Controller
         ApiCache::forgetGroups(['instructor_assignments.index', 'courses.index', 'initial.data']);
 
         $course->load(['department', 'teachingDepartment', 'teachingProgram', 'program']);
+    }
+
+    /**
+     * The program handing each course over, recorded on the course so the
+     * receiving side can name it later. A shared course (GEC 1) belongs to a
+     * college but no program, so this cannot be read off the course itself.
+     *
+     * A Program Head speaks for their program. Otherwise it is the course's own
+     * program, then the program whose curriculum row the acting department saw it
+     * under on the Course Teaching page.
+     *
+     * @param  Collection<int, Course>  $courses
+     * @return array<int, int|null> keyed by course id
+     */
+    private function sourceProgramIds(Collection $courses, ?User $actor): array
+    {
+        if ($actor?->role === 'program_head' && $actor->program_id !== null) {
+            return $courses->mapWithKeys(fn (Course $course): array => [(int) $course->id => (int) $actor->program_id])->all();
+        }
+
+        $placements = null;
+        if ($actor?->department_id) {
+            $curriculumIds = $this->activeCurriculumIds((int) $actor->department_id);
+            $placements = $curriculumIds->isEmpty() ? null : $this->curriculumPlacements($curriculumIds, null);
+        }
+
+        return $courses->mapWithKeys(function (Course $course) use ($placements): array {
+            $programId = $course->program_id ?? $placements?->get($course->id)?->curriculum_program_id;
+
+            return [(int) $course->id => $programId === null ? null : (int) $programId];
+        })->all();
+    }
+
+    /**
+     * Who handed the courses over, named by program ("BSED-English") rather than
+     * college: within one college "College of Education assigned…" says nothing.
+     *
+     * @param  Collection<int, Course>  $courses
+     */
+    private function sourceLabel(Collection $courses, ?User $actor): string
+    {
+        $labels = $courses->map(fn (Course $course) => $course->teachingSourceProgram?->shortLabel())->filter()->unique();
+
+        return $labels->isNotEmpty()
+            ? $labels->sort()->implode(', ')
+            : ($actor?->department?->department_name ?? 'A department');
     }
 
     /**
@@ -557,7 +614,10 @@ class CourseTeachingAssignmentController extends Controller
             'curriculum_program_code' => $course->getAttribute('curriculum_program_code'),
             'curriculum_program_name' => $course->getAttribute('curriculum_program_name'),
             'curriculum_program_major' => $course->getAttribute('curriculum_program_major'),
+            // False for a major: it cannot leave its college, but it can still be
+            // assigned to a sibling program of that college.
             'delegable' => SchedulingPolicy::isDelegableCourse($course),
+            'is_major' => SchedulingPolicy::isMajorCourse($course),
             // Classes this semester that already have an instructor. While any do,
             // the teaching college cannot be changed.
             'instructor_assigned_classes' => $instructorAssignedClasses,
@@ -577,6 +637,8 @@ class CourseTeachingAssignmentController extends Controller
             'id' => (int) $course->id, 'course_code' => $course->course_code, 'course_name' => $course->course_name,
             'source_department_id' => $course->department_id === null ? null : (int) $course->department_id,
             'source_department_code' => $course->department?->department_code, 'source_department_name' => $course->department?->department_name,
+            'source_program_id' => $course->teaching_source_program_id === null ? null : (int) $course->teaching_source_program_id,
+            'source_program_label' => $course->teachingSourceProgram?->shortLabel(),
             'teaching_department_id' => (int) $course->teaching_department_id, 'year_level' => $course->year_level === null ? null : (int) $course->year_level,
             'units' => $course->units, 'assignment_status' => $scheduleCount === 0 ? 'Awaiting schedule' : ($unassignedCount > 0 ? 'Instructor assignment pending' : 'Ready for teaching'),
             'schedule_count' => $scheduleCount,

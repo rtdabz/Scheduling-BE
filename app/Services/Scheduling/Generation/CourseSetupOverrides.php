@@ -252,8 +252,8 @@ final class CourseSetupOverrides
                 }
                 self::assertFitsTheDay($code, 'meeting', intdiv($slots, 2));
             } else {
-                // `class_duration` caps a section's weekly time on the course.
-                self::assertWithinCeiling($code, $minutes, SchedulingPolicy::courseWeeklyCeilingMinutes($course, $section->department));
+                // One class may run as long as the teaching day
+                // (`class_duration` raises the course's ceiling to it).
                 self::assertFitsTheDay($code, 'class', $slots);
             }
 

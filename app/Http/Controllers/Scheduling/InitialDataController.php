@@ -368,6 +368,7 @@ class InitialDataController extends Controller
             ->with(array_filter([
                 'academicSemester:id,academic_year,semester',
                 'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
+                'section.program:id,code',
                 // teaching_department_id drives the delegated-assignment masking below.
                 'course:id,course_code,course_name,lecture_hours,lab_hours,units,course_category,room_type_required,year_level,semester,department_id,teaching_department_id,teaching_program_id,program_id',
                 'faculty:id,first_name,last_name,middle_name,department_id,program_id',
@@ -418,6 +419,10 @@ class InitialDataController extends Controller
         if ($schedulesTruncated) {
             $schedules = $schedules->take($scheduleLimit)->values();
         }
+        // Serialising each meeting dominates a cache-miss rebuild (~0.5ms a row).
+        // No client reads these off a meeting: the split row already ships as
+        // split_group_id/meeting_type/meeting_index, and the timestamps are unused.
+        $schedules->each(fn (Schedule $schedule) => $schedule->makeHidden(['split', 'created_at', 'updated_at', 'deleted_at']));
 
         $needsSubmissions = $wants('schedules') || $wants('schedule_submissions');
         $scheduleSubmissions = ! $needsSubmissions ? collect() : ScheduleSubmission::query()
@@ -509,15 +514,18 @@ class InitialDataController extends Controller
                 'slot_minutes' => SchedulingPolicy::SLOT_MINUTES,
                 'slot_count' => SchedulingPolicy::totalSlots(),
             ],
-            'rooms' => $rooms,
-            'courses' => $courses,
+            'rooms' => self::withoutNestedLogos($rooms, 'department'),
+            'courses' => self::withoutNestedLogos($courses, 'department', 'teachingDepartment'),
             // Department-wide schedulers may use the external-instructor tab. A
             // Program Head, however, owns one program roster and must never see
             // another program's instructors in Auto-Assign.
             'faculties' => $wants('faculties')
-                ? $this->facultyLoad->get($facultyDepartmentId, $activeSemesterId, $facultyProgramId)
+                ? self::withoutNestedLogos(
+                    $this->facultyLoad->get($facultyDepartmentId, $activeSemesterId, $facultyProgramId),
+                    'department',
+                )
                 : collect(),
-            'sections' => $sections,
+            'sections' => self::withoutNestedLogos($sections, 'department'),
             'schedules' => $schedules,
             'schedules_truncated' => $schedulesTruncated,
             'schedule_submissions' => $scheduleSubmissions,
@@ -577,6 +585,23 @@ class InitialDataController extends Controller
         }
 
         return $payload;
+    }
+
+    /**
+     * Drops the logo from each nested department relation. A logo is a ~40KB
+     * data URL, and repeating it on every faculty, course, section and room made
+     * up most of a 6MB payload. The client reads logos only off the top-level
+     * `departments` list, which keeps them.
+     */
+    private static function withoutNestedLogos(Collection $models, string ...$relations): Collection
+    {
+        return $models->each(function ($model) use ($relations): void {
+            foreach ($relations as $relation) {
+                if ($model->relationLoaded($relation)) {
+                    $model->getRelation($relation)?->makeHidden('logo');
+                }
+            }
+        });
     }
 
     /**

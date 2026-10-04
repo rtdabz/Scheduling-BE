@@ -32,6 +32,30 @@ class AuthenticationWorkflowTest extends TestCase
             ->assertOk();
     }
 
+    public function test_new_login_signs_out_the_previous_device(): void
+    {
+        $user = User::factory()->create([
+            'username' => 'secretary1',
+            'password' => Hash::make('StrongPass123'),
+        ]);
+        $credentials = ['username' => 'secretary1', 'password' => 'StrongPass123'];
+
+        $oldToken = $this->postJson('/api/login', $credentials)->assertOk()->json('token');
+        $newToken = $this->postJson('/api/login', $credentials)->assertOk()->json('token');
+
+        $this->assertSame(1, $user->tokens()->count());
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($oldToken)->getJson('/api/me')
+            ->assertUnauthorized()
+            ->assertJsonPath('reason', 'session_replaced');
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($newToken)->getJson('/api/me')
+            ->assertOk()
+            ->assertJsonPath('id', $user->id);
+    }
+
     public function test_inactive_user_cannot_login(): void
     {
         User::factory()->create(['is_active' => false, 'password' => Hash::make('StrongPass123')]);

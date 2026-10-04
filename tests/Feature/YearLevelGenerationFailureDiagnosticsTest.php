@@ -99,6 +99,23 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
             array_column($response->json('blocking_constraints'), 'code'),
         );
         $this->assertSame(0, Schedule::query()->count());
+
+        // The block offers the fewest courses that close the 6-slot gap, in
+        // every section: one Hybrid Split frees 4 x 3 = 12, one Online 4 x 6.
+        $recommendations = collect($response->json('recommendations'))->keyBy('id');
+        $hybrid = $recommendations->get('room-capacity-hybrid_split');
+        $online = $recommendations->get('room-capacity-online');
+        $this->assertNotNull($hybrid, 'No Hybrid Split option was offered.');
+        $this->assertNotNull($online, 'No Online option was offered.');
+
+        $this->assertSame(['set_hybrid_split'], array_values(array_unique(array_column($hybrid['adjustments'], 'type'))));
+        $this->assertCount(4, $hybrid['adjustments']);
+        $this->assertCount(1, array_unique(array_column($hybrid['adjustments'], 'course_id')));
+        $this->assertStringContainsString('This frees 12 room slots, while 6 are needed.', $hybrid['suggested_adjustment']);
+
+        $this->assertSame(['online'], array_values(array_unique(array_column($online['adjustments'], 'value'))));
+        $this->assertCount(4, $online['adjustments']);
+        $this->assertStringContainsString('This frees 24 room slots, while 6 are needed.', $online['suggested_adjustment']);
     }
 
     public function test_a_pattern_change_that_would_fit_is_recommended_not_applied(): void

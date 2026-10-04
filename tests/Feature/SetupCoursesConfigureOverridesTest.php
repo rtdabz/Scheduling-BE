@@ -102,13 +102,19 @@ class SetupCoursesConfigureOverridesTest extends TestCase
         }
     }
 
-    public function test_a_duration_longer_than_the_course_is_refused_before_generation(): void
+    public function test_one_class_may_run_eight_hours_but_not_past_the_teaching_day(): void
     {
         [$section, $course] = $this->scenario();
 
+        // Eight hours straight is one valid class, whatever the course's units.
+        $this->assertSame(
+            [(int) $course->id => 16],
+            CourseSetupOverrides::normalizeDurations($section, [(int) $course->id => 480], [(int) $course->id], []),
+        );
+
         $this->expectException(ValidationException::class);
 
-        CourseSetupOverrides::normalizeDurations($section, [(int) $course->id => 300], [(int) $course->id], []);
+        CourseSetupOverrides::normalizeDurations($section, [(int) $course->id => 15 * 60], [(int) $course->id], []);
     }
 
     public function test_a_split_session_may_not_exceed_the_course_units(): void

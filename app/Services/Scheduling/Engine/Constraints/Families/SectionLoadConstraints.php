@@ -46,17 +46,12 @@ final class SectionLoadConstraints
         // user's to set, so it counts only the section's other linked meetings
         // of that session, against one teaching day.
         $isIntegratedSession = SchedulingPolicy::isIntegratedSession($course, $row->meetingType, $row->splitGroupId);
-        $allowed = $isIntegratedSession
-            ? SchedulingPolicy::integratedSessionCeilingMinutes(
-                isset($snapshot->operatingHours['opening_time']) ? (string) $snapshot->operatingHours['opening_time'] : null,
-                isset($snapshot->operatingHours['closing_time']) ? (string) $snapshot->operatingHours['closing_time'] : null,
-            )
-            // A Consecutive Days run meets for the class's full length every day.
-            : SchedulingPolicy::courseWeeklyCeilingMinutes($course, $snapshot->departmentSettings)
-                * SchedulingPolicy::weeklyCeilingMeetings($row->preferredPattern);
-        if ($allowed <= 0) {
-            return null;
-        }
+        // Read only when a meeting needs it: it falls back to the institution's
+        // settings when the snapshot carries no operating hours.
+        $dayMinutes = static fn (): int => SchedulingPolicy::integratedSessionCeilingMinutes(
+            isset($snapshot->operatingHours['opening_time']) ? (string) $snapshot->operatingHours['opening_time'] : null,
+            isset($snapshot->operatingHours['closing_time']) ? (string) $snapshot->operatingHours['closing_time'] : null,
+        );
         $counts = static fn (array|ScheduleRow $other): bool => ! $isIntegratedSession
             || (ConstraintSupport::stringValue($other, 'meeting_type') === $row->meetingType
                 && SchedulingPolicy::isIntegratedSession(
@@ -66,10 +61,30 @@ final class SectionLoadConstraints
                 ));
 
         $total = self::minutes($row);
+        $longest = $total;
         foreach ($sameSection as $other) {
             if (ConstraintSupport::intValue($other, 'course_id') === $row->courseId && $counts($other)) {
                 $total += self::minutes($other);
+                $longest = max($longest, self::minutes($other));
             }
+        }
+
+        // Same decision as RuleEngine: a Consecutive Days run meets for the
+        // class's full length every day, and one class may run as long as the
+        // teaching day.
+        if ($isIntegratedSession) {
+            $allowed = $dayMinutes();
+        } else {
+            $ceiling = SchedulingPolicy::courseWeeklyCeilingMinutes($course, $snapshot->departmentSettings);
+            $allowed = SchedulingPolicy::classDurationAllowanceMinutes(
+                $ceiling,
+                $longest,
+                $longest > $ceiling ? $dayMinutes() : $ceiling,
+                $row->preferredPattern,
+            );
+        }
+        if ($allowed <= 0) {
+            return null;
         }
 
         // Same leniency as RuleEngine: data already over the ceiling before

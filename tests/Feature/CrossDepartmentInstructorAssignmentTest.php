@@ -566,6 +566,43 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->assertJsonPath('cross_department_pending', 0);
     }
 
+    /**
+     * A course handed to a sibling program never leaves the college (BSED-ENG
+     * Prof Ed taught by BEED), so "owned by another college" alone missed it and
+     * the receiving program saw a notification with nothing pending.
+     */
+    public function test_schedule_status_counts_a_course_handed_to_a_sibling_program(): void
+    {
+        $fixture = $this->fixture();
+        $sibling = \App\Models\Program::create([
+            'department_id' => $fixture['it']->id,
+            'code' => 'BSCS',
+            'name' => 'Computer Science',
+        ]);
+        $fixture['gec']->update([
+            'program_id' => $fixture['itProgram']->id,
+            'teaching_department_id' => $fixture['it']->id,
+            'teaching_program_id' => $sibling->id,
+        ]);
+        $this->meetingBlocks($fixture);
+        $head = fn (int $programId) => $this->grantCapabilities(User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $fixture['it']->id,
+            'program_id' => $programId,
+        ]));
+
+        $this->actingAs($head($sibling->id))
+            ->getJson("/api/departments/{$fixture['it']->id}/schedule-status")
+            ->assertOk()
+            ->assertJsonPath('cross_department_pending', 1);
+
+        // The program that handed it over has nothing to staff.
+        $this->actingAs($head($fixture['itProgram']->id))
+            ->getJson("/api/departments/{$fixture['it']->id}/schedule-status")
+            ->assertOk()
+            ->assertJsonPath('cross_department_pending', 0);
+    }
+
     public function test_an_assigned_delegated_class_is_no_longer_counted(): void
     {
         $fixture = $this->fixture();

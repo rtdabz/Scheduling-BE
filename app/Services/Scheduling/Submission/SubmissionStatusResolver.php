@@ -6,6 +6,7 @@ use App\Models\Schedule;
 use App\Models\ScheduleHistoryItem;
 use App\Models\ScheduleSubmission;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * The two statuses a section's schedule is shown with.
@@ -69,7 +70,7 @@ class SubmissionStatusResolver
                 $closedBySection[$sectionId] = $closed;
             }
         }
-        $snapshots = $this->snapshotRows(collect($closedBySection)->pluck('snapshot_version_id')->filter()->unique()->all());
+        $fingerprints = $this->sectionFingerprints(collect($closedBySection)->pluck('snapshot_version_id')->filter()->all());
 
         $result = [];
         foreach ($sectionIds as $sectionId) {
@@ -79,11 +80,11 @@ class SubmissionStatusResolver
 
             $revision = self::INITIAL;
             if ($closed !== null && $closed->snapshot_version_id !== null) {
-                $before = $snapshots->get((int) $closed->snapshot_version_id, collect())
-                    ->filter(fn (array $row): bool => (int) ($row['section_id'] ?? 0) === $sectionId);
-                if ($this->fingerprint($before) !== $this->fingerprint($live)) {
+                // '' is the fingerprint of no meetings at all.
+                $before = $fingerprints[(int) $closed->snapshot_version_id][$sectionId] ?? '';
+                if ($before !== $this->fingerprint($live)) {
                     // A working copy emptied by Reset is a fresh start, not an edit.
-                    $revision = $live->isEmpty() && $before->isNotEmpty() ? self::RESET : self::MODIFIED;
+                    $revision = $live->isEmpty() && $before !== '' ? self::RESET : self::MODIFIED;
                 }
             }
 
@@ -106,16 +107,20 @@ class SubmissionStatusResolver
      */
     public function forSubmissions(Collection $submissions): array
     {
-        $ordered = $submissions->sortByDesc('revision_number')->values();
-        $snapshots = $this->snapshotRows($ordered->pluck('snapshot_version_id')->filter()->unique()->all());
+        $result = $submissions->mapWithKeys(fn (ScheduleSubmission $submission): array => [$submission->id => self::INITIAL])->all();
+        // A version with no sections left has nothing to compare, and cannot be
+        // the version another one was revised from, so its snapshot is never read.
+        $ordered = $submissions
+            ->filter(fn (ScheduleSubmission $submission): bool => $submission->sections->isNotEmpty())
+            ->sortByDesc('revision_number')
+            ->values();
+        $fingerprints = $this->sectionFingerprints($ordered->pluck('snapshot_version_id')->filter()->all());
 
-        $result = [];
         foreach ($ordered as $submission) {
-            $result[$submission->id] = self::INITIAL;
             if ($submission->snapshot_version_id === null) {
                 continue;
             }
-            $own = $snapshots->get((int) $submission->snapshot_version_id, collect());
+            $own = $fingerprints[(int) $submission->snapshot_version_id];
             foreach ($submission->sections as $section) {
                 $sectionId = (int) $section->id;
                 $previous = $ordered->first(fn (ScheduleSubmission $candidate): bool => (int) $candidate->department_id === (int) $submission->department_id
@@ -125,9 +130,8 @@ class SubmissionStatusResolver
                 if ($previous === null || $previous->snapshot_version_id === null) {
                     continue;
                 }
-                $before = $snapshots->get((int) $previous->snapshot_version_id, collect());
-                $inSection = fn (array $row): bool => (int) ($row['section_id'] ?? 0) === $sectionId;
-                if ($this->fingerprint($before->filter($inSection)) !== $this->fingerprint($own->filter($inSection))) {
+                $before = $fingerprints[(int) $previous->snapshot_version_id];
+                if (($before[$sectionId] ?? '') !== ($own[$sectionId] ?? '')) {
                     $result[$submission->id] = self::MODIFIED;
                     break;
                 }
@@ -255,23 +259,36 @@ class SubmissionStatusResolver
     }
 
     /**
+     * Each submitted version's fingerprint per section, keyed by version id and
+     * then section id; a section with no meetings in the version is absent.
+     *
+     * A submit snapshot is written once and never changed -- later edits go to
+     * the working copy and new versions get new ids -- so a version's
+     * fingerprints are computed once and kept, instead of decoding its snapshot
+     * JSON on every read. Bump the key's `v1` whenever fingerprint(),
+     * meetingKey() or CONTENT_FIELDS changes, so old entries are not reused.
+     *
      * @param  list<int>  $versionIds
-     * @return Collection<int, Collection<int, array>>  Snapshot rows keyed by history version id.
+     * @return array<int, array<int, string>>
      */
-    private function snapshotRows(array $versionIds): Collection
+    private function sectionFingerprints(array $versionIds): array
     {
-        if ($versionIds === []) {
-            return collect();
+        $result = [];
+        foreach (array_unique(array_map('intval', $versionIds)) as $versionId) {
+            $result[$versionId] = Cache::rememberForever(
+                "submission.fingerprints.v1.{$versionId}",
+                fn (): array => ScheduleHistoryItem::query()
+                    ->where('history_version_id', $versionId)
+                    ->get(['before_snapshot', 'after_snapshot'])
+                    ->map(fn (ScheduleHistoryItem $item): ?array => $item->after_snapshot ?: $item->before_snapshot)
+                    ->filter()
+                    ->groupBy(fn (array $row): int => (int) ($row['section_id'] ?? 0))
+                    ->map(fn (Collection $rows): string => $this->fingerprint($rows))
+                    ->all(),
+            );
         }
 
-        return ScheduleHistoryItem::query()
-            ->whereIn('history_version_id', $versionIds)
-            ->get(['history_version_id', 'before_snapshot', 'after_snapshot'])
-            ->groupBy('history_version_id')
-            ->map(fn (Collection $items): Collection => $items
-                ->map(fn (ScheduleHistoryItem $item): ?array => $item->after_snapshot ?: $item->before_snapshot)
-                ->filter()
-                ->values());
+        return $result;
     }
 
     /** @param  iterable<array|Schedule>  $rows */

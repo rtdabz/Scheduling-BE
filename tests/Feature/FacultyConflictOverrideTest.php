@@ -109,6 +109,66 @@ class FacultyConflictOverrideTest extends TestCase
         $this->assertDatabaseHas('schedules', ['id' => $taught->id, 'faculty_conflict_override' => true]);
     }
 
+    public function test_the_instructor_assignment_page_recommends_free_instructors_instead(): void
+    {
+        [$fixture, , $clashing] = $this->clash();
+        $free = Faculty::create([
+            'first_name' => 'Free',
+            'last_name' => 'Instructor',
+            'employment_type' => 'full-time',
+            'department_id' => $fixture['department']->id,
+            'status' => 'active',
+        ]);
+
+        $options = $this->actingAs($fixture['user'])
+            ->getJson("/api/instructor-assignments/{$clashing->id}/recommendations")
+            ->assertOk()
+            ->json('options');
+
+        // The double-booked instructor is checked out; the free one is offered.
+        $this->assertSame([$free->id], array_column($options, 'faculty_id'));
+        $this->assertContains('Free at this time', $options[0]['reasons']);
+        $this->assertDatabaseHas('schedules', ['id' => $clashing->id, 'faculty_id' => null]);
+    }
+
+    public function test_an_instructor_who_taught_the_course_before_ranks_first(): void
+    {
+        [$fixture, , $clashing] = $this->clash();
+        $newcomer = Faculty::create([
+            'first_name' => 'Aaron',
+            'last_name' => 'Newcomer',
+            'employment_type' => 'full-time',
+            'department_id' => $fixture['department']->id,
+            'status' => 'active',
+        ]);
+        $veteran = Faculty::create([
+            'first_name' => 'Zed',
+            'last_name' => 'Veteran',
+            'employment_type' => 'full-time',
+            'department_id' => $fixture['department']->id,
+            'status' => 'active',
+        ]);
+        $earlier = Semester::create([
+            'academic_year' => '2025-2026',
+            'semester' => '2nd',
+            'is_active' => false,
+            'is_enabled' => true,
+        ]);
+        $this->schedule($fixture, [
+            'semester_id' => $earlier->id,
+            'faculty_id' => $veteran->id,
+            'status' => 'finalized',
+        ]);
+
+        $options = $this->actingAs($fixture['user'])
+            ->getJson("/api/instructor-assignments/{$clashing->id}/recommendations")
+            ->assertOk()
+            ->json('options');
+
+        $this->assertSame([$veteran->id, $newcomer->id], array_column($options, 'faculty_id'));
+        $this->assertContains('Taught this course before', $options[0]['reasons']);
+    }
+
     public function test_a_conflict_that_is_not_the_instructors_own_cannot_be_overridden(): void
     {
         [$fixture, , $clashing] = $this->clash();

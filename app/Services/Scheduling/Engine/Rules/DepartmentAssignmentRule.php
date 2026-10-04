@@ -60,7 +60,8 @@ final class DepartmentAssignmentRule
 
     /**
      * Another department's room is reachable only through an approved room
-     * request, and only inside its granted windows.
+     * request, and only inside its granted windows. The owner, in turn, may
+     * not book its own room inside a window it lent out.
      *
      * @param  array<string, mixed>  $attempt
      * @return array<string, mixed>|null
@@ -68,8 +69,25 @@ final class DepartmentAssignmentRule
     private function roomDepartment(array $attempt, AttemptRecords $records): ?array
     {
         $room = $records->room;
-        if ($room === null || $room->department_id === null || (int) $room->department_id === $records->departmentId()) {
+        if ($room === null || $room->department_id === null) {
             return null;
+        }
+
+        if ((int) $room->department_id === $records->departmentId()) {
+            $lent = RoomAccessPolicy::overlappingWindow(
+                $this->lookups->remember(
+                    'room-lent:'.$records->departmentId().':'.$records->semester->id,
+                    fn () => app(RoomAccessPolicy::class)->lentWindowsFor($records->departmentId(), (int) $records->semester->id),
+                )[(int) $room->id] ?? [],
+                (string) ($attempt['day'] ?? ''),
+                (string) ($attempt['start_time'] ?? '00:00'),
+                (string) ($attempt['end_time'] ?? '00:00'),
+            );
+
+            return $lent === null ? null : [
+                'rule' => 'room_department_alignment',
+                'message' => RoomAccessPolicy::lentRefusal((string) $room->room_code, $lent),
+            ];
         }
 
         $grantWindows = $this->lookups->remember(

@@ -54,6 +54,9 @@ class YearLevelGenerationDiagnostics
         foreach ($blockingConstraints as $index => $constraint) {
             $code = (string) ($constraint['code'] ?? 'blocking_constraint');
             $context = (array) ($constraint['context'] ?? []);
+            if ($code === 'insufficient_room_slots') {
+                array_push($recommendations, ...$this->roomSlotReliefRecommendations($constraint));
+            }
             $adjustments = [];
             $courseCode = (string) ($context['course_code'] ?? '');
             $title = match ($code) {
@@ -93,7 +96,7 @@ class YearLevelGenerationDiagnostics
                         'type' => $adjustmentType ?? (string) ($target['adjustment_type'] ?? ''),
                         'section_id' => (int) ($target['section_id'] ?? 0),
                         'course_id' => (int) ($target['course_id'] ?? 0),
-                        'value' => null,
+                        'value' => $target['value'] ?? null,
                         'section_name' => (string) ($target['section_name'] ?? ''),
                         'course_code' => (string) ($target['course_code'] ?? ''),
                     ];
@@ -111,6 +114,54 @@ class YearLevelGenerationDiagnostics
                 'course_code' => null,
                 'impact' => $adjustments === [] ? 'high' : 'medium',
                 'adjustments' => $adjustments,
+                'status' => 'active',
+                'resolved' => false,
+            ];
+        }
+
+        return $recommendations;
+    }
+
+    /**
+     * One applicable recommendation per way of closing a room-time shortfall
+     * (Hybrid Split, Online), each changing the named courses in every
+     * section. They share the `room-capacity-` id so the wizard lists them as
+     * alternatives of one fix.
+     *
+     * @param  array<string, mixed>  $constraint
+     * @return list<array<string, mixed>>
+     */
+    private function roomSlotReliefRecommendations(array $constraint): array
+    {
+        $context = (array) ($constraint['context'] ?? []);
+        $shortfall = (int) ($context['shortfall_slots'] ?? 0);
+        $recommendations = [];
+
+        foreach ((array) ($context['options'] ?? []) as $option) {
+            $kind = (string) ($option['kind'] ?? '');
+            $recommendations[] = [
+                'id' => 'room-capacity-'.$kind,
+                'title' => $kind === 'online' ? 'Online' : 'Hybrid Split',
+                'detected_cause' => 'These options free up enough room time to schedule all sections. On-site Split will not help because it still needs the same room on two days.',
+                'suggested_adjustment' => sprintf(
+                    '%s. This frees %d room slots, while %d are needed.',
+                    implode(', ', (array) ($option['course_codes'] ?? [])),
+                    (int) ($option['frees'] ?? 0),
+                    $shortfall,
+                ),
+                'section_id' => null,
+                'section_name' => null,
+                'course_id' => null,
+                'course_code' => null,
+                'impact' => 'medium',
+                'adjustments' => array_map(static fn (array $target): array => [
+                    'type' => (string) ($target['adjustment_type'] ?? ''),
+                    'section_id' => (int) ($target['section_id'] ?? 0),
+                    'course_id' => (int) ($target['course_id'] ?? 0),
+                    'value' => $target['value'] ?? null,
+                    'section_name' => (string) ($target['section_name'] ?? ''),
+                    'course_code' => (string) ($target['course_code'] ?? ''),
+                ], (array) ($option['targets'] ?? [])),
                 'status' => 'active',
                 'resolved' => false,
             ];

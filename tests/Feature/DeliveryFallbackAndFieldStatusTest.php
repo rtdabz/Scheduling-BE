@@ -14,11 +14,8 @@ use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Generation\GenerateSchedulePlan;
 use App\Services\Scheduling\Support\SchedulingPolicy;
-use Illuminate\Contracts\Queue\Job;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Event;
 use Tests\TestCase;
 
 /**
@@ -114,52 +111,7 @@ class DeliveryFallbackAndFieldStatusTest extends TestCase
         $this->assertArrayNotHasKey('lecture_online_fallback', $chosen[0]['schedules'][0]);
     }
 
-    /**
-     * The queue worker outlives many settings saves. Its static field-code
-     * cache used to survive them, so a course taken off the field list was
-     * still generated as Field. The solver now reads the list from its
-     * snapshot, captured when the run starts.
-     */
-    public function test_the_solver_reads_field_status_from_its_snapshot_not_a_stale_process_cache(): void
-    {
-        $context = $this->scaffold();
-        $course = $this->course($context, 'PE 1', 2, 'minor');
-        $this->lectureRoom($context, 'LEC-1');
-
-        $this->configureFieldCode($context, 'PE 1');
-        $this->assertTrue(SchedulingPolicy::isFieldCourse($course, (int) $context['department']->id));
-
-        // Removed by another process: this process's cache is not told.
-        DB::table(DepartmentCourseRules::TABLE)->delete();
-
-        $solutions = app(CspSolver::class)->solveRanked(
-            sectionId: (int) $context['section']->id,
-            courseIds: [(int) $course->id],
-            maxSolutions: 1,
-            seed: 1,
-        );
-
-        $this->assertNotSame([], $solutions);
-        foreach ($solutions[0]['schedules'] as $row) {
-            $this->assertNotSame('field', $row['mode'], 'A course no longer on the field list was generated as Field.');
-        }
-    }
-
-    public function test_a_queued_job_starts_from_the_current_field_list(): void
-    {
-        $context = $this->scaffold();
-        $course = $this->course($context, 'PE 1', 2, 'minor');
-
-        $this->configureFieldCode($context, 'PE 1');
-        $this->assertTrue(SchedulingPolicy::isFieldCourse($course, (int) $context['department']->id));
-        DB::table(DepartmentCourseRules::TABLE)->delete();
-
-        Event::dispatch(new JobProcessing('database', $this->createMock(Job::class)));
-
-        $this->assertFalse(SchedulingPolicy::isFieldCourse($course, (int) $context['department']->id));
-    }
-
-    /** A course's name never makes it Field; only the record or the department list does. */
+    /** A course's name never makes it Field; only the course record or a run's own choice does. */
     public function test_nstp_is_not_field_unless_the_department_configures_it(): void
     {
         $context = $this->scaffold();
@@ -175,6 +127,37 @@ class DeliveryFallbackAndFieldStatusTest extends TestCase
 
         $this->assertNotSame([], $solutions);
         $this->assertSame('on-site', $solutions[0]['schedules'][0]['mode']);
+    }
+
+    /**
+     * Single meetings yield Monday-Thursday only to split sessions. With every
+     * course a regular single meeting there is nothing to yield to, so they
+     * are spread over the week -- not stacked on Friday and Saturday, which
+     * left CBA's first BSBA sections meeting only on those two days.
+     */
+    public function test_regular_single_meetings_spread_over_the_week_when_no_course_is_split(): void
+    {
+        $context = $this->scaffold();
+        $this->lectureRoom($context, 'LEC-1');
+        $courseIds = [];
+        foreach (range(1, 8) as $index) {
+            $courseIds[] = (int) $this->course($context, "GE {$index}", 3, 'minor')->id;
+        }
+
+        $solutions = app(CspSolver::class)->solveRanked(
+            sectionId: (int) $context['section']->id,
+            courseIds: $courseIds,
+            maxSolutions: 1,
+            seed: 1,
+        );
+
+        $this->assertNotSame([], $solutions);
+        $days = array_unique(array_map(static fn (array $row): string => (string) $row['day'], $solutions[0]['schedules']));
+        $this->assertNotSame(
+            [],
+            array_intersect($days, ['Monday', 'Tuesday', 'Wednesday', 'Thursday']),
+            'Every regular class was pushed to the end of the week: '.implode(', ', $days),
+        );
     }
 
     /** @return array{semester: Semester, department: Departments, section: Sections, curriculum: Curriculum} */
@@ -242,13 +225,6 @@ class DeliveryFallbackAndFieldStatusTest extends TestCase
             'department_id' => $context['department']->id,
             'max_concurrent_classes' => 1,
         ]);
-    }
-
-    /** @param array{department: Departments} $context */
-    private function configureFieldCode(array $context, string $code): void
-    {
-        SchedulingPolicy::clearFieldCourseCache();
-        DepartmentCourseRules::put((int) $context['department']->id, (int) Course::query()->where('course_code', $code)->value('id'), null, ['is_field' => true]);
     }
 
     /**

@@ -7,7 +7,6 @@ namespace App\Services\Scheduling\Schedule;
 use App\Models\Course;
 use App\Models\Faculty;
 use App\Models\Schedule;
-use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Manual\AvailableSlotFinder;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -48,7 +47,7 @@ final class ConflictRecommender
         private readonly AvailableSlotFinder $slotFinder,
         private readonly RuleEngine $ruleEngine,
         private readonly ManualHybridFacultyAssignmentResolver $hybridAssignments,
-        private readonly FacultyLoadService $facultyLoad,
+        private readonly InstructorRecommender $instructors,
     ) {}
 
     /**
@@ -327,20 +326,14 @@ final class ConflictRecommender
 
     /**
      * Active instructors of the class's department who are free for it (and
-     * for any meeting that is assigned with it), lightest load first. One that
-     * would land in pro bono is still offered, ranked last and flagged: the
-     * resolve endpoint will ask for confirmation.
+     * for any meeting that is assigned with it), ranked by InstructorRecommender.
+     * One that would land in pro bono is still offered, ranked last and flagged:
+     * the resolve endpoint will ask for confirmation.
      *
      * @return list<array<string, mixed>>
      */
     private function instructorOptions(Schedule $schedule, int $semesterId, int $take): array
     {
-        $group = $this->hybridAssignments->resolve($schedule);
-        $groupIds = $group->pluck('id')->map(static fn ($id): int => (int) $id)->all();
-        $units = (int) (Course::query()->whereKey($schedule->course_id)->value('units') ?? 0);
-        $pair = ['section_id' => (int) $schedule->section_id, 'course_id' => (int) $schedule->course_id, 'units' => $units];
-
-        $options = [];
         $faculties = Faculty::query()
             ->where('department_id', $schedule->department_id)
             ->where('status', 'active')
@@ -348,53 +341,24 @@ final class ConflictRecommender
             ->orderBy('last_name')
             ->get();
 
-        foreach ($faculties as $faculty) {
-            $free = true;
-            foreach ($group as $meeting) {
-                if ($this->ruleEngine->validateInstructorAssignment([
-                    ...$meeting->toArray(),
-                    'faculty_id' => (int) $faculty->id,
-                    'ignore_schedule_id' => $groupIds,
-                ]) !== []) {
-                    $free = false;
-                    break;
-                }
-            }
-            if (! $free) {
-                continue;
-            }
-
-            $load = $this->facultyLoad->projectLoad($faculty, $semesterId, [$pair]);
-            $name = trim("{$faculty->first_name} {$faculty->last_name}");
-            $options[] = [
+        return array_map(fn (array $option): array => [
+            'action' => 'reassign_instructor',
+            'schedule_id' => (int) $schedule->id,
+            'summary' => "Assign {$option['faculty_name']} to {$this->label($schedule)}.",
+            'reasons' => ['Timetable unchanged', ...$option['reasons']],
+            // Below every same-time room change, above most moves: a new
+            // instructor leaves the timetable alone.
+            'score' => $option['score'],
+            'faculty_id' => $option['faculty_id'],
+            'faculty_name' => $option['faculty_name'],
+            'projected_units' => $option['projected_units'],
+            'requires_overload_confirmation' => $option['requires_overload_confirmation'],
+            'payload' => [
                 'action' => 'reassign_instructor',
                 'schedule_id' => (int) $schedule->id,
-                'summary' => "Assign {$name} to {$this->label($schedule)}.",
-                'reasons' => [
-                    'Timetable unchanged',
-                    'Free at this time',
-                    $load['requires_confirmation']
-                        ? "Over Basic Load at {$load['projected_units']} units"
-                        : "{$load['projected_units']} units after this class",
-                ],
-                // Below every same-time room change, above most moves: a new
-                // instructor leaves the timetable alone.
-                'score' => ($load['requires_confirmation'] ? 40 : 90) - min(30, (int) $load['projected_units']),
-                'faculty_id' => (int) $faculty->id,
-                'faculty_name' => $name,
-                'projected_units' => (int) $load['projected_units'],
-                'requires_overload_confirmation' => (bool) $load['requires_confirmation'],
-                'payload' => [
-                    'action' => 'reassign_instructor',
-                    'schedule_id' => (int) $schedule->id,
-                    'faculty_id' => (int) $faculty->id,
-                ],
-            ];
-        }
-
-        usort($options, static fn (array $left, array $right): int => $right['score'] <=> $left['score']);
-
-        return array_slice($options, 0, $take);
+                'faculty_id' => $option['faculty_id'],
+            ],
+        ], $this->instructors->recommend($this->hybridAssignments->resolve($schedule), $faculties, $semesterId, $take));
     }
 
     /** @var array<int, string> course code by course id, for option summaries */

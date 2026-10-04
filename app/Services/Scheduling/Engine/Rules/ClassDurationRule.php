@@ -48,14 +48,6 @@ final class ClassDurationRule
         $course = $records->course;
         $meetingType = isset($attempt['meeting_type']) ? (string) $attempt['meeting_type'] : null;
         $isIntegratedSession = SchedulingPolicy::isIntegratedSession($course, $meetingType, $attempt['split_group_id'] ?? null);
-        // A Consecutive Days run meets for the class's full length every day.
-        $allowedMinutes = $isIntegratedSession
-            ? SchedulingPolicy::integratedSessionCeilingMinutes()
-            : $this->allowedWeeklyMinutes($records) * SchedulingPolicy::weeklyCeilingMeetings($attempt['preferred_pattern'] ?? null);
-        if ($allowedMinutes <= 0) {
-            return null;
-        }
-
         $ignoreIds = RuleSupport::ignoreIds($attempt['ignore_schedule_id'] ?? null);
         $rows = Schedule::query()
             ->where('semester_id', (int) $attempt['semester_id'])
@@ -76,8 +68,24 @@ final class ClassDurationRule
         // Before this save: every live meeting, including the ones being edited
         // or replaced. After: the untouched ones plus this attempt.
         $minutesBefore = $rows->sum($minutesOf);
-        $totalMinutes = $rows->reject(static fn (Schedule $row): bool => in_array((int) $row->id, $ignoreIds, true))->sum($minutesOf)
-            + max(0, RuleSupport::durationMinutes((string) $attempt['start_time'], (string) $attempt['end_time']));
+        $kept = $rows->reject(static fn (Schedule $row): bool => in_array((int) $row->id, $ignoreIds, true));
+        $attemptMinutes = max(0, RuleSupport::durationMinutes((string) $attempt['start_time'], (string) $attempt['end_time']));
+        $totalMinutes = $kept->sum($minutesOf) + $attemptMinutes;
+
+        // A Consecutive Days run meets for the class's full length every day,
+        // and one class may run as long as the teaching day.
+        $dayMinutes = SchedulingPolicy::integratedSessionCeilingMinutes();
+        $allowedMinutes = $isIntegratedSession
+            ? $dayMinutes
+            : SchedulingPolicy::classDurationAllowanceMinutes(
+                $this->allowedWeeklyMinutes($records),
+                max($attemptMinutes, (int) $kept->map($minutesOf)->max()),
+                $dayMinutes,
+                $attempt['preferred_pattern'] ?? null,
+            );
+        if ($allowedMinutes <= 0) {
+            return null;
+        }
 
         // Only a save that adds time past the ceiling is refused. Data that was
         // already over must not block unrelated edits such as assigning an

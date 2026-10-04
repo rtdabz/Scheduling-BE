@@ -105,8 +105,9 @@ return [
             'requires' => ['schedule.view'],
             'module' => 'room_requests',
             'requires_program' => true,
-            // Room borrowing is between departments; the VPAA takes no part.
-            'allowed_roles' => ['secretary', 'program_head'],
+            // Room borrowing is secretary to secretary; program heads and the
+            // VPAA take no part (the VPAA is only notified).
+            'allowed_roles' => ['secretary'],
             'title' => 'Request Rooms',
             'description' => "Ask another department to lend one of its vacant rooms during specific weekly windows.",
         ],
@@ -182,8 +183,9 @@ return [
      *
      * Secretaries and program heads build their department's timetable end to
      * end; approvals and designations stay with the dean and VPAA. The
-     * secretary alone also decides on requests to borrow their department's
-     * rooms and divides those rooms between the department's programs. Both
+     * secretary alone requests other departments' rooms, decides on requests
+     * for their own department's rooms, and divides those rooms between the
+     * department's programs. Both
      * author curricula; a program head only for their own program.
      *
      * The VPAA approves and returns schedules but does not build them: it holds
@@ -211,7 +213,7 @@ return [
             'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
             'schedule.generate', 'schedule.submit', 'schedule.withdraw',
             'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
-            'room.request', 'curriculum.manage',
+            'curriculum.manage',
         ],
     ],
 ];

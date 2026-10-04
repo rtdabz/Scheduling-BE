@@ -6,6 +6,7 @@ namespace App\Services\Scheduling\Support;
 
 use App\Models\Course;
 use App\Models\Departments;
+use App\Models\Program;
 use App\Models\Rooms;
 use App\Services\TimeslotService;
 use Carbon\Carbon;
@@ -1330,6 +1331,20 @@ final class SchedulingPolicy
         return self::consecutiveDayCount($pattern) ?? 1;
     }
 
+    /**
+     * `class_duration`'s weekly allowance for a section's (non-Integrated)
+     * meetings of one course: the course's unit-derived ceiling, raised to its
+     * longest meeting up to one teaching day, times the meetings its pattern
+     * holds. One class may run as long as the day (a department's eight-hour
+     * class), while a duplicated placement still goes over: two meetings add
+     * up past the longest one.
+     */
+    public static function classDurationAllowanceMinutes(int $courseCeilingMinutes, int $longestMeetingMinutes, int $dayMinutes, mixed $pattern): int
+    {
+        return max($courseCeilingMinutes, min($longestMeetingMinutes, $dayMinutes))
+            * self::weeklyCeilingMeetings($pattern);
+    }
+
     /** The longest run the department's week allows: Monday-Saturday, or through Sunday. */
     public static function maxConsecutiveDays(bool $sundayClassesEnabled): int
     {
@@ -1825,13 +1840,9 @@ final class SchedulingPolicy
     }
 
     /**
-     * Whether this course's teaching may be handed to another college at all.
-     *
-     * Only a service or minor course can be: a major belongs to the department —
-     * and program — that offers it, so delegating one would contradict the
-     * own-department and program rules the engine enforces below. The management
-     * endpoint refuses a major on this basis rather than storing an override the
-     * rule engine would then ignore.
+     * Whether this is a service or minor course, as opposed to a major — the
+     * `delegable` flag the course list filters on. Majors can be cross-assigned
+     * too; majorDelegationRefusal() holds the one limit on them.
      */
     public static function isDelegableCourse(Course $course): bool
     {
@@ -1975,11 +1986,16 @@ final class SchedulingPolicy
     }
 
     /**
-     * The department whose instructors may teach this major. Falls back to the
-     * section's department for a course with no owning department of its own.
+     * The department whose instructors may teach this major. A cross-assignment
+     * wins; otherwise the owning department, falling back to the section's
+     * department for a course with no owning department of its own.
      */
     public static function majorTeachingDepartmentId(Course $course, ?int $sectionDepartmentId = null): ?int
     {
+        if ($course->teaching_department_id !== null) {
+            return (int) $course->teaching_department_id;
+        }
+
         if ($course->department_id !== null) {
             return (int) $course->department_id;
         }
@@ -1989,16 +2005,45 @@ final class SchedulingPolicy
 
     /**
      * The program an instructor must belong to in order to teach this course, or
-     * null when the course is not tied to one. Only majors carry the restriction:
-     * a service or minor course is taught across programs by design.
+     * null when the course is not tied to one. A major is tied to its own program
+     * unless it was cross-assigned — to a program (Prof Ed of BSED-FIL taught by
+     * BEED) or to a whole college, which leaves any of its programs free to teach
+     * it; a minor only when it was assigned to a program.
      */
     public static function requiredTeachingProgramId(Course $course): ?int
     {
+        if ($course->teaching_program_id !== null) {
+            return (int) $course->teaching_program_id;
+        }
+
+        if ($course->teaching_department_id !== null) {
+            return null;
+        }
+
         if (! self::isMajorCourse($course)) {
-            return $course->teaching_program_id === null ? null : (int) $course->teaching_program_id;
+            return null;
         }
 
         return $course->program_id === null ? null : (int) $course->program_id;
+    }
+
+    /**
+     * Why a major cannot be handed to this target, or null when it can. A major
+     * may be cross-assigned to any college or program like a minor; only handing
+     * it to its own college as a whole is refused, since that changes nothing —
+     * inside its own college it moves to a specific sibling program.
+     */
+    public static function majorDelegationRefusal(Course $course, ?Program $program, ?int $teachingDepartmentId = null): ?string
+    {
+        if (! self::isMajorCourse($course) || $program !== null) {
+            return null;
+        }
+
+        if ($course->department_id !== null && $teachingDepartmentId === (int) $course->department_id) {
+            return 'Within its own college, a major course can only be assigned to a specific program.';
+        }
+
+        return null;
     }
 
     /**

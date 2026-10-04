@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\AuthenticationAuditService;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\CapabilityRegistry;
+use App\Support\SingleActiveSession;
 use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
@@ -26,6 +27,7 @@ class AuthController extends Controller
     public function __construct(
         private readonly AuthenticationAuditService $audit,
         private readonly CapabilityRegistry $capabilities,
+        private readonly SingleActiveSession $sessions,
     ) {}
 
     public function login(Request $request): JsonResponse
@@ -263,7 +265,8 @@ class AuthController extends Controller
     private function authenticatedResponse(Request $request, User $user, string $method): JsonResponse
     {
         $user->forceFill(['last_login_at' => now()])->save();
-        $token = $user->createToken("wicars-{$method}")->plainTextToken;
+        // Single active session: signing in here signs every other device out.
+        $token = $this->sessions->start($user, "wicars-{$method}")->plainTextToken;
         $this->audit->record($request, 'login_succeeded', $user, ['method' => $method]);
 
         return response()->json([

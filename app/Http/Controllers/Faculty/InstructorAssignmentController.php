@@ -15,6 +15,7 @@ use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Schedule\FacultyConflictOverride;
+use App\Services\Scheduling\Schedule\InstructorRecommender;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
@@ -39,6 +40,7 @@ class InstructorAssignmentController extends Controller
         private readonly FacultyLoadService $facultyLoad,
         private readonly ManualHybridFacultyAssignmentResolver $manualHybridAssignments,
         private readonly ScheduleHistoryRecorder $historyRecorder,
+        private readonly InstructorRecommender $instructorRecommender,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -80,19 +82,11 @@ class InstructorAssignmentController extends Controller
             }
 
             $incomingCourses = Course::query()
-                ->with(['department:id,department_code,department_name'])
+                ->with(['department:id,department_code,department_name', 'teachingSourceProgram:id,code,major'])
                 ->where('status', 'active')
-                ->where('teaching_department_id', $departmentId)
-                ->when($programId !== null, fn ($query) => $query->where(
-                    fn ($programScope) => $programScope
-                        ->where('program_id', $programId)
-                        ->orWhere('teaching_program_id', $programId),
-                ))
-                ->where(function ($query) use ($departmentId): void {
-                    $query->whereNull('department_id')->orWhere('department_id', '!=', $departmentId);
-                })
+                ->delegatedTo($departmentId, $programId)
                 ->orderBy('course_code')
-                ->get(['id', 'course_code', 'course_name', 'units', 'year_level', 'department_id', 'teaching_department_id']);
+                ->get(['id', 'course_code', 'course_name', 'units', 'year_level', 'department_id', 'teaching_department_id', 'program_id', 'teaching_program_id', 'teaching_source_program_id']);
 
             $schedules = Schedule::query()
                 ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
@@ -236,9 +230,7 @@ class InstructorAssignmentController extends Controller
         $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
         if ($faculty !== null && $requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
             $schedule->course->loadMissing(['program', 'teachingProgram']);
-            $requiredProgram = SchedulingPolicy::isMajorCourse($schedule->course)
-                ? $schedule->course->program
-                : $schedule->course->teachingProgram;
+            $requiredProgram = $schedule->course->teachingProgram ?? $schedule->course->program;
             $programLabel = $requiredProgram?->code ?? $requiredProgram?->name;
 
             return response()->json([
@@ -374,6 +366,53 @@ class InstructorAssignmentController extends Controller
             // nothing left to warn about after the save.
             'warnings' => [],
             'load' => $load,
+        ]);
+    }
+
+    /**
+     * GET /api/instructor-assignments/{schedule}/recommendations
+     *
+     * Instructors the caller may assign who are free for every meeting of the
+     * class, best first. Offered when the chosen instructor clashes, so the
+     * user can pick someone free instead of assigning over the conflict.
+     */
+    public function recommendations(Request $request, Schedule $schedule): JsonResponse
+    {
+        $validated = $request->validate([
+            'limit' => 'nullable|integer|min:1|max:10',
+        ]);
+
+        $departmentId = (int) ($request->user()?->department_id ?? 0);
+        if (! $this->userCanManageInstructor($request, $schedule, $departmentId)) {
+            return response()->json(['message' => 'You cannot assign an instructor to this class.'], 403);
+        }
+
+        $semesterId = $this->activeSemesterId();
+        if (! in_array($schedule->status, self::ASSIGNABLE_STATUSES, true) || $semesterId === null) {
+            return response()->json(['options' => []]);
+        }
+
+        // The same pool update() accepts: active, this college, the caller's
+        // program for a Program Head, and the course's program when it has one.
+        $programId = $request->user()?->role === 'program_head'
+            ? (int) ($request->user()?->program_id ?? 0)
+            : SchedulingPolicy::requiredTeachingProgramId($schedule->course);
+        $faculties = Faculty::query()
+            ->where('department_id', $departmentId)
+            ->where('status', 'active')
+            ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
+            ->when($schedule->faculty_id !== null, fn ($query) => $query->whereKeyNot($schedule->faculty_id))
+            ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->get();
+
+        return response()->json([
+            'options' => $this->instructorRecommender->recommend(
+                $this->linkedMeetingBlocks($schedule),
+                $faculties,
+                $semesterId,
+                (int) ($validated['limit'] ?? 3),
+            ),
         ]);
     }
 

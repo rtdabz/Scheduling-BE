@@ -34,7 +34,7 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
         ], null, 'lecture', []));
     }
 
-    public function test_department_scoped_field_configuration_classifies_shared_course_as_field_for_generation(): void
+    public function test_a_runs_field_choice_classifies_a_shared_course_as_field_for_generation(): void
     {
         $department = \App\Models\Departments::create([
             'department_name' => 'College of Computer Studies',
@@ -67,10 +67,13 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
             'semester' => '1st',
             'status' => 'active',
         ]);
-        DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['is_field' => true]);
-        SchedulingPolicy::clearFieldCourseCache();
+        // Field is the run's own choice, passed the way generation passes it.
+        $asFieldRun = static fn (\Closure $callback): mixed => DepartmentCourseRules::withOverride((int) $department->id, [
+            'field_course_codes' => ['PATH FIT 1'],
+            'scope_course_ids' => [(int) $course->id],
+        ], $callback);
 
-        $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
+        $requirements = $asFieldRun(fn () => app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]));
 
         $this->assertSame('field', $requirements[$course->id][0]['component_type']);
         $this->assertSame(['field'], $requirements[$course->id][0]['eligible_room_types']);
@@ -110,10 +113,13 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
             'semester' => '1st',
             'status' => 'active',
         ]);
-        DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['is_field' => true]);
-        SchedulingPolicy::clearFieldCourseCache();
+        // Field is the run's own choice, passed the way generation passes it.
+        $asFieldRun = static fn (\Closure $callback): mixed => DepartmentCourseRules::withOverride((int) $department->id, [
+            'field_course_codes' => ['PATH FIT 1'],
+            'scope_course_ids' => [(int) $course->id],
+        ], $callback);
 
-        $result = app(YearLevelFeasibilityService::class)->check(
+        $result = $asFieldRun(fn () => app(YearLevelFeasibilityService::class)->check(
             [$section],
             [
                 $section->id => [
@@ -121,7 +127,7 @@ class FieldCourseRoomTypeInvariantTest extends TestCase
                     'delivery_modes_by_course_id' => [],
                 ],
             ],
-        );
+        ));
 
         $this->assertSame([], $result);
     }

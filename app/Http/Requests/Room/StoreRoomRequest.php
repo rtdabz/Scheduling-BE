@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\DB;
 
 class StoreRoomRequest extends FormRequest
 {
-    public const BUILDING_RULE = 'nullable|string|in:NEE Building,Building 1,Building 2,Building 3,Building 4,Building 5,Building 6';
+    public const BUILDING_RULE = 'nullable|string|max:100';
 
     /**
      * A room code is one room however it is typed: case and spacing do not

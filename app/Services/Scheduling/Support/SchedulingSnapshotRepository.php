@@ -222,6 +222,18 @@ final class SchedulingSnapshotRepository
                 $roomRecords[$roomId]['program_days'] = $days;
             }
         }
+        // Windows this department lent out of its own rooms; the borrower holds
+        // them, so the owner's runs treat them as booked.
+        foreach (app(RoomAccessPolicy::class)->lentWindowsFor($departmentId, $semesterId) as $roomId => $windows) {
+            if (isset($roomRecords[$roomId])) {
+                $roomRecords[$roomId]['lent_windows'] = array_map(static fn (array $window): array => [
+                    'day' => $window['day'],
+                    'start_time' => $window['start_time'],
+                    'end_time' => $window['end_time'],
+                    'borrower' => $window['borrower'],
+                ], $windows);
+            }
+        }
 
         $payload = [
             'schema_version' => SchedulingSnapshot::SCHEMA_VERSION,

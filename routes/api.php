@@ -140,6 +140,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
             Route::match(['put', 'patch'], 'rooms/{room}', [RoomsController::class, 'update']);
             Route::delete('rooms/{room}', [RoomsController::class, 'destroy']);
             Route::patch('rooms/{room}/assign', [RoomsController::class, 'assign']);
+            // A building is the rooms that name it; these act on all of them.
+            // The name travels in the body since it may hold any character.
+            Route::put('buildings', [RoomsController::class, 'renameBuilding']);
+            Route::post('buildings/archive', [RoomsController::class, 'archiveBuilding']);
         });
 
         Route::get('semesters', [SemesterController::class, 'index']);
@@ -225,8 +229,11 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     // decide (the owning department).
     Route::middleware('capability:room.request,room.review_requests')->group(function () {
         Route::get('room-requests', [RoomRequestController::class, 'index']);
-        Route::get('room-requests/rooms/{room}/occupancy', [RoomRequestController::class, 'occupancy'])->whereNumber('room');
     });
+    // Program heads take no part in requests but still schedule around lent windows.
+    Route::get('room-requests/rooms/{room}/occupancy', [RoomRequestController::class, 'occupancy'])
+        ->middleware('capability:room.request,room.review_requests,schedule.create')
+        ->whereNumber('room');
     Route::middleware('capability:room.request')->group(function () {
         Route::post('room-requests', [RoomRequestController::class, 'store']);
         Route::post('room-requests/{roomRequest}/cancel', [RoomRequestController::class, 'cancel'])->whereNumber('roomRequest');
@@ -308,6 +315,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('instructor-assignments', [InstructorAssignmentController::class, 'index']);
         Route::delete('instructor-assignments/sections/{section}', [InstructorAssignmentController::class, 'clearSection']);
         Route::post('instructor-assignments/clear', [InstructorAssignmentController::class, 'clearSections']);
+        Route::get('instructor-assignments/{schedule}/recommendations', [InstructorAssignmentController::class, 'recommendations']);
         Route::patch('instructor-assignments/{schedule}', [InstructorAssignmentController::class, 'update']);
 
     });

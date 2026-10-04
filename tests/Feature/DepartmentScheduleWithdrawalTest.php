@@ -14,8 +14,11 @@ use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\Scheduling\Submission\SubmissionStatusResolver;
 use App\Support\ApiCache;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class DepartmentScheduleWithdrawalTest extends TestCase
@@ -495,6 +498,42 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $this->assertSame('initial', $submissions[1]['revision_status']);
         $this->assertSame('pending_dean', $submissions[2]['status']);
         $this->assertSame('modified', $submissions[2]['revision_status']);
+    }
+
+    public function test_a_returned_versions_fingerprints_are_cached_once_and_survive_later_edits(): void
+    {
+        [, , , , $section, $secretary, $schedule, $submission] = $this->returnedVersion();
+        $submittedKey = SubmissionStatusResolver::meetingKey($schedule->getAttributes());
+        $cacheKey = "submission.fingerprints.v1.{$submission->snapshot_version_id}";
+
+        $this->assertSectionStatus($secretary, $section, 'rejected', 'initial');
+        $this->assertSame([$section->id => $submittedKey], Cache::get($cacheKey));
+
+        $schedule->update(['day' => 'Thursday']);
+        $this->editedDirectly();
+        $this->assertSectionStatus($secretary, $section, 'rejected', 'modified');
+        // The entry is the submitted version, not the working copy.
+        $this->assertSame([$section->id => $submittedKey], Cache::get($cacheKey));
+
+        // A later read compares against the cached entry without decoding the snapshot again.
+        DB::enableQueryLog();
+        $statuses = app(SubmissionStatusResolver::class)->forSections([$section->id], $submission->semester_id);
+        $this->assertSame('modified', $statuses[$section->id]['revision_status']);
+        $this->assertFalse(collect(DB::getQueryLog())->contains(
+            fn (array $query): bool => str_contains($query['query'], 'schedule_history_items'),
+        ));
+    }
+
+    public function test_a_version_with_no_sections_left_is_skipped_without_reading_its_snapshot(): void
+    {
+        [, , , , , , , $submission] = $this->returnedVersion();
+        $submission->sections()->detach();
+        Cache::flush();
+
+        $statuses = app(SubmissionStatusResolver::class)->forSubmissions(ScheduleSubmission::query()->with('sections')->get());
+
+        $this->assertSame([$submission->id => 'initial'], $statuses);
+        $this->assertFalse(Cache::has("submission.fingerprints.v1.{$submission->snapshot_version_id}"));
     }
 
     public function test_revision_diff_lists_moved_meetings_against_the_rejected_version_and_ignores_instructors(): void

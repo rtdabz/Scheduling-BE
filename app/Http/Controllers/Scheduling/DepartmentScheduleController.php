@@ -692,15 +692,14 @@ class DepartmentScheduleController extends Controller
             ->where('semester_id', $activeSemesterId)
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES)
             ->whereNull('faculty_id')
-            ->where('department_id', '!=', $departmentId)
+            // Another college's classes, or — for a course handed to a sibling
+            // program — this college's own classes of that course.
+            ->where(fn ($owner) => $owner
+                ->where('department_id', '!=', $departmentId)
+                ->orWhereHas('course', fn ($course) => $course->where('department_id', $departmentId)))
             ->whereHas('course', fn ($course) => $course
                 ->where('status', 'active')
-                ->where('teaching_department_id', $departmentId)
-                ->when($programId !== null, fn ($scope) => $scope->where(
-                    fn ($programScope) => $programScope
-                        ->where('program_id', $programId)
-                        ->orWhere('teaching_program_id', $programId),
-                )))
+                ->delegatedTo($departmentId, $programId))
             ->distinct()
             ->get(['section_id', 'course_id'])
             ->count();

@@ -134,6 +134,22 @@ class CrudIntegrityGuardsTest extends TestCase
         $this->assertDatabaseHas('rooms', ['id' => $room->id, 'status' => 'not available']);
     }
 
+    public function test_a_building_with_a_booked_room_is_not_archived_at_all(): void
+    {
+        $fixture = $this->fixture();
+        $booked = Rooms::create(['room_code' => 'CIT-101', 'building' => 'CIT Building', 'room_type' => 'lecture']);
+        $free = Rooms::create(['room_code' => 'CIT-102', 'building' => 'CIT Building', 'room_type' => 'lecture']);
+        $this->schedule($fixture, $this->section($fixture), 'draft')->update(['room_id' => $booked->id]);
+
+        $this->actingAs($fixture['vpaa'], 'sanctum')
+            ->postJson('/api/buildings/archive', ['building' => 'CIT Building'])
+            ->assertStatus(422)
+            ->assertJsonFragment(['message' => 'This building cannot be archived while classes are scheduled in its rooms: CIT-101.']);
+
+        $this->assertNotSoftDeleted('rooms', ['id' => $booked->id]);
+        $this->assertNotSoftDeleted('rooms', ['id' => $free->id]);
+    }
+
     public function test_a_record_under_an_archived_department_cannot_be_restored(): void
     {
         $fixture = $this->fixture();
@@ -156,23 +172,29 @@ class CrudIntegrityGuardsTest extends TestCase
             ->assertOk();
     }
 
-    public function test_a_restored_account_whose_slot_was_refilled_comes_back_inactive(): void
+    public function test_an_archived_role_holder_stays_archived_while_the_slot_is_filled(): void
     {
         $fixture = $this->fixture();
         $archived = User::factory()->create([
-            'role' => 'dean', 'department_id' => $fixture['department']->id, 'is_active' => true,
+            'role' => 'secretary', 'department_id' => $fixture['department']->id, 'is_active' => false,
         ]);
         $archived->delete();
-        User::factory()->create([
-            'role' => 'dean', 'department_id' => $fixture['department']->id, 'is_active' => true,
+        $current = User::factory()->create([
+            'role' => 'secretary', 'department_id' => $fixture['department']->id, 'is_active' => true,
         ]);
 
         $this->actingAs($fixture['vpaa'], 'sanctum')
             ->postJson("/api/archives/users/{$archived->id}/restore")
-            ->assertOk();
+            ->assertStatus(422);
+        $this->assertSoftDeleted('users', ['id' => $archived->id]);
 
-        $this->assertDatabaseHas('users', ['id' => $archived->id, 'deleted_at' => null, 'is_active' => false]);
-        $this->assertSame(1, User::where('role', 'dean')->where('department_id', $fixture['department']->id)->where('is_active', true)->count());
+        // Once the slot is free the archived account can come back.
+        $current->delete();
+        $fixture['secretary']->update(['is_active' => false]);
+        $this->actingAs($fixture['vpaa'], 'sanctum')
+            ->postJson("/api/archives/users/{$archived->id}/restore")
+            ->assertOk();
+        $this->assertDatabaseHas('users', ['id' => $archived->id, 'deleted_at' => null]);
     }
 
     /** @return array<string, mixed> */

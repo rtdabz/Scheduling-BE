@@ -1,8 +1,11 @@
 <?php
 
+use App\Support\SingleActiveSession;
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -41,5 +44,18 @@ return Application::configure(basePath: dirname(__DIR__))
             }
 
             return $request->expectsJson();
+        });
+
+        // A token revoked by a sign-in on another device gets a reason, so the
+        // old device can say why it was signed out.
+        $exceptions->render(function (AuthenticationException $e, Request $request) {
+            if ($request->is('api/*') && app(SingleActiveSession::class)->wasReplaced($request->bearerToken())) {
+                return response()->json([
+                    'message' => 'This account was signed in on another device.',
+                    'reason' => 'session_replaced',
+                ], 401);
+            }
+
+            return null;
         });
     })->create();

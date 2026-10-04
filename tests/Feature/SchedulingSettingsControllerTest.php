@@ -254,131 +254,26 @@ class SchedulingSettingsControllerTest extends TestCase
             ->assertOk();
     }
 
-    public function test_a_sunday_required_day_needs_sunday_classes(): void
-    {
-        [$user, $department] = $this->laboratoryDepartment();
-        $course = Course::create(['course_code' => 'IT 101', 'course_name' => 'Programming 1', 'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3, 'course_category' => 'major', 'room_type_required' => 'lecture', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'status' => 'active']);
-        $rules = ['forced_day_rules' => [['course_id' => $course->id, 'day' => 'Sunday']]];
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', $rules)
-            ->assertStatus(422);
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', [...$rules, 'sunday_classes_enabled' => true])
-            ->assertOk();
-    }
-
-    public function test_consecutive_day_rules_are_saved_per_course_and_per_section(): void
+    /**
+     * Required Day and Consecutive Days are a generation run's own choice. A
+     * saved rule held every later manual placement to it -- a department's
+     * NSTP 1 "on Saturday" refused any other day with no setting to clear.
+     */
+    public function test_day_rules_are_no_longer_saved(): void
     {
         [$user, $department] = $this->laboratoryDepartment();
         [$course, $section] = $this->clinicalCourseAndSection($department);
 
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
-            ['course_id' => $course->id, 'section_id' => null, 'day_count' => 2, 'preferred_start_day' => null],
-            ['course_id' => $course->id, 'section_id' => $section->id, 'day_count' => 3, 'preferred_start_day' => 'Thursday'],
-        ]])->assertOk()
-            ->assertJsonPath('consecutive_day_rules.0.section_id', null)
-            ->assertJsonPath('consecutive_day_rules.1.day_count', 3)
-            ->assertJsonPath('consecutive_day_rules.1.preferred_start_day', 'Thursday');
-
-        $this->assertSame(
-            [$course->id => ['day_count' => 3, 'preferred_start_day' => 'Thursday', 'meeting_days' => null]],
-            \App\Services\Scheduling\Support\SchedulingPolicy::consecutiveDayRuleMap($department->id, $section->id),
-        );
-
-        // Sending an empty list clears them.
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => []])
-            ->assertOk()
+        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
+            'section_id' => $section->id,
+            'forced_day_rules' => [['course_id' => $course->id, 'day' => 'Saturday']],
+            'consecutive_day_rules' => [['course_id' => $course->id, 'day_count' => 3]],
+        ])->assertOk()
+            ->assertJsonPath('forced_day_rules', [])
             ->assertJsonPath('consecutive_day_rules', []);
-    }
 
-    public function test_ticked_meeting_days_set_the_count_and_start_and_need_not_be_back_to_back(): void
-    {
-        [$user, $department] = $this->laboratoryDepartment();
-        [$course] = $this->clinicalCourseAndSection($department);
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
-            ['course_id' => $course->id, 'day_count' => 2, 'meeting_days' => ['Friday', 'Monday', 'Wednesday']],
-        ]])->assertOk()
-            ->assertJsonPath('consecutive_day_rules.0.day_count', 3)
-            ->assertJsonPath('consecutive_day_rules.0.preferred_start_day', 'Monday')
-            ->assertJsonPath('consecutive_day_rules.0.meeting_days', ['Monday', 'Wednesday', 'Friday']);
-
-        // Sunday is closed for this department.
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
-            ['course_id' => $course->id, 'day_count' => 2, 'meeting_days' => ['Friday', 'Sunday']],
-        ]])->assertStatus(422)
-            ->assertJsonPath('message', 'CLIN 101: Sunday is not in the Monday-Saturday teaching week. Untick it, or ask the department secretary to enable Sunday classes.');
-
-        // A repeated day would otherwise collapse into a back-to-back rule.
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
-            ['course_id' => $course->id, 'day_count' => 3, 'meeting_days' => ['Monday', 'Monday']],
-        ]])->assertStatus(422)
-            ->assertJsonPath('message', 'CLIN 101: tick each meeting day only once.');
-    }
-
-    public function test_rules_may_share_meeting_days(): void
-    {
-        [$user, $department] = $this->laboratoryDepartment();
-        [$course, $section] = $this->clinicalCourseAndSection($department);
-        $week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
-            ['course_id' => $course->id, 'section_id' => null, 'day_count' => 5, 'meeting_days' => $week],
-            ['course_id' => $course->id, 'section_id' => $section->id, 'day_count' => 5, 'meeting_days' => $week],
-        ]])->assertOk()
-            ->assertJsonPath('consecutive_day_rules.1.meeting_days', $week);
-    }
-
-    public function test_a_consecutive_run_must_fit_the_teaching_week(): void
-    {
-        [$user, $department] = $this->laboratoryDepartment();
-        [$course] = $this->clinicalCourseAndSection($department);
-        $fromFriday = ['consecutive_day_rules' => [
-            ['course_id' => $course->id, 'day_count' => 3, 'preferred_start_day' => 'Friday'],
-        ]];
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', $fromFriday)
-            ->assertStatus(422)
-            ->assertJsonPath('message', 'CLIN 101: 3 consecutive days starting Friday run past the end of the Monday-Saturday teaching week. Choose an earlier starting day or fewer days.');
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
-            ['course_id' => $course->id, 'day_count' => 7],
-        ]])->assertStatus(422);
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', [...$fromFriday, 'sunday_classes_enabled' => true])
-            ->assertOk();
-    }
-
-    public function test_a_course_cannot_have_both_a_required_day_and_consecutive_days(): void
-    {
-        [$user, $department] = $this->laboratoryDepartment();
-        [$course] = $this->clinicalCourseAndSection($department);
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
-            'forced_day_rules' => [['course_id' => $course->id, 'day' => 'Thursday']],
-        ])->assertOk();
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
-            ['course_id' => $course->id, 'day_count' => 3],
-        ]])->assertStatus(422)
-            ->assertJsonPath('message', 'CLIN 101 has a Required Day of Thursday, so it cannot also meet on consecutive days. Clear its Required Day, or tick its meeting days instead.');
-
-        // Clearing the Required Day in the same save lets it through.
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
-            'forced_day_rules' => [],
-            'consecutive_day_rules' => [['course_id' => $course->id, 'day_count' => 3, 'preferred_start_day' => 'Thursday']],
-        ])->assertOk();
-    }
-
-    public function test_consecutive_days_are_only_set_for_the_departments_own_sections(): void
-    {
-        [$user, $department] = $this->laboratoryDepartment();
-        [$course] = $this->clinicalCourseAndSection($department);
-        $otherDepartment = Departments::create(['department_name' => 'Nursing', 'department_code' => 'NUR']);
-        [, $foreignSection] = $this->clinicalCourseAndSection($otherDepartment, 'CLIN 201');
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', ['consecutive_day_rules' => [
-            ['course_id' => $course->id, 'section_id' => $foreignSection->id, 'day_count' => 3],
-        ]])->assertStatus(422);
+        $this->assertDatabaseMissing(\App\Services\Scheduling\Support\DepartmentCourseRules::TABLE, ['department_id' => $department->id]);
+        $this->assertSame([], \App\Services\Scheduling\Support\SchedulingPolicy::forcedCourseDayMap($department->id));
     }
 
     /** @return array{0: Course, 1: Sections} */

@@ -14,9 +14,12 @@ use App\Models\SystemNotification;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
+use App\Services\Scheduling\Domain\ScheduleRow;
+use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintKernel;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Generation\GenerateSchedulePlan;
 use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -51,7 +54,7 @@ class RoomRequestTest extends TestCase
             ->postJson('/api/room-requests', $this->payload($f))
             ->assertCreated()
             ->assertJsonPath('data.status', 'pending')
-            ->assertJsonPath('data.room.room_code', 'LAB-1')
+            ->assertJsonPath('data.room.room_code', 'RM-1')
             ->assertJsonPath('data.requesting_department.code', 'CIT')
             ->assertJsonPath('data.owner_department.code', 'CAS')
             ->assertJsonPath('data.windows.0.start_time', '11:00');
@@ -60,7 +63,31 @@ class RoomRequestTest extends TestCase
             ->where('user_id', $f['ownerSecretary']->id)
             ->where('type', 'room_request_submitted')
             ->exists());
-        $this->assertFalse(SystemNotification::query()->where('user_id', $f['vpaa']->id)->exists());
+        $this->assertTrue(SystemNotification::query()
+            ->where('user_id', $f['vpaa']->id)
+            ->where('type', 'room_request_submitted')
+            ->exists(), 'The VPAA was not told about the request.');
+    }
+
+    /** Requests are secretary to secretary: a program head can neither send nor decide one, nor is notified. */
+    public function test_program_heads_take_no_part_in_room_requests(): void
+    {
+        $f = $this->fixture();
+        $requesterHead = User::factory()->create(['role' => 'program_head', 'department_id' => $f['secretary']->department_id]);
+        $ownerHead = User::factory()->create(['role' => 'program_head', 'department_id' => $f['owner']->id]);
+
+        $this->actingAs($requesterHead)->postJson('/api/room-requests', $this->payload($f))->assertForbidden();
+        $this->actingAs($requesterHead)->getJson('/api/room-requests')->assertForbidden();
+
+        $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->json('data.id');
+        $this->actingAs($ownerHead)->postJson("/api/room-requests/{$id}/approve")->assertForbidden();
+        $this->actingAs($requesterHead)->postJson("/api/room-requests/{$id}/cancel")->assertForbidden();
+
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/approve")->assertOk();
+        $this->assertFalse(SystemNotification::query()
+            ->whereIn('user_id', [$requesterHead->id, $ownerHead->id])
+            ->where('type', 'like', 'room_request_%')
+            ->exists());
     }
 
     public function test_own_and_shared_rooms_cannot_be_requested(): void
@@ -75,6 +102,18 @@ class RoomRequestTest extends TestCase
                 ->assertStatus(422)
                 ->assertJsonValidationErrors('room_id');
         }
+    }
+
+    /** Laboratories stay with their department; only lecture rooms are lent. */
+    public function test_a_laboratory_cannot_be_requested(): void
+    {
+        $f = $this->fixture();
+        $lab = $this->room('LAB-1', 'laboratory', $f['owner']->id);
+
+        $this->actingAs($f['secretary'])
+            ->postJson('/api/room-requests', [...$this->payload($f), 'room_id' => $lab->id])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('room_id');
     }
 
     public function test_a_window_overlapping_an_existing_class_is_refused(): void
@@ -128,7 +167,7 @@ class RoomRequestTest extends TestCase
             ->where('type', 'room_request_borrowed')
             ->first();
         $this->assertNotNull($notice, 'The VPAA was not told about the borrowing.');
-        $this->assertStringContainsString('CIT is borrowing LAB-1 from CAS', $notice->message);
+        $this->assertStringContainsString('CIT is borrowing RM-1 from CAS', $notice->message);
     }
 
     /** The VPAA is only told about borrowing; it cannot take part in it. */
@@ -184,8 +223,69 @@ class RoomRequestTest extends TestCase
         $this->assertTrue($this->violatesRoomOwnership($attempt('Tuesday', '11:00:00', '13:00:00')));
     }
 
+    /** Once lent, the window belongs to the borrower: the owner may not book its own room inside it. */
+    public function test_owner_cannot_book_its_room_inside_a_lent_window(): void
+    {
+        $f = $this->fixture();
+        $section = Sections::create([
+            'section_name' => 'CAS 1A',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $f['owner']->id,
+            'semester_id' => $f['semester']->id,
+            'status' => 'active',
+        ]);
+        $course = Course::create([
+            'course_code' => 'CAS 101',
+            'course_name' => 'Owner Lecture',
+            'lecture_hours' => 2,
+            'lab_hours' => 0,
+            'units' => 1,
+            'course_category' => 'major',
+            'room_type_required' => 'lecture',
+            'year_level' => '1',
+            'semester' => '1st',
+            'department_id' => $f['owner']->id,
+            'status' => 'active',
+        ]);
+        $attempt = fn (string $day, string $start, string $end): array => [
+            'semester_id' => $f['semester']->id,
+            'section_id' => $section->id,
+            'course_id' => $course->id,
+            'room_id' => $f['room']->id,
+            'department_id' => $f['owner']->id,
+            'day' => $day,
+            'start_time' => $start,
+            'end_time' => $end,
+            'mode' => 'on-site',
+        ];
+        $kernelRefuses = function (array $attempt): bool {
+            $snapshot = app(SchedulingSnapshotRepository::class)->capture(
+                semesterId: (int) $attempt['semester_id'],
+                departmentId: (int) $attempt['department_id'],
+                sectionIds: [(int) $attempt['section_id']],
+                courseIds: [(int) $attempt['course_id']],
+            );
+
+            return collect((new SchedulingConstraintKernel)->evaluateRow(ScheduleRow::fromArray($attempt), $snapshot))
+                ->contains(fn ($violation): bool => $violation->ruleId === 'room_department_alignment');
+        };
+
+        $this->assertFalse($this->violatesRoomOwnership($attempt('Monday', '12:00:00', '14:00:00')));
+
+        $this->approvedGrant($f);
+
+        foreach ([['Monday', '12:00:00', '14:00:00'], ['Monday', '10:00:00', '11:30:00']] as [$day, $start, $end]) {
+            $this->assertTrue($this->violatesRoomOwnership($attempt($day, $start, $end)), "Validator let the owner into {$day} {$start}.");
+            $this->assertTrue($kernelRefuses($attempt($day, $start, $end)), "Kernel let the owner into {$day} {$start}.");
+        }
+        $this->assertFalse($this->violatesRoomOwnership($attempt('Monday', '13:00:00', '15:00:00')));
+        $this->assertFalse($this->violatesRoomOwnership($attempt('Tuesday', '11:00:00', '13:00:00')));
+        $this->assertFalse($kernelRefuses($attempt('Monday', '13:00:00', '15:00:00')));
+    }
+
     /** The generator: a granted room is offered, and only inside its window. */
-    public function test_generator_places_a_laboratory_in_the_granted_window(): void
+    public function test_generator_places_a_lecture_in_the_granted_window(): void
     {
         $f = $this->fixture();
         $this->approvedGrant($f);
@@ -194,7 +294,7 @@ class RoomRequestTest extends TestCase
 
         $this->assertCount(1, $plan->rows);
         $row = $plan->rows[0];
-        $this->assertSame((int) $f['room']->id, $row->roomId, 'The granted laboratory was not used.');
+        $this->assertSame((int) $f['room']->id, $row->roomId, 'The granted lecture room was not used.');
         $this->assertSame('Monday', $row->day);
         $this->assertSame('11:00:00', $row->startTime);
         $this->assertSame('13:00:00', $row->endTime);
@@ -211,7 +311,8 @@ class RoomRequestTest extends TestCase
         }
     }
 
-    public function test_a_grant_cannot_be_revoked_while_classes_depend_on_it(): void
+    /** The owner can take the room back at any time; the borrower's classes in it become Room TBA. */
+    public function test_revoking_a_grant_moves_the_borrowers_classes_to_room_tba(): void
     {
         $f = $this->fixture();
         $id = $this->approvedGrant($f);
@@ -219,19 +320,37 @@ class RoomRequestTest extends TestCase
 
         $this->actingAs($f['ownerSecretary'])
             ->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'CAS needs it back.'])
-            ->assertStatus(422);
-
-        $class->delete();
-
-        $this->actingAs($f['ownerSecretary'])
-            ->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'CAS needs it back.'])
             ->assertOk()
-            ->assertJsonPath('data.status', 'revoked');
+            ->assertJsonPath('data.status', 'revoked')
+            ->assertJsonPath('released_schedule_count', 1);
 
+        $this->assertNull($class->fresh()->room_id, 'The class kept a room its department can no longer use.');
         $this->assertTrue(SystemNotification::query()
             ->where('user_id', $f['vpaa']->id)
             ->where('type', 'room_request_returned')
             ->exists());
+        $this->assertStringContainsString('Room TBA', (string) SystemNotification::query()
+            ->where('user_id', $f['secretary']->id)
+            ->where('type', 'room_request_revoked')
+            ->value('message'));
+    }
+
+    /** The borrower can give the room back at any time; only classes under this grant are released. */
+    public function test_giving_back_a_room_releases_only_classes_under_that_grant(): void
+    {
+        $f = $this->fixture();
+        $id = $this->approvedGrant($f);
+        $inside = $this->bookRoom($f, $f['requester'], 'Monday', '11:00:00', '13:00:00', $f['section'], $f['course']);
+        $owners = $this->bookRoom($f, $f['owner'], 'Tuesday', '07:00:00', '09:00:00');
+
+        $this->actingAs($f['secretary'])
+            ->postJson("/api/room-requests/{$id}/cancel")
+            ->assertOk()
+            ->assertJsonPath('data.status', 'cancelled')
+            ->assertJsonPath('released_schedule_count', 1);
+
+        $this->assertNull($inside->fresh()->room_id);
+        $this->assertSame((int) $f['room']->id, (int) $owners->fresh()->room_id, "The owner's own class lost its room.");
     }
 
     public function test_requester_lists_its_own_while_the_owner_sees_both(): void
@@ -295,7 +414,7 @@ class RoomRequestTest extends TestCase
         return [
             'room_id' => $f['room']->id,
             'semester_id' => $f['semester']->id,
-            'purpose' => 'IT laboratory classes',
+            'purpose' => 'IT lecture classes',
             'windows' => [['day' => 'Monday', 'start_time' => '11:00', 'end_time' => '13:00']],
         ];
     }
@@ -344,11 +463,11 @@ class RoomRequestTest extends TestCase
         $course ??= Course::create([
             'course_code' => $department->department_code.' 199',
             'course_name' => 'Occupying Course',
-            'lecture_hours' => 0,
-            'lab_hours' => 1,
+            'lecture_hours' => 2,
+            'lab_hours' => 0,
             'units' => 1,
             'course_category' => 'major',
-            'room_type_required' => 'laboratory',
+            'room_type_required' => 'lecture',
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $department->id,
@@ -416,12 +535,12 @@ class RoomRequestTest extends TestCase
 
         $course = Course::create([
             'course_code' => 'IT 101',
-            'course_name' => 'Laboratory Course IT 101',
-            'lecture_hours' => 0,
-            'lab_hours' => 1,
+            'course_name' => 'Lecture Course IT 101',
+            'lecture_hours' => 2,
+            'lab_hours' => 0,
             'units' => 2,
             'course_category' => 'major',
-            'room_type_required' => 'laboratory',
+            'room_type_required' => 'lecture',
             'year_level' => '1',
             'semester' => '1st',
             'department_id' => $requester->id,
@@ -435,7 +554,7 @@ class RoomRequestTest extends TestCase
             'owner' => $owner,
             'section' => $section,
             'course' => $course,
-            'room' => $this->room('LAB-1', 'laboratory', $owner->id),
+            'room' => $this->room('RM-1', 'lecture', $owner->id),
             'secretary' => $this->secretaryFor($requester),
             'ownerSecretary' => $this->secretaryFor($owner),
             'vpaa' => User::factory()->create(['role' => 'vpaa', 'department_id' => null]),

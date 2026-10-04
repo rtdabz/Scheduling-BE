@@ -75,7 +75,7 @@ class DepartmentsController extends Controller
             return response()->json([
                 'error_code' => 'department_profile_mismatch',
                 'department_profile' => 'standard',
-                'message' => 'This department has laboratory courses in its active curriculum and cannot use the standard profile.',
+                'message' => 'This department still has laboratory courses in its active curriculum, so specialized rooms must stay on.',
             ], 422);
         }
 

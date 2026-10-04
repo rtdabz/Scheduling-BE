@@ -26,6 +26,7 @@ class Course extends Model
         'department_id',
         'teaching_department_id',
         'teaching_program_id',
+        'teaching_source_program_id',
         'program_id',
         'status',
     ];
@@ -111,6 +112,35 @@ class Course extends Model
     public function teachingProgram()
     {
         return $this->belongsTo(Program::class, 'teaching_program_id');
+    }
+
+    /** The program that handed this course to its teaching program, when recorded. */
+    public function teachingSourceProgram()
+    {
+        return $this->belongsTo(Program::class, 'teaching_source_program_id');
+    }
+
+    /**
+     * Courses handed to this department (and, for a Program Head, this program)
+     * to teach for someone else. Two kinds:
+     *  - another college's course, delegated to this college (IT's GEC 101 → CAS);
+     *  - a course of this college handed to a sibling program (BSED-ENG Prof Ed →
+     *    BEED), which never leaves the college, so "owner is another college"
+     *    alone would miss it.
+     */
+    public function scopeDelegatedTo($query, int $departmentId, ?int $programId = null)
+    {
+        return $query->where('teaching_department_id', $departmentId)->where(fn ($kind) => $kind
+            ->where(fn ($crossCollege) => $crossCollege
+                ->where(fn ($owner) => $owner->whereNull('department_id')->orWhere('department_id', '!=', $departmentId))
+                ->when($programId !== null, fn ($scope) => $scope->where(fn ($program) => $program
+                    ->where('program_id', $programId)
+                    ->orWhere('teaching_program_id', $programId))))
+            ->orWhere(fn ($sibling) => $sibling
+                ->where('department_id', $departmentId)
+                ->whereNotNull('teaching_program_id')
+                ->where(fn ($owner) => $owner->whereNull('program_id')->orWhereColumn('program_id', '!=', 'teaching_program_id'))
+                ->when($programId !== null, fn ($scope) => $scope->where('teaching_program_id', $programId))));
     }
 
     public function program()

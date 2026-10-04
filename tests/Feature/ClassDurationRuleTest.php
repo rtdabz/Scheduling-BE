@@ -32,11 +32,27 @@ class ClassDurationRuleTest extends TestCase
         $this->assertSame(180, $violation['allowed_minutes']);
     }
 
-    public function test_a_stretched_single_meeting_is_refused(): void
+    /**
+     * One class may run as long as the teaching day (a department's eight-hour
+     * class), but a second meeting on top of it is a duplicate, not a longer
+     * class.
+     */
+    public function test_one_class_may_fill_the_day_but_a_second_meeting_is_refused(): void
     {
         $f = $this->fixture();
 
-        $this->assertNotNull($this->durationViolation($f, 'Monday', '08:00', '12:00'));
+        $this->assertNull($this->durationViolation($f, 'Monday', '08:00', '16:00'));
+
+        $this->persist($f, 'Monday', '08:00', '16:00');
+        $this->assertNotNull($this->durationViolation($f, 'Tuesday', '08:00', '09:00'));
+    }
+
+    public function test_a_duplicated_meeting_is_refused(): void
+    {
+        $f = $this->fixture();
+        $this->persist($f, 'Monday', '08:00', '11:00');
+
+        $this->assertNotNull($this->durationViolation($f, 'Tuesday', '08:00', '11:00'));
     }
 
     public function test_an_mwf_set_of_shorter_meetings_fits(): void

@@ -35,7 +35,7 @@ class DepartmentCourseRulesTest extends TestCase
         SchedulingPolicy::clearFieldCourseCache();
 
         $this->assertSame([], SchedulingPolicy::forcedCourseDayMap($departmentId));
-        $this->assertSame(['CLIN 101'], DepartmentCourseRules::fieldCourseCodes($departmentId));
+        $this->assertSame(1, (int) DB::table(DepartmentCourseRules::TABLE)->value('is_field'));
         $this->assertSame(3, SchedulingPolicy::consecutiveDayRuleMap($departmentId, null)[(int) $course->id]['day_count']);
 
         DepartmentCourseRules::clear($departmentId, DepartmentCourseRules::RULE_FIELD, [(int) $course->id]);

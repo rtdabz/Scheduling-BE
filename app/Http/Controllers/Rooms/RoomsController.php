@@ -11,6 +11,7 @@ use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class RoomsController extends Controller
 {
@@ -132,6 +133,98 @@ class RoomsController extends Controller
         return response()->json([
             'message' => 'Room archived successfully.',
         ]);
+    }
+
+    /**
+     * Rename a building: every active room that names it moves to the new
+     * name. Another building's name is refused so two buildings never merge;
+     * changing only the case or spacing of its own name is allowed.
+     */
+    public function renameBuilding(Request $request)
+    {
+        $validated = $request->validate([
+            'building' => 'required|string|max:100',
+            'name' => 'required|string|max:100',
+        ]);
+        $from = trim($validated['building']);
+        $to = preg_replace('/\s+/', ' ', trim($validated['name']));
+
+        $rooms = $this->roomsInBuilding($from);
+        if ($rooms->isEmpty()) {
+            return response()->json(['message' => 'This building has no rooms.'], 404);
+        }
+
+        $taken = Rooms::query()
+            ->whereNotIn('id', $rooms->pluck('id'))
+            ->whereRaw('LOWER(TRIM(building)) = ?', [mb_strtolower($to)])
+            ->exists();
+        if ($taken) {
+            return response()->json([
+                'message' => "A building named \"{$to}\" already exists.",
+                'errors' => ['name' => ['A building with this name already exists.']],
+            ], 422);
+        }
+
+        Rooms::query()->whereIn('id', $rooms->pluck('id'))->update(['building' => $to]);
+        ApiCache::forgetGroups([
+            'rooms.index',
+            'departments.index',
+            'initial.data',
+        ]);
+
+        return response()->json([
+            'message' => 'Building renamed successfully.',
+            'building' => $to,
+            'rooms' => Rooms::with('department')->whereIn('id', $rooms->pluck('id'))->get(),
+        ]);
+    }
+
+    /**
+     * Archive a building: all of its rooms, or none of them. Like a single
+     * room, it is refused while any of its rooms has classes scheduled.
+     */
+    public function archiveBuilding(Request $request)
+    {
+        $validated = $request->validate([
+            'building' => 'required|string|max:100',
+        ]);
+
+        $rooms = $this->roomsInBuilding(trim($validated['building']));
+        if ($rooms->isEmpty()) {
+            return response()->json(['message' => 'This building has no rooms.'], 404);
+        }
+
+        $booked = Schedule::query()
+            ->whereIn('room_id', $rooms->pluck('id'))
+            ->distinct()
+            ->pluck('room_id');
+        if ($booked->isNotEmpty()) {
+            $codes = $rooms->whereIn('id', $booked)->pluck('room_code')->sort()->implode(', ');
+
+            return response()->json([
+                'message' => "This building cannot be archived while classes are scheduled in its rooms: {$codes}.",
+            ], 422);
+        }
+
+        DB::transaction(fn () => $rooms->each->delete());
+        ApiCache::forgetGroups([
+            'rooms.index',
+            'departments.index',
+            'initial.data',
+        ]);
+
+        return response()->json([
+            'message' => 'Building archived successfully.',
+            'archived_room_ids' => $rooms->pluck('id'),
+        ]);
+    }
+
+    /** @return \Illuminate\Database\Eloquent\Collection<int, Rooms> */
+    private function roomsInBuilding(string $building)
+    {
+        return Rooms::query()
+            ->whereRaw('TRIM(building) = ?', [$building])
+            ->get();
     }
 
     /**

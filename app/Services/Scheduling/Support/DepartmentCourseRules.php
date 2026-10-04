@@ -16,6 +16,11 @@ use Illuminate\Support\Facades\DB;
  * Each rule's columns are cleared and set independently, and a row left with
  * no rule is removed. Readers filter on their own columns, so they never see
  * another rule's row.
+ *
+ * Nothing in the app saves rules any more: each one is a generation run's
+ * own choice ({@see withOverride}). The settings endpoint no longer writes
+ * them, so manual scheduling is never held to a rule from an earlier run
+ * (a department's NSTP 1 "on Saturday", or PATH-FIT as a field course).
  */
 final class DepartmentCourseRules
 {

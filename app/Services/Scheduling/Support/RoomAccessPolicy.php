@@ -58,6 +58,89 @@ class RoomAccessPolicy
     }
 
     /**
+     * Approved windows the department has lent out of its own rooms for the
+     * semester, keyed by room id. A lent window belongs to the borrower: the
+     * owner may not book its room inside it.
+     *
+     * @return array<int, list<array{day: string, start_time: string, end_time: string, start_minutes: int, end_minutes: int, borrower: string|null}>>
+     */
+    public function lentWindowsFor(int $departmentId, int $semesterId): array
+    {
+        if ($departmentId <= 0 || $semesterId <= 0) {
+            return [];
+        }
+
+        // Ownership is read from the room, not the request, so a room moved to
+        // another department after approval stays guarded for its new owner.
+        $rows = DB::table('room_request_windows')
+            ->join('room_requests', 'room_requests.id', '=', 'room_request_windows.room_request_id')
+            ->join('rooms', 'rooms.id', '=', 'room_requests.room_id')
+            ->leftJoin('departments', 'departments.id', '=', 'room_requests.requesting_department_id')
+            ->where('rooms.department_id', $departmentId)
+            ->where('room_requests.requesting_department_id', '!=', $departmentId)
+            ->where('room_requests.semester_id', $semesterId)
+            ->where('room_requests.status', RoomRequest::STATUS_APPROVED)
+            ->orderBy('room_requests.room_id')
+            ->orderBy('room_request_windows.day')
+            ->orderBy('room_request_windows.start_time')
+            ->get([
+                'room_requests.room_id',
+                'room_request_windows.day',
+                'room_request_windows.start_time',
+                'room_request_windows.end_time',
+                'departments.department_code',
+            ]);
+
+        $windows = [];
+        foreach ($rows as $row) {
+            $windows[(int) $row->room_id][] = self::window(
+                (string) $row->day,
+                (string) $row->start_time,
+                (string) $row->end_time,
+            ) + ['borrower' => $row->department_code === null ? null : (string) $row->department_code];
+        }
+
+        return $windows;
+    }
+
+    /**
+     * The first window the meeting overlaps, if any.
+     *
+     * @template T of array{day: string, start_minutes: int, end_minutes: int}
+     *
+     * @param  list<T>  $windows
+     * @return T|null
+     */
+    public static function overlappingWindow(array $windows, string $day, string $startTime, string $endTime): ?array
+    {
+        $start = self::minutes($startTime);
+        $end = self::minutes($endTime);
+
+        foreach ($windows as $window) {
+            if ($window['day'] === $day && $start < $window['end_minutes'] && $window['start_minutes'] < $end) {
+                return $window;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Refusal shown when the owner tries to book inside a window it lent out.
+     *
+     * @param  array{day: string, start_time: string, end_time: string, borrower?: string|null}  $window
+     */
+    public static function lentRefusal(string $roomCode, array $window): string
+    {
+        return sprintf(
+            'Room %s is lent to %s on %s. Choose another time or room.',
+            $roomCode,
+            $window['borrower'] ?? 'another department',
+            self::describe([$window]),
+        );
+    }
+
+    /**
      * Rooms with at least one approved window for the department in the semester.
      *
      * @return list<int>

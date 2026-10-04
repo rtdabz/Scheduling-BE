@@ -30,6 +30,7 @@ class Schedule extends Model
     public const RESPONSE_RELATIONS = [
         'academicSemester:id,academic_year,semester',
         'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
+        'section.program:id,code',
         'course:id,course_code,course_name,lecture_hours,lab_hours,units,course_category,room_type_required,year_level,semester,department_id,teaching_department_id,teaching_program_id,program_id',
         'faculty:id,first_name,last_name,middle_name,department_id,program_id',
         'room:id,room_code,building,room_type,allow_lecture_usage,department_id',

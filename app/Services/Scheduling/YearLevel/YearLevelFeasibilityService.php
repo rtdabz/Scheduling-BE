@@ -382,12 +382,20 @@ class YearLevelFeasibilityService
             ]];
         }
 
-        $supply = $this->weeklyRoomSlotSupply($rooms, $slotsPerDay)
-            - $this->occupiedRoomSlots($sections, $rooms->pluck('id')->map('intval')->all());
+        // The demand above is lecture time (laboratories may fall back to Room
+        // TBA), so it is measured against the rooms a lecture can use: lecture
+        // rooms, and a laboratory only where it is opened to lectures.
+        $lectureRooms = $rooms
+            ->filter(static fn (Rooms $room): bool => $room->room_type === 'lecture' || (bool) $room->allow_lecture_usage)
+            ->values();
+        $supply = $this->weeklyRoomSlotSupply($lectureRooms, $slotsPerDay, $department)
+            - $this->occupiedRoomSlots($sections, $lectureRooms->pluck('id')->map('intval')->all());
 
         if ($demand <= $supply) {
             return [];
         }
+
+        $shortfall = $demand - max(0, $supply);
 
         return [[
             'code' => 'insufficient_room_slots',
@@ -395,16 +403,121 @@ class YearLevelFeasibilityService
                 'On-site placements need %d room-slots but only %d are free across %d room%s.',
                 $demand,
                 max(0, $supply),
-                $rooms->count(),
-                $rooms->count() === 1 ? '' : 's',
+                $lectureRooms->count(),
+                $lectureRooms->count() === 1 ? '' : 's',
             ),
-            'suggested_action' => 'Set some courses to Online, reduce lecture/lab splitting, or free up existing draft schedules.',
+            'suggested_action' => 'Apply one of the options above, borrow a room from another department with a room request, or free up existing draft schedules.',
             'context' => [
                 'required_slots' => $demand,
                 'available_slots' => max(0, $supply),
-                'room_count' => $rooms->count(),
+                'room_count' => $lectureRooms->count(),
+                'shortfall_slots' => $shortfall,
+                'options' => $this->roomSlotReliefOptions($sections, $configsBySectionId, $courses, $shortfall),
             ],
         ]];
+    }
+
+    /**
+     * The fewest course changes that free enough room time to close the
+     * shortfall: a Hybrid Split option (one meeting online) and an Online
+     * option, each applied to a course in every section that takes it.
+     *
+     * Only a regular, on-site lecture course is offered: a split, a
+     * laboratory, a field course or one already online frees nothing more,
+     * and an On-site Split frees nothing at all -- it is the same room time on
+     * two days. A course pinned to a mode in Setup Courses is the user's
+     * choice and is left alone. Minors go first, majors only when minors are
+     * not enough; within each, the course that frees the most.
+     *
+     * @param  list<Sections>  $sections
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @param  Collection<int, Course>  $courses
+     * @return list<array{kind: string, frees: int, course_codes: list<string>, targets: list<array<string, mixed>>}>
+     */
+    private function roomSlotReliefOptions(array $sections, array $configsBySectionId, Collection $courses, int $shortfall): array
+    {
+        $candidates = [];
+        foreach ($sections as $section) {
+            $config = $configsBySectionId[(int) $section->id] ?? [];
+            $modes = (array) ($config['delivery_modes_by_course_id'] ?? []);
+            $splitIds = array_map('intval', [
+                ...($config['balanced_split_course_ids'] ?? []),
+                ...($config['hybrid_split_course_ids'] ?? []),
+            ]);
+
+            foreach ($this->configuredCourses($config, $courses) as $course) {
+                $courseId = (int) $course->id;
+                $mode = $modes[$courseId] ?? $modes[(string) $courseId] ?? null;
+                if (($mode !== null && $mode !== 'automatic')
+                    || in_array($courseId, $splitIds, true)
+                    || SchedulingPolicy::isLaboratoryCourse($course)
+                    || SchedulingPolicy::isFieldCourse($course, (int) $section->department_id)) {
+                    continue;
+                }
+
+                $slots = $this->configuredSlots($course, $config);
+                $candidates[$courseId] ??= ['course' => $course, 'online' => 0, 'hybrid' => 0, 'targets' => []];
+                $candidates[$courseId]['online'] += $slots;
+                $candidates[$courseId]['hybrid'] += max(0, $slots - SchedulingPolicy::hybridSplitMeetingSlots());
+                $candidates[$courseId]['targets'][] = [
+                    'section_id' => (int) $section->id,
+                    'section_name' => (string) $section->section_name,
+                    'course_id' => $courseId,
+                    'course_code' => (string) $course->course_code,
+                ];
+            }
+        }
+
+        $options = [];
+        foreach (['hybrid_split' => 'hybrid', 'online' => 'online'] as $kind => $saving) {
+            $pool = array_values(array_filter(
+                $candidates,
+                static fn (array $candidate): bool => $candidate[$saving] > 0
+                    && ($saving !== 'hybrid' || SchedulingPolicy::hybridSplitEligible($candidate['course'])),
+            ));
+            usort($pool, static fn (array $left, array $right): int => [
+                $left['course']->course_category === 'major',
+                -$left[$saving],
+                (string) $left['course']->course_code,
+            ] <=> [
+                $right['course']->course_category === 'major',
+                -$right[$saving],
+                (string) $right['course']->course_code,
+            ]);
+
+            $chosen = [];
+            $frees = 0;
+            foreach ($pool as $candidate) {
+                if ($frees >= $shortfall) {
+                    break;
+                }
+                $chosen[] = $candidate;
+                $frees += $candidate[$saving];
+            }
+            if ($chosen === [] || $frees < $shortfall) {
+                continue;
+            }
+
+            $targets = [];
+            foreach ($chosen as $candidate) {
+                foreach ($candidate['targets'] as $target) {
+                    $targets[] = [
+                        ...$target,
+                        'adjustment_type' => $kind === 'online' ? 'set_delivery_mode' : 'set_hybrid_split',
+                        'value' => $kind === 'online' ? 'online' : null,
+                    ];
+                }
+            }
+
+            $options[] = [
+                'kind' => $kind,
+                'frees' => $frees,
+                'course_codes' => array_map(static fn (array $candidate): string => (string) $candidate['course']->course_code, $chosen),
+                'targets' => $targets,
+            ];
+        }
+
+        return $options;
     }
 
     /**
@@ -676,11 +789,15 @@ class YearLevelFeasibilityService
      *
      * @param  Collection<int, Rooms>  $rooms
      */
-    private function weeklyRoomSlotSupply(Collection $rooms, int $slotsPerDay): int
+    private function weeklyRoomSlotSupply(Collection $rooms, int $slotsPerDay, Departments $department): int
     {
+        // Sunday counts when the department teaches on it.
         return $this->concurrentRoomCapacity($rooms)
             * $slotsPerDay
-            * SchedulingPolicy::countAllowedDays(SchedulingPolicy::WEEKDAYS_AND_SATURDAY, $this->allowedDays);
+            * SchedulingPolicy::countAllowedDays(
+                SchedulingPolicy::teachingDays((bool) $department->sunday_classes_enabled),
+                $this->allowedDays,
+            );
     }
 
     /**
@@ -794,6 +911,6 @@ class YearLevelFeasibilityService
             ->where(function ($query): void {
                 $query->where('status', 'available')->orWhereNull('status');
             })
-            ->get(['id', 'room_code', 'room_type']);
+            ->get(['id', 'room_code', 'room_type', 'allow_lecture_usage']);
     }
 }

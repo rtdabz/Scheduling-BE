@@ -26,8 +26,8 @@ use Tests\TestCase;
  *
  * Any secretary or program head may decide it for any delegable course — the
  * colleges settle between themselves who teaches what, and the system does not
- * pick a side. What it does refuse is delegating a **major**, which belongs to the
- * department and program that offers it.
+ * pick a side. A **major** never leaves the college that offers it, but may be
+ * handed to a sibling program of that college (BSED-FIL Prof Ed taught by BEED).
  *
  * The listing is a separate question from the decision, and its source is the acting
  * department's own **curriculum**: like the Auto-Assign Instructor workspace it
@@ -39,7 +39,7 @@ class CourseTeachingAssignmentTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const MAJOR_REFUSAL = 'A major course is taught by the department that offers it and cannot be assigned to another college.';
+    private const MAJOR_NEEDS_PROGRAM = 'Within its own college, a major course can only be assigned to a specific program.';
 
     private int $curriculaCreated = 0;
 
@@ -86,7 +86,7 @@ class CourseTeachingAssignmentTest extends TestCase
         $this->assertSame($fixture['cas']->id, $fixture['gec']->refresh()->teaching_department_id);
     }
 
-    public function test_the_listing_includes_programs_from_receiving_departments(): void
+    public function test_the_listing_includes_programs_from_every_department(): void
     {
         $fixture = $this->fixture();
         $casProgram = Program::create([
@@ -102,7 +102,8 @@ class CourseTeachingAssignmentTest extends TestCase
         $programs = collect($response->json('programs'));
 
         $this->assertTrue($programs->contains(fn (array $program): bool => $program['id'] === $casProgram->id));
-        $this->assertFalse($programs->contains(fn (array $program): bool => $program['id'] === $fixture['program']->id));
+        // The acting college's own programs too: a major may move to a sibling program.
+        $this->assertTrue($programs->contains(fn (array $program): bool => $program['id'] === $fixture['program']->id));
     }
 
     /**
@@ -159,7 +160,11 @@ class CourseTeachingAssignmentTest extends TestCase
         $this->assertSame($fixture['cas']->id, $fixture['gec']->refresh()->teaching_department_id);
     }
 
-    public function test_a_major_cannot_be_handed_to_another_college(): void
+    /**
+     * A major is cross-assigned like a minor: handed to a whole college, that
+     * college's instructors teach it, from any of its programs.
+     */
+    public function test_a_major_can_be_handed_to_another_college(): void
     {
         $fixture = $this->fixture();
 
@@ -167,10 +172,133 @@ class CourseTeachingAssignmentTest extends TestCase
             ->patchJson("/api/course-teaching-assignments/{$fixture['major']->id}", [
                 'teaching_department_id' => $fixture['cas']->id,
             ])
+            ->assertOk();
+
+        $major = $fixture['major']->refresh();
+        $this->assertSame($fixture['cas']->id, (int) $major->teaching_department_id);
+        $this->assertSame($fixture['cas']->id, SchedulingPolicy::majorTeachingDepartmentId($major));
+        $this->assertNull(SchedulingPolicy::requiredTeachingProgramId($major));
+    }
+
+    /** Handing a major to its own college as a whole would change nothing. */
+    public function test_a_major_needs_a_program_within_its_own_college(): void
+    {
+        $fixture = $this->fixture();
+
+        $this->actingAs($fixture['itSecretary'])
+            ->patchJson("/api/course-teaching-assignments/{$fixture['major']->id}", [
+                'teaching_department_id' => $fixture['it']->id,
+            ])
             ->assertStatus(422)
-            ->assertJsonPath('message', self::MAJOR_REFUSAL);
+            ->assertJsonPath('message', self::MAJOR_NEEDS_PROGRAM);
 
         $this->assertNull($fixture['major']->refresh()->teaching_department_id);
+    }
+
+    /**
+     * GEC 101 belongs to IT but to no program, so the program that handed it over
+     * has to be recorded — otherwise the receiver can only be told "CIT".
+     */
+    public function test_a_shared_course_records_the_program_that_handed_it_over(): void
+    {
+        $fixture = $this->fixture();
+        $fixture['program']->update(['major' => 'Web Development']);
+        $sibling = Program::create(['department_id' => $fixture['it']->id, 'code' => 'BSCS', 'name' => 'Computer Science']);
+        $givingHead = $this->grantCapabilities(User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $fixture['it']->id,
+            'program_id' => $fixture['program']->id,
+        ]));
+        $receivingHead = $this->grantCapabilities(User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $fixture['it']->id,
+            'program_id' => $sibling->id,
+        ]));
+
+        $this->actingAs($givingHead)
+            ->postJson('/api/course-teaching-assignments/batch', [
+                'course_ids' => [$fixture['gec']->id],
+                'teaching_department_id' => $fixture['it']->id,
+                'teaching_program_id' => $sibling->id,
+            ])
+            ->assertOk();
+
+        $this->assertSame($fixture['program']->id, (int) $fixture['gec']->refresh()->teaching_source_program_id);
+        $this->assertSame(
+            'BSIT-Web Development assigned 1 course to BSCS. View Cross-Department.',
+            DB::table('system_notifications')->where('user_id', $receivingHead->id)->latest('id')->value('message'),
+        );
+        $this->actingAs($receivingHead)->getJson('/api/course-teaching-assignments')
+            ->assertOk()
+            ->assertJsonPath('incoming_cross_department_courses.0.source_program_label', 'BSIT-Web Development');
+
+        // Handing it back clears who gave it, along with who teaches it.
+        $this->actingAs($givingHead)->deleteJson("/api/course-teaching-assignments/{$fixture['gec']->id}")->assertOk();
+        $this->assertNull($fixture['gec']->refresh()->teaching_source_program_id);
+    }
+
+    public function test_a_major_can_be_handed_to_another_colleges_program(): void
+    {
+        $fixture = $this->fixture();
+        $casProgram = Program::query()->where('department_id', $fixture['cas']->id)->firstOrFail();
+
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/batch', [
+                'course_ids' => [$fixture['major']->id],
+                'teaching_department_id' => $fixture['cas']->id,
+                'teaching_program_id' => $casProgram->id,
+            ])
+            ->assertOk();
+
+        $major = $fixture['major']->refresh();
+        $this->assertSame($fixture['cas']->id, SchedulingPolicy::majorTeachingDepartmentId($major));
+        $this->assertSame($casProgram->id, SchedulingPolicy::requiredTeachingProgramId($major));
+    }
+
+    public function test_a_major_can_be_handed_to_a_sibling_program_and_binds_its_instructors(): void
+    {
+        $fixture = $this->fixture();
+        $sibling = Program::create([
+            'department_id' => $fixture['it']->id,
+            'code' => 'BSCS',
+            'name' => 'Computer Science',
+        ]);
+        $siblingHead = $this->grantCapabilities(User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $fixture['it']->id,
+            'program_id' => $sibling->id,
+        ]));
+
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/batch', [
+                'course_ids' => [$fixture['major']->id],
+                'teaching_department_id' => $fixture['it']->id,
+                'teaching_program_id' => $sibling->id,
+            ])
+            ->assertOk();
+
+        $major = $fixture['major']->refresh();
+        $this->assertSame($sibling->id, (int) $major->teaching_program_id);
+        $this->assertSame($sibling->id, SchedulingPolicy::requiredTeachingProgramId($major));
+
+        // Named by program, not by college.
+        $notification = DB::table('system_notifications')->where('user_id', $siblingHead->id)->latest('id')->first();
+        $this->assertNotNull($notification);
+        $this->assertSame('BSIT assigned 1 course to BSCS. View Cross-Department.', $notification->message);
+
+        // The handover never leaves the college, yet it is still incoming work for
+        // the receiving program — and not for the program that gave it away.
+        $this->actingAs($siblingHead)->getJson('/api/course-teaching-assignments')
+            ->assertOk()
+            ->assertJsonPath('incoming_cross_department_courses.0.id', $fixture['major']->id);
+        $owningHead = User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $fixture['it']->id,
+            'program_id' => $fixture['program']->id,
+        ]);
+        $this->actingAs($this->grantCapabilities($owningHead))->getJson('/api/course-teaching-assignments')
+            ->assertOk()
+            ->assertJsonCount(0, 'incoming_cross_department_courses');
     }
 
     public function test_a_minor_that_no_college_teaches_by_default_can_be_delegated(): void
