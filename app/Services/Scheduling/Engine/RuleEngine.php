@@ -17,7 +17,6 @@ use App\Services\Scheduling\Engine\Rules\OverlapConflict;
 use App\Services\Scheduling\Engine\Rules\RoomAvailabilityRule;
 use App\Services\Scheduling\Engine\Rules\RoomTypeRule;
 use App\Services\Scheduling\Engine\Rules\RuleLookupCache;
-use App\Services\Scheduling\Schedule\FacultyConflictOverride;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 class RuleEngine
@@ -126,7 +125,7 @@ class RuleEngine
             ]),
         ];
 
-        return FacultyConflictOverride::withoutStanding($attempt, array_values($violations));
+        return array_values($violations);
     }
 
     private const INSTRUCTOR_ASSIGNMENT_RULES = ['faculty_conflict', 'required_field'];

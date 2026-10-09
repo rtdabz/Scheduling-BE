@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Schedule;
 
+use App\Models\Course;
+use App\Models\Departments;
+use App\Models\Program;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Facades\DB;
 
 final class ScheduleConflictScanner
@@ -123,9 +127,7 @@ final class ScheduleConflictScanner
             }
         }
 
-        if ($departmentId !== null
-            && (int) ($case->schedule['department_id'] ?? 0) !== $departmentId
-            && (int) ($case->otherSchedule['department_id'] ?? 0) !== $departmentId) {
+        if ($departmentId !== null && ! in_array($departmentId, $case->owners()['department_ids'], true)) {
             return false;
         }
 
@@ -139,11 +141,12 @@ final class ScheduleConflictScanner
      */
     private function rows(int $semesterId): array
     {
-        return DB::table('schedules')
+        return $this->withAssigningOwner(DB::table('schedules')
             ->leftJoin('courses', 'courses.id', '=', 'schedules.course_id')
             ->leftJoin('sections', 'sections.id', '=', 'schedules.section_id')
             ->leftJoin('rooms', 'rooms.id', '=', 'schedules.room_id')
             ->leftJoin('faculties', 'faculties.id', '=', 'schedules.faculty_id')
+            ->leftJoin('departments as class_departments', 'class_departments.id', '=', 'schedules.department_id')
             ->where('schedules.semester_id', $semesterId)
             ->whereNull('schedules.deleted_at')
             ->orderBy('schedules.id')
@@ -166,6 +169,8 @@ final class ScheduleConflictScanner
                 'rooms.room_code',
                 'faculties.first_name as faculty_first_name',
                 'faculties.last_name as faculty_last_name',
+                'class_departments.department_code as department_code',
+                'class_departments.department_name as department_name',
             ])
             ->mapWithKeys(static function (object $row): array {
                 $schedule = (array) $row;
@@ -178,7 +183,53 @@ final class ScheduleConflictScanner
 
                 return [$schedule['id'] => $schedule];
             })
-            ->all();
+            ->all());
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function withAssigningOwner(array $rows): array
+    {
+        $courseIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $row): int => (int) ($row['course_id'] ?? 0),
+            $rows,
+        ))));
+        $courses = $courseIds === [] ? collect() : Course::query()->whereIn('id', $courseIds)->get()->keyBy('id');
+
+        $owners = [];
+        foreach ($rows as $id => $row) {
+            $course = $courses->get((int) ($row['course_id'] ?? 0));
+            $classDepartmentId = $row['department_id'] !== null ? (int) $row['department_id'] : null;
+            $owners[$id] = $course instanceof Course
+                ? [
+                    'department_id' => SchedulingPolicy::isMajorCourse($course)
+                        ? SchedulingPolicy::majorTeachingDepartmentId($course, $classDepartmentId)
+                        : SchedulingPolicy::assignedTeachingDepartmentId($course) ?? $classDepartmentId,
+                    'program_id' => SchedulingPolicy::requiredTeachingProgramId($course),
+                ]
+                : ['department_id' => $classDepartmentId, 'program_id' => null];
+        }
+
+        $departmentIds = array_values(array_unique(array_filter(array_column($owners, 'department_id'))));
+        $programIds = array_values(array_unique(array_filter(array_column($owners, 'program_id'))));
+        $departments = $departmentIds === [] ? collect() : Departments::query()->whereIn('id', $departmentIds)->get(['id', 'department_code', 'department_name'])->keyBy('id');
+        $programs = $programIds === [] ? collect() : Program::query()->whereIn('id', $programIds)->get(['id', 'code', 'name', 'major'])->keyBy('id');
+
+        foreach ($rows as $id => $row) {
+            $department = $departments->get($owners[$id]['department_id']);
+            $program = $programs->get($owners[$id]['program_id']);
+            $rows[$id]['assigning_department_id'] = $owners[$id]['department_id'];
+            $rows[$id]['assigning_department_code'] = $department?->department_code;
+            $rows[$id]['assigning_department_name'] = $department?->department_name;
+            $rows[$id]['assigning_program_id'] = $owners[$id]['program_id'];
+            $rows[$id]['assigning_program_code'] = $program === null
+                ? null
+                : trim($program->code.($program->major ? " {$program->major}" : ''));
+        }
+
+        return $rows;
     }
 
     /**

@@ -1,0 +1,16 @@
+{
+  "attempts": [
+    {"strategy": "tried", "outcome": "failed"},
+    {"strategy": "skipped", "outcome": "skipped_no_time"}
+  ],
+  "cases": [
+    {"id": "strategy-tried", "impact": "low", "adjustments": [{"type": "clear_pattern", "section_id": 1, "course_id": 5, "value": null}], "expected": {"contract_version": 1, "priority": 3, "tried_alone": true, "applicable": true}},
+    {"id": "fresh", "impact": "high", "adjustments": [{"type": "set_delivery_mode", "section_id": 1, "course_id": 5, "value": "online"}], "expected": {"contract_version": 1, "priority": 2, "tried_alone": false, "applicable": true}},
+    {"id": "strategy-skipped", "impact": "low", "adjustments": [{"type": "disable_minor_split", "section_id": 1, "course_id": 5, "value": null}], "expected": {"contract_version": 1, "priority": 0, "tried_alone": false, "applicable": true}},
+    {"id": "guidance", "impact": "unknown", "adjustments": [], "expected": {"contract_version": 1, "priority": 1, "tried_alone": false, "applicable": false}},
+    {"id": "mixed", "impact": "medium", "adjustments": [{"type": "clear_pattern", "section_id": 1, "course_id": 5, "value": null}, {"type": "future_operation", "section_id": 1, "course_id": 5, "value": null}], "expected": {"contract_version": 1, "priority": 1, "tried_alone": false, "applicable": false}},
+    {"id": "invalid-value", "impact": "low", "adjustments": [{"type": "set_delivery_mode", "section_id": 1, "course_id": 5, "value": "teleport"}], "expected": {"contract_version": 1, "priority": 0, "tried_alone": false, "applicable": false}},
+    {"id": "resolved", "impact": "low", "status": "resolved", "adjustments": [{"type": "clear_pattern", "section_id": 1, "course_id": 5, "value": null}], "expected": {"contract_version": 1, "priority": 0, "tried_alone": false, "applicable": false}}
+  ],
+  "active_order": ["strategy-skipped", "fresh", "strategy-tried"]
+}

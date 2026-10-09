@@ -133,34 +133,6 @@ final class ResolveScheduleConflict
     }
 
     /**
-     * @return array<string, mixed>
-     * @throws ConflictResolutionException
-     */
-    public function override(string $conflictId, string $reason, ?int $actorUserId = null): array
-    {
-        if (trim($reason) === '') {
-            throw new ConflictResolutionException('An override needs a reason.');
-        }
-
-        return $this->inScope($conflictId, function (ScheduleConflictCase $case, array $before) use ($reason, $actorUserId, $conflictId): array {
-            if (! in_array($case->rule, FacultyConflictOverride::RULES, true)) {
-                throw new ConflictResolutionException(
-                    'Only an instructor conflict can be allowed to stand. This one has to be resolved.',
-                );
-            }
-
-            $ids = $case->scheduleIds();
-            $beforeRows = $this->snapshotRows($ids);
-            FacultyConflictOverride::flag($ids);
-
-            return $this->settle($case, $before, $ids, $beforeRows, $conflictId, [
-                'action' => 'override',
-                'overridden_schedule_ids' => $ids,
-            ], $reason, $actorUserId, 'conflict_overridden');
-        });
-    }
-
-    /**
      * @param  callable(ScheduleConflictCase, list<ScheduleConflictCase>): array<string, mixed>  $apply
      * @return array<string, mixed>
      */
@@ -299,7 +271,7 @@ final class ResolveScheduleConflict
 
         return [
             'conflict_id' => $conflictId,
-            'status' => $auditAction === 'conflict_overridden' ? 'overridden' : 'resolved',
+            'status' => 'resolved',
             'affected_schedule_ids' => $affectedIds,
             'history_version_id' => (int) $version->id,
             'semester_id' => $case->semesterId,

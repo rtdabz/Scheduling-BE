@@ -123,7 +123,6 @@ class ProfileTest extends TestCase
             'max_units' => 21,
             'deload_units' => 6,
             'overload_units' => 0,
-            'probono_units' => 0,
             'department_id' => $department->id,
             'status' => 'active',
         ]);

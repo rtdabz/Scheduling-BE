@@ -2,15 +2,22 @@
 
 namespace App\Providers;
 
-use App\Services\Scheduling\Lock\DatabaseSchedulingScopeLock;
-use App\Services\Scheduling\Lock\SchedulingScopeLock;
-use App\Services\Scheduling\Support\SchedulingPolicy;
-use App\Services\Scheduling\Support\SchedulingQueryCounter;
 use App\Services\Scheduling\Engine\CspSolver;
-use App\Services\Scheduling\Engine\Solver\CspYearLevelSchedulingSolverAdapter;
 use App\Services\Scheduling\Engine\Solver\CspSchedulingSolverAdapter;
+use App\Services\Scheduling\Engine\Solver\CspYearLevelSchedulingSolverAdapter;
 use App\Services\Scheduling\Engine\Solver\SchedulingSolver;
 use App\Services\Scheduling\Engine\Solver\YearLevelSchedulingSolver;
+use App\Services\Scheduling\Lock\DatabaseSchedulingScopeLock;
+use App\Services\Scheduling\Lock\SchedulingScopeLock;
+use App\Services\Scheduling\Recommendations\Providers\ConflictRecommendationProvider;
+use App\Services\Scheduling\Recommendations\Providers\DraftRecommendationProvider;
+use App\Services\Scheduling\Recommendations\Providers\GenerationRecommendationProvider;
+use App\Services\Scheduling\Recommendations\Providers\LegacySplitRecommendationProvider;
+use App\Services\Scheduling\Recommendations\Providers\PlacementRecommendationProvider;
+use App\Services\Scheduling\Recommendations\RecommendationEngine;
+use App\Services\Scheduling\Recommendations\RecommendationSource;
+use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Services\Scheduling\Support\SchedulingQueryCounter;
 use App\Support\LiveUpdateRecorder;
 use App\Support\LiveUpdates;
 use Illuminate\Queue\Events\JobProcessing;
@@ -23,6 +30,24 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->bind(RecommendationEngine::class, static function ($app): RecommendationEngine {
+            $providers = [];
+            foreach (RecommendationSource::cases() as $source) {
+                $provider = match ($source) {
+                    RecommendationSource::ManualPlacement => PlacementRecommendationProvider::class,
+                    RecommendationSource::DraftReview => DraftRecommendationProvider::class,
+                    RecommendationSource::Conflict => ConflictRecommendationProvider::class,
+                    RecommendationSource::LegacySplit => LegacySplitRecommendationProvider::class,
+                    RecommendationSource::Configuration,
+                    RecommendationSource::Feasibility,
+                    RecommendationSource::Search,
+                    RecommendationSource::PreferredDays => GenerationRecommendationProvider::class,
+                };
+                $providers[$source->value] = static fn () => $app->make($provider);
+            }
+
+            return new RecommendationEngine($providers);
+        });
         $this->app->bind(SchedulingSolver::class, CspSchedulingSolverAdapter::class);
         $this->app->bind(YearLevelSchedulingSolver::class, static function ($app): YearLevelSchedulingSolver {
             return new CspYearLevelSchedulingSolverAdapter($app->make(CspSolver::class));

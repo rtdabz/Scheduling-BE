@@ -39,7 +39,6 @@ class UserFacultyProfileService
             'max_units' => self::DEFAULT_MAX_UNITS,
             'overload_units' => 0,
             'deload_units' => 0,
-            'probono_units' => 0,
             'department_id' => $user->department_id,
             'program_id' => $user->program_id,
             'status' => 'active',

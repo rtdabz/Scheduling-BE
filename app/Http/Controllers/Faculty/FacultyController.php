@@ -8,6 +8,7 @@ use App\Models\Semester;
 use App\Services\FacultyDesignationService;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Services\TeachingHistoryArchive;
 use App\Support\ApiCache;
 use App\Support\ProfilePicture;
 use Illuminate\Http\JsonResponse;
@@ -32,6 +33,7 @@ class FacultyController extends Controller
     public function __construct(
         private readonly FacultyLoadService $facultyLoad,
         private readonly FacultyDesignationService $designations,
+        private readonly TeachingHistoryArchive $archive,
     ) {}
 
     public function index(Request $request)
@@ -100,7 +102,6 @@ class FacultyController extends Controller
             'max_units' => self::DEFAULT_MAX_UNITS,
             'overload_units' => 0,
             'deload_units' => 0,
-            'probono_units' => 0,
         ];
         if ($departmentId !== null) {
             $payload['department_id'] = $departmentId;
@@ -155,11 +156,17 @@ class FacultyController extends Controller
                 'sections.section_name',
             ])
             ->distinct()
-            ->orderByDesc('semesters.academic_year')
-            ->orderByDesc('semesters.semester')
-            ->orderBy('courses.course_code')
-            ->orderBy('sections.section_name')
             ->get();
+
+        $rows = $rows
+            ->concat($this->archive->rows(
+                [(int) $faculty->id],
+                null,
+                $rows->pluck('semester_id')->map('intval')->unique()->values()->all(),
+            ))
+            ->sort(static fn (object $left, object $right): int => [$right->academic_year, $right->semester, $left->course_code, $left->section_name]
+                <=> [$left->academic_year, $left->semester, $right->course_code, $right->section_name])
+            ->values();
 
         $semesters = $rows->groupBy('semester_id')->map(function ($semesterRows) {
             $first = $semesterRows->first();

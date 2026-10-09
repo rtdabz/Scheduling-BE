@@ -6,16 +6,18 @@ namespace App\Http\Controllers\Scheduling;
 
 use App\Exceptions\ConflictResolutionException;
 use App\Exceptions\ScheduleConflictException;
-use App\Http\Controllers\Concerns\ConfirmsFacultyOverload;
+use App\Http\Controllers\Concerns\EnforcesFacultyUnitCeiling;
 use App\Http\Controllers\Controller;
 use App\Models\Faculty;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
 use App\Models\Semester;
 use App\Services\FacultyLoadService;
+use App\Services\Scheduling\Recommendations\RecommendationContext;
+use App\Services\Scheduling\Recommendations\RecommendationEngine;
+use App\Services\Scheduling\Recommendations\RecommendationSource;
 use App\Services\Scheduling\Schedule\ConflictRecommender;
 use App\Services\Scheduling\Schedule\ConflictResolutionLog;
-use App\Services\Scheduling\Schedule\FacultyConflictOverride;
 use App\Services\Scheduling\Schedule\ResolveScheduleConflict;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Schedule\ScheduleConflictCase;
@@ -27,14 +29,14 @@ use Illuminate\Http\Request;
 
 class ScheduleConflictController extends Controller
 {
-    use ConfirmsFacultyOverload;
+    use EnforcesFacultyUnitCeiling;
 
     public function __construct(
         private readonly ScheduleConflictScanner $scanner,
         private readonly ResolveScheduleConflict $resolver,
         private readonly ScheduleAuthorizationService $authorization,
         private readonly FacultyLoadService $facultyLoad,
-        private readonly ConflictRecommender $recommender,
+        private readonly RecommendationEngine $recommendationEngine,
         private readonly ConflictResolutionLog $resolutionLog,
         private readonly StandingRuleScanner $standingRules,
     ) {}
@@ -87,7 +89,9 @@ class ScheduleConflictController extends Controller
 
         $ids = [$parsed['schedule_id'], $parsed['other_schedule_id']];
         if (! $this->authorization->scheduleIdsBelongToDepartment($request, [$ids[0]])
-            && ! $this->authorization->scheduleIdsBelongToDepartment($request, [$ids[1]])) {
+            && ! $this->authorization->scheduleIdsBelongToDepartment($request, [$ids[1]])
+            && ! $this->authorization->scheduleIdsAssignableByDepartment($request, [$ids[0]])
+            && ! $this->authorization->scheduleIdsAssignableByDepartment($request, [$ids[1]])) {
             return $this->forbidden();
         }
 
@@ -104,8 +108,13 @@ class ScheduleConflictController extends Controller
             return response()->json(['message' => 'This conflict is already resolved.'], 404);
         }
 
+        $result = $this->recommendationEngine->recommend(new RecommendationContext(
+            RecommendationSource::Conflict,
+            ['case' => $case, 'limit' => (int) ($validated['limit'] ?? ConflictRecommender::DEFAULT_LIMIT) + 5],
+            scope: ['semester_id' => $case->semesterId, 'schedule_ids' => $case->scheduleIds(), ...$case->owners()],
+        ));
         $options = array_values(array_filter(
-            $this->recommender->recommend($case, (int) ($validated['limit'] ?? ConflictRecommender::DEFAULT_LIMIT) + 5),
+            $result->legacyPayload,
             fn (array $option): bool => $this->authorizeAction($request, (int) $option['schedule_id'], (string) $option['action']) === null,
         ));
         $options = array_slice($options, 0, (int) ($validated['limit'] ?? ConflictRecommender::DEFAULT_LIMIT));
@@ -224,47 +233,15 @@ class ScheduleConflictController extends Controller
                 return response()->json(['message' => 'Choose the instructor to reassign this class to.'], 422);
             }
 
-            $confirmation = $this->overloadGate($request, $scheduleId, $validated['faculty_id']);
-            if ($confirmation !== null) {
-                return $confirmation;
+            $refusal = $this->unitCeilingGate($scheduleId, $validated['faculty_id']);
+            if ($refusal !== null) {
+                return $refusal;
             }
         }
 
         return $this->run(fn (): array => $this->resolver->resolve(
             $conflict,
             $validated,
-            $request->user()?->id,
-        ));
-    }
-
-    public function override(Request $request, string $conflict): JsonResponse
-    {
-        $validated = $request->validate([
-            'reason' => 'required|string|min:3|max:2000',
-            'confirm' => 'accepted',
-        ]);
-
-        $parsed = ScheduleConflictCase::parseId($conflict);
-        if ($parsed === null) {
-            return response()->json(['message' => 'That is not a conflict identifier.'], 404);
-        }
-
-        if (! $this->authorization->scheduleIdsBelongToDepartment(
-            $request,
-            [$parsed['schedule_id'], $parsed['other_schedule_id']],
-        )) {
-            return $this->forbidden();
-        }
-
-        if ($request->user()?->hasCapability('schedule.assign_instructor') !== true) {
-            return response()->json([
-                'message' => 'Allowing an instructor conflict to stand needs the Assign Instructors permission.',
-            ], 403);
-        }
-
-        return $this->run(fn (): array => $this->resolver->override(
-            $conflict,
-            (string) $validated['reason'],
             $request->user()?->id,
         ));
     }
@@ -279,10 +256,7 @@ class ScheduleConflictController extends Controller
         } catch (ConflictResolutionException $exception) {
             return response()->json($exception->payload(), $exception->status());
         } catch (ScheduleConflictException $exception) {
-            return response()->json(
-                FacultyConflictOverride::refusal($exception->getMessage(), $exception->violations()),
-                422,
-            );
+            return response()->json($exception->payload(), 422);
         }
     }
 
@@ -314,9 +288,9 @@ class ScheduleConflictController extends Controller
             ], 403);
     }
 
-    private function overloadGate(Request $request, int $scheduleId, mixed $facultyId): ?JsonResponse
+    private function unitCeilingGate(int $scheduleId, mixed $facultyId): ?JsonResponse
     {
-        if ($facultyId === null || $request->boolean('confirm_overload')) {
+        if ($facultyId === null) {
             return null;
         }
 
@@ -328,7 +302,7 @@ class ScheduleConflictController extends Controller
             return null;
         }
 
-        return $this->overloadConfirmationResponse([
+        return $this->unitCeilingRefusal([
             $this->withAssignmentLabel(
                 $this->facultyLoad->projectLoad($faculty, $this->activeSemesterId(), [$pair]),
                 $this->assignmentLabelForSchedule($schedule),

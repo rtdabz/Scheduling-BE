@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Schedule;
 
+use App\Models\Faculty;
+use App\Models\Rooms;
+use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
+use Illuminate\Support\Collection;
 
 final class ConflictResolutionLog
 {
@@ -33,7 +37,10 @@ final class ConflictResolutionLog
             ->limit(self::LIMIT)
             ->get();
 
+        $names = $this->namesFor($logs);
+
         foreach ($logs as $log) {
+            $fix = $this->fixFor($log, $names);
             foreach ($this->conflictsOf($log) as $conflict) {
                 if (! $this->inScope($conflict, $log, $departmentId, $sectionId)) {
                     continue;
@@ -58,6 +65,7 @@ final class ConflictResolutionLog
                     'resolved_at' => $log->created_at?->toISOString(),
                     'resolved_by' => $log->user?->name,
                     'reason' => $log->metadata['reason'] ?? null,
+                    'fix' => $fix,
                     'affected_schedule_ids' => $conflict['affected_schedule_ids'],
                 ];
 
@@ -68,6 +76,93 @@ final class ConflictResolutionLog
         }
 
         return $entries;
+    }
+
+    /**
+     * @param  Collection<int, SchedulingAuditLog>  $logs
+     * @return array{classes: array<int, string>, faculty: array<int, string>, rooms: array<int, string>}
+     */
+    private function namesFor(Collection $logs): array
+    {
+        $scheduleIds = [];
+        $facultyIds = [];
+        $roomIds = [];
+        foreach ($logs as $log) {
+            $metadata = is_array($log->metadata) ? $log->metadata : [];
+            $changes = is_array($metadata['changes'] ?? null) ? $metadata['changes'] : [];
+            if (isset($metadata['schedule_id'])) {
+                $scheduleIds[] = (int) $metadata['schedule_id'];
+            }
+            if (isset($changes['faculty_id'])) {
+                $facultyIds[] = (int) $changes['faculty_id'];
+            }
+            if (isset($changes['room_id'])) {
+                $roomIds[] = (int) $changes['room_id'];
+            }
+        }
+
+        $classes = $scheduleIds === [] ? [] : Schedule::withTrashed()
+            ->with(['course:id,course_code', 'section:id,section_name'])
+            ->whereIn('id', array_unique($scheduleIds))
+            ->get(['id', 'course_id', 'section_id'])
+            ->mapWithKeys(static fn (Schedule $schedule): array => [(int) $schedule->id => trim(
+                ($schedule->course?->course_code ?? 'the class')
+                .($schedule->section?->section_name ? " ({$schedule->section->section_name})" : ''),
+            )])
+            ->all();
+
+        $faculty = $facultyIds === [] ? [] : Faculty::withTrashed()
+            ->whereIn('id', array_unique($facultyIds))
+            ->get(['id', 'first_name', 'last_name'])
+            ->mapWithKeys(static fn (Faculty $person): array => [(int) $person->id => trim("{$person->first_name} {$person->last_name}")])
+            ->all();
+
+        $rooms = $roomIds === [] ? [] : Rooms::query()
+            ->whereIn('id', array_unique($roomIds))
+            ->pluck('room_code', 'id')
+            ->mapWithKeys(static fn ($code, $id): array => [(int) $id => (string) $code])
+            ->all();
+
+        return ['classes' => $classes, 'faculty' => $faculty, 'rooms' => $rooms];
+    }
+
+    /**
+     * @param  array{classes: array<int, string>, faculty: array<int, string>, rooms: array<int, string>}  $names
+     */
+    private function fixFor(SchedulingAuditLog $log, array $names): ?string
+    {
+        $metadata = is_array($log->metadata) ? $log->metadata : [];
+
+        if ($log->action === 'conflict_overridden') {
+            return 'Kept both classes as they are (allowed to stand).';
+        }
+        if ($log->action === 'schedule_conflicts_cleared') {
+            return 'A class was moved or edited in the Schedule Builder.';
+        }
+        if ($log->action === 'schedule_plan_committed') {
+            return 'The timetable was regenerated without the clash.';
+        }
+
+        $changes = is_array($metadata['changes'] ?? null) ? $metadata['changes'] : [];
+        $class = $names['classes'][(int) ($metadata['schedule_id'] ?? 0)] ?? 'the class';
+
+        return match ($metadata['action'] ?? null) {
+            'reassign_instructor' => isset($changes['faculty_id'])
+                ? 'Assigned '.($names['faculty'][(int) $changes['faculty_id']] ?? 'another instructor')." to {$class}."
+                : "Removed the instructor from {$class}.",
+            'change_room' => "Moved {$class} to ".(isset($changes['room_id'])
+                ? ($names['rooms'][(int) $changes['room_id']] ?? 'another room')
+                : 'no room').'.',
+            'change_delivery_mode' => "Changed {$class} to ".($changes['mode'] ?? 'another delivery mode').'.',
+            'move_schedule' => "Moved {$class} to ".trim(implode(' ', array_filter([
+                $changes['day'] ?? null,
+                isset($changes['start_time'], $changes['end_time'])
+                    ? ScheduleConflictCase::clock((string) $changes['start_time']).' - '.ScheduleConflictCase::clock((string) $changes['end_time'])
+                    : null,
+                isset($changes['room_id']) ? 'in '.($names['rooms'][(int) $changes['room_id']] ?? 'another room') : null,
+            ]))).'.',
+            default => null,
+        };
     }
 
     /**

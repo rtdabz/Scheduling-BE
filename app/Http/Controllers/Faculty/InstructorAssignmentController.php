@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers\Faculty;
 
-use App\Http\Controllers\Concerns\ConfirmsFacultyOverload;
+use App\Http\Controllers\Concerns\EnforcesFacultyUnitCeiling;
 use App\Http\Controllers\Controller;
 use App\Models\Course;
 use App\Models\Departments;
@@ -14,8 +14,6 @@ use App\Models\Semester;
 use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Engine\RuleEngine;
-use App\Services\Scheduling\Schedule\FacultyConflictOverride;
-use App\Services\Scheduling\Schedule\InstructorRecommender;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
@@ -28,7 +26,7 @@ use Illuminate\Support\Facades\DB;
 
 class InstructorAssignmentController extends Controller
 {
-    use ConfirmsFacultyOverload;
+    use EnforcesFacultyUnitCeiling;
 
     private const ASSIGNABLE_STATUSES = SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES;
 
@@ -40,7 +38,6 @@ class InstructorAssignmentController extends Controller
         private readonly FacultyLoadService $facultyLoad,
         private readonly ManualHybridFacultyAssignmentResolver $manualHybridAssignments,
         private readonly ScheduleHistoryRecorder $historyRecorder,
-        private readonly InstructorRecommender $instructorRecommender,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -114,7 +111,7 @@ class InstructorAssignmentController extends Controller
                 ->orderBy('first_name')
                 ->get();
 
-            $this->facultyLoad->decorateMany($faculties, (int) $activeSemester->id);
+            $this->facultyLoad->decorateMany($faculties, (int) $activeSemester->id, true);
 
             $courses = $schedules->pluck('course')->filter()->unique('id')->values();
 
@@ -229,23 +226,15 @@ class InstructorAssignmentController extends Controller
                 'faculty_id' => $facultyId,
                 'ignore_schedule_id' => $linkedScheduleIds,
             ]);
-            $violations = array_merge($violations, $this->ruleEngine->validateInstructorAssignment($attempt));
+            $linkedViolations = $this->ruleEngine->validateInstructorAssignment($attempt);
+            $violations = array_merge($violations, $linkedViolations);
         }
 
-        $overriddenIds = [];
         if ($violations !== []) {
-            if (
-                $facultyId === null
-                || ! $request->boolean(FacultyConflictOverride::REQUEST_FLAG)
-                || ! FacultyConflictOverride::onlyOverridable($violations)
-            ) {
-                return response()->json(
-                    FacultyConflictOverride::refusal('The instructor assignment conflicts with an existing schedule.', $violations),
-                    422,
-                );
-            }
-
-            $overriddenIds = array_merge($linkedScheduleIds, FacultyConflictOverride::partnerIds($violations));
+            return response()->json([
+                'message' => 'The instructor assignment conflicts with an existing schedule.',
+                'violations' => $violations,
+            ], 422);
         }
 
         $activeSemesterId = $this->activeSemesterId();
@@ -256,12 +245,9 @@ class InstructorAssignmentController extends Controller
                 $this->assignmentLabelForSchedule($schedule),
             );
 
-            if (! $request->boolean('confirm_overload')) {
-                $confirmation = $this->overloadConfirmationResponse([$projection]);
-
-                if ($confirmation !== null) {
-                    return $confirmation;
-                }
+            $refusal = $this->unitCeilingRefusal([$projection]);
+            if ($refusal !== null) {
+                return $refusal;
             }
         }
 
@@ -273,19 +259,11 @@ class InstructorAssignmentController extends Controller
             $facultyId,
             $previousFacultyId,
             $departmentId,
-            $overriddenIds,
         ) {
             $before = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
             Schedule::query()
                 ->whereIn('id', $linkedScheduleIds)
-                ->where(fn ($query) => $facultyId === null
-                    ? $query->whereNotNull('faculty_id')
-                    : $query->whereNull('faculty_id')->orWhere('faculty_id', '!=', $facultyId))
-                ->update(['faculty_conflict_override' => false]);
-            Schedule::query()
-                ->whereIn('id', $linkedScheduleIds)
                 ->update(['faculty_id' => $facultyId]);
-            FacultyConflictOverride::flag($overriddenIds);
 
             $after = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
             $action = $facultyId === null ? 'instructor_assignment_released' : 'instructor_assigned';
@@ -337,40 +315,16 @@ class InstructorAssignmentController extends Controller
 
     public function recommendations(Request $request, Schedule $schedule): JsonResponse
     {
-        $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:10',
-        ]);
-
         $departmentId = (int) ($request->user()?->department_id ?? 0);
         if (! $this->userCanManageInstructor($request, $schedule, $departmentId)) {
             return response()->json(['message' => 'You cannot assign an instructor to this class.'], 403);
         }
 
-        $semesterId = $this->activeSemesterId();
-        if (! in_array($schedule->status, self::ASSIGNABLE_STATUSES, true) || $semesterId === null) {
-            return response()->json(['options' => []]);
-        }
-
-        $programId = $request->user()?->role === 'program_head'
-            ? (int) ($request->user()?->program_id ?? 0)
-            : SchedulingPolicy::requiredTeachingProgramId($schedule->course);
-        $faculties = Faculty::query()
-            ->where('department_id', $departmentId)
-            ->where('status', 'active')
-            ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
-            ->when($schedule->faculty_id !== null, fn ($query) => $query->whereKeyNot($schedule->faculty_id))
-            ->orderBy('last_name')
-            ->orderBy('first_name')
-            ->get();
-
         return response()->json([
-            'options' => $this->instructorRecommender->recommend(
-                $this->linkedMeetingBlocks($schedule),
-                $faculties,
-                $semesterId,
-                (int) ($validated['limit'] ?? 3),
-            ),
-        ]);
+            'code' => 'instructor_recommendations_retired',
+            'message' => 'Instructor recommendations have been retired. Choose an instructor manually in Instructor Assignment.',
+            'options' => [],
+        ], 410);
     }
 
     public function clearSection(Request $request, Sections $section): JsonResponse
@@ -455,7 +409,7 @@ class InstructorAssignmentController extends Controller
             $sectionIds,
         ) {
             $before = Schedule::query()->whereIn('id', $scheduleIds)->get();
-            Schedule::query()->whereIn('id', $scheduleIds)->update(['faculty_id' => null, 'faculty_conflict_override' => false]);
+            Schedule::query()->whereIn('id', $scheduleIds)->update(['faculty_id' => null]);
             $after = Schedule::query()->whereIn('id', $scheduleIds)->get();
             $version = $this->historyRecorder->record(
                 'instructor_assignment_released',
@@ -499,7 +453,7 @@ class InstructorAssignmentController extends Controller
             ->with(['department', 'program', 'availabilities'])
             ->whereIn('id', $facultyIds->all())
             ->get();
-        $this->facultyLoad->decorateMany($affectedFaculties, $activeSemesterId);
+        $this->facultyLoad->decorateMany($affectedFaculties, $activeSemesterId, true);
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         return response()->json([

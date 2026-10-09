@@ -49,6 +49,54 @@ class FacultyTeachingHistoryTest extends TestCase
             ->assertJsonPath('semesters.1.is_active', false);
     }
 
+    public function test_history_survives_a_semester_change_with_the_details_it_was_taught_with(): void
+    {
+        $fixture = $this->fixture();
+        $this->schedule($fixture, ['status' => 'finalized']);
+        $this->schedule($fixture, ['status' => 'finalized', 'day' => 'Wednesday']);
+        $next = Semester::create(['academic_year' => '2026-2027', 'semester' => '2nd', 'is_active' => false, 'is_enabled' => true]);
+        $vpaa = $this->grantCapabilities(User::factory()->create(['role' => 'vpaa']));
+
+        $this->actingAs($vpaa)->patchJson("/api/semesters/{$next->id}/activate")->assertOk();
+        $this->assertSame(0, Schedule::withTrashed()->count());
+        $fixture['course']->update(['units' => 2, 'course_code' => 'HIS101-NEW']);
+
+        $this->actingAs($fixture['user'])
+            ->getJson("/api/faculties/{$fixture['faculty']->id}/teaching-history")
+            ->assertOk()
+            ->assertJsonCount(1, 'semesters')
+            ->assertJsonPath('semesters.0.semester_id', $fixture['semester']->id)
+            ->assertJsonPath('semesters.0.is_active', false)
+            ->assertJsonPath('semesters.0.total_units', 3)
+            ->assertJsonPath('semesters.0.section_count', 1)
+            ->assertJsonPath('semesters.0.courses.0.course_code', 'HIS101')
+            ->assertJsonPath('semesters.0.courses.0.sections', ['HIS-1A']);
+
+        $nextSection = Sections::create([
+            'section_name' => 'HIS-1A',
+            'year_level' => '1',
+            'semester' => '2nd',
+            'department_id' => $fixture['department']->id,
+            'program_id' => $fixture['program']->id,
+            'semester_id' => $next->id,
+            'status' => 'active',
+        ]);
+        $meeting = $this->schedule($fixture, [
+            'semester_id' => $next->id,
+            'section_id' => $nextSection->id,
+            'faculty_id' => null,
+            'status' => 'faculty_assignment',
+        ]);
+        $this->actingAs($fixture['user'])
+            ->patchJson("/api/instructor-assignments/{$meeting->id}", ['faculty_id' => $fixture['faculty']->id])
+            ->assertOk();
+        $this->getJson("/api/faculties/{$fixture['faculty']->id}/teaching-history")
+            ->assertOk()
+            ->assertJsonPath('semesters.0.semester_id', $next->id)
+            ->assertJsonPath('semesters.1.semester_id', $fixture['semester']->id)
+            ->assertJsonPath('semesters.1.courses.0.course_code', 'HIS101');
+    }
+
     public function test_history_is_hidden_from_other_departments(): void
     {
         $fixture = $this->fixture();

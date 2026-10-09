@@ -39,7 +39,6 @@ class Schedule extends Model
         'course_id',
         'faculty_id',
         'faculty_assignment_done',
-        'faculty_conflict_override',
         'room_id',
         'department_id',
         'program_id',
@@ -57,7 +56,6 @@ class Schedule extends Model
 
     protected $casts = [
         'faculty_assignment_done' => 'boolean',
-        'faculty_conflict_override' => 'boolean',
     ];
 
     protected ?string $tempSplitGroupId = null;
@@ -118,16 +116,6 @@ class Schedule extends Model
 
     protected static function booted()
     {
-        static::updating(function (Schedule $schedule): void {
-            if (
-                $schedule->faculty_conflict_override
-                && ! $schedule->isDirty('faculty_conflict_override')
-                && $schedule->movesInstructorOrTime()
-            ) {
-                $schedule->faculty_conflict_override = false;
-            }
-        });
-
         static::saved(function (Schedule $schedule) {
             if ($schedule->tempSplitGroupId !== null || $schedule->tempMeetingType !== null || $schedule->tempMeetingIndex !== null) {
                 $split = ($schedule->wasRecentlyCreated && ! $schedule->relationLoaded('split'))
@@ -159,25 +147,6 @@ class Schedule extends Model
         static::restored(function (Schedule $schedule): void {
             ScheduleSplit::withTrashed()->where('schedule_id', $schedule->id)->restore();
         });
-    }
-
-    public function movesInstructorOrTime(): bool
-    {
-        if ((int) $this->getOriginal('faculty_id') !== (int) $this->faculty_id) {
-            return true;
-        }
-
-        if ((string) $this->getOriginal('day') !== (string) $this->day) {
-            return true;
-        }
-
-        foreach (['start_time', 'end_time'] as $column) {
-            if (substr((string) $this->getOriginal($column), 0, 5) !== substr((string) $this->{$column}, 0, 5)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

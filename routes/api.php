@@ -218,7 +218,6 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('conflicts/rule-issues', [ScheduleConflictController::class, 'ruleIssues']);
         Route::get('conflicts/{conflict}/recommendations', [ScheduleConflictController::class, 'recommendations']);
         Route::post('conflicts/{conflict}/resolve', [ScheduleConflictController::class, 'resolve']);
-        Route::post('conflicts/{conflict}/override', [ScheduleConflictController::class, 'override']);
     });
 
     Route::middleware('capability:schedule.view')->group(function () {

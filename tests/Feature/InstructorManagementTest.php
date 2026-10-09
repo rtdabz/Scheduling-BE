@@ -110,12 +110,6 @@ class InstructorManagementTest extends TestCase
         $this->actingAs($f['vpaa'])
             ->patchJson("/api/faculties/{$f['faculty']->id}", ['deload_units' => 3])
             ->assertForbidden();
-
-        // Pro bono is no longer an allowance: a stray value is ignored.
-        $this->actingAs($f['vpaa'])
-            ->patchJson("/api/faculties/{$f['faculty']->id}", ['probono_units' => 3])
-            ->assertOk();
-        $this->assertSame(0, (int) $f['faculty']->refresh()->probono_units);
     }
 
     public function test_unvalidated_columns_cannot_be_mass_assigned(): void
@@ -208,11 +202,6 @@ class InstructorManagementTest extends TestCase
             ->assertJsonPath('max_units', 24)
             ->assertJsonPath('required_units', 21)
             ->assertJsonPath('unit_ceiling', 27);
-
-        // Pro bono is whatever passes Basic Load and Overload, not an allowance.
-        $this->actingAs($secretary)
-            ->patchJson("/api/faculties/{$f['faculty']->id}", ['probono_units' => 2])
-            ->assertForbidden();
 
         $this->actingAs($secretary)
             ->patchJson("/api/faculties/{$f['faculty']->id}", ['last_name' => 'Hijacked'])
@@ -542,7 +531,6 @@ class InstructorManagementTest extends TestCase
                 'max_units' => 18,
                 'deload_units' => 0,
                 'overload_units' => 0,
-                'probono_units' => 0,
                 'department_id' => $department->id,
                 'status' => 'active',
             ]),

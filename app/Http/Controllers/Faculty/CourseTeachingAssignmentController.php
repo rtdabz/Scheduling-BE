@@ -279,7 +279,8 @@ class CourseTeachingAssignmentController extends Controller
             $targetId,
             null,
             null,
-            ['course_ids' => $courses->pluck('id')->values()->all(), 'source_department_id' => $actor?->department_id, 'teaching_department_id' => $targetId, 'teaching_program_id' => $targetProgramId, 'link' => '/secretary/cross-department-assignments'],
+            ['course_ids' => $courses->pluck('id')->values()->all(), 'source_department_id' => $actor?->department_id, 'teaching_department_id' => $targetId, 'teaching_program_id' => $targetProgramId],
+            $targetProgramId === null ? null : [$targetProgramId],
         );
 
         return response()->json(['course_ids' => $courses->pluck('id')->values()->all()]);
@@ -379,6 +380,7 @@ class CourseTeachingAssignmentController extends Controller
                     'source_department_id' => $course->department_id,
                     'teaching_department_id' => $teachingDepartmentId,
                 ],
+                $teachingProgramId === null ? null : [$teachingProgramId],
             );
         }
 

@@ -6,15 +6,19 @@ use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Exceptions\YearLevelGenerationException;
 use App\Http\Controllers\Controller;
 use App\Jobs\GenerateYearLevelSchedulePreview;
+use App\Models\Schedule;
 use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\Scheduling\Generation\CourseSetupOverrides;
 use App\Services\Scheduling\Generation\GenerationCourseSelection;
-use App\Services\Scheduling\Generation\GenerationDraftReviewer;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\Manual\AvailableSlotFinder;
+use App\Services\Scheduling\Recommendations\GenerationAdjustmentInterpreter;
+use App\Services\Scheduling\Recommendations\RecommendationContext;
+use App\Services\Scheduling\Recommendations\RecommendationEngine;
+use App\Services\Scheduling\Recommendations\RecommendationSource;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -26,6 +30,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -44,6 +49,8 @@ class ScheduleRecommendationController extends Controller
         private readonly ScheduleRequirementBuilderResolver $requirementBuilders,
         private readonly ScheduleAuthorizationService $authorization,
         private readonly GenerationCourseSelection $courseSelection,
+        private readonly RecommendationEngine $recommendationEngine,
+        private readonly GenerationAdjustmentInterpreter $adjustmentInterpreter,
     ) {}
 
     public function availableSlots(Request $request): JsonResponse
@@ -59,6 +66,27 @@ class ScheduleRecommendationController extends Controller
             'excluded_days.*' => SchedulingPolicy::allowedDaysRule('required'),
             'search_from_day' => SchedulingPolicy::allowedDaysRule('sometimes'),
             'consecutive_days' => 'sometimes|nullable|integer|min:'.SchedulingPolicy::MIN_CONSECUTIVE_DAYS.'|max:'.count(SchedulingPolicy::DAYS),
+            'placement' => 'sometimes|array:rows,selected_meeting,consecutive_rule,session_alternatives,allowed_days',
+            'placement.session_alternatives' => 'sometimes|boolean',
+            'placement.allowed_days' => 'sometimes|nullable|array|min:1',
+            'placement.allowed_days.*' => SchedulingPolicy::allowedDaysRule('required|distinct'),
+            'placement.consecutive_rule' => 'sometimes|nullable|array:day_count,preferred_start_day,meeting_days',
+            'placement.consecutive_rule.day_count' => 'required_with:placement.consecutive_rule|integer|min:2|max:7',
+            'placement.consecutive_rule.preferred_start_day' => SchedulingPolicy::allowedDaysRule('sometimes|nullable'),
+            'placement.consecutive_rule.meeting_days' => 'sometimes|nullable|array|min:2|max:7',
+            'placement.consecutive_rule.meeting_days.*' => SchedulingPolicy::allowedDaysRule('required|distinct'),
+            'placement.selected_meeting' => 'required_with:placement|integer|min:0|max:6',
+            'placement.rows' => 'required_with:placement|array|min:1|max:7',
+            'placement.rows.*' => 'array:day,start_time,end_time,mode,room_id,faculty_id,is_hybrid,preferred_pattern,meeting_type',
+            'placement.rows.*.day' => SchedulingPolicy::allowedDaysRule('required'),
+            'placement.rows.*.start_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/'],
+            'placement.rows.*.end_time' => ['required', 'regex:/^\d{1,2}:\d{2}(:\d{2})?$/', 'after:placement.rows.*.start_time'],
+            'placement.rows.*.mode' => SchedulingPolicy::allowedDeliveryModesRule('required'),
+            'placement.rows.*.room_id' => 'nullable|integer|exists:rooms,id',
+            'placement.rows.*.faculty_id' => 'nullable|integer|exists:faculties,id',
+            'placement.rows.*.is_hybrid' => 'sometimes|boolean',
+            'placement.rows.*.preferred_pattern' => ['nullable', 'string', 'max:20', fn ($attribute, $value, $fail) => SchedulingPolicy::isValidRowPattern($value) ? null : $fail('The meeting pattern is not supported.')],
+            'placement.rows.*.meeting_type' => 'nullable|in:lecture,laboratory',
             'ignore_schedule_ids' => 'sometimes|array',
             'ignore_schedule_ids.*' => 'integer',
             'tentative_schedules' => 'sometimes|array',
@@ -89,21 +117,57 @@ class ScheduleRecommendationController extends Controller
             courseIds: [(int) $validated['course_id']],
         );
 
-        $result = app(AvailableSlotFinder::class)->find(
-            snapshot: $snapshot,
-            sectionId: (int) $section->id,
-            courseId: (int) $validated['course_id'],
-            durationSlots: (int) $validated['duration_slots'],
-            modes: $validated['modes'] ?? AvailableSlotFinder::MODES,
-            tentativeSchedules: $validated['tentative_schedules'] ?? [],
-            ignoreScheduleIds: array_map('intval', $validated['ignore_schedule_ids'] ?? []),
-            meetingType: $validated['meeting_type'] ?? null,
-            excludedDays: $validated['excluded_days'] ?? [],
-            searchFromDay: $validated['search_from_day'] ?? null,
-            consecutiveDays: isset($validated['consecutive_days']) ? (int) $validated['consecutive_days'] : null,
-        );
+        $placement = $validated['placement'] ?? null;
+        if ($placement !== null) {
+            $placement['rows'] = array_values($placement['rows']);
+            if (! isset($placement['rows'][$placement['selected_meeting']])) {
+                return response()->json(['message' => 'The selected meeting is outside the affected group.'], 422);
+            }
+            $selected = $placement['rows'][$placement['selected_meeting']];
+            $runCount = SchedulingPolicy::consecutiveDayCount($placement['rows'][0]['preferred_pattern'] ?? null);
+            if ((isset($validated['consecutive_days']) && (int) $validated['consecutive_days'] !== $runCount)
+                || (isset($placement['consecutive_rule']) && (int) $placement['consecutive_rule']['day_count'] !== $runCount)) {
+                return response()->json(['message' => 'The run settings must match the affected meeting group.'], 422);
+            }
+            $validated['consecutive_days'] = $runCount;
+            if (SchedulingPolicy::timeToMinutes($selected['end_time']) - SchedulingPolicy::timeToMinutes($selected['start_time']) !== (int) $validated['duration_slots'] * SchedulingPolicy::SLOT_MINUTES) {
+                return response()->json(['message' => 'The requested duration must match the selected meeting.'], 422);
+            }
+            $validated['meeting_type'] = $selected['meeting_type'] ?? null;
+            $foreignIgnore = Schedule::query()->whereIn('id', $validated['ignore_schedule_ids'] ?? [])
+                ->where(fn ($query) => $query->where('section_id', '!=', $section->id)->orWhere('course_id', '!=', $validated['course_id']))->exists();
+            if ($foreignIgnore) {
+                return response()->json(['message' => 'Only persisted rows of the affected course and section may be replaced.'], 422);
+            }
+            $groupId = count($placement['rows']) > 1 ? (string) Str::uuid() : null;
+            $placement['rows'] = array_map(static fn (array $row, int $index): array => [
+                ...$row, 'semester_id' => (int) $section->semester_id, 'section_id' => (int) $section->id,
+                'course_id' => (int) $validated['course_id'], 'department_id' => (int) $section->department_id,
+                'split_group_id' => $groupId, 'meeting_index' => count($placement['rows']) > 1 ? $index + 1 : null, 'status' => 'draft',
+            ], $placement['rows'], array_keys($placement['rows']));
+        }
 
-        return response()->json($result);
+        $result = $this->recommendationEngine->recommend(new RecommendationContext(
+            RecommendationSource::ManualPlacement,
+            [
+                'snapshot' => $snapshot,
+                'sectionId' => (int) $section->id,
+                'courseId' => (int) $validated['course_id'],
+                'durationSlots' => (int) $validated['duration_slots'],
+                'modes' => $validated['modes'] ?? AvailableSlotFinder::MODES,
+                'tentativeSchedules' => $validated['tentative_schedules'] ?? [],
+                'ignoreScheduleIds' => array_map('intval', $validated['ignore_schedule_ids'] ?? []),
+                'meetingType' => $validated['meeting_type'] ?? null,
+                'excludedDays' => $validated['excluded_days'] ?? [],
+                'searchFromDay' => $validated['search_from_day'] ?? null,
+                'consecutiveDays' => isset($validated['consecutive_days']) ? (int) $validated['consecutive_days'] : null,
+                ...($placement !== null ? ['placement' => $placement] : []),
+            ],
+            scope: ['semester_id' => $snapshot->semesterId, 'department_id' => $snapshot->departmentId, 'section_id' => (int) $section->id, 'course_id' => (int) $validated['course_id']],
+            snapshotFingerprint: $snapshot->fingerprint,
+        ));
+
+        return response()->json($result->legacyPayload);
     }
 
     public function reviewDraft(Request $request): JsonResponse
@@ -137,6 +201,11 @@ class ScheduleRecommendationController extends Controller
             'unplaced.*.course_id' => 'required|integer',
             'unplaced.*.reason' => 'nullable|string|max:500',
             'unplaced.*.shape' => 'nullable|in:split,online_split',
+            'unplaced.*.consecutive_rule' => 'sometimes|nullable|array:day_count,preferred_start_day,meeting_days',
+            'unplaced.*.consecutive_rule.day_count' => 'required_with:unplaced.*.consecutive_rule|integer|min:2|max:7',
+            'unplaced.*.consecutive_rule.preferred_start_day' => SchedulingPolicy::allowedDaysRule('sometimes|nullable'),
+            'unplaced.*.consecutive_rule.meeting_days' => 'sometimes|nullable|array|min:2|max:7',
+            'unplaced.*.consecutive_rule.meeting_days.*' => SchedulingPolicy::allowedDaysRule('required|distinct'),
             'unplaced.*.meetings' => 'required|array|min:1|max:6',
             'unplaced.*.meetings.*.duration_slots' => 'required|integer|min:1|max:48',
             'unplaced.*.meetings.*.meeting_type' => 'nullable|in:lecture,laboratory',
@@ -164,14 +233,20 @@ class ScheduleRecommendationController extends Controller
             ], 422);
         }
 
-        return response()->json(app(GenerationDraftReviewer::class)->review(
-            semesterId: $semesterId,
-            departmentId: $departmentId,
-            sectionIds: $sectionIds,
-            rows: $validated['rows'],
-            unplaced: $validated['unplaced'] ?? [],
-            preferredDays: $validated['preferred_days'] ?? null,
+        $result = $this->recommendationEngine->recommend(new RecommendationContext(
+            RecommendationSource::DraftReview,
+            [
+                'semesterId' => $semesterId,
+                'departmentId' => $departmentId,
+                'sectionIds' => $sectionIds,
+                'rows' => $validated['rows'],
+                'unplaced' => $validated['unplaced'] ?? [],
+                'preferredDays' => $validated['preferred_days'] ?? null,
+            ],
+            scope: ['semester_id' => $semesterId, 'department_id' => $departmentId, 'section_ids' => $sectionIds],
         ));
+
+        return response()->json($result->legacyPayload);
     }
 
     public function yearLevelPreview(Request $request): JsonResponse
@@ -211,6 +286,7 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
             'section_configs.*.delivery_modes_by_course_id.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
             ...$this->ruleOverrideRules(),
+            ...$this->selectedAdjustmentRules(),
         ]);
 
         if (($guard = $this->departmentGuard($request, (int) $validated['department_id'], [
@@ -258,61 +334,7 @@ class ScheduleRecommendationController extends Controller
 
         $configsBySectionId = [];
         try {
-            foreach ($sections as $section) {
-                $config = $configs->get((int) $section->id);
-                $selection = $this->courseSelection->resolve($section, $config);
-                $courseIds = $selection['course_ids'];
-                $splitIds = $selection['selected_split_session_course_ids'];
-                $gecIds = $selection['balanced_split_course_ids'];
-                $hybridSplitIds = $selection['hybrid_split_course_ids'];
-                $preferredPatterns = $selection['preferred_patterns'];
-                $sectionConfig = [
-                    'course_ids' => $courseIds,
-                    'mode' => (string) ($config['mode'] ?? 'on-site'),
-                    'is_hybrid' => $selection['is_hybrid'],
-                    'selected_split_session_course_ids' => $splitIds,
-                    'balanced_split_course_ids' => $gecIds,
-                    'hybrid_split_course_ids' => $hybridSplitIds,
-                    'preferred_patterns' => $preferredPatterns,
-                    'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
-                    'allowed_days' => SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null),
-                    'allow_friday_saturday_split' => (bool) ($config['allow_friday_saturday_split'] ?? false),
-                    'seed' => $this->yearLevelConfigSeed(
-                        semesterId: (int) $validated['semester_id'],
-                        departmentId: (int) $validated['department_id'],
-                        yearLevel: (int) $validated['year_level'],
-                        sectionId: (int) $section->id,
-                        courseIds: $courseIds,
-                        splitIds: $splitIds,
-                        gecIds: $gecIds,
-                        preferredPatterns: $preferredPatterns,
-                    ),
-                ];
-                CourseSetupOverrides::assertSundayAllowed($section, $sectionConfig['allowed_days']);
-                CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
-                $sectionConfig[CourseSetupOverrides::DURATIONS_KEY] = CourseSetupOverrides::normalizeDurations(
-                    $section,
-                    $config['duration_minutes_by_course_id'] ?? [],
-                    $courseIds,
-                    $sectionConfig,
-                );
-                $sectionConfig[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
-                    $section,
-                    $config['component_minutes_by_course_id'] ?? [],
-                    $courseIds,
-                    $sectionConfig,
-                );
-                $sectionConfig[CourseSetupOverrides::PREFERRED_ROOMS_KEY] = CourseSetupOverrides::normalizePreferredRooms(
-                    $section,
-                    $config['preferred_rooms_by_course_id'] ?? [],
-                    $courseIds,
-                    $sectionConfig,
-                );
-                $profile = $this->preflight->validate($section, $courseIds, $sectionConfig);
-                $sectionConfig['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $sectionConfig);
-                $sectionConfig['department_profile'] = $profile->value;
-                $configsBySectionId[(int) $section->id] = $sectionConfig;
-            }
+            ['configs' => $configsBySectionId, 'profile' => $profile] = $this->prepareYearLevelConfigs($sections, $configs, $validated);
 
             $result = $this->yearLevelGenerator->preview($sections->all(), $configsBySectionId);
         } catch (ScheduleGenerationPreflightException $exception) {
@@ -399,6 +421,7 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
             'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
             ...$this->ruleOverrideRules(),
+            ...$this->selectedAdjustmentRules(),
         ]);
         if (($guard = $this->departmentGuard($request, (int) $validated['department_id'], [
             ...array_column($validated['section_configs'], 'section_id'),
@@ -435,54 +458,10 @@ class ScheduleRecommendationController extends Controller
         if (($stale = $this->rejectStaleCurriculumSelection($sections, $configs)) !== null) {
             return $stale;
         }
-        $configsBySectionId = [];
-        foreach ($sections as $section) {
-            $config = $configs->get((int) $section->id);
-            if ($config === null) {
-                return response()->json(['message' => 'Provide one configuration for every active section.'], 422);
-            }
-            $selection = $this->courseSelection->resolve($section, $config);
-            $courseIds = $selection['course_ids'];
-            $splitIds = $selection['selected_split_session_course_ids'];
-            $gecIds = $selection['balanced_split_course_ids'];
-            $hybridSplitIds = $selection['hybrid_split_course_ids'];
-            $preferredPatterns = $selection['preferred_patterns'];
-            $sectionConfig = [
-                'course_ids' => $courseIds,
-                'mode' => (string) ($config['mode'] ?? 'on-site'),
-                'is_hybrid' => $selection['is_hybrid'],
-                'selected_split_session_course_ids' => $splitIds, 'balanced_split_course_ids' => $gecIds,
-                'hybrid_split_course_ids' => $hybridSplitIds,
-                'preferred_patterns' => $preferredPatterns, 'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
-                'allowed_days' => SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null),
-                'allow_friday_saturday_split' => (bool) ($config['allow_friday_saturday_split'] ?? false),
-                'seed' => $this->yearLevelConfigSeed((int) $validated['semester_id'], (int) $validated['department_id'], (int) $validated['year_level'], (int) $section->id, $courseIds, $splitIds, $gecIds, $preferredPatterns),
-            ];
-            CourseSetupOverrides::assertSundayAllowed($section, $sectionConfig['allowed_days']);
-            CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
-            $sectionConfig[CourseSetupOverrides::DURATIONS_KEY] = CourseSetupOverrides::normalizeDurations(
-                $section,
-                $config['duration_minutes_by_course_id'] ?? [],
-                $courseIds,
-                $sectionConfig,
-            );
-            $sectionConfig[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
-                $section,
-                $config['component_minutes_by_course_id'] ?? [],
-                $courseIds,
-                $sectionConfig,
-            );
-            $sectionConfig[CourseSetupOverrides::PREFERRED_ROOMS_KEY] = CourseSetupOverrides::normalizePreferredRooms(
-                $section,
-                $config['preferred_rooms_by_course_id'] ?? [],
-                $courseIds,
-                $sectionConfig,
-            );
-            $profile = $this->preflight->validate($section, $courseIds, $sectionConfig);
-            $sectionConfig['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $sectionConfig);
-            $sectionConfig['department_profile'] = $profile->value;
-            $configsBySectionId[(int) $section->id] = $sectionConfig;
+        if ($sections->contains(static fn (Sections $section): bool => ! $configs->has((int) $section->id))) {
+            return response()->json(['message' => 'Provide one configuration for every active section.'], 422);
         }
+        ['configs' => $configsBySectionId, 'applied' => $applied] = $this->prepareYearLevelConfigs($sections, $configs, $validated);
         $runId = (string) Str::uuid();
         ScheduleGenerationRun::create(['run_id' => $runId, 'requested_by' => $request->user()->id, 'semester_id' => $validated['semester_id'], 'department_id' => $validated['department_id'], 'year_level' => $validated['year_level'], 'status' => 'queued']);
         GenerateYearLevelSchedulePreview::dispatch(
@@ -492,7 +471,9 @@ class ScheduleRecommendationController extends Controller
             $this->ruleOverrides($validated),
         )->onQueue('scheduling');
 
-        return response()->json(['run_id' => $runId, 'status' => 'queued'], 202);
+        return response()->json(['run_id' => $runId, 'status' => 'queued',
+            ...(($validated['selected_adjustments'] ?? []) !== [] ? ['applied_adjustments' => $applied] : []),
+        ], 202);
         });
     }
 
@@ -602,6 +583,98 @@ class ScheduleRecommendationController extends Controller
         $run->refresh();
 
         return $run;
+    }
+
+    /** Same trusted configuration and adjustment preparation for sync and queued runs. */
+    private function prepareYearLevelConfigs(Collection $sections, Collection $configs, array $validated): array
+    {
+        $prepared = [];
+        foreach ($sections as $section) {
+            $config = $configs->get((int) $section->id);
+            if ($config === null) {
+                throw ValidationException::withMessages(['section_configs' => 'Provide one configuration for every active section.']);
+            }
+            $selection = $this->courseSelection->resolve($section, $config);
+            $prepared[(int) $section->id] = [
+                ...$selection,
+                'mode' => (string) ($config['mode'] ?? 'on-site'),
+                'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
+                'allowed_days' => SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null),
+                'allow_friday_saturday_split' => (bool) ($config['allow_friday_saturday_split'] ?? false),
+            ];
+        }
+        $selected = $validated['selected_adjustments'] ?? [];
+        try {
+            $result = $this->adjustmentInterpreter->apply($prepared, $selected);
+            if ($selected !== [] && $result['applied'] === []) {
+                throw new InvalidArgumentException('The selected adjustment no longer changes this configuration. Refresh the recommendations.');
+            }
+        } catch (InvalidArgumentException $exception) {
+            throw ValidationException::withMessages(['selected_adjustments' => $exception->getMessage()]);
+        }
+        foreach ($sections as $section) {
+            $sectionId = (int) $section->id;
+            $config = $configs->get($sectionId);
+            $sectionConfig = $result['configs'][$sectionId];
+            if ($selected !== []) {
+                $selection = $this->courseSelection->resolve($section, [
+                    ...$sectionConfig, 'selected_gec_course_ids' => $sectionConfig['balanced_split_course_ids'],
+                ]);
+                foreach ($selection as $key => $value) {
+                    $expected = $sectionConfig[$key];
+                    $actual = $value;
+                    if (in_array($key, ['course_ids', 'selected_split_session_course_ids', 'balanced_split_course_ids', 'hybrid_split_course_ids'], true)) {
+                        sort($expected);
+                        sort($actual);
+                    }
+                    if ($actual !== $expected) {
+                        throw ValidationException::withMessages(['selected_adjustments' => 'The selected adjustment is no longer eligible for this course configuration. Refresh the recommendations.']);
+                    }
+                    $sectionConfig[$key] = $value;
+                }
+            }
+            $courseIds = $sectionConfig['course_ids'];
+            $sectionConfig['seed'] = $this->yearLevelConfigSeed(
+                (int) $validated['semester_id'], (int) $validated['department_id'], (int) $validated['year_level'],
+                $sectionId, $courseIds, $sectionConfig['selected_split_session_course_ids'],
+                $sectionConfig['balanced_split_course_ids'], $sectionConfig['preferred_patterns'],
+            );
+            CourseSetupOverrides::assertSundayAllowed($section, $sectionConfig['allowed_days']);
+            CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
+            $sectionConfig[CourseSetupOverrides::DURATIONS_KEY] = CourseSetupOverrides::normalizeDurations(
+                $section, $config['duration_minutes_by_course_id'] ?? [], $courseIds, $sectionConfig,
+            );
+            $sectionConfig[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
+                $section, $config['component_minutes_by_course_id'] ?? [], $courseIds, $sectionConfig,
+            );
+            $sectionConfig[CourseSetupOverrides::PREFERRED_ROOMS_KEY] = CourseSetupOverrides::normalizePreferredRooms(
+                $section, $config['preferred_rooms_by_course_id'] ?? [], $courseIds, $sectionConfig,
+            );
+            $profile = $this->preflight->validate($section, $courseIds, $sectionConfig);
+            $sectionConfig['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $sectionConfig);
+            $sectionConfig['department_profile'] = $profile->value;
+            $prepared[$sectionId] = $sectionConfig;
+        }
+        if ($result['applied'] !== []) {
+            $prepared[array_key_first($prepared)]['_selected_adjustments'] = $result['applied'];
+        }
+
+        return ['configs' => $prepared, 'profile' => $profile, 'applied' => $result['applied']];
+    }
+
+    private function selectedAdjustmentRules(): array
+    {
+        return [
+            'selected_adjustments' => 'sometimes|array|max:1000',
+            'selected_adjustments.*' => 'array:type,section_id,course_id,value,section_name,course_code,reason',
+            'selected_adjustments.*.type' => 'required|string|max:80',
+            'selected_adjustments.*.section_id' => 'required|integer|min:1',
+            'selected_adjustments.*.course_id' => 'required|integer|min:0',
+            'selected_adjustments.*.value' => 'sometimes|nullable|string|max:80',
+            'selected_adjustments.*.section_name' => 'sometimes|nullable|string|max:255',
+            'selected_adjustments.*.course_code' => 'sometimes|nullable|string|max:255',
+            'selected_adjustments.*.reason' => 'sometimes|nullable|string|max:2000',
+        ];
     }
 
     /** @return array<string, mixed> */

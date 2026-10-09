@@ -214,7 +214,7 @@ class ScheduleApprovalTargetingTest extends TestCase
         $this->assertSame('pending_dean', $submission->refresh()->status);
     }
 
-    public function test_an_instructor_clash_allowed_to_stand_does_not_block_approval(): void
+    public function test_an_instructor_clash_blocks_approval(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
@@ -231,21 +231,23 @@ class ScheduleApprovalTargetingTest extends TestCase
             'department_id' => $department->id,
             'status' => 'active',
         ]);
-        $this->schedule($department, $semester, $room, $course, $firstSection, [
+        $first = $this->schedule($department, $semester, $room, $course, $firstSection, [
             'status' => 'submitted',
             'faculty_id' => $faculty->id,
-            'faculty_conflict_override' => true,
         ]);
-        $this->schedule($department, $semester, $otherRoom, $course, $secondSection, [
+        $second = $this->schedule($department, $semester, $otherRoom, $course, $secondSection, [
             'status' => 'submitted',
             'faculty_id' => $faculty->id,
-            'faculty_conflict_override' => true,
         ]);
         $submission = $this->submission($department, $semester, [$firstSection, $secondSection], 'pending_dean');
 
         $this->actingAs($dean)
             ->postJson("/api/departments/{$department->id}/approve-by-dean", ['schedule_submission_id' => $submission->id])
-            ->assertOk();
+            ->assertStatus(422)
+            ->assertJsonPath('error_code', 'open_conflicts')
+            ->assertJsonPath('conflicts.0.id', "faculty_conflict:{$first->id}:{$second->id}");
+
+        $this->assertSame('pending_dean', $submission->refresh()->status);
     }
 
     private function fixture(): array

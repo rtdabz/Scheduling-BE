@@ -4,6 +4,7 @@ namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 
 final class OverlapConflict
 {
@@ -49,7 +50,10 @@ final class OverlapConflict
         }
 
         return $this->clash($attempt, 'faculty_id', $attempt['faculty_id'], 'faculty_conflict', fn (Schedule $first, string $day): string => "Faculty is already teaching on {$day} from {$first->start_time} to {$first->end_time} "
-            ."for {$first->course?->course_code} ({$first->section?->section_name}).");
+            ."for {$first->course?->course_code} ({$first->section?->section_name})."
+            .(in_array($first->status, SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES, true)
+                ? ''
+                : ' That class was recalled or returned for revision and still holds this instructor until it is re-approved.'));
     }
 
     /** @param array<string, mixed> $attempt */

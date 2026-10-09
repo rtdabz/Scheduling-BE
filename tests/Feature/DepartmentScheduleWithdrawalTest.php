@@ -367,6 +367,35 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $this->assertSame($instructor->id, (int) $sameHour->refresh()->faculty_id);
     }
 
+    public function test_a_recalled_class_still_counts_in_load_and_explains_why_it_blocks_its_instructor(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $instructor = $this->instructor($department);
+        $otherRoom = Rooms::create(['room_code' => 'CIT 102', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
+
+        $this->schedule($department, $semester, $room, $course, $firstSection, [
+            'status' => 'faculty_assignment',
+            'faculty_id' => $instructor->id,
+        ]);
+        $sameHour = $this->schedule($department, $semester, $otherRoom, $course, $secondSection, [
+            'status' => 'faculty_assignment',
+        ]);
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
+            ->assertOk();
+
+        $this->assertSame(1, app(\App\Services\FacultyLoadService::class)
+            ->projectLoad($instructor->refresh(), $semester->id, [])['current_units']);
+
+        $response = $this->actingAs($secretary)
+            ->patchJson("/api/instructor-assignments/{$sameHour->id}", ['faculty_id' => $instructor->id])
+            ->assertStatus(422);
+        $this->assertStringContainsString('recalled or returned for revision', $response->getContent());
+        $this->assertNull($sameHour->refresh()->faculty_id);
+    }
+
     public function test_a_returned_version_survives_reset_and_resubmission_keeps_both_versions(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();

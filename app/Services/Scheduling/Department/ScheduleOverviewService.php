@@ -182,20 +182,8 @@ class ScheduleOverviewService
                 $this->overlapExists($semesterId, $visibleStatuses)
                     ->whereColumn('other.faculty_id', 'schedules.faculty_id')
                     ->whereNotNull('schedules.faculty_id')
-                    ->where(fn ($query) => $query
-                        ->where('schedules.faculty_conflict_override', false)
-                        ->orWhere('other.faculty_conflict_override', false))
                     ->selectRaw('1'),
                 'faculty_hit',
-            )
-            ->selectSub(
-                $this->overlapExists($semesterId, $visibleStatuses)
-                    ->whereColumn('other.faculty_id', 'schedules.faculty_id')
-                    ->whereNotNull('schedules.faculty_id')
-                    ->where('schedules.faculty_conflict_override', true)
-                    ->where('other.faculty_conflict_override', true)
-                    ->selectRaw('1'),
-                'overridden_hit',
             )
             ->selectSub(
                 $this->overlapExists($semesterId, $visibleStatuses)
@@ -221,7 +209,6 @@ class ScheduleOverviewService
             ->selectRaw('COALESCE(SUM(CASE WHEN room_hit IS NOT NULL THEN 1 ELSE 0 END), 0) AS room_conflicts')
             ->selectRaw('COALESCE(SUM(CASE WHEN section_hit IS NOT NULL THEN 1 ELSE 0 END), 0) AS section_conflicts')
             ->selectRaw('COALESCE(SUM(CASE WHEN faculty_hit IS NOT NULL OR room_hit IS NOT NULL OR section_hit IS NOT NULL THEN 1 ELSE 0 END), 0) AS total_conflicts')
-            ->selectRaw('COALESCE(SUM(CASE WHEN overridden_hit IS NOT NULL THEN 1 ELSE 0 END), 0) AS overridden_conflicts')
             ->groupBy('section_id')
             ->get()
             ->keyBy('section_id')
@@ -230,7 +217,6 @@ class ScheduleOverviewService
                 'room' => (int) $row->room_conflicts,
                 'section' => (int) $row->section_conflicts,
                 'total' => (int) $row->total_conflicts,
-                'overridden' => (int) $row->overridden_conflicts,
             ]);
     }
 
@@ -284,7 +270,7 @@ class ScheduleOverviewService
             'meetings' => (int) ($stats->meetings ?? 0),
             'unassigned_faculty' => (int) ($stats->unassigned_faculty ?? 0),
             'unassigned_rooms' => (int) ($stats->unassigned_rooms ?? 0),
-            'conflicts' => $conflicts + ['faculty' => 0, 'room' => 0, 'section' => 0, 'total' => 0, 'overridden' => 0],
+            'conflicts' => $conflicts + ['faculty' => 0, 'room' => 0, 'section' => 0, 'total' => 0],
             'day_load' => $dayLoad,
         ];
     }
@@ -312,7 +298,6 @@ class ScheduleOverviewService
                 'room' => (int) $sections->sum(fn (array $section) => $section['conflicts']['room']),
                 'section' => (int) $sections->sum(fn (array $section) => $section['conflicts']['section']),
                 'total' => (int) $sections->sum(fn (array $section) => $section['conflicts']['total']),
-                'overridden' => (int) $sections->sum(fn (array $section) => $section['conflicts']['overridden']),
             ],
             'status' => $this->statuses->derive(
                 $sections->pluck('status')->all(),

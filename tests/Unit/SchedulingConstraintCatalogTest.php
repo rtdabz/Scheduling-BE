@@ -34,7 +34,7 @@ class SchedulingConstraintCatalogTest extends TestCase
             app_path('Http/Controllers/Scheduling/ScheduleController.php'),
             app_path('Http/Controllers/Scheduling/ScheduleRecommendationController.php'),
             app_path('Http/Controllers/Faculty/InstructorAssignmentController.php'),
-            app_path('Http/Controllers/Concerns/ConfirmsFacultyOverload.php'),
+            app_path('Http/Controllers/Concerns/EnforcesFacultyUnitCeiling.php'),
         ];
 
         $emitted = [];

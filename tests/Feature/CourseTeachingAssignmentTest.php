@@ -228,6 +228,10 @@ class CourseTeachingAssignmentTest extends TestCase
             'BSIT-Web Development assigned 1 course to BSCS. View Cross-Department.',
             DB::table('system_notifications')->where('user_id', $receivingHead->id)->latest('id')->value('message'),
         );
+        $this->assertFalse(DB::table('system_notifications')
+            ->where('user_id', $givingHead->id)
+            ->where('type', 'incoming_cross_department_courses')
+            ->exists());
         $this->actingAs($receivingHead)->getJson('/api/course-teaching-assignments')
             ->assertOk()
             ->assertJsonPath('incoming_cross_department_courses.0.source_program_label', 'BSIT-Web Development');

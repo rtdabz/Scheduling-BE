@@ -96,7 +96,7 @@ class FacultyLoadService
     /**
      * @param  \Illuminate\Support\Collection<int, Faculty>|Collection  $faculties
      */
-    public function decorateMany($faculties, ?int $semesterId)
+    public function decorateMany($faculties, ?int $semesterId, bool $includeHeld = false)
     {
         if ($faculties->isEmpty()) {
             return $faculties;
@@ -104,7 +104,7 @@ class FacultyLoadService
 
         $rows = $semesterId === null
             ? collect()
-            : $this->assignmentRows($semesterId, $faculties->pluck('id')->all());
+            : $this->assignmentRows($semesterId, $faculties->pluck('id')->all(), $includeHeld);
 
         $byFaculty = $rows->groupBy('faculty_id');
 
@@ -121,7 +121,7 @@ class FacultyLoadService
     {
         $rows = $semesterId === null
             ? collect()
-            : $this->assignmentRows($semesterId, [$faculty->id]);
+            : $this->assignmentRows($semesterId, [$faculty->id], true);
 
         $currentUnits = [];
         foreach ($rows as $row) {
@@ -147,20 +147,19 @@ class FacultyLoadService
             'projected_units' => $projected,
             'basic_load' => $basic,
             'overload_units' => (int) ($faculty->overload_units ?? 0),
-            'probono_units' => (int) ($faculty->probono_units ?? 0),
             'unit_ceiling' => SchedulingPolicy::facultyUnitCeiling($faculty),
             'tier' => $tier,
             'tier_label' => SchedulingPolicy::loadTierLabel($tier),
-            'requires_confirmation' => SchedulingPolicy::facultyUnitCeiling($faculty) > 0
+            'exceeds_ceiling' => SchedulingPolicy::facultyUnitCeiling($faculty) > 0
                 && $added > 0
-                && $tier === SchedulingPolicy::LOAD_TIER_PROBONO,
+                && $tier === SchedulingPolicy::LOAD_TIER_BEYOND_CEILING,
         ];
     }
 
     /**
      * @param  array<int, int>  $facultyIds
      */
-    private function assignmentRows(?int $semesterId, array $facultyIds): \Illuminate\Support\Collection
+    private function assignmentRows(?int $semesterId, array $facultyIds, bool $includeHeld = false): \Illuminate\Support\Collection
     {
         if ($facultyIds === []) {
             return collect();
@@ -170,7 +169,11 @@ class FacultyLoadService
             ->join('courses', 'schedules.course_id', '=', 'courses.id')
             ->join('sections', 'schedules.section_id', '=', 'sections.id')
             ->when($semesterId !== null, fn ($query) => $query->where('schedules.semester_id', $semesterId))
-            ->whereIn('schedules.status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
+            ->when(
+                ! $includeHeld || $semesterId === null,
+                fn ($query) => $query->whereIn('schedules.status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES),
+            )
+            ->whereNull('schedules.deleted_at')
             ->whereIn('schedules.faculty_id', $facultyIds)
             ->select([
                 'schedules.id as schedule_id',

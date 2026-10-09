@@ -219,7 +219,14 @@ class InitialDataController extends Controller
                 }
             }
 
-            $courses = $courses->map(function ($c) use ($pivotMap) {
+            $curricularIds = $activeSemesterCourseIds->flip();
+            $courses = $courses->map(function ($c) use ($pivotMap, $curricularIds, $departmentId, $configuredFieldCodes) {
+                $c->setAttribute('delegated_only', $departmentId !== null && ! (
+                    $curricularIds->has((int) $c->id)
+                    && ($c->department_id === null
+                        || (int) $c->department_id === $departmentId
+                        || in_array($c->course_code, $configuredFieldCodes, true))
+                ));
                 if (isset($pivotMap[$c->id])) {
                     $p = $pivotMap[$c->id];
                     $c->year_level = (string) $p->year_level;
@@ -259,7 +266,8 @@ class InitialDataController extends Controller
                             ->orWhere('teaching_program_id', $facultyProgramId),
                     ))
                     ->orderBy('course_code')
-                    ->get();
+                    ->get()
+                    ->each(fn (Course $course) => $course->setAttribute('delegated_only', true));
         }
 
         $sections = ! $wants('sections') ? collect() : Sections::query()

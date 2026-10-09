@@ -56,12 +56,17 @@ class RoomRequestController extends Controller
         $semester = $this->resolveSemester($request->input('semester_id'));
 
         $schedules = Schedule::query()
-            ->with(['course:id,course_code', 'section:id,section_name', 'department:id,department_code'])
+            ->with([
+                'course:id,course_code,course_name,course_category,units,lecture_hours,lab_hours',
+                'section:id,section_name',
+                'department:id,department_code',
+                'faculty:id,first_name,last_name,middle_name',
+            ])
             ->where('room_id', $roomModel->id)
             ->where('semester_id', $semester->id)
             ->orderBy('day')
             ->orderBy('start_time')
-            ->get(['id', 'course_id', 'section_id', 'department_id', 'day', 'start_time', 'end_time']);
+            ->get(['id', 'semester_id', 'course_id', 'section_id', 'faculty_id', 'room_id', 'department_id', 'day', 'start_time', 'end_time', 'mode', 'status']);
 
         $grants = $this->approvedWindows($roomModel->id, $semester->id);
 
@@ -88,6 +93,23 @@ class RoomRequestController extends Controller
                     'label' => 'Lent to '.$window->department_code,
                 ])->all(),
             ],
+            'schedules' => $schedules->map(fn (Schedule $schedule): array => [
+                'id' => $schedule->id,
+                'semester_id' => $schedule->semester_id,
+                'section_id' => $schedule->section_id,
+                'course_id' => $schedule->course_id,
+                'faculty_id' => $schedule->faculty_id,
+                'room_id' => $schedule->room_id,
+                'department_id' => $schedule->department_id,
+                'day' => (string) $schedule->day,
+                'start_time' => (string) $schedule->start_time,
+                'end_time' => (string) $schedule->end_time,
+                'mode' => $schedule->mode,
+                'status' => $schedule->status,
+                'section' => $schedule->section?->only(['id', 'section_name']),
+                'course' => $schedule->course?->only(['id', 'course_code', 'course_name', 'course_category', 'units', 'lecture_hours', 'lab_hours']),
+                'faculty' => $schedule->faculty?->only(['id', 'first_name', 'last_name', 'middle_name']),
+            ])->values()->all(),
         ]);
     }
 
@@ -555,7 +577,7 @@ class RoomRequestController extends Controller
             (int) $model->owner_department_id,
             (int) $model->semester_id,
             null,
-            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/secretary/room-requests'],
+            $this->notificationMetadata($model),
         );
     }
 
@@ -587,7 +609,7 @@ class RoomRequestController extends Controller
             (int) $model->requesting_department_id,
             (int) $model->semester_id,
             $model->review_remarks,
-            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/secretary/room-requests'],
+            $this->notificationMetadata($model),
         );
     }
 
@@ -606,7 +628,7 @@ class RoomRequestController extends Controller
             (int) $model->owner_department_id,
             (int) $model->semester_id,
             null,
-            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/secretary/room-requests'],
+            $this->notificationMetadata($model),
         );
     }
 
@@ -634,8 +656,18 @@ class RoomRequestController extends Controller
             (int) $model->requesting_department_id,
             (int) $model->semester_id,
             null,
-            ['room_request_id' => $model->id, 'room_id' => $model->room_id, 'link' => '/facilities'],
+            $this->notificationMetadata($model),
         );
+    }
+
+    /** @return array{room_request_id: int, room_id: int, windows: list<array{day: string, start_time: string, end_time: string}>} */
+    private function notificationMetadata(RoomRequest $model): array
+    {
+        return [
+            'room_request_id' => (int) $model->id,
+            'room_id' => (int) $model->room_id,
+            'windows' => $this->windowArrays($model),
+        ];
     }
 
     /** @return list<array{day: string, start_time: string, end_time: string}> */

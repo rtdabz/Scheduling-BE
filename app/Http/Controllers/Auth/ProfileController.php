@@ -107,7 +107,6 @@ class ProfileController extends Controller
             'max_units' => (int) $faculty->max_units,
             'deload_units' => (int) $faculty->deload_units,
             'overload_units' => (int) $faculty->overload_units,
-            'probono_units' => (int) $faculty->probono_units,
             'unit_ceiling' => SchedulingPolicy::facultyUnitCeiling($faculty),
             'tier' => $tier,
             'tier_label' => SchedulingPolicy::loadTierLabel($tier),

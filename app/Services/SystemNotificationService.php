@@ -16,6 +16,7 @@ class SystemNotificationService
     /**
      * @param array<string, mixed> $metadata
      * @param array<int, string> $roles
+     * @param list<int>|null $programIds
      */
     public function notifyRoles(
         array $roles,
@@ -27,8 +28,9 @@ class SystemNotificationService
         ?int $semesterId = null,
         ?string $remarks = null,
         array $metadata = [],
+        ?array $programIds = null,
     ): void {
-        $users = $this->usersForRoles($roles, $departmentId);
+        $users = $this->usersForRoles($roles, $departmentId, $programIds);
         $this->createForUsers($users, $type, $title, $message, $actor, $departmentId, $semesterId, $remarks, $metadata);
     }
 
@@ -84,9 +86,10 @@ class SystemNotificationService
 
     /**
      * @param array<int, string> $roles
+     * @param list<int>|null $programIds
      * @return Collection<int, User>
      */
-    private function usersForRoles(array $roles, ?int $departmentId = null): Collection
+    private function usersForRoles(array $roles, ?int $departmentId = null, ?array $programIds = null): Collection
     {
         return User::query()
             ->whereIn('role', $roles)
@@ -100,6 +103,9 @@ class SystemNotificationService
                     }
                 });
             })
+            ->when($programIds !== null, fn ($query) => $query->where(fn ($programQuery) => $programQuery
+                ->where('role', '!=', 'program_head')
+                ->orWhereIn('program_id', $programIds)))
             ->get();
     }
 
@@ -214,6 +220,7 @@ class SystemNotificationService
         $courseIds = Course::query()
             ->where('department_id', $sourceDepartmentId)
             ->where('teaching_department_id', $receivingDepartmentId)
+            ->when($course->teaching_source_program_id !== null, fn ($query) => $query->where('teaching_source_program_id', $course->teaching_source_program_id))
             ->where('status', 'active')
             ->pluck('id');
         if ($courseIds->isEmpty()) return;
@@ -237,11 +244,48 @@ class SystemNotificationService
         $source = $course->department?->department_name ?? 'The source department';
         $receiving = $course->teachingDepartment?->department_name ?? 'The receiving department';
         $message = "{$receiving} completed instructor assignments for the {$courseIds->count()} course" . ($courseIds->count() === 1 ? '' : 's') . '.';
-        $this->notifyRoles(['secretary', 'program_head', 'dean'], 'cross_department_instructor_assignments_completed', 'Cross-department assignments completed', $message, $actor, $sourceDepartmentId, $semesterId, null, ['course_ids' => $courseIds->values()->all(), 'receiving_department_id' => $receivingDepartmentId, 'link' => '/secretary/cross-department-assignments']);
+        $this->notifyRoles(['secretary', 'program_head', 'dean'], 'cross_department_instructor_assignments_completed', 'Cross-department assignments completed', $message, $actor, $sourceDepartmentId, $semesterId, null, ['course_ids' => $courseIds->values()->all(), 'receiving_department_id' => $receivingDepartmentId], $course->teaching_source_program_id === null ? null : [(int) $course->teaching_source_program_id]);
     }
 
     public function notifyCrossDepartmentCompletion(Schedule $schedule, User $actor, ?array $completedScheduleIds = null): void
     {
         $this->notifyDelegatedCourseCompletion($schedule, $actor, $completedScheduleIds);
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, Schedule>  $releasedRows
+     */
+    public function notifyCrossDepartmentInstructorsReleased(\Illuminate\Support\Collection $releasedRows, User $actor, string $action): void
+    {
+        $releasedRows
+            ->groupBy(static fn (Schedule $row): string => $row->course->teaching_department_id.'|'.($row->course->teaching_program_id ?? ''))
+            ->each(function ($rows) use ($actor, $action): void {
+                $first = $rows->first();
+                $classes = $rows
+                    ->unique(static fn (Schedule $row): string => $row->section_id.':'.$row->course_id)
+                    ->map(static fn (Schedule $row): string => trim(($row->course?->course_code ?? 'Course').' ('.($row->section?->section_name ?? 'section').')'))
+                    ->values();
+                $owner = $first->course?->department?->department_name ?? 'The owning department';
+                $label = $classes->take(5)->implode(', ').($classes->count() > 5 ? ' and '.($classes->count() - 5).' more' : '');
+                $message = "{$owner} {$action} its schedule, so your instructor assignment"
+                    .($classes->count() === 1 ? ' was' : 's were')
+                    ." released for {$label}. Assign them again once the new schedule is approved.";
+                $this->notifyRoles(
+                    ['secretary', 'program_head'],
+                    'cross_department_instructors_released',
+                    'Cross-department instructors released',
+                    $message,
+                    $actor,
+                    (int) $first->course->teaching_department_id,
+                    (int) $first->semester_id ?: null,
+                    null,
+                    [
+                        'schedule_ids' => $rows->pluck('id')->map('intval')->values()->all(),
+                        'course_ids' => $rows->pluck('course_id')->map('intval')->unique()->values()->all(),
+                        'source_department_id' => (int) $first->department_id,
+                    ],
+                    $first->course->teaching_program_id === null ? null : [(int) $first->course->teaching_program_id],
+                );
+            });
     }
 }

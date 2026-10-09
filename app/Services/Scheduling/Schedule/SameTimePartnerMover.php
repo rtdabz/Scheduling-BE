@@ -33,6 +33,16 @@ final class SameTimePartnerMover
             return collect();
         }
 
+        return $this->groupPartnersFor($schedule);
+    }
+
+    /** @return Collection<int, Schedule> */
+    public function groupPartnersFor(Schedule $schedule): Collection
+    {
+        if ($schedule->split_group_id === null) {
+            return collect();
+        }
+
         return Schedule::query()
             ->whereKeyNot($schedule->id)
             ->whereHas('split', static fn (Builder $query) => $query->where('split_group_id', $schedule->split_group_id))
@@ -62,6 +72,38 @@ final class SameTimePartnerMover
     public function move(array $attemptData, Collection $partners): array
     {
         $partners = $partners->values();
+        ['rows' => $partnerRows, 'moves_partners' => $movesPartners] = $this->project($attemptData, $partners);
+        if (! $movesPartners) {
+            return [];
+        }
+        $time = ['start_time' => $attemptData['start_time'], 'end_time' => $attemptData['end_time']];
+        $isRun = SchedulingPolicy::consecutiveDayCount($attemptData['preferred_pattern'] ?? null) !== null;
+
+        $partnerIds = $partners->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+        $ignoreIds = [(int) $attemptData['id'], ...$partnerIds];
+        foreach ($partners as $index => $partner) {
+            $violations = $this->ruleEngine->validate([...$partnerRows[$index], 'ignore_schedule_id' => $ignoreIds]);
+            if ($violations !== []) {
+                throw new ScheduleConflictException($violations, $isRun
+                    ? sprintf('The run\'s %s meeting cannot move to %s at the new time.', (string) $partner->day, (string) $partnerRows[$index]['day'])
+                    : 'The paired meeting cannot move to the new time.');
+            }
+
+            $partner->update($isRun ? [...$time, 'day' => $partnerRows[$index]['day']] : $time);
+        }
+
+        return $partnerIds;
+    }
+
+    /**
+     * Project the same partner changes for previews and writes, without saving.
+     *
+     * @param  Collection<int, Schedule>  $partners
+     * @return array{rows: list<array<string, mixed>>, moves_partners: bool}
+     * @throws ScheduleConflictException
+     */
+    public function project(array $attemptData, Collection $partners): array
+    {
         $partnerRows = $partners->map(static fn (Schedule $partner): array => $partner->toArray())->all();
         $time = ['start_time' => $attemptData['start_time'], 'end_time' => $attemptData['end_time']];
         $isRun = SchedulingPolicy::consecutiveDayCount($attemptData['preferred_pattern'] ?? null) !== null;
@@ -82,31 +124,16 @@ final class SameTimePartnerMover
             throw new ScheduleConflictException($groupViolations, 'Schedule update breaks its linked meetings.');
         }
 
-        if (! $movesPartners) {
-            return [];
+        if ($movesPartners && $partners->contains(
+            static fn (Schedule $partner): bool => ! in_array($partner->status, self::EDITABLE_STATUSES, true),
+        )) {
+            throw new ScheduleConflictException([[
+                'rule' => 'split_group_same_time',
+                'message' => 'The paired meeting is locked at its current approval stage, so this meeting cannot move to a new time.',
+            ]], 'Schedule update breaks its linked meetings.');
         }
 
-        $partnerIds = $partners->pluck('id')->map(static fn ($id): int => (int) $id)->all();
-        $ignoreIds = [(int) $attemptData['id'], ...$partnerIds];
-        foreach ($partners as $index => $partner) {
-            if (! in_array($partner->status, self::EDITABLE_STATUSES, true)) {
-                throw new ScheduleConflictException([[
-                    'rule' => 'split_group_same_time',
-                    'message' => 'The paired meeting is locked at its current approval stage, so this meeting cannot move to a new time.',
-                ]], 'Schedule update breaks its linked meetings.');
-            }
-
-            $violations = $this->ruleEngine->validate([...$partnerRows[$index], 'ignore_schedule_id' => $ignoreIds]);
-            if ($violations !== []) {
-                throw new ScheduleConflictException($violations, $isRun
-                    ? sprintf('The run\'s %s meeting cannot move to %s at the new time.', (string) $partner->day, (string) $partnerRows[$index]['day'])
-                    : 'The paired meeting cannot move to the new time.');
-            }
-
-            $partner->update($isRun ? [...$time, 'day' => $partnerRows[$index]['day']] : $time);
-        }
-
-        return $partnerIds;
+        return ['rows' => $partnerRows, 'moves_partners' => $movesPartners];
     }
 
     /**

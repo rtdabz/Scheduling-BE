@@ -429,7 +429,6 @@ final class SchedulingSnapshotRepository
             'max_units' => (int) $faculty->max_units,
             'overload_units' => (int) $faculty->overload_units,
             'deload_units' => (int) $faculty->deload_units,
-            'probono_units' => (int) $faculty->probono_units,
             'department_id' => $faculty->department_id === null ? null : (int) $faculty->department_id,
             'program_id' => $faculty->program_id === null ? null : (int) $faculty->program_id,
             'status' => (string) $faculty->status,

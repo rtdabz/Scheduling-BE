@@ -13,6 +13,11 @@ use App\Services\Scheduling\Engine\Solver\YearLevelSchedulingSolver;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleQualityEvaluator;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
+use App\Services\Scheduling\Recommendations\GenerationAdjustmentInterpreter;
+use App\Services\Scheduling\Recommendations\RecommendationContext;
+use App\Services\Scheduling\Recommendations\RecommendationEngine;
+use App\Services\Scheduling\Recommendations\RecommendationSource;
+use App\Services\Scheduling\Recommendations\SessionAlternativePolicy;
 use App\Services\Scheduling\Support\GenerationCancellationToken;
 use App\Services\Scheduling\Support\SchedulingMetricsReporter;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -115,6 +120,8 @@ class YearLevelScheduleGenerationService
         private ?ScheduleRequirementBuilderResolver $requirementBuilders = null,
         private ?ScheduleGenerationPreflightService $preflight = null,
         private ?SchedulingMetricsReporter $metricsReporter = null,
+        private ?RecommendationEngine $recommendationEngine = null,
+        private ?GenerationAdjustmentInterpreter $adjustmentInterpreter = null,
     ) {
         $this->loadedCourses = collect();
         $this->cancellation = GenerationCancellationToken::none();
@@ -175,7 +182,7 @@ class YearLevelScheduleGenerationService
                 YearLevelGenerationException::STAGE_FEASIBILITY,
                 blockingConstraints: $blocking,
                 recommendations: [
-                    ...$this->diagnostics()->feasibilityRecommendations($blocking),
+                    ...$this->recommendations(RecommendationSource::Feasibility, ['blockingConstraints' => $blocking, 'configsBySectionId' => $configsBySectionId]),
                 ],
                 generationMetrics: $this->reportedMetrics([]),
             );
@@ -305,24 +312,29 @@ class YearLevelScheduleGenerationService
         if ($searchIncomplete) {
             $bottleneck = $this->diagnostics()->markSearchIncomplete($bottleneck);
         }
-        $recommendations = $this->diagnostics()->searchRecommendations(
-            $bottleneck,
-            $plannedStrategies,
-            $courses,
-            $configsBySectionId,
-            $this->suggestedPreferredDay($configsBySectionId),
-            $searchIncomplete,
-        );
+        $draft = $this->bestEffortDraft($sections, $configsBySectionId, $courses, $draftDeadline);
+        $recommendations = $this->recommendations(RecommendationSource::Search, [
+            'bottleneck' => $bottleneck,
+            'strategies' => $plannedStrategies,
+            'courses' => $courses,
+            'configsBySectionId' => $configsBySectionId,
+            'suggestedPreferredDay' => $this->suggestedPreferredDay($configsBySectionId),
+            'searchIncomplete' => $searchIncomplete,
+            'probeDraft' => $draft,
+            'probeDeadline' => $draftDeadline,
+        ], metadata: ['attempts' => $attempts]);
         $message = $this->diagnostics()->searchMessage($bottleneck, $attempts, $searchIncomplete);
 
-        $draft = $this->bestEffortDraft($sections, $configsBySectionId, $courses, $draftDeadline);
         if ($draft !== null && $draft['unplaced_courses'] === []) {
             unset($draft['unplaced_courses']);
 
             return $this->decorateResult($draft, null, $attempts, $configsBySectionId, $sections);
         }
         if ($draft !== null) {
-            return $this->decorateDraftResult($draft, $attempts, $sections, $bottleneck, $recommendations, $message);
+            $result = $this->decorateDraftResult($draft, $attempts, $sections, $bottleneck, $recommendations, $message);
+            $result['applied_adjustments'] = $this->selectedAdjustments($configsBySectionId);
+
+            return $result;
         }
 
         throw new YearLevelGenerationException(
@@ -407,7 +419,7 @@ class YearLevelScheduleGenerationService
                 ?? 'The selected configuration found no complete timetable, so the generator applied a reported preference adjustment while preserving all hard constraints.'),
             'impact' => (string) ($strategy['impact'] ?? 'medium'),
         ];
-        $candidate['applied_adjustments'] = [...$existingAdjustments, ...$splitFallbacks];
+        $candidate['applied_adjustments'] = [...$this->selectedAdjustments($configsBySectionId), ...$existingAdjustments, ...$splitFallbacks];
         $candidate['generation_changes'] = (new YearLevelGenerationChangeReport)->build(
             $strategy,
             $splitFallbacks,
@@ -549,22 +561,22 @@ class YearLevelScheduleGenerationService
         $shape = null;
         if ($isIn('hybrid_split_course_ids')) {
             $shape = 'online_split';
-            $slots = SchedulingPolicy::hybridSplitMeetingSlots();
-            $meetings = [
-                ['meeting_type' => 'lecture', 'duration_slots' => $slots, 'modes' => ['on-site']],
-                ['meeting_type' => 'lecture', 'duration_slots' => $slots, 'modes' => ['online']],
-            ];
+            $meetings = SessionAlternativePolicy::hybridSplitMeetings();
         } elseif ($isIn('balanced_split_course_ids') && count($meetings) === 1 && $meetings[0]['duration_slots'] >= 2) {
             $shape = 'split';
-            $half = intdiv($meetings[0]['duration_slots'], 2);
-            $meetings = [
-                ['meeting_type' => 'lecture', 'duration_slots' => $half, 'modes' => $meetings[0]['modes']],
-                ['meeting_type' => 'lecture', 'duration_slots' => $half, 'modes' => $meetings[0]['modes']],
-            ];
+            // Keep an off-grid equal-half total unresolved rather than shortening it.
+            if ($meetings[0]['duration_slots'] % 2 === 0) {
+                $half = intdiv($meetings[0]['duration_slots'], 2);
+                $meetings = [
+                    ['meeting_type' => 'lecture', 'duration_slots' => $half, 'modes' => $meetings[0]['modes']],
+                    ['meeting_type' => 'lecture', 'duration_slots' => $half, 'modes' => $meetings[0]['modes']],
+                ];
+            }
         }
 
         $reason = match (true) {
             $timedOut => 'The generator ran out of time before it reached this course.',
+            $shape === 'split' && count($meetings) === 1 => 'Equal Split Session halves do not fit the scheduling time grid; the total duration has been retained for review.',
             $pattern !== null => "No time fits its fixed {$pattern} pattern alongside the section's other classes.",
             $isIn('selected_split_session_course_ids') => "No free days fit its lecture and laboratory meetings alongside the section's other classes.",
             $isIn('balanced_split_course_ids') => "No two free days fit its Split Session alongside the section's other classes.",
@@ -580,6 +592,8 @@ class YearLevelScheduleGenerationService
             'reason' => $reason,
             'shape' => $shape,
             'meetings' => $meetings,
+            ...(($runRule = ($this->generationSnapshot?->consecutiveDayRulesFor((int) $section->id) ?? [])[$courseId] ?? null) !== null
+                ? ['consecutive_rule' => $runRule] : []),
         ];
     }
 
@@ -685,11 +699,11 @@ class YearLevelScheduleGenerationService
             return [];
         }
 
-        return $this->diagnostics()->preferredDayRecommendation(
-            $this->suggestedPreferredDay($configsBySectionId),
-            $configsBySectionId,
-            timetableFits: true,
-        );
+        return $this->recommendations(RecommendationSource::PreferredDays, [
+            'day' => $this->suggestedPreferredDay($configsBySectionId),
+            'configsBySectionId' => $configsBySectionId,
+            'timetableFits' => true,
+        ]);
     }
 
     private function checkpoint(): void
@@ -762,13 +776,13 @@ class YearLevelScheduleGenerationService
             'blocking_constraints' => [],
             'bottleneck' => $bottleneck,
             'attempts' => [],
-            'recommendations' => $this->diagnostics()->searchRecommendations(
-                $bottleneck,
-                $strategies,
-                $courses,
-                $configs,
-                $this->suggestedPreferredDay($configs),
-            ),
+            'recommendations' => $this->recommendations(RecommendationSource::Search, [
+                'bottleneck' => $bottleneck,
+                'strategies' => $strategies,
+                'courses' => $courses,
+                'configsBySectionId' => $configs,
+                'suggestedPreferredDay' => $this->suggestedPreferredDay($configs),
+            ], metadata: ['search_incomplete' => true]),
         ];
     }
 
@@ -899,27 +913,13 @@ class YearLevelScheduleGenerationService
             $sectionsById[(int) $section->id] = $section;
         }
 
-        $next = $configsBySectionId;
-        $touched = [];
-
-        foreach ($adjustments as $adjustment) {
-            $sectionId = (int) ($adjustment['section_id'] ?? 0);
-            $courseId = (int) ($adjustment['course_id'] ?? 0);
-            $type = (string) ($adjustment['type'] ?? '');
-            $sectionLevelAdjustment = in_array($type, ['disable_section_hybrid', 'enable_friday_saturday_split', 'add_preferred_day'], true);
-            if ((! $sectionLevelAdjustment && $courseId <= 0) || ! isset($next[$sectionId])) {
-                continue;
-            }
-
-            $config = $this->applyAdjustment($next[$sectionId], $type, $courseId, $adjustment['value'] ?? null);
-            if ($config === null) {
-                continue;
-            }
-
-            $next[$sectionId] = $config;
-            $touched[$sectionId] = $sectionId;
+        try {
+            $result = ($this->adjustmentInterpreter ??= new GenerationAdjustmentInterpreter)->apply($configsBySectionId, $adjustments);
+        } catch (\InvalidArgumentException) {
+            return null;
         }
-
+        $next = $result['configs'];
+        $touched = array_values(array_unique(array_column($result['applied'], 'section_id')));
         if ($touched === []) {
             return null;
         }
@@ -948,110 +948,10 @@ class YearLevelScheduleGenerationService
         return $this->decorateConfigs($next, $courses);
     }
 
-    /**
-     * @param  array<string, mixed>  $config
-     * @return array<string, mixed>|null null when the adjustment changes nothing
-     */
-    private function applyAdjustment(array $config, string $type, int $courseId, mixed $value): ?array
+    /** Request-local metadata prepared by the authorized sync/queue boundary. */
+    private function selectedAdjustments(array $configs): array
     {
-        switch ($type) {
-            case 'set_pattern':
-                $pattern = SchedulingPolicy::normalizePreferredPattern($value);
-                if ($pattern === null || ! array_key_exists($courseId, $config['preferred_patterns'] ?? [])) {
-                    return null;
-                }
-                if (SchedulingPolicy::normalizePreferredPattern($config['preferred_patterns'][$courseId]) === $pattern) {
-                    return null;
-                }
-                $config['preferred_patterns'][$courseId] = $pattern;
-
-                return $config;
-
-            case 'clear_pattern':
-                if (! array_key_exists($courseId, $config['preferred_patterns'] ?? [])) {
-                    return null;
-                }
-                unset($config['preferred_patterns'][$courseId]);
-
-                return $config;
-
-            case 'disable_lecture_lab_split':
-                $splitIds = array_map('intval', $config['selected_split_session_course_ids'] ?? []);
-                if (! in_array($courseId, $splitIds, true)) {
-                    return null;
-                }
-                $remainingSplitIds = array_values(array_diff($splitIds, [$courseId]));
-                $config['selected_split_session_course_ids'] = $remainingSplitIds;
-                if ($remainingSplitIds === []) {
-                    $config['is_hybrid'] = false;
-                }
-
-                return $config;
-
-            case 'disable_minor_split':
-                $balancedIds = array_map('intval', $config['balanced_split_course_ids'] ?? []);
-                if (! in_array($courseId, $balancedIds, true)) {
-                    return null;
-                }
-                $config['balanced_split_course_ids'] = array_values(array_diff($balancedIds, [$courseId]));
-                $config['hybrid_split_course_ids'] = array_values(array_diff(
-                    array_map('intval', $config['hybrid_split_course_ids'] ?? []),
-                    [$courseId],
-                ));
-                unset($config['preferred_patterns'][$courseId]);
-
-                return $config;
-
-            case 'enable_friday_saturday_split':
-                if ((bool) ($config['allow_friday_saturday_split'] ?? false)) {
-                    return null;
-                }
-                $config['allow_friday_saturday_split'] = true;
-
-                return $config;
-
-            case 'add_preferred_day':
-                $allowedDays = SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null);
-                $day = (string) ($value ?? '');
-                if ($allowedDays === null || in_array($day, $allowedDays, true) || ! in_array($day, $this->teachingDays(), true)) {
-                    return null;
-                }
-                $config['allowed_days'] = SchedulingPolicy::normalizeAllowedDays([...$allowedDays, $day]);
-
-                return $config;
-
-            case 'disable_section_hybrid':
-                $splitIds = array_map('intval', $config['selected_split_session_course_ids'] ?? []);
-                $isHybrid = (bool) ($config['is_hybrid'] ?? false);
-                if ($splitIds === [] && ! $isHybrid) {
-                    return null;
-                }
-                $config['selected_split_session_course_ids'] = [];
-                $config['is_hybrid'] = false;
-
-                return $config;
-
-            case 'set_delivery_mode':
-                $modes = $config['delivery_modes_by_course_id'] ?? [];
-                $mode = (string) ($value ?? 'automatic');
-                if ($mode === 'automatic') {
-                    if (! array_key_exists($courseId, $modes)) {
-                        return null;
-                    }
-                    unset($modes[$courseId]);
-                } else {
-                    if (! SchedulingPolicy::isValidDeliveryMode($mode) || ($modes[$courseId] ?? null) === $mode) {
-                        return null;
-                    }
-                    $modes[$courseId] = $mode;
-                }
-                $config['delivery_modes_by_course_id'] = $modes;
-
-                return $config;
-
-            default:
-                return null;
-        }
+        return $configs[array_key_first($configs)]['_selected_adjustments'] ?? [];
     }
 
     private function feasibility(): YearLevelFeasibilityService
@@ -1062,6 +962,30 @@ class YearLevelScheduleGenerationService
     private function diagnostics(): YearLevelGenerationDiagnostics
     {
         return $this->diagnostics ??= app(YearLevelGenerationDiagnostics::class);
+    }
+
+    /**
+     * @param  array<string, mixed>  $inputs
+     * @param  array<string, mixed>  $metadata
+     * @return list<array<string, mixed>>
+     */
+    private function recommendations(RecommendationSource $source, array $inputs, array $metadata = []): array
+    {
+        $inputs['diagnostics'] = $this->diagnostics();
+        $engine = $this->recommendationEngine ??= app(RecommendationEngine::class);
+        $snapshot = $this->generationSnapshot;
+
+        return $engine->recommend(new RecommendationContext(
+            $source,
+            [...$inputs, 'snapshot' => $snapshot],
+            scope: [
+                'semester_id' => $snapshot?->semesterId,
+                'department_id' => $snapshot?->departmentId,
+                'section_ids' => array_keys($inputs['configsBySectionId'] ?? $snapshot?->sectionsById ?? []),
+            ],
+            snapshotFingerprint: $snapshot?->fingerprint,
+            metadata: ['selection_contract' => 1, 'search_incomplete' => (bool) ($inputs['searchIncomplete'] ?? false), ...$metadata],
+        ))->legacyPayload;
     }
 
     private function planner(): YearLevelRetryStrategyPlanner

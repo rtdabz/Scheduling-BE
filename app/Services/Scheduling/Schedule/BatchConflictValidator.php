@@ -18,10 +18,8 @@ class BatchConflictValidator
         }
 
         $normalized = [];
-        $standingOverrides = FacultyConflictOverride::standingIds($rows);
         foreach ($rows as $index => $row) {
             $normalized[$index] = $this->normalizeRow($row);
-            $normalized[$index]['faculty_override'] = isset($standingOverrides[(int) ($row['id'] ?? 0)]);
         }
 
         return $this->pairwiseConflicts($normalized, $this->courseCodeMap($normalized), $this->roomTypes($normalized));
@@ -110,7 +108,6 @@ class BatchConflictValidator
                 if (
                     $left['faculty_id'] !== null
                     && $left['faculty_id'] === $right['faculty_id']
-                    && ! ($left['faculty_override'] && $right['faculty_override'])
                 ) {
                     $add(BatchConflict::RULE_FACULTY);
                 }

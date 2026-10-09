@@ -392,7 +392,10 @@ class RoomRequestTest extends TestCase
             ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
             ->assertOk()
             ->assertJsonPath('occupied.0.day', 'Tuesday')
-            ->assertJsonPath('occupied.0.department_code', 'CAS');
+            ->assertJsonPath('occupied.0.department_code', 'CAS')
+            ->assertJsonCount(1, 'schedules')
+            ->assertJsonPath('schedules.0.room_id', $f['room']->id)
+            ->assertJsonPath('schedules.0.department_id', $f['owner']->id);
     }
 
     private function violatesRoomOwnership(array $attempt): bool

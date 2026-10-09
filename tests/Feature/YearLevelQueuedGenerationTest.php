@@ -14,6 +14,7 @@ use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\Scheduling\Recommendations\GenerationRecommendationPolicy;
 use App\Services\Scheduling\Support\GenerationCancellationToken;
 use App\Services\Scheduling\YearLevel\YearLevelGenerationEligibilityService;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
@@ -54,17 +55,22 @@ class YearLevelQueuedGenerationTest extends TestCase
             'status' => 'queued',
         ]);
 
-        ScheduleGenerationRun::query()->where('run_id', $runId)->update([
-            'status' => 'completed',
-            'result' => ['schedules' => []],
-            'finished_at' => now(),
-        ]);
+        $legacy = [['id' => 'stored-advice', 'impact' => 'medium', 'adjustments' => []]];
+        $current = GenerationRecommendationPolicy::withSelectionMetadata($legacy);
+        foreach ([$legacy, $current] as $recommendations) {
+            ScheduleGenerationRun::query()->where('run_id', $runId)->update([
+                'status' => 'completed',
+                'result' => ['schedules' => [], 'recommendations' => $recommendations],
+                'finished_at' => now(),
+            ]);
 
-        $this->actingAs($user)
-            ->getJson("/api/schedule-recommendations/generation-runs/{$runId}")
-            ->assertOk()
-            ->assertJsonPath('status', 'completed')
-            ->assertJsonPath('result.schedules', []);
+            $this->actingAs($user)
+                ->getJson("/api/schedule-recommendations/generation-runs/{$runId}")
+                ->assertOk()
+                ->assertJsonPath('status', 'completed')
+                ->assertJsonPath('result.schedules', [])
+                ->assertJsonPath('result.recommendations', $recommendations);
+        }
     }
 
     public function test_a_new_section_can_be_generated_alone_beside_a_submitted_one(): void

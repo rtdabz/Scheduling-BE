@@ -6,7 +6,6 @@ namespace App\Services\Scheduling\Generation;
 
 use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
-use App\Services\Scheduling\Domain\GenerationConfigurationRecommendation;
 use App\Services\Scheduling\Domain\GenerationConfigurationValidationResult;
 use App\Services\Scheduling\Domain\ScheduleCandidate;
 use App\Services\Scheduling\Domain\SchedulePlan;
@@ -15,6 +14,9 @@ use App\Services\Scheduling\Domain\SchedulingGenerationMetrics;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Constraints\ValidateScheduleCandidate;
 use App\Services\Scheduling\Engine\Solver\SchedulingSolver;
+use App\Services\Scheduling\Recommendations\RecommendationContext;
+use App\Services\Scheduling\Recommendations\RecommendationEngine;
+use App\Services\Scheduling\Recommendations\RecommendationSource;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
 use Illuminate\Support\Str;
@@ -26,6 +28,7 @@ final class GenerateSchedulePlan
         private readonly ValidateGenerationConfiguration $configurationValidator,
         private readonly SchedulingSolver $solver,
         private readonly ValidateScheduleCandidate $candidateValidator,
+        private readonly RecommendationEngine $recommendationEngine,
     ) {}
 
     /** @return list<SchedulePlan> */
@@ -39,16 +42,16 @@ final class GenerateSchedulePlan
         $validation = $this->configurationValidator->validateSnapshot($configuration, $snapshot);
 
         if (! $validation->canGenerate()) {
-            return [$this->statePlan($validation, SchedulePlanStatus::Invalid)];
+            return [$this->statePlan($validation, SchedulePlanStatus::Invalid, $snapshot)];
         }
 
         if ($validation->requiresConfirmation() && ! $configurationWarningsConfirmed) {
-            return [$this->statePlan($validation, SchedulePlanStatus::ConfigurationValid)];
+            return [$this->statePlan($validation, SchedulePlanStatus::ConfigurationValid, $snapshot)];
         }
 
         $candidates = $this->solveWithPhysicalRoomsFirst($configuration, $snapshot);
         if ($candidates === []) {
-            return [$this->noSolutionPlan($validation, $configurationWarningsConfirmed)];
+            return [$this->noSolutionPlan($validation, $configurationWarningsConfirmed, $snapshot)];
         }
 
         return array_map(
@@ -98,6 +101,7 @@ final class GenerateSchedulePlan
     private function statePlan(
         GenerationConfigurationValidationResult $validation,
         SchedulePlanStatus $status,
+        SchedulingSnapshot $snapshot,
     ): SchedulePlan {
         return new SchedulePlan(
             planId: (string) Str::uuid(),
@@ -105,7 +109,7 @@ final class GenerateSchedulePlan
             snapshotFingerprint: $validation->snapshotFingerprint,
             status: $status,
             violations: $validation->violations,
-            recommendations: $this->recommendations($validation),
+            recommendations: $this->recommendations($validation, $snapshot),
             metadata: [
                 ...$validation->metadata,
                 'configuration_validation_status' => $validation->status(),
@@ -117,6 +121,7 @@ final class GenerateSchedulePlan
     private function noSolutionPlan(
         GenerationConfigurationValidationResult $validation,
         bool $warningsConfirmed,
+        SchedulingSnapshot $snapshot,
     ): SchedulePlan {
         return new SchedulePlan(
             planId: (string) Str::uuid(),
@@ -132,7 +137,7 @@ final class GenerateSchedulePlan
                     context: ['section_id' => $validation->configuration->sectionId],
                 ),
             ],
-            recommendations: $this->recommendations($validation),
+            recommendations: $this->recommendations($validation, $snapshot),
             metadata: $this->solverMetadata($validation, $warningsConfirmed),
         );
     }
@@ -166,7 +171,7 @@ final class GenerateSchedulePlan
             status: $status,
             rows: $candidate->rows,
             violations: $violations,
-            recommendations: $this->recommendations($validation),
+            recommendations: $this->recommendations($validation, $snapshot),
             unresolvedResources: $unresolvedResources,
             scores: $this->scores($candidate),
             metadata: [
@@ -215,12 +220,14 @@ final class GenerateSchedulePlan
     }
 
     /** @return list<array<string, mixed>> */
-    private function recommendations(GenerationConfigurationValidationResult $validation): array
+    private function recommendations(GenerationConfigurationValidationResult $validation, SchedulingSnapshot $snapshot): array
     {
-        return array_map(
-            static fn (GenerationConfigurationRecommendation $recommendation): array => $recommendation->toArray(),
-            $validation->recommendations,
-        );
+        return $this->recommendationEngine->recommend(new RecommendationContext(
+            RecommendationSource::Configuration,
+            ['validation' => $validation, 'snapshot' => $snapshot],
+            scope: $validation->metadata,
+            snapshotFingerprint: $validation->snapshotFingerprint,
+        ))->legacyPayload;
     }
 
     /** @return array<string, mixed> */

@@ -12,7 +12,10 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Engine\CspSolver;
+use App\Services\Scheduling\Engine\Rules\MeetingGroupRule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -24,10 +27,17 @@ class GenerationDraftReviewTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_a_run_without_a_complete_timetable_returns_a_draft_with_the_courses_left_out(): void
+    public static function unplacedRequirements(): array
+    {
+        return ['even total' => [3, 2, 3, false], 'off-grid halves' => [2.5, 1, 5, false], 'request-local run' => [3, 1, 6, true]];
+    }
+
+    #[DataProvider('unplacedRequirements')]
+    public function test_a_run_without_a_complete_timetable_returns_a_draft_with_the_courses_left_out(float $units, int $meetingCount, int $meetingSlots, bool $consecutive): void
     {
         $fixture = $this->fixture();
         ['section' => $section, 'blocked' => $blocked, 'placed' => $placed] = $fixture;
+        $blocked->update(['units' => $units]);
 
         // Every search that includes GEC 101 dead-ends on it; without it the
         // section solves.
@@ -100,8 +110,12 @@ class GenerationDraftReviewTest extends TestCase
             'section_configs' => [[
                 'section_id' => $section->id,
                 'course_ids' => [(int) $blocked->id, (int) $placed->id],
-                'selected_gec_course_ids' => [(int) $blocked->id],
+                'selected_gec_course_ids' => $consecutive ? [] : [(int) $blocked->id],
             ]],
+            ...($consecutive ? ['rule_overrides' => ['consecutive_day_rules' => [[
+                'course_id' => $blocked->id, 'section_id' => $section->id, 'day_count' => 3,
+                'meeting_days' => ['Tuesday', 'Thursday', 'Friday'],
+            ]]]] : []),
         ]);
 
         $response->assertOk()
@@ -110,10 +124,25 @@ class GenerationDraftReviewTest extends TestCase
             ->assertJsonPath('unplaced_courses.0.course_id', (int) $blocked->id)
             ->assertJsonPath('unplaced_courses.0.course_code', 'GEC 101')
             ->assertJsonPath('unplaced_courses.0.section_id', (int) $section->id);
-        // Reported as the two meetings it is configured to have.
-        $response->assertJsonPath('unplaced_courses.0.shape', 'split')
-            ->assertJsonCount(2, 'unplaced_courses.0.meetings')
-            ->assertJsonPath('unplaced_courses.0.meetings.0.duration_slots', 3);
+        // Odd totals remain unresolved; two floor-rounded halves would lose time.
+        $response->assertJsonPath('unplaced_courses.0.shape', $consecutive ? null : 'split')
+            ->assertJsonCount($meetingCount, 'unplaced_courses.0.meetings')
+            ->assertJsonPath('unplaced_courses.0.meetings.0.duration_slots', $meetingSlots);
+        if ($consecutive) {
+            $response->assertJsonPath('unplaced_courses.0.consecutive_rule.day_count', 3)
+                ->assertJsonPath('unplaced_courses.0.consecutive_rule.meeting_days', ['Tuesday', 'Thursday', 'Friday']);
+            $this->assertDatabaseCount('department_course_rules', 0);
+            $options = $this->review($fixture, $response->json('schedules'), $response->json('unplaced_courses'))
+                ->assertOk()->json('issues.0.options');
+            $this->assertNotEmpty($options);
+            foreach ($options as $option) {
+                $this->assertSame(['Tuesday', 'Thursday', 'Friday'], array_column($option['rows'], 'day'));
+                $this->assertNull($option['label']);
+            }
+        } elseif ($meetingCount === 1) {
+            $this->review($fixture, $response->json('schedules'), $response->json('unplaced_courses'))
+                ->assertOk()->assertJsonPath('issues.0.options', []);
+        }
         $this->assertNotEmpty($response->json('unplaced_courses.0.reason'));
         $this->assertSame(
             [(int) $placed->id],
@@ -215,10 +244,10 @@ class GenerationDraftReviewTest extends TestCase
         ]];
 
         $options = $this->review($fixture, $draft, $unplaced)->assertOk()->json('issues.0.options');
-        $onlineSplits = array_values(array_filter($options, static fn (array $option): bool => $option['label'] === 'Online Split'));
-        $splits = array_values(array_filter($options, static fn (array $option): bool => ! $option['label'] === 'Online Split'));
+        $onlineSplits = array_values(array_filter($options, static fn (array $option): bool => $option['label'] === 'Hybrid Split'));
+        $splits = array_values(array_filter($options, static fn (array $option): bool => $option['label'] !== 'Hybrid Split'));
 
-        $this->assertNotEmpty($onlineSplits, 'A three-unit lecture course is offered an Online Split.');
+        $this->assertNotEmpty($onlineSplits, 'A three-unit lecture course is offered a Hybrid Split.');
         $this->assertLessThanOrEqual(2, count($onlineSplits));
         foreach ($onlineSplits as $option) {
             $rows = $option['rows'];
@@ -263,7 +292,7 @@ class GenerationDraftReviewTest extends TestCase
 
         // A room is free: no Fully Online option is offered.
         $labels = array_column($this->review($fixture, [], $unplaced)->assertOk()->json('issues.0.options'), 'label');
-        $this->assertNotContains('Fully Online', $labels);
+        $this->assertNotContains('Online (All)', $labels);
 
         // The only room is out of service: nothing on site fits.
         $fixture['room']->update(['status' => 'not available']);
@@ -271,7 +300,7 @@ class GenerationDraftReviewTest extends TestCase
 
         $this->assertNotEmpty($options);
         foreach ($options as $option) {
-            $this->assertSame('Fully Online', $option['label']);
+            $this->assertSame('Online (All)', $option['label']);
             $rows = $option['rows'];
             $this->assertCount(2, $rows);
             $this->assertSame(['online', 'online'], array_column($rows, 'mode'));
@@ -348,6 +377,88 @@ class GenerationDraftReviewTest extends TestCase
                 );
             }
         }
+    }
+
+    public function test_a_free_physical_interval_without_an_online_partner_is_not_a_hybrid_option(): void
+    {
+        $fixture = $this->fixture();
+        foreach (['Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as $day) {
+            Schedule::create([
+                'semester_id' => $fixture['semester']->id, 'section_id' => $fixture['section']->id,
+                'course_id' => $fixture['placed']->id, 'department_id' => $fixture['department']->id,
+                'mode' => 'online', 'room_id' => null, 'day' => $day,
+                'start_time' => '00:00', 'end_time' => '23:30', 'status' => 'draft',
+            ]);
+        }
+        $options = $this->review($fixture, [], [[
+            'section_id' => (int) $fixture['section']->id, 'course_id' => (int) $fixture['blocked']->id,
+            'shape' => 'split', 'meetings' => [
+                ['duration_slots' => 3, 'meeting_type' => 'lecture', 'modes' => ['on-site']],
+                ['duration_slots' => 3, 'meeting_type' => 'lecture', 'modes' => ['on-site']],
+            ],
+        ]])->assertOk()->json('issues.0.options');
+
+        $this->assertSame([], $options, 'Monday has physical room time, but no distinct day fits the second meeting.');
+    }
+
+    public function test_a_two_day_run_is_not_offered_a_hybrid_or_all_online_pair(): void
+    {
+        $fixture = $this->fixture();
+        DB::table('department_course_rules')->insert([
+            'department_id' => $fixture['department']->id, 'course_id' => $fixture['blocked']->id,
+            'section_id' => $fixture['section']->id, 'consecutive_day_count' => 2,
+        ]);
+        $draft = $this->rows($fixture, (int) $fixture['blocked']->id, [['Monday', '08:00', '09:30'], ['Wednesday', '08:00', '09:30']]);
+        $draft = array_map(static fn (array $row): array => [...$row, 'preferred_pattern' => 'consecutive:2'], $draft);
+        $blocker = $this->rows($fixture, (int) $fixture['placed']->id, [['Monday', '08:00', '09:30']]);
+        $issues = $this->review($fixture, [...$draft, ...$blocker])->assertOk()->json('issues');
+        $issue = collect($issues)->firstWhere('course_id', (int) $fixture['blocked']->id);
+        $this->assertNotNull($issue);
+        $this->assertSame([], $issue['options'], 'The per-day draft search has not found a complete run; it must not substitute a two-meeting alternative.');
+    }
+
+    public function test_marker_only_consecutive_runs_keep_their_interval_and_do_not_offer_split_alternatives(): void
+    {
+        $fixture = $this->fixture();
+        $this->assertDatabaseCount('department_course_rules', 0);
+        $draft = $this->rows($fixture, (int) $fixture['blocked']->id, [['Monday', '08:00', '09:30'], ['Tuesday', '08:00', '09:30']]);
+        $draft = array_map(static fn (array $row): array => [...$row, 'preferred_pattern' => 'consecutive:2'], $draft);
+        $blocker = $this->rows($fixture, (int) $fixture['placed']->id, [['Monday', '08:00', '09:30']]);
+
+        foreach (['available', 'not available'] as $roomStatus) {
+            $fixture['room']->update(['status' => $roomStatus]);
+            $issues = $this->review($fixture, [...$draft, ...$blocker])->assertOk()->json('issues');
+            $issue = collect($issues)->firstWhere('course_id', (int) $fixture['blocked']->id);
+            $this->assertNotNull($issue);
+            foreach ($issue['options'] as $option) {
+                $this->assertSame([], MeetingGroupRule::groupMismatches('consecutive', $fixture['blocked'], $option['rows'], 'consecutive:2'));
+                foreach ($option['rows'] as $row) {
+                    $this->assertSame($option['rows'][0]['start_time'], $row['start_time']);
+                    $this->assertSame($option['rows'][0]['end_time'], $row['end_time']);
+                    if ($roomStatus === 'available') {
+                        $this->assertSame('08:00', substr($row['start_time'], 0, 5));
+                        $this->assertSame('09:30', substr($row['end_time'], 0, 5));
+                    }
+                    $this->assertSame('consecutive:2', $row['preferred_pattern']);
+                }
+            }
+            $labels = array_column($issue['options'], 'label');
+            $this->assertNotContains('Hybrid Split', $labels);
+            $this->assertNotContains('Online (All)', $labels);
+            if ($roomStatus === 'available') {
+                $this->assertSame([], $issue['options'], 'Per-day discovery cannot replace only part of the marked run.');
+            } else {
+                $this->assertNotEmpty($issue['options'], 'A whole-run move can retain its marker and matching intervals.');
+                $operations = array_map(static fn (array $row): array => [
+                    ...$row,
+                    'start_time' => substr($row['start_time'], 0, 5),
+                    'end_time' => substr($row['end_time'], 0, 5),
+                    'status' => 'draft',
+                ], $issue['options'][0]['rows']);
+                $this->actingAs($fixture['user'])->postJson('/api/schedules/batch', ['operations' => $operations])->assertSuccessful();
+            }
+        }
+        $this->assertDatabaseCount('department_course_rules', 0);
     }
 
     private function review(array $fixture, array $rows, array $unplaced = [], ?array $sectionIds = null)

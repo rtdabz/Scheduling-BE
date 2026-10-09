@@ -4,13 +4,18 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Schedule;
 
+use App\Exceptions\ScheduleConflictException;
 use App\Models\Course;
-use App\Models\Faculty;
 use App\Models\Schedule;
+use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Manual\AvailableSlotFinder;
+use App\Services\Scheduling\Recommendations\PlacementGroupValidator;
+use App\Services\Scheduling\Recommendations\SessionInterpreter;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
+use Closure;
+use Illuminate\Support\Collection;
 
 final class ConflictRecommender
 {
@@ -24,8 +29,8 @@ final class ConflictRecommender
         private readonly SchedulingSnapshotRepository $snapshots,
         private readonly AvailableSlotFinder $slotFinder,
         private readonly RuleEngine $ruleEngine,
-        private readonly ManualHybridFacultyAssignmentResolver $hybridAssignments,
-        private readonly InstructorRecommender $instructors,
+        private readonly SameTimePartnerMover $sameTimePartners,
+        private readonly PlacementGroupValidator $groups,
     ) {}
 
     /**
@@ -46,13 +51,7 @@ final class ConflictRecommender
 
             $budget = $perSchedule;
 
-            foreach ($this->placementCandidates($schedule, $allowed) as $candidates) {
-                $buckets[] = $this->firstValid($candidates, self::PER_BUCKET, $budget);
-            }
-
-            if (in_array('reassign_instructor', $allowed, true)) {
-                $buckets[] = $this->instructorOptions($schedule, $case->semesterId, self::PER_BUCKET);
-            }
+            $buckets = [...$buckets, ...array_values($this->placementOptions($schedule, $allowed, $budget))];
         }
 
         $options = array_merge(...$buckets ?: [[]]);
@@ -71,7 +70,7 @@ final class ConflictRecommender
      * @param  list<string>  $allowed
      * @return array<string, list<array<string, mixed>>>
      */
-    private function placementCandidates(Schedule $schedule, array $allowed): array
+    private function placementOptions(Schedule $schedule, array $allowed, int &$budget): array
     {
         $wanted = array_intersect($allowed, ['change_room', 'change_delivery_mode', 'move_schedule']);
         if ($wanted === []
@@ -93,14 +92,20 @@ final class ConflictRecommender
             courseIds: [(int) $schedule->course_id],
         );
 
+        $partners = $this->sameTimePartners->groupPartnersFor($schedule);
+        $ignoreIds = [(int) $schedule->id, ...$partners->pluck('id')->map('intval')->all()];
+        $session = SessionInterpreter::fromRows([$schedule->toArray(), ...$partners->map->toArray()->all()]);
+        $validate = $this->groups->forContext($snapshot, ignoreIds: $ignoreIds, session: $session);
+
         $found = $this->slotFinder->find(
             snapshot: $snapshot,
             sectionId: (int) $schedule->section_id,
             courseId: (int) $schedule->course_id,
             durationSlots: intdiv($durationMinutes, SchedulingPolicy::SLOT_MINUTES),
-            ignoreScheduleIds: [(int) $schedule->id],
+            ignoreScheduleIds: $ignoreIds,
             meetingType: $schedule->meeting_type,
             searchFromDay: (string) $schedule->day,
+            rowTemplate: $schedule->toArray(),
         );
 
         $day = (string) $schedule->day;
@@ -136,6 +141,7 @@ final class ConflictRecommender
 
         foreach (array_keys($candidates) as $action) {
             usort($candidates[$action], static fn (array $left, array $right): int => $right['score'] <=> $left['score']);
+            $candidates[$action] = $this->firstValid($candidates[$action], self::PER_BUCKET, $budget, $partners, $validate);
         }
 
         return $candidates;
@@ -176,7 +182,7 @@ final class ConflictRecommender
                     + ($keepsRoom ? 4 : 0)
                     - ($keepsMode ? 0 : 15),
                 ['day' => $slot['day'], 'start_time' => $startTime, 'end_time' => $endTime, 'room_id' => $roomId, 'mode' => $mode],
-                "Move {$this->label($schedule)} to {$slot['day']} {$startTime}-{$endTime} {$where}.",
+                "Move {$this->label($schedule)} to {$slot['day']} ".ScheduleConflictCase::clock($startTime).' - '.ScheduleConflictCase::clock($endTime)." {$where}.",
                 $this->moveReasons($schedule, $slot, $currentStart, $keepsRoom, $keepsMode ? null : $modeChange),
             ],
         };
@@ -242,7 +248,7 @@ final class ConflictRecommender
      * @param  list<array<string, mixed>>  $candidates
      * @return list<array<string, mixed>>
      */
-    private function firstValid(array $candidates, int $take, int &$budget): array
+    private function firstValid(array $candidates, int $take, int &$budget, Collection $partners, Closure $validate): array
     {
         $valid = [];
         foreach ($candidates as $candidate) {
@@ -251,68 +257,30 @@ final class ConflictRecommender
             }
             $budget--;
 
-            if ($this->ruleEngine->validate($candidate['attempt']) !== []) {
+            try {
+                $projection = $candidate['action'] === 'move_schedule'
+                    ? $this->sameTimePartners->project($candidate['attempt'], $partners)
+                    : ['rows' => $partners->map->toArray()->all(), 'moves_partners' => false];
+            } catch (ScheduleConflictException) {
+                continue;
+            }
+            $rows = [$candidate['attempt'], ...$projection['rows']];
+            if (! $validate($rows) || $this->ruleEngine->validate($candidate['attempt']) !== []) {
                 continue;
             }
 
-            $partners = $this->splitPartners($candidate['attempt']);
-            if ($partners !== [] && collect($this->ruleEngine->validateConfiguredMeetingGroups([$candidate['attempt'], ...$partners]))
-                ->contains('rule', 'split_group_same_time')) {
-                continue;
+            $candidate['group_rows'] = array_map(static fn (array $row): array => [
+                'id' => (int) $row['id'], ...ScheduleRow::fromArray($row)->toArray(),
+            ], $rows);
+            $candidate['affected_schedule_ids'] = [(int) $candidate['schedule_id']];
+            if ($projection['moves_partners']) {
+                $candidate['affected_schedule_ids'] = [...$candidate['affected_schedule_ids'], ...$partners->pluck('id')->map('intval')->all()];
+                $candidate['reasons'][] = 'Moves linked meetings to the same time';
             }
-
             $valid[] = $candidate;
         }
 
         return $valid;
-    }
-
-    /**
-     * @param  array<string, mixed>  $attempt
-     * @return list<array<string, mixed>>
-     */
-    private function splitPartners(array $attempt): array
-    {
-        if (($attempt['split_group_id'] ?? null) === null) {
-            return [];
-        }
-
-        return Schedule::query()
-            ->whereKeyNot($attempt['id'])
-            ->whereHas('split', static fn ($query) => $query->where('split_group_id', $attempt['split_group_id']))
-            ->get()
-            ->map(static fn (Schedule $partner): array => $partner->toArray())
-            ->all();
-    }
-
-    /**
-     * @return list<array<string, mixed>>
-     */
-    private function instructorOptions(Schedule $schedule, int $semesterId, int $take): array
-    {
-        $faculties = Faculty::query()
-            ->where('department_id', $schedule->department_id)
-            ->where('status', 'active')
-            ->when($schedule->faculty_id !== null, fn ($query) => $query->whereKeyNot($schedule->faculty_id))
-            ->orderBy('last_name')
-            ->get();
-
-        return array_map(fn (array $option): array => [
-            'action' => 'reassign_instructor',
-            'schedule_id' => (int) $schedule->id,
-            'summary' => "Assign {$option['faculty_name']} to {$this->label($schedule)}.",
-            'reasons' => ['Timetable unchanged', ...$option['reasons']],
-            'score' => $option['score'],
-            'faculty_id' => $option['faculty_id'],
-            'faculty_name' => $option['faculty_name'],
-            'projected_units' => $option['projected_units'],
-            'requires_overload_confirmation' => $option['requires_overload_confirmation'],
-            'payload' => [
-                'action' => 'reassign_instructor',
-                'schedule_id' => (int) $schedule->id,
-                'faculty_id' => $option['faculty_id'],
-            ],
-        ], $this->instructors->recommend($this->hybridAssignments->resolve($schedule), $faculties, $semesterId, $take));
     }
 
     /** @var array<int, string> course code by course id, for option summaries */

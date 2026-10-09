@@ -12,7 +12,7 @@ final readonly class ScheduleConflictCase
     public const RESOLUTION_OPTIONS = [
         BatchConflict::RULE_SECTION => ['move_schedule'],
         BatchConflict::RULE_ROOM => ['change_room', 'change_delivery_mode', 'move_schedule'],
-        BatchConflict::RULE_FACULTY => ['reassign_instructor', 'move_schedule', 'request_override'],
+        BatchConflict::RULE_FACULTY => ['reassign_instructor', 'move_schedule'],
         BatchConflict::RULE_SUBJECT_SECTION_TIME => ['move_schedule', 'change_delivery_mode'],
     ];
 
@@ -95,7 +95,12 @@ final readonly class ScheduleConflictCase
             (int) ($this->otherSchedule[$key] ?? 0),
         ])));
 
-        return ['department_ids' => $ids('department_id'), 'section_ids' => $ids('section_id')];
+        $departments = $ids('department_id');
+        if ($this->rule === BatchConflict::RULE_FACULTY) {
+            $departments = array_values(array_unique([...$departments, ...$ids('assigning_department_id')]));
+        }
+
+        return ['department_ids' => $departments, 'section_ids' => $ids('section_id')];
     }
 
     /**
@@ -141,11 +146,19 @@ final readonly class ScheduleConflictCase
         ];
     }
 
+    /** 12-hour clock, as the timetable shows it: "3:00 PM". */
+    public static function clock(string $time): string
+    {
+        $stamp = strtotime($time);
+
+        return $stamp === false ? $time : date('g:i A', $stamp);
+    }
+
     public function message(): string
     {
         $left = (string) ($this->schedule['course_code'] ?? 'A class');
         $right = (string) ($this->otherSchedule['course_code'] ?? 'another class');
-        $window = "{$this->day} {$this->overlapStart}-{$this->overlapEnd}";
+        $window = "{$this->day} ".self::clock($this->overlapStart).' - '.self::clock($this->overlapEnd);
 
         return match ($this->rule) {
             BatchConflict::RULE_SECTION => "{$left} and {$right} are scheduled for the same section on {$window}.",

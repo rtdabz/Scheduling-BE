@@ -10,6 +10,7 @@ use App\Services\Scheduling\Domain\GenerationConfigurationRecommendation;
 use App\Services\Scheduling\Domain\GenerationConfigurationValidationResult;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintPredicates;
+use App\Services\Scheduling\Recommendations\GenerationRecommendationPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 
@@ -724,18 +725,7 @@ final class ValidateGenerationConfiguration
         array $course = [],
         array $adjustments = [],
     ): GenerationConfigurationRecommendation {
-        return new GenerationConfigurationRecommendation(
-            id: $id,
-            title: $title,
-            detectedCause: $cause,
-            suggestedAdjustment: $adjustment,
-            impact: $impact,
-            adjustments: $adjustments,
-            sectionId: $configuration->sectionId,
-            sectionName: null,
-            courseId: $courseId,
-            courseCode: isset($course['course_code']) ? (string) $course['course_code'] : null,
-        );
+        return GenerationRecommendationPolicy::configuration($id, $title, $cause, $adjustment, $impact, $configuration, $courseId, $course, $adjustments);
     }
 
     /** @param array<string, mixed> $course */

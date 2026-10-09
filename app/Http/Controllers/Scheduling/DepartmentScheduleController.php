@@ -1152,6 +1152,9 @@ class DepartmentScheduleController extends Controller
                 ->whereIn('section_id', $sectionIds)
                 ->whereIn('status', $withdrawableStatuses)
                 ->where('faculty_assignment_done', true)
+                ->whereDoesntHave('course', fn ($courseQuery) => $courseQuery
+                    ->whereNotNull('teaching_department_id')
+                    ->whereColumn('courses.teaching_department_id', '!=', 'schedules.department_id'))
                 ->update(['faculty_assignment_done' => false, 'updated_at' => now()]);
 
             $completed = $this->departmentScheduleQuery($id)

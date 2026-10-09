@@ -24,7 +24,6 @@ class Faculty extends Model
         'max_units',
         'overload_units',
         'deload_units',
-        'probono_units',
         'department_id',
         'program_id',
         'status',

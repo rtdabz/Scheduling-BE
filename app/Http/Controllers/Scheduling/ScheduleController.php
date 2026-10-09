@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Scheduling;
 
 use App\Exceptions\ScheduleConflictException;
-use App\Http\Controllers\Concerns\ConfirmsFacultyOverload;
+use App\Http\Controllers\Concerns\EnforcesFacultyUnitCeiling;
 use App\Http\Controllers\Controller;
 use App\Models\Course;
 use App\Models\Faculty;
@@ -17,9 +17,11 @@ use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
+use App\Services\Scheduling\Recommendations\RecommendationContext;
+use App\Services\Scheduling\Recommendations\RecommendationEngine;
+use App\Services\Scheduling\Recommendations\RecommendationSource;
 use App\Services\Scheduling\Schedule\BatchConflict;
 use App\Services\Scheduling\Schedule\BatchConflictValidator;
-use App\Services\Scheduling\Schedule\FacultyConflictOverride;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Schedule\SameTimePartnerMover;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
@@ -40,7 +42,7 @@ use Illuminate\Validation\ValidationException;
 
 class ScheduleController extends Controller
 {
-    use ConfirmsFacultyOverload;
+    use EnforcesFacultyUnitCeiling;
 
     private const REPLACEABLE_BATCH_STATUSES = ['draft', 'completed', 'revision'];
 
@@ -65,6 +67,7 @@ class ScheduleController extends Controller
         private readonly SameTimePartnerMover $sameTimePartners,
         private readonly ScheduleConflictScanner $conflictScanner,
         private readonly RevisionChangeRecorder $revisionChanges,
+        private readonly RecommendationEngine $recommendationEngine,
     ) {
         $this->ruleEngine = $ruleEngine;
     }
@@ -460,10 +463,11 @@ class ScheduleController extends Controller
         $savedSchedules = [];
         $deletedScheduleIds = [];
         $resolvedConflicts = [];
+        $releasedInstructorRows = new \Illuminate\Database\Eloquent\Collection;
 
         try {
-            $this->withScheduleWriteLock($this->conflictScopeSemesterIds($validated['operations'], $deleteIds), function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds, &$resolvedConflicts): void {
-                DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds, &$resolvedConflicts): void {
+            $this->withScheduleWriteLock($this->conflictScopeSemesterIds($validated['operations'], $deleteIds), function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds, &$resolvedConflicts, &$releasedInstructorRows): void {
+                DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds, &$resolvedConflicts, &$releasedInstructorRows): void {
                     $sectionsById = [];
                     $allViolations = array_merge(
                         $this->checkIntraBatchConflicts($validated['operations']),
@@ -528,6 +532,9 @@ class ScheduleController extends Controller
                             Schedule::retireSplitsFor($archivedIds);
                         }
                         $deletedScheduleIds = array_map('intval', $deleteIds);
+                        $releasedInstructorRows = $deletedBefore
+                            ->filter(static fn (Schedule $schedule): bool => $schedule->faculty_id !== null)
+                            ->values();
                     }
 
                     $savedIds = [];
@@ -648,11 +655,25 @@ class ScheduleController extends Controller
 
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
+        $releasedInstructorRows->loadMissing(['course.department', 'section']);
+        $crossDepartmentReleased = $releasedInstructorRows->filter(static fn (Schedule $schedule): bool => $schedule->course?->teaching_department_id !== null
+            && (int) $schedule->course->teaching_department_id !== (int) $schedule->department_id);
+        if ($crossDepartmentReleased->isNotEmpty() && $request->user() !== null) {
+            $this->notifications->notifyCrossDepartmentInstructorsReleased(
+                $crossDepartmentReleased,
+                $request->user(),
+                $validated['operations'] === [] ? 'reset' : 'regenerated',
+            );
+        }
+        $classKey = static fn (Schedule $schedule): string => $schedule->section_id.':'.$schedule->course_id;
+
         return response()->json([
             'message' => 'Batch schedule operation completed successfully.',
             'schedules' => $savedSchedules,
             'deleted_schedule_ids' => $deletedScheduleIds,
             'resolved_conflicts' => $resolvedConflicts,
+            'instructors_released' => $releasedInstructorRows->unique($classKey)->count(),
+            'cross_department_instructors_released' => $crossDepartmentReleased->unique($classKey)->count(),
         ]);
     }
 
@@ -831,18 +852,29 @@ class ScheduleController extends Controller
         }
 
         if (! empty($allViolations)) {
-            return response()->json([
+            return $this->splitValidationResponse([
                 'status' => 'conflict',
                 'message' => 'One or more split sessions could not be scheduled conflict-free.',
                 'violations' => $allViolations,
             ], 422);
         }
 
-        return response()->json([
+        return $this->splitValidationResponse([
             'status' => 'ok',
             'message' => 'All split sessions validated successfully.',
             'operations' => $this->restoreOriginalOperationOrder($resolvedOpsByOriginalIndex),
         ]);
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function splitValidationResponse(array $payload, int $status = 200): JsonResponse
+    {
+        $result = $this->recommendationEngine->recommend(new RecommendationContext(
+            RecommendationSource::LegacySplit,
+            ['payload' => $payload],
+        ));
+
+        return response()->json($result->legacyPayload, $status);
     }
 
     private function prioritizeSplitAnchorMeetings(array $operations): array
@@ -1302,12 +1334,9 @@ class ScheduleController extends Controller
                     $this->facultyLoad->projectLoad($faculty, $this->activeSemesterId(), [$pair]),
                     $this->assignmentLabelForSchedule($schedule),
                 );
-                if (! $request->boolean('confirm_overload')) {
-                    $confirmation = $this->overloadConfirmationResponse([$projection]);
-
-                    if ($confirmation !== null) {
-                        return $confirmation;
-                    }
+                $refusal = $this->unitCeilingRefusal([$projection]);
+                if ($refusal !== null) {
+                    return $refusal;
                 }
             }
         }
@@ -1368,9 +1397,6 @@ class ScheduleController extends Controller
 
         $semesterId = (int) ($validated['semester_id'] ?? $schedule->semester_id);
 
-        $overrideConflicts = ($validated['faculty_id'] ?? null) !== null
-            && $request->boolean(FacultyConflictOverride::REQUEST_FLAG);
-
         $groupPartners = $this->sameTimePartners->partnersFor($schedule, $validated);
         $runPartnerIds = $this->sameTimePartners->runPartnerIds($schedule, $groupPartners);
         if ($runPartnerIds !== []) {
@@ -1385,8 +1411,8 @@ class ScheduleController extends Controller
 
         try {
             $actorId = $request->user()?->id;
-            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, $semesterId, $actorId, &$movedPartnerIds, &$resolvedConflicts): void {
-                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $overrideConflicts, $groupPartners, $instructorOnly, $semesterId, $actorId, &$movedPartnerIds, &$resolvedConflicts): void {
+            $this->withScheduleWriteLock($semesterId > 0 ? [$semesterId] : [], function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $groupPartners, $instructorOnly, $semesterId, $actorId, &$movedPartnerIds, &$resolvedConflicts): void {
+                DB::transaction(function () use ($schedule, $validated, $attemptData, $manualFacultySchedules, $manualFacultyScheduleIds, $groupPartners, $instructorOnly, $semesterId, $actorId, &$movedPartnerIds, &$resolvedConflicts): void {
                     $touchedIds = array_values(array_unique(array_map('intval', [
                         (int) $schedule->id,
                         ...$groupPartners->pluck('id')->all(),
@@ -1398,13 +1424,9 @@ class ScheduleController extends Controller
                     $violations = $instructorOnly
                         ? $this->ruleEngine->validateInstructorAssignment($attemptData)
                         : $this->ruleEngine->validate($attemptData);
-                    $overriddenIds = [];
 
                     if (! empty($violations)) {
-                        if (! $overrideConflicts || ! FacultyConflictOverride::onlyOverridable($violations)) {
-                            throw new ScheduleConflictException($violations, 'Schedule update conflicts with existing entries.');
-                        }
-                        array_push($overriddenIds, (int) $schedule->id, ...FacultyConflictOverride::partnerIds($violations));
+                        throw new ScheduleConflictException($violations, 'Schedule update conflicts with existing entries.');
                     }
 
                     if ($groupPartners->isNotEmpty()) {
@@ -1427,19 +1449,14 @@ class ScheduleController extends Controller
                             );
                             $relatedViolations = $this->ruleEngine->validateInstructorAssignment($relatedAttempt);
                             if (! empty($relatedViolations)) {
-                                if (! $overrideConflicts || ! FacultyConflictOverride::onlyOverridable($relatedViolations)) {
-                                    throw new ScheduleConflictException(
-                                        $relatedViolations,
-                                        'Instructor assignment conflicts with a related hybrid schedule.',
-                                    );
-                                }
-                                array_push($overriddenIds, (int) $relatedSchedule->id, ...FacultyConflictOverride::partnerIds($relatedViolations));
+                                throw new ScheduleConflictException(
+                                    $relatedViolations,
+                                    'Instructor assignment conflicts with a related hybrid schedule.',
+                                );
                             }
                             $relatedSchedule->update(['faculty_id' => $validated['faculty_id']]);
                         }
                     }
-
-                    FacultyConflictOverride::flag($overriddenIds);
 
                     $resolvedConflicts = $this->recordClearedConflicts(
                         (int) $semesterId,
@@ -1455,10 +1472,7 @@ class ScheduleController extends Controller
                 });
             });
         } catch (ScheduleConflictException $exception) {
-            return response()->json(
-                FacultyConflictOverride::refusal($exception->getMessage(), $exception->violations()),
-                422,
-            );
+            return response()->json($exception->payload(), 422);
         }
 
         $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department']);
@@ -1851,9 +1865,7 @@ class ScheduleController extends Controller
             'assignments.*.schedule_ids' => 'required|array|min:1',
             'assignments.*.schedule_ids.*' => 'integer|exists:schedules,id',
             'assignments.*.faculty_id' => 'nullable|integer|exists:faculties,id',
-            'assignments.*.override_conflicts' => 'sometimes|boolean',
         ]);
-        $overrideAll = $request->boolean(FacultyConflictOverride::REQUEST_FLAG);
 
         $expandedAssignments = [];
         foreach ($validated['assignments'] as $assignment) {
@@ -1990,12 +2002,9 @@ class ScheduleController extends Controller
             }
         }
 
-        if (! $request->boolean('confirm_overload')) {
-            $confirmation = $this->overloadConfirmationResponse($projections);
-
-            if ($confirmation !== null) {
-                return $confirmation;
-            }
+        $refusal = $this->unitCeilingRefusal($projections);
+        if ($refusal !== null) {
+            return $refusal;
         }
 
         $semesterIds = $schedules
@@ -2008,14 +2017,11 @@ class ScheduleController extends Controller
             ->all();
 
         try {
-            $this->withScheduleWriteLock($semesterIds, function () use ($validated, $schedules, $overrideAll): void {
-                DB::transaction(function () use ($validated, $schedules, $overrideAll): void {
-                    $overriddenIds = [];
-
+            $this->withScheduleWriteLock($semesterIds, function () use ($validated, $schedules): void {
+                DB::transaction(function () use ($validated, $schedules): void {
                     foreach ($validated['assignments'] as $assignment) {
                         $facultyId = $assignment['faculty_id'] ?? null;
                         $facultyId = $facultyId === null ? null : (int) $facultyId;
-                        $override = $facultyId !== null && ($overrideAll || (bool) ($assignment['override_conflicts'] ?? false));
 
                         foreach ($assignment['schedule_ids'] as $scheduleId) {
                             $schedule = $schedules->get((int) $scheduleId);
@@ -2039,33 +2045,24 @@ class ScheduleController extends Controller
                             ));
 
                             if (! empty($violations)) {
-                                if ($override && FacultyConflictOverride::onlyOverridable($violations)) {
-                                    array_push($overriddenIds, (int) $schedule->id, ...FacultyConflictOverride::partnerIds($violations));
-                                } else {
-                                    throw new ScheduleConflictException(
-                                        array_map(
-                                            static fn (array $violation): array => array_merge($violation, [
-                                                'schedule_id' => (int) $schedule->id,
-                                            ]),
-                                            $violations,
-                                        ),
-                                        'Instructor assignment conflicts with existing entries.',
-                                    );
-                                }
+                                throw new ScheduleConflictException(
+                                    array_map(
+                                        static fn (array $violation): array => array_merge($violation, [
+                                            'schedule_id' => (int) $schedule->id,
+                                        ]),
+                                        $violations,
+                                    ),
+                                    'Instructor assignment conflicts with existing entries.',
+                                );
                             }
 
                             $schedule->update(['faculty_id' => $facultyId]);
                         }
                     }
-
-                    FacultyConflictOverride::flag($overriddenIds);
                 });
             });
         } catch (ScheduleConflictException $exception) {
-            return response()->json(
-                FacultyConflictOverride::refusal($exception->getMessage(), $exception->violations()),
-                422,
-            );
+            return response()->json($exception->payload(), 422);
         }
 
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
@@ -2222,12 +2219,19 @@ class ScheduleController extends Controller
         $result = DB::transaction(function () use ($validated, $request): array {
             $before = Schedule::whereIn('id', $validated['ids'])->get();
             $updateValues = ['status' => $validated['status'], 'updated_at' => now()];
-            if ($validated['status'] === 'reassignment') {
-                $updateValues['faculty_assignment_done'] = false;
-            } elseif ($validated['status'] === 'finalized') {
+            if ($validated['status'] === 'finalized') {
                 $updateValues['faculty_assignment_done'] = true;
             }
             $updated = Schedule::whereIn('id', $validated['ids'])->update($updateValues);
+            if ($validated['status'] === 'reassignment') {
+                // Rows taught by another department stay done: the owner cannot
+                // reassign them, and reopening them would hide their instructors.
+                Schedule::whereIn('id', $validated['ids'])
+                    ->whereDoesntHave('course', fn ($query) => $query
+                        ->whereNotNull('teaching_department_id')
+                        ->whereColumn('courses.teaching_department_id', '!=', 'schedules.department_id'))
+                    ->update(['faculty_assignment_done' => false]);
+            }
             $schedules = Schedule::whereIn('id', $validated['ids'])->with(Schedule::RESPONSE_RELATIONS)->get();
             $version = $this->historyRecorder->record('schedule_batch_status_updated', $before, $schedules, $request->user()?->id, null, null, 'batch_status', null, ['status' => $validated['status']]);
             SchedulingAuditLog::create([

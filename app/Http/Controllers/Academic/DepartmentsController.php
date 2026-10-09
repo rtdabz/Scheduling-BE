@@ -10,6 +10,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
 class DepartmentsController extends Controller
@@ -22,7 +23,8 @@ class DepartmentsController extends Controller
                 'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
                 'users' => fn ($query) => $query
                     ->whereIn('role', ['dean', 'secretary', 'program_head'])
-                    ->select('id', 'name', 'role', 'department_id'),
+                    ->select('id', 'name', 'role', 'department_id', 'program_id')
+                    ->with('program:id,code,name,major'),
             ])
             ->latest()
             ->get());
@@ -41,17 +43,24 @@ class DepartmentsController extends Controller
             'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
                 ->whereIn('role', ['dean', 'secretary', 'program_head'])
-                ->select('id', 'name', 'role', 'department_id'),
+                ->select('id', 'name', 'role', 'department_id', 'program_id')
+                ->with('program:id,code,name,major'),
         ]), 201);
     }
 
-    public function show(Departments $department)
+    public function show(Request $request, Departments $department)
     {
+        $user = $request->user();
+        if (! $user->isVpaa() && (int) $user->department_id !== (int) $department->id) {
+            abort(403, 'You can only view your own department.');
+        }
+
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
                 ->whereIn('role', ['dean', 'secretary', 'program_head'])
-                ->select('id', 'name', 'role', 'department_id'),
+                ->select('id', 'name', 'role', 'department_id', 'program_id')
+                ->with('program:id,code,name,major'),
         ]));
     }
 
@@ -84,7 +93,8 @@ class DepartmentsController extends Controller
             'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
                 ->whereIn('role', ['dean', 'secretary', 'program_head'])
-                ->select('id', 'name', 'role', 'department_id'),
+                ->select('id', 'name', 'role', 'department_id', 'program_id')
+                ->with('program:id,code,name,major'),
         ]));
     }
 

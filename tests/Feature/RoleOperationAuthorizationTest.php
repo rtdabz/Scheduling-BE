@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Departments;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -9,6 +10,22 @@ use Tests\TestCase;
 class RoleOperationAuthorizationTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_department_roles_can_view_only_their_own_department(): void
+    {
+        $own = Departments::create(['department_name' => 'Own Department', 'department_code' => 'OWN']);
+        $other = Departments::create(['department_name' => 'Other Department', 'department_code' => 'OTH']);
+
+        foreach (['dean', 'secretary', 'program_head'] as $role) {
+            $user = User::factory()->create(['role' => $role, 'department_id' => $own->id]);
+
+            $this->actingAs($user->fresh())->getJson("/api/departments/{$own->id}")->assertOk();
+            $this->actingAs($user->fresh())->getJson("/api/departments/{$other->id}")->assertForbidden();
+        }
+
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $this->actingAs($vpaa->fresh())->getJson("/api/departments/{$other->id}")->assertOk();
+    }
 
     public function test_dean_cannot_use_room_write_routes(): void
     {

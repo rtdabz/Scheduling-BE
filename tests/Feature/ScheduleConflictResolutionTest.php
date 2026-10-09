@@ -208,7 +208,6 @@ class ScheduleConflictResolutionTest extends TestCase
                 'action' => 'reassign_instructor',
                 'schedule_id' => $right->id,
                 'faculty_id' => $fixture['otherFaculty']->id,
-                'confirm_overload' => true,
             ])
             ->assertOk()
             ->assertJsonPath('status', 'resolved');
@@ -219,7 +218,7 @@ class ScheduleConflictResolutionTest extends TestCase
         ]);
     }
 
-    public function test_an_override_needs_a_reason_and_leaves_both_meetings_marked(): void
+    public function test_an_instructor_conflict_cannot_be_allowed_to_stand(): void
     {
         $fixture = $this->fixture();
         $left = $this->schedule($fixture, ['faculty_id' => $fixture['faculty']->id]);
@@ -229,40 +228,13 @@ class ScheduleConflictResolutionTest extends TestCase
             'room_id' => $fixture['otherRoom']->id,
             'faculty_id' => $fixture['faculty']->id,
         ]);
-        $conflictId = "faculty_conflict:{$left->id}:{$right->id}";
 
         $this->actingAs($fixture['user'])
-            ->postJson("/api/conflicts/{$conflictId}/override", ['confirm' => true])
-            ->assertStatus(422);
-
-        $this->actingAs($fixture['user'])
-            ->postJson("/api/conflicts/{$conflictId}/override", [
+            ->postJson("/api/conflicts/faculty_conflict:{$left->id}:{$right->id}/override", [
                 'confirm' => true,
                 'reason' => 'Department head approved the double booking.',
             ])
-            ->assertOk()
-            ->assertJsonPath('status', 'overridden');
-
-        $this->assertDatabaseHas('schedules', ['id' => $left->id, 'faculty_conflict_override' => true]);
-        $this->assertDatabaseHas('schedules', ['id' => $right->id, 'faculty_conflict_override' => true]);
-        $this->assertDatabaseHas('scheduling_audit_logs', ['action' => 'conflict_overridden']);
-    }
-
-    public function test_a_section_conflict_cannot_be_overridden(): void
-    {
-        $fixture = $this->fixture();
-        $left = $this->schedule($fixture);
-        $right = $this->schedule($fixture, [
-            'course_id' => $fixture['otherCourse']->id,
-            'room_id' => $fixture['otherRoom']->id,
-        ]);
-
-        $this->actingAs($fixture['user'])
-            ->postJson("/api/conflicts/section_conflict:{$left->id}:{$right->id}/override", [
-                'confirm' => true,
-                'reason' => 'We would like this to stand.',
-            ])
-            ->assertStatus(422);
+            ->assertNotFound();
 
         $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'conflict_overridden']);
     }
@@ -423,10 +395,7 @@ class ScheduleConflictResolutionTest extends TestCase
         $fixture = $this->fixture();
 
         $this->actingAs($fixture['user'])
-            ->postJson('/api/conflicts/not-a-conflict/override', [
-                'confirm' => true,
-                'reason' => 'Nothing to allow.',
-            ])
+            ->getJson('/api/conflicts/not-a-conflict/recommendations')
             ->assertStatus(404);
     }
 
@@ -504,7 +473,7 @@ class ScheduleConflictResolutionTest extends TestCase
         }
     }
 
-    public function test_a_faculty_conflict_recommends_a_free_instructor(): void
+    public function test_a_faculty_conflict_recommends_placements_that_keep_the_instructor(): void
     {
         $fixture = $this->fixture();
         $left = $this->schedule($fixture, ['faculty_id' => $fixture['faculty']->id]);
@@ -521,15 +490,16 @@ class ScheduleConflictResolutionTest extends TestCase
             ->assertOk()
             ->json('options'));
 
-        $reassign = $options->firstWhere('action', 'reassign_instructor');
-        $this->assertNotNull($reassign, 'Another instructor in the department is free.');
-        $this->assertSame($fixture['otherFaculty']->id, $reassign['faculty_id']);
-        $this->assertContains('Timetable unchanged', $reassign['reasons']);
-
-        $this->actingAs($fixture['user'])
-            ->postJson("/api/conflicts/{$conflictId}/resolve", $reassign['payload'])
-            ->assertOk()
-            ->assertJsonPath('status', 'resolved');
+        $this->assertNotEmpty($options);
+        $this->assertNotContains('reassign_instructor', $options->pluck('action')->all());
+        foreach ($options as $option) {
+            $this->assertSame($fixture['faculty']->id, $option['group_rows'][0]['faculty_id']);
+            DB::beginTransaction();
+            $this->postJson("/api/conflicts/{$conflictId}/resolve", $option['payload'])
+                ->assertOk()->assertJsonPath('status', 'resolved');
+            $this->assertSame($fixture['faculty']->id, Schedule::find($option['schedule_id'])->faculty_id);
+            DB::rollBack();
+        }
     }
 
     public function test_recommendations_for_a_resolved_or_unknown_conflict_are_a_404(): void
@@ -581,6 +551,8 @@ class ScheduleConflictResolutionTest extends TestCase
             ->assertJsonPath('resolutions.0.status', 'resolved')
             ->assertJsonPath('resolutions.0.resolved_by', $fixture['user']->name)
             ->assertJsonPath('resolutions.0.day', 'Monday');
+
+        $this->assertStringStartsWith('Moved ', (string) $this->getJson("/api/conflicts/resolved?semester_id={$fixture['semester']->id}")->json('resolutions.0.fix'));
     }
 
     public function test_a_manual_fix_that_is_undone_shows_as_reopened(): void
@@ -615,31 +587,6 @@ class ScheduleConflictResolutionTest extends TestCase
             ->getJson('/api/conflicts/resolved')
             ->assertJsonPath('resolutions.0.conflict_id', $conflictId)
             ->assertJsonPath('resolutions.0.status', 'reopened');
-    }
-
-    public function test_an_override_is_listed_as_allowed_not_resolved(): void
-    {
-        $fixture = $this->fixture();
-        $left = $this->schedule($fixture, ['faculty_id' => $fixture['faculty']->id]);
-        $right = $this->schedule($fixture, [
-            'section_id' => $fixture['otherSection']->id,
-            'course_id' => $fixture['otherCourse']->id,
-            'room_id' => $fixture['otherRoom']->id,
-            'faculty_id' => $fixture['faculty']->id,
-        ]);
-
-        $this->actingAs($fixture['user'])
-            ->postJson("/api/conflicts/faculty_conflict:{$left->id}:{$right->id}/override", [
-                'confirm' => true,
-                'reason' => 'Department head approved the double booking.',
-            ])
-            ->assertOk();
-
-        $this->actingAs($fixture['user'])
-            ->getJson('/api/conflicts/resolved')
-            ->assertJsonPath('resolutions.0.method', 'overridden')
-            ->assertJsonPath('resolutions.0.status', 'overridden')
-            ->assertJsonPath('resolutions.0.reason', 'Department head approved the double booking.');
     }
 
     public function test_the_resolved_list_is_scoped_to_the_callers_department(): void
@@ -744,7 +691,6 @@ class ScheduleConflictResolutionTest extends TestCase
         $this->actingAs($fixture['user'])
             ->putJson("/api/schedules/{$right->id}", [
                 'faculty_id' => $fixture['otherFaculty']->id,
-                'confirm_overload' => true,
             ])
             ->assertOk()
             ->assertJsonPath('resolved_conflicts.0.id', "faculty_conflict:{$left->id}:{$right->id}");
@@ -873,6 +819,152 @@ class ScheduleConflictResolutionTest extends TestCase
             ->getJson('/api/conflicts/rule-issues')
             ->assertOk()
             ->assertJsonCount(0, 'issues');
+    }
+
+    public function test_linked_recommendations_check_every_meeting_and_save_the_projected_group(): void
+    {
+        [$fixture, $target, $partner, $blocker, $conflictId] = $this->linkedConflict();
+        $beforeBooking = collect($this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations?limit=10")
+            ->assertOk()->json('options'))->where('schedule_id', $target->id);
+        $this->assertTrue($beforeBooking->contains('start_time', '10:00'));
+        // 10:00 is on the 90-minute candidate grid, but the partner's instructor becomes busy then.
+        $this->schedule($fixture, [
+            'section_id' => $fixture['otherSection']->id,
+            'course_id' => $fixture['thirdCourse']->id,
+            'room_id' => $fixture['thirdRoom']->id,
+            'faculty_id' => $fixture['faculty']->id,
+            'day' => 'Wednesday', 'start_time' => '09:30', 'end_time' => '10:30',
+        ]);
+        $historyCount = DB::table('schedule_history_versions')->count();
+        $options = collect($this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations?limit=10")
+            ->assertOk()->json('options'))->where('schedule_id', $target->id);
+
+        $this->assertNotEmpty($options);
+        $this->assertSame($historyCount, DB::table('schedule_history_versions')->count());
+        foreach ($options as $option) {
+            $this->assertCount(2, $option['group_rows']);
+            $this->assertEqualsCanonicalizing([$target->id, $partner->id], array_column($option['group_rows'], 'id'));
+            $this->assertSame([$fixture['faculty']->id], array_values(array_unique(array_column($option['group_rows'], 'faculty_id'))));
+            $this->assertNotSame('10:00', $option['start_time']);
+            DB::beginTransaction();
+            $response = $this->postJson("/api/conflicts/{$conflictId}/resolve", [...$option['payload'], 'source' => 'recommendation'])
+                ->assertOk()->assertJsonPath('status', 'resolved');
+            $this->assertEqualsCanonicalizing($option['affected_schedule_ids'], $response->json('affected_schedule_ids'));
+            foreach ($option['group_rows'] as $row) {
+                $saved = Schedule::find($row['id']);
+                foreach (['day', 'mode', 'room_id', 'faculty_id'] as $field) {
+                    $this->assertEquals($row[$field], $saved->$field);
+                }
+                $this->assertSame(substr($row['start_time'], 0, 5), substr($saved->start_time, 0, 5));
+                $this->assertSame(substr($row['end_time'], 0, 5), substr($saved->end_time, 0, 5));
+            }
+            $this->assertDatabaseHas('scheduling_audit_logs', ['action' => 'conflict_resolved']);
+            DB::rollBack();
+        }
+        $this->assertSame('08:00', substr($partner->refresh()->start_time, 0, 5));
+        $this->assertSame('08:00', substr($blocker->refresh()->start_time, 0, 5));
+    }
+
+    public function test_locked_partners_are_not_offered_a_new_time(): void
+    {
+        [$fixture, $target, $partner, , $conflictId] = $this->linkedConflict(onGrid: true);
+        $beforeLock = collect($this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations?limit=10")
+            ->assertOk()->json('options'))->where('schedule_id', $target->id);
+        $this->assertTrue($beforeLock->contains(fn (array $option): bool => in_array($partner->id, $option['affected_schedule_ids'], true)));
+        $partner->update(['status' => 'approved']);
+        $options = collect($this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations?limit=10")
+            ->assertOk()->json('options'))->where('schedule_id', $target->id);
+
+        $this->assertNotEmpty($options, 'Moving the target to another day at the same time must remain available.');
+        foreach ($options as $option) {
+            $this->assertSame([$target->id], $option['affected_schedule_ids']);
+            $keptPartner = collect($option['group_rows'])->firstWhere('id', $partner->id);
+            $this->assertSame($partner->day, $keptPartner['day']);
+            $this->assertSame('07:00', substr($keptPartner['start_time'], 0, 5));
+            $this->assertSame('08:30', substr($keptPartner['end_time'], 0, 5));
+            DB::beginTransaction();
+            $this->postJson("/api/conflicts/{$conflictId}/resolve", $option['payload'])->assertOk();
+            DB::rollBack();
+        }
+    }
+
+    public function test_a_kept_partner_is_validated_even_for_a_room_only_change(): void
+    {
+        [$fixture, $target, $partner, $blocker] = $this->linkedConflict(onGrid: true);
+        $blocker->update(['section_id' => $fixture['otherSection']->id, 'room_id' => $target->room_id]);
+        $conflictId = "room_conflict:{$target->id}:{$blocker->id}";
+        $beforeClash = collect($this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations?limit=10")
+            ->assertOk()->json('options'))->where('schedule_id', $target->id);
+        $this->assertTrue($beforeClash->contains('action', 'change_room'), 'The on-grid target must have a same-time room alternative before its partner is blocked.');
+        $this->schedule($fixture, [
+            'course_id' => $fixture['thirdCourse']->id, 'day' => $partner->day,
+            'room_id' => $fixture['thirdRoom']->id,
+            'start_time' => '07:00', 'end_time' => '08:00',
+        ]);
+        $options = $this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations?limit=10")
+            ->assertOk()->json('options');
+
+        $this->assertNotEmpty($options);
+        $this->assertFalse(collect($options)->contains(fn (array $option): bool => $option['schedule_id'] === $target->id && $option['action'] !== 'move_schedule'));
+    }
+
+    public function test_a_new_partner_booking_after_preview_is_refused_atomically_at_save(): void
+    {
+        [$fixture, $target, $partner, , $conflictId] = $this->linkedConflict();
+        $option = collect($this->actingAs($fixture['user'])
+            ->getJson("/api/conflicts/{$conflictId}/recommendations?limit=10")
+            ->assertOk()->json('options'))
+            ->first(fn (array $option): bool => $option['schedule_id'] === $target->id && count($option['affected_schedule_ids']) === 2);
+        $this->assertNotNull($option);
+        $projectedPartner = collect($option['group_rows'])->firstWhere('id', $partner->id);
+        $this->schedule($fixture, [
+            'course_id' => $fixture['thirdCourse']->id, 'room_id' => $fixture['thirdRoom']->id,
+            'day' => $projectedPartner['day'],
+            'start_time' => $projectedPartner['start_time'], 'end_time' => $projectedPartner['end_time'],
+        ]);
+        $historyCount = DB::table('schedule_history_versions')->count();
+        $this->postJson("/api/conflicts/{$conflictId}/resolve", $option['payload'])->assertStatus(422);
+        $this->assertSame('08:00', substr($target->refresh()->start_time, 0, 5));
+        $this->assertSame('08:00', substr($partner->refresh()->start_time, 0, 5));
+        $this->assertSame($historyCount, DB::table('schedule_history_versions')->count());
+        $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'conflict_resolved']);
+    }
+
+    public function test_view_permission_alone_returns_no_placement_candidates(): void
+    {
+        [$fixture, , , , $conflictId] = $this->linkedConflict();
+        $viewer = $this->grantCapabilities(User::factory()->create([
+            'role' => 'dean', 'department_id' => $fixture['department']->id,
+        ]), ['schedule.view']);
+        $this->actingAs($viewer)->getJson("/api/conflicts/{$conflictId}/recommendations")
+            ->assertOk()->assertJsonPath('options', []);
+    }
+
+    /** @return array{array, Schedule, Schedule, Schedule, string} */
+    private function linkedConflict(bool $onGrid = false): array
+    {
+        $fixture = $this->fixture();
+        $fixture['course']->update(['units' => 3, 'lecture_hours' => 3, 'course_category' => 'minor']);
+        $pair = [
+            'start_time' => $onGrid ? '07:00' : '08:00',
+            'end_time' => $onGrid ? '08:30' : '09:30', 'is_hybrid' => true,
+            'split_group_id' => 'conflict-pair', 'meeting_type' => 'lecture',
+            'faculty_id' => $fixture['faculty']->id,
+        ];
+        $target = $this->schedule($fixture, [...$pair, 'meeting_index' => 1]);
+        $partner = $this->schedule($fixture, [...$pair, 'day' => 'Wednesday', 'mode' => 'online', 'room_id' => null, 'meeting_index' => 2]);
+        $blocker = $this->schedule($fixture, [
+            'course_id' => $fixture['otherCourse']->id, 'room_id' => $fixture['otherRoom']->id,
+            'start_time' => $pair['start_time'], 'end_time' => $onGrid ? '08:00' : '09:00',
+        ]);
+
+        return [$fixture, $target, $partner, $blocker, "section_conflict:{$target->id}:{$blocker->id}"];
     }
 
     private function fixture(): array

@@ -127,7 +127,6 @@ class CspSolver
 
     private ?DepartmentRoomFairness $roomFairness = null;
 
-
     /** @var array<int, string> */
     private array $generationForcedDaysByCourseId = [];
 
@@ -613,9 +612,9 @@ class CspSolver
                 $course = $coursesById->get((int) $variable['course_id']);
                 if ($throwOnEmptyDomain) {
                     throw new RuntimeException(sprintf(
-                    '%s / %s has no eligible room candidates after existing schedule conflicts were applied.',
-                    (string) $section->section_name,
-                    (string) ($course?->course_code ?? ('Course '.$variable['course_id'])),
+                        '%s / %s has no eligible room candidates after existing schedule conflicts were applied.',
+                        (string) $section->section_name,
+                        (string) ($course?->course_code ?? ('Course '.$variable['course_id'])),
                     ));
                 }
             }
@@ -1577,115 +1576,115 @@ class CspSolver
                 $emptyAfterDays = $cached['empty_after_days'] ?? false;
                 $emptyAfterSunday = $cached['empty_after_sunday'] ?? false;
             } else {
-            $domain = match (true) {
-                $consecutiveRule !== null => $this->buildConsecutiveDaysDomain(
-                    course: $course,
-                    matchingRooms: $rooms,
-                    meetingSlots: $durationSlots,
-                    dayCount: $consecutiveDayCount,
-                    deliveryMode: $courseDeliveryMode,
-                    runs: SchedulingPolicy::consecutiveRuleRuns($consecutiveRule, $this->sundayClassesEnabled, $this->allowedDays),
-                ),
-                $hasBothComponents => $this->buildDefaultLectureLabDomain(
-                    course: $course,
-                    matchingRooms: $rooms,
-                    deliveryMode: $courseDeliveryMode,
-                    isHybrid: $courseIsHybrid,
-                    anchoredSchedule: $anchoredSchedulesByCourseId[(int) $course->id] ?? null,
-                    lectureSlots: $lectureComponentSlots,
-                    laboratorySlots: $laboratoryComponentSlots,
-                ),
-                $requiresHybridSplit && $preferredPattern === null => $this->buildFlexibleHybridSplitDomain(
-                    course: $course,
-                    matchingRooms: $rooms,
-                    durationSlots: $durationSlots,
-                ),
-                $requiresHybridSplit => $this->buildHybridSplitPatternDomain(
-                    course: $course,
-                    matchingRooms: $rooms,
-                    durationSlots: $durationSlots,
-                    preferredPattern: $preferredPattern,
-                ),
-                $requiresBalancedSplit && $preferredPattern === null => $this->buildFlexibleBalancedSplitDomain(
-                    course: $course,
-                    matchingRooms: $rooms,
-                    durationSlots: $durationSlots,
-                    deliveryMode: $courseDeliveryMode,
-                    isHybrid: false,
-                ),
-                $courseDeliveryMode === 'online' && $preferredPattern === null => $this->buildSingleDayDomain(
-                    course: $course,
-                    matchingRooms: $rooms,
-                    durationSlots: $durationSlots,
-                    deliveryMode: $courseDeliveryMode,
-                    isHybrid: false,
-                ),
-                $preferredPattern === null => $this->buildSingleDayDomain(
-                    course: $course,
-                    matchingRooms: $rooms,
-                    durationSlots: $durationSlots,
-                    deliveryMode: $courseDeliveryMode,
-                    isHybrid: false,
-                ),
-                default => $this->buildPatternDomainWithFallbacks(
-                    course: $course,
-                    matchingRooms: $rooms,
-                    durationSlots: $durationSlots,
-                    preferredPattern: $preferredPattern,
-                    deliveryMode: $courseDeliveryMode,
-                    isHybrid: $courseIsHybrid,
-                    requireBalancedDurations: $requiresBalancedSplit,
-                ),
-            };
+                $domain = match (true) {
+                    $consecutiveRule !== null => $this->buildConsecutiveDaysDomain(
+                        course: $course,
+                        matchingRooms: $rooms,
+                        meetingSlots: $durationSlots,
+                        dayCount: $consecutiveDayCount,
+                        deliveryMode: $courseDeliveryMode,
+                        runs: SchedulingPolicy::consecutiveRuleRuns($consecutiveRule, $this->sundayClassesEnabled, $this->allowedDays),
+                    ),
+                    $hasBothComponents => $this->buildDefaultLectureLabDomain(
+                        course: $course,
+                        matchingRooms: $rooms,
+                        deliveryMode: $courseDeliveryMode,
+                        isHybrid: $courseIsHybrid,
+                        anchoredSchedule: $anchoredSchedulesByCourseId[(int) $course->id] ?? null,
+                        lectureSlots: $lectureComponentSlots,
+                        laboratorySlots: $laboratoryComponentSlots,
+                    ),
+                    $requiresHybridSplit && $preferredPattern === null => $this->buildFlexibleHybridSplitDomain(
+                        course: $course,
+                        matchingRooms: $rooms,
+                        durationSlots: $durationSlots,
+                    ),
+                    $requiresHybridSplit => $this->buildHybridSplitPatternDomain(
+                        course: $course,
+                        matchingRooms: $rooms,
+                        durationSlots: $durationSlots,
+                        preferredPattern: $preferredPattern,
+                    ),
+                    $requiresBalancedSplit && $preferredPattern === null => $this->buildFlexibleBalancedSplitDomain(
+                        course: $course,
+                        matchingRooms: $rooms,
+                        durationSlots: $durationSlots,
+                        deliveryMode: $courseDeliveryMode,
+                        isHybrid: false,
+                    ),
+                    $courseDeliveryMode === 'online' && $preferredPattern === null => $this->buildSingleDayDomain(
+                        course: $course,
+                        matchingRooms: $rooms,
+                        durationSlots: $durationSlots,
+                        deliveryMode: $courseDeliveryMode,
+                        isHybrid: false,
+                    ),
+                    $preferredPattern === null => $this->buildSingleDayDomain(
+                        course: $course,
+                        matchingRooms: $rooms,
+                        durationSlots: $durationSlots,
+                        deliveryMode: $courseDeliveryMode,
+                        isHybrid: false,
+                    ),
+                    default => $this->buildPatternDomainWithFallbacks(
+                        course: $course,
+                        matchingRooms: $rooms,
+                        durationSlots: $durationSlots,
+                        preferredPattern: $preferredPattern,
+                        deliveryMode: $courseDeliveryMode,
+                        isHybrid: $courseIsHybrid,
+                        requireBalancedDurations: $requiresBalancedSplit,
+                    ),
+                };
 
-            if (array_key_exists((int) $course->id, $deliveryModesByCourseId)
-                && ! $hasBothComponents
-                && ! $requiresHybridSplit) {
-                $domain = array_values(array_filter($domain, static function (array $candidate) use ($courseDeliveryMode): bool {
-                    foreach ($candidate['blocks'] ?? [] as $block) {
-                        if ((string) ($block['mode'] ?? $candidate['mode'] ?? 'on-site') !== $courseDeliveryMode) {
-                            return false;
+                if (array_key_exists((int) $course->id, $deliveryModesByCourseId)
+                    && ! $hasBothComponents
+                    && ! $requiresHybridSplit) {
+                    $domain = array_values(array_filter($domain, static function (array $candidate) use ($courseDeliveryMode): bool {
+                        foreach ($candidate['blocks'] ?? [] as $block) {
+                            if ((string) ($block['mode'] ?? $candidate['mode'] ?? 'on-site') !== $courseDeliveryMode) {
+                                return false;
+                            }
                         }
-                    }
 
-                    return true;
-                }));
-            }
+                        return true;
+                    }));
+                }
 
-            if (isset($requirementsByCourseId[(int) $course->id])) {
-                $domain = $this->filterDomainByRequirements(
-                    $domain,
-                    $requirementsByCourseId[(int) $course->id],
-                );
-            }
+                if (isset($requirementsByCourseId[(int) $course->id])) {
+                    $domain = $this->filterDomainByRequirements(
+                        $domain,
+                        $requirementsByCourseId[(int) $course->id],
+                    );
+                }
 
-            $emptyAfterRequirements = $domain === [] && isset($requirementsByCourseId[(int) $course->id]);
+                $emptyAfterRequirements = $domain === [] && isset($requirementsByCourseId[(int) $course->id]);
 
-            $emptyAfterForcedDay = false;
-            if ($forcedDay !== null && $domain !== [] && $consecutiveRule === null) {
-                $domain = $this->filterDomainByForcedDay($domain, $forcedDay);
-                $emptyAfterForcedDay = $domain === [];
-            }
+                $emptyAfterForcedDay = false;
+                if ($forcedDay !== null && $domain !== [] && $consecutiveRule === null) {
+                    $domain = $this->filterDomainByForcedDay($domain, $forcedDay);
+                    $emptyAfterForcedDay = $domain === [];
+                }
 
-            $emptyAfterDays = false;
-            if ($this->allowedDays !== null && $domain !== []) {
-                $domain = $this->filterDomainByDays($domain, $this->allowedDays);
-                $emptyAfterDays = $domain === [];
-            }
+                $emptyAfterDays = false;
+                if ($this->allowedDays !== null && $domain !== []) {
+                    $domain = $this->filterDomainByDays($domain, $this->allowedDays);
+                    $emptyAfterDays = $domain === [];
+                }
 
-            $emptyAfterSunday = false;
-            if (! $this->sundayClassesEnabled && $domain !== []) {
-                $domain = $this->filterDomainByDays($domain, SchedulingPolicy::teachingDays(false));
-                $emptyAfterSunday = $domain === [];
-            }
+                $emptyAfterSunday = false;
+                if (! $this->sundayClassesEnabled && $domain !== []) {
+                    $domain = $this->filterDomainByDays($domain, SchedulingPolicy::teachingDays(false));
+                    $emptyAfterSunday = $domain === [];
+                }
 
-            $this->domainCache[$domainCacheKey] = [
-                'domain' => $domain,
-                'empty_after_requirements' => $emptyAfterRequirements,
-                'empty_after_forced_day' => $emptyAfterForcedDay,
-                'empty_after_days' => $emptyAfterDays,
-                'empty_after_sunday' => $emptyAfterSunday,
-            ];
+                $this->domainCache[$domainCacheKey] = [
+                    'domain' => $domain,
+                    'empty_after_requirements' => $emptyAfterRequirements,
+                    'empty_after_forced_day' => $emptyAfterForcedDay,
+                    'empty_after_days' => $emptyAfterDays,
+                    'empty_after_sunday' => $emptyAfterSunday,
+                ];
             }
 
             $shuffleSeed = abs($sectionId * 2053 + (int) $course->id * 97 + $seed);
@@ -2376,8 +2375,7 @@ class CspSolver
     private function splitLectureLabDayPairs(
         Course $course,
         bool $isHybrid = false,
-    ): array
-    {
+    ): array {
         $onSiteDays = array_values(array_unique(array_map(
             static fn (array $pair): string => $pair[0],
             array_filter(
@@ -2469,8 +2467,7 @@ class CspSolver
         Collection $matchingRooms,
         bool $isHybrid,
         bool $forceOnline = false,
-    ): array
-    {
+    ): array {
         if ($isHybrid || $forceOnline) {
             return [[
                 'room_id' => null,
@@ -2693,32 +2690,7 @@ class CspSolver
                 && ($this->allowedDays === null || in_array($day, $this->allowedDays, true)),
         ));
 
-        $pairs = array_values(array_filter(
-            SchedulingPolicy::autoSplitDayPairs(),
-            static fn (array $pair): bool => in_array($pair[0], $days, true) && in_array($pair[1], $days, true),
-        ));
-        if ($this->allowFridaySaturdaySplit
-            && in_array('Friday', $days, true)
-            && in_array('Saturday', $days, true)) {
-            $pairs[] = ['Friday', 'Saturday'];
-        }
-        if ($pairs !== [] || $this->allowedDays === null) {
-            return $pairs;
-        }
-
-        $spaced = [];
-        $adjacent = [];
-        foreach ($days as $i => $day1) {
-            foreach (array_slice($days, $i + 1) as $day2) {
-                if ($this->dayIndex($day2) - $this->dayIndex($day1) > 1) {
-                    $spaced[] = [$day1, $day2];
-                } else {
-                    $adjacent[] = [$day1, $day2];
-                }
-            }
-        }
-
-        return [...$spaced, ...$adjacent];
+        return SchedulingPolicy::balancedSplitDayPairs($days, $this->allowFridaySaturdaySplit, $this->allowedDays !== null);
     }
 
     private function buildPatternDomainWithFallbacks(
@@ -3039,8 +3011,7 @@ class CspSolver
         array $firstStartSlots,
         array $secondStartSlots,
         ?int $limit = null,
-    ): array
-    {
+    ): array {
         $pairs = [];
 
         foreach ($firstStartSlots as $firstStart) {

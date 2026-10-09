@@ -7,12 +7,8 @@ use App\Models\Schedule;
 use App\Models\Semester;
 use Illuminate\Http\JsonResponse;
 
-trait ConfirmsFacultyOverload
+trait EnforcesFacultyUnitCeiling
 {
-    public const OVERLOAD_CONFIRMATION_MESSAGE = 'This instructor will have a pro bono load. Do you want to proceed?';
-
-    public const OVERLOAD_CONFIRMATION_MESSAGE_PLURAL = 'These instructors will have a pro bono load. Do you want to proceed?';
-
     protected function activeSemesterId(): ?int
     {
         $id = Semester::query()->where('is_active', true)->value('id');
@@ -23,23 +19,36 @@ trait ConfirmsFacultyOverload
     /**
      * @param  array<int, array<string, mixed>>  $projections  FacultyLoadService::projectLoad() results
      */
-    protected function overloadConfirmationResponse(array $projections): ?JsonResponse
+    protected function unitCeilingRefusal(array $projections): ?JsonResponse
     {
-        $needed = array_values(array_filter(
+        $over = array_values(array_filter(
             $projections,
-            static fn (array $projection): bool => (bool) ($projection['requires_confirmation'] ?? false),
+            static fn (array $projection): bool => (bool) ($projection['exceeds_ceiling'] ?? false),
         ));
 
-        if ($needed === []) {
+        if ($over === []) {
             return null;
         }
 
+        $describe = static fn (array $projection): string => sprintf(
+            '%s (%d of %d units)',
+            $projection['faculty_name'] ?? 'Instructor',
+            (int) ($projection['projected_units'] ?? 0),
+            (int) ($projection['unit_ceiling'] ?? 0),
+        );
+
         return response()->json([
-            'message' => count($needed) === 1
-                ? self::OVERLOAD_CONFIRMATION_MESSAGE
-                : self::OVERLOAD_CONFIRMATION_MESSAGE_PLURAL,
-            'overload_confirmation' => ['instructors' => $needed],
-        ], 409);
+            'message' => count($over) === 1
+                ? sprintf(
+                    '%s would carry %d units, past the %d-unit limit (basic load + overload). Choose another instructor.',
+                    $over[0]['faculty_name'] ?? 'This instructor',
+                    (int) ($over[0]['projected_units'] ?? 0),
+                    (int) ($over[0]['unit_ceiling'] ?? 0),
+                )
+                : 'These instructors would go past their unit limit (basic load + overload): '
+                    .implode(', ', array_map($describe, $over)).'.',
+            'unit_ceiling_exceeded' => ['instructors' => $over],
+        ], 422);
     }
 
     /**

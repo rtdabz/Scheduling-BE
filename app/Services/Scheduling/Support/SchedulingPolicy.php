@@ -124,15 +124,12 @@ final class SchedulingPolicy
 
     public const LOAD_TIER_OVERLOAD = 'overload';
 
-    public const LOAD_TIER_PROBONO = 'probono';
-
     public const LOAD_TIER_BEYOND_CEILING = 'beyond_ceiling';
 
     public const LOAD_TIER_LABELS = [
         self::LOAD_TIER_BASIC => 'Basic Load',
         self::LOAD_TIER_OVERLOAD => 'Overload',
-        self::LOAD_TIER_PROBONO => 'Pro-bono',
-        self::LOAD_TIER_BEYOND_CEILING => 'Beyond ceiling',
+        self::LOAD_TIER_BEYOND_CEILING => 'Over limit',
     ];
 
     public const INSTRUCTOR_ASSIGNABLE_STATUSES = ['approved', 'faculty_assignment', 'reassignment'];
@@ -855,7 +852,7 @@ final class SchedulingPolicy
             return self::LOAD_TIER_OVERLOAD;
         }
 
-        return self::LOAD_TIER_PROBONO;
+        return self::LOAD_TIER_BEYOND_CEILING;
     }
 
     public static function loadTierLabel(string $tier): string
@@ -1274,6 +1271,40 @@ final class SchedulingPolicy
             static fn (string $pattern): array => self::FIXED_MEETING_PATTERNS[$pattern],
             self::AUTO_SPLIT_PATTERNS,
         );
+    }
+
+    /**
+     * @param  list<string>  $days  Eligible days in teaching-week order.
+     * @return list<array{0: string, 1: string}>
+     */
+    public static function balancedSplitDayPairs(array $days, bool $allowFridaySaturdaySplit = false, bool $allowFallback = false): array
+    {
+        $pairs = array_values(array_filter(
+            self::autoSplitDayPairs(),
+            static fn (array $pair): bool => in_array($pair[0], $days, true) && in_array($pair[1], $days, true),
+        ));
+        if ($allowFridaySaturdaySplit
+            && in_array('Friday', $days, true)
+            && in_array('Saturday', $days, true)) {
+            $pairs[] = ['Friday', 'Saturday'];
+        }
+        if ($pairs !== [] || ! $allowFallback) {
+            return $pairs;
+        }
+
+        $spaced = [];
+        $adjacent = [];
+        foreach ($days as $i => $day1) {
+            foreach (array_slice($days, $i + 1) as $day2) {
+                if (self::dayIndex($day2) - self::dayIndex($day1) > 1) {
+                    $spaced[] = [$day1, $day2];
+                } else {
+                    $adjacent[] = [$day1, $day2];
+                }
+            }
+        }
+
+        return [...$spaced, ...$adjacent];
     }
 
     /** @return array{0: string, 1: string}|null */

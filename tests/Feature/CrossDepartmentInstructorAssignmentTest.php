@@ -212,10 +212,9 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
                 ->json('courses'),
         );
 
-        $this->assertNotNull(
-            $courses->firstWhere('id', $fixture['gec']->id),
-            'The delegated course was filtered out by the curriculum scope.',
-        );
+        $delegated = $courses->firstWhere('id', $fixture['gec']->id);
+        $this->assertNotNull($delegated, 'The delegated course was filtered out by the curriculum scope.');
+        $this->assertTrue($delegated['delegated_only']);
     }
 
     public function test_only_an_active_instructor_of_the_teaching_college_may_teach_it(): void
@@ -285,6 +284,34 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ['Friday', 'Monday', 'Wednesday'],
             $this->daysTaughtBy($fixture, $fixture['casInstructor']),
         );
+    }
+
+    public function test_completion_notice_reaches_only_the_program_that_handed_the_course_over(): void
+    {
+        $fixture = $this->fixture();
+        $otherProgram = \App\Models\Program::create(['department_id' => $fixture['it']->id, 'code' => 'BSCS', 'name' => 'Computer Science']);
+        $fixture['gec']->update(['teaching_source_program_id' => $fixture['itProgram']->id]);
+        $head = fn (int $programId) => User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $fixture['it']->id,
+            'program_id' => $programId,
+        ]);
+        $sourceHead = $head($fixture['itProgram']->id);
+        $otherHead = $head($otherProgram->id);
+        $blocks = $this->meetingBlocks($fixture);
+        Schedule::whereIn('id', $blocks->pluck('id'))->update(['faculty_id' => $fixture['casInstructor']->id]);
+
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty-done', ['ids' => $blocks->pluck('id')->all(), 'done' => true])
+            ->assertOk();
+
+        $received = fn (User $user): bool => \Illuminate\Support\Facades\DB::table('system_notifications')
+            ->where('user_id', $user->id)
+            ->where('type', 'cross_department_instructor_assignments_completed')
+            ->exists();
+        $this->assertTrue($received($sourceHead));
+        $this->assertTrue($received($fixture['itSecretary']));
+        $this->assertFalse($received($otherHead));
     }
 
     public function test_batch_assignment_refreshes_the_cached_workspace_with_the_instructor_name(): void
@@ -407,13 +434,112 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         );
     }
 
-    public function test_a_pro_bono_load_is_still_confirmed_before_the_batch_is_written(): void
+    public function test_owner_reassignment_keeps_the_teaching_college_handoff_done(): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        $ids = $blocks->pluck('id')->all();
+
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty', [
+                'assignments' => [['schedule_ids' => $ids, 'faculty_id' => $fixture['casInstructor']->id]],
+            ])
+            ->assertOk();
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty-done', ['ids' => $ids, 'done' => true])
+            ->assertOk();
+
+        foreach (['finalized', 'reassignment'] as $status) {
+            $this->actingAs($fixture['itSecretary'])
+                ->patchJson('/api/schedules/batch-status', ['ids' => $ids, 'status' => $status])
+                ->assertOk();
+        }
+
+        $this->assertTrue(Schedule::query()->whereIn('id', $ids)->get()->every(
+            fn (Schedule $schedule): bool => $schedule->faculty_assignment_done,
+        ));
+        $sourceSchedules = collect(
+            $this->actingAs($fixture['itSecretary'])->getJson('/api/initial-data')->assertOk()->json('schedules'),
+        )->whereIn('id', $ids);
+        $this->assertCount(3, $sourceSchedules);
+        $this->assertTrue($sourceSchedules->every(
+            fn (array $schedule): bool => (int) $schedule['faculty_id'] === $fixture['casInstructor']->id,
+        ));
+    }
+
+    public function test_owner_recall_keeps_the_teaching_college_instructor_visible(): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        $ids = $blocks->pluck('id')->all();
+
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty', [
+                'assignments' => [['schedule_ids' => $ids, 'faculty_id' => $fixture['casInstructor']->id]],
+            ])
+            ->assertOk();
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty-done', ['ids' => $ids, 'done' => true])
+            ->assertOk();
+
+        $submission = \App\Models\ScheduleSubmission::create([
+            'department_id' => $fixture['it']->id,
+            'semester_id' => $fixture['semester']->id,
+            'revision_number' => 1,
+            'status' => 'approved',
+            'submitted_at' => now(),
+        ]);
+        $submission->sections()->attach([$fixture['section']->id], ['state' => 'included']);
+
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson("/api/departments/{$fixture['it']->id}/withdraw-submission", ['section_ids' => [$fixture['section']->id]])
+            ->assertOk();
+
+        $this->assertTrue(Schedule::query()->whereIn('id', $ids)->get()->every(
+            fn (Schedule $schedule): bool => $schedule->status === 'revision'
+                && $schedule->faculty_assignment_done
+                && (int) $schedule->faculty_id === $fixture['casInstructor']->id,
+        ));
+        $sourceSchedules = collect(
+            $this->actingAs($fixture['itSecretary'])->getJson('/api/initial-data')->assertOk()->json('schedules'),
+        )->whereIn('id', $ids);
+        $this->assertCount(3, $sourceSchedules);
+        $this->assertTrue($sourceSchedules->every(
+            fn (array $schedule): bool => (int) $schedule['faculty_id'] === $fixture['casInstructor']->id,
+        ));
+
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/schedules/batch', [
+                'operations' => [],
+                'delete_ids' => $ids,
+                'replace_section_ids' => [$fixture['section']->id],
+                'replace_semester_id' => $fixture['semester']->id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('instructors_released', 1)
+            ->assertJsonPath('cross_department_instructors_released', 1);
+
+        $this->assertSame(0, Schedule::query()->whereIn('id', $ids)->count());
+        $notice = \Illuminate\Support\Facades\DB::table('system_notifications')
+            ->where('user_id', $fixture['casSecretary']->id)
+            ->where('type', 'cross_department_instructors_released')
+            ->first();
+        $this->assertNotNull($notice);
+        $this->assertStringContainsString('reset its schedule', $notice->message);
+        $this->assertStringContainsString('GEC 101 (BSIT 1A)', $notice->message);
+        $this->assertFalse(\Illuminate\Support\Facades\DB::table('system_notifications')
+            ->where('user_id', $fixture['itSecretary']->id)
+            ->where('type', 'cross_department_instructors_released')
+            ->exists());
+    }
+
+    public function test_a_load_past_the_ceiling_is_refused_before_the_batch_is_written(): void
     {
         $fixture = $this->fixture();
         $blocks = $this->meetingBlocks($fixture);
 
         // Basic Load (21 maximum less 6 deload) plus the 3-unit overload allowance
-        // already carried, so the 3-unit class lands in pro bono.
+        // already carried, so the 3-unit class would go past the ceiling.
         $this->carriedLoad($fixture, 18);
 
         $assignment = [[
@@ -422,29 +548,17 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         ]];
 
         $this->actingAs($fixture['casSecretary'])
-            ->patchJson('/api/schedules/batch-faculty', ['assignments' => $assignment])
-            ->assertStatus(409)
-            ->assertJsonPath('overload_confirmation.instructors.0.faculty_id', $fixture['casInstructor']->id)
-            ->assertJsonPath('overload_confirmation.instructors.0.tier', 'probono')
+            ->patchJson('/api/schedules/batch-faculty', ['assignments' => $assignment, 'confirm_overload' => true])
+            ->assertStatus(422)
+            ->assertJsonPath('unit_ceiling_exceeded.instructors.0.faculty_id', $fixture['casInstructor']->id)
+            ->assertJsonPath('unit_ceiling_exceeded.instructors.0.tier', 'beyond_ceiling')
             // Three meeting blocks are one class, so the load rises by the course's
             // units once rather than three times.
-            ->assertJsonPath('overload_confirmation.instructors.0.added_units', 3)
-            ->assertJsonPath('overload_confirmation.instructors.0.projected_units', 21)
-            ->assertJsonPath('overload_confirmation.instructors.0.assignment_label', 'GEC 101 — BSIT 1A');
+            ->assertJsonPath('unit_ceiling_exceeded.instructors.0.added_units', 3)
+            ->assertJsonPath('unit_ceiling_exceeded.instructors.0.projected_units', 21)
+            ->assertJsonPath('unit_ceiling_exceeded.instructors.0.assignment_label', 'GEC 101 — BSIT 1A');
 
         $this->assertSame([], $this->daysTaughtBy($fixture, $fixture['casInstructor']));
-
-        $this->actingAs($fixture['casSecretary'])
-            ->patchJson('/api/schedules/batch-faculty', [
-                'assignments' => $assignment,
-                'confirm_overload' => true,
-            ])
-            ->assertOk();
-
-        $this->assertSame(
-            ['Friday', 'Monday', 'Wednesday'],
-            $this->daysTaughtBy($fixture, $fixture['casInstructor']),
-        );
     }
 
     public function test_a_conflict_on_one_block_rolls_the_whole_class_back(): void
@@ -464,7 +578,6 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
                     'schedule_ids' => $ordered,
                     'faculty_id' => $fixture['casInstructor']->id,
                 ]],
-                'confirm_overload' => true,
             ])
             ->assertStatus(422)
             ->assertJsonPath('violations.0.schedule_id', $blocks->firstWhere('day', 'Monday')->id);
@@ -778,7 +891,6 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             'max_units' => 21,
             'deload_units' => 6,
             'overload_units' => 3,
-            'probono_units' => 3,
         ], $overrides));
     }
 }

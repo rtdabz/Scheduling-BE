@@ -29,6 +29,7 @@ final class AvailableSlotFinder
      *                                     a run of this many days is listed, on the run's first day. The
      *                                     run is the section's ticked meeting days when its rule has them,
      *                                     else any run of this many back-to-back days
+     * @param  array<string, mixed>|null  $rowTemplate  Affected meeting facts for group discovery; complete-group validation follows enumeration.
      * @return array{
      *     slots: list<array<string, mixed>>,
      *     rooms: list<array{room_id: int|null, room_code: string, room_type: string, mode: string, slot_count: int}>,
@@ -48,6 +49,7 @@ final class AvailableSlotFinder
         array $excludedDays = [],
         ?string $searchFromDay = null,
         ?int $consecutiveDays = null,
+        ?array $rowTemplate = null,
     ): array {
         if ($durationSlots <= 0) {
             throw new InvalidArgumentException('A meeting must be at least one slot long.');
@@ -113,6 +115,10 @@ final class AvailableSlotFinder
                         mode: $mode,
                         roomId: $roomId,
                         meetingType: $meetingType,
+                        facultyId: isset($rowTemplate['faculty_id']) ? (int) $rowTemplate['faculty_id'] : null,
+                        isHybrid: (bool) ($rowTemplate['is_hybrid'] ?? false),
+                        preferredPattern: $rowTemplate['preferred_pattern'] ?? null,
+                        splitGroupId: $rowTemplate['split_group_id'] ?? null,
                     );
 
                     if ($this->kernel->evaluateRow($row, $snapshot, $candidateRows, $ignoreScheduleIds) !== []) {
