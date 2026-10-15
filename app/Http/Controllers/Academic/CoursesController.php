@@ -37,7 +37,7 @@ class CoursesController extends Controller
             return response()->json(['message' => 'You can only view your own program curriculum.'], 403);
         }
 
-        $cacheKey = ApiCache::key('courses.index', [
+        $cacheKey = ApiCache::compositeKey('courses.index', ['departments.index', 'curriculum.index'], [
             'department_id' => $deptId,
             'curriculum_id' => $curriculumId,
             'all' => $bypassActiveCurriculum,

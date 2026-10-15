@@ -193,8 +193,8 @@ class CourseTeachingAssignmentController extends Controller
     public function update(Request $request, Course $course): JsonResponse
     {
         $validated = $request->validate([
-            'teaching_department_id' => 'present|nullable|integer|exists:departments,id',
-            'teaching_program_id' => 'sometimes|nullable|integer|exists:programs,id',
+            'teaching_department_id' => 'present|nullable|integer|exists:departments,id,deleted_at,NULL',
+            'teaching_program_id' => 'sometimes|nullable|integer|exists:programs,id,deleted_at,NULL',
         ]);
 
         $teachingDepartmentId = $validated['teaching_department_id'] === null
@@ -229,9 +229,9 @@ class CourseTeachingAssignmentController extends Controller
     {
         $validated = $request->validate([
             'course_ids' => ['required', 'array', 'min:1'],
-            'course_ids.*' => ['integer', 'distinct', 'exists:courses,id'],
-            'teaching_department_id' => ['required', 'integer', 'exists:departments,id'],
-            'teaching_program_id' => ['nullable', 'integer', 'exists:programs,id'],
+            'course_ids.*' => ['integer', 'distinct', 'exists:courses,id,deleted_at,NULL'],
+            'teaching_department_id' => ['required', 'integer', 'exists:departments,id,deleted_at,NULL'],
+            'teaching_program_id' => ['nullable', 'integer', 'exists:programs,id,deleted_at,NULL'],
         ]);
         $targetId = (int) $validated['teaching_department_id'];
         $targetProgramId = isset($validated['teaching_program_id']) ? (int) $validated['teaching_program_id'] : null;

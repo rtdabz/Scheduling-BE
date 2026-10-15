@@ -19,8 +19,8 @@ class StoreSectionRequest extends FormRequest
         return [
             'section_name' => 'required|string|max:255',
             'year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
-            'department_id' => 'required|exists:departments,id',
-            'program_id' => ['required', 'integer', Rule::exists('programs', 'id')->where(fn ($q) => $q->where('department_id', $this->input('department_id')))],
+            'department_id' => 'required|exists:departments,id,deleted_at,NULL',
+            'program_id' => ['required', 'integer', Rule::exists('programs', 'id')->whereNull('deleted_at')->where(fn ($q) => $q->where('department_id', $this->input('department_id')))],
             'curriculum_id' => 'nullable|integer|exists:curriculum,id',
         ];
     }

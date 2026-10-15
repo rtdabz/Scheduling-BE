@@ -46,7 +46,7 @@ class ScheduleController extends Controller
 
     private const REPLACEABLE_BATCH_STATUSES = ['draft', 'completed', 'revision'];
 
-    private const PLOTTING_EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
+    private const PLOTTING_EDITABLE_STATUSES = Schedule::PLOTTING_EDITABLE_STATUSES;
 
     private const DELETABLE_STATUSES = Schedule::UNLOCKED_STATUSES;
 
@@ -155,62 +155,78 @@ class ScheduleController extends Controller
             'split_group_id' => 'nullable|string|max:36',
             'meeting_type' => 'nullable|in:lecture,laboratory',
             'meeting_index' => 'nullable|integer|min:1',
-            'status' => SchedulingPolicy::allowedScheduleStatusesRule('sometimes'),
+            'status' => 'sometimes|required|in:draft',
+        ], [
+            'status.in' => 'New timetable entries must start as draft. Use the approval workflow to advance status.',
         ]);
+        $validated['status'] = 'draft';
         $validated = $this->clearOnlineRoomId($validated);
 
-        $section = Sections::with('program')->findOrFail($validated['section_id']);
-        $validated['program_id'] = $validated['program_id'] ?? $section->program_id;
-        if ($validated['program_id'] === null) {
-            return response()->json(['message' => 'This section cannot be scheduled until it is assigned to a Program.'], 422);
-        }
-        if ((int) $section->department_id !== (int) $validated['department_id'] || (int) $section->program_id !== (int) $validated['program_id']) {
-            return response()->json(['message' => 'The schedule Department, Program, and Section must match.'], 422);
-        }
-        $validated['curriculum_id'] = $section->curriculum_id;
+        try {
+            $result = $this->withScheduleWriteLock([(int) $validated['semester_id']], function () use ($request, $validated) {
+                return DB::transaction(function () use ($request, $validated) {
+                    $section = Sections::with('program')->lockForUpdate()->findOrFail($validated['section_id']);
+                    $validated['program_id'] = $validated['program_id'] ?? $section->program_id;
+                    if ($validated['program_id'] === null) {
+                        return response()->json(['message' => 'This section cannot be scheduled until it is assigned to a Program.'], 422);
+                    }
+                    if ((int) $section->department_id !== (int) $validated['department_id'] || (int) $section->program_id !== (int) $validated['program_id']) {
+                        return response()->json(['message' => 'The schedule Department, Program, and Section must match.'], 422);
+                    }
+                    $validated['curriculum_id'] = $section->curriculum_id;
 
-        if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
-            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
-        }
-        if (! $this->authorization->departmentHasProgram((int) $validated['department_id'])) {
-            return response()->json(['message' => 'Create at least one Program under this Department before scheduling.'], 422);
-        }
-        if (! $this->authorization->programIsWritable($request, (int) $validated['program_id'])) {
-            return $this->programForbidden();
-        }
+                    if (! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
+                        return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+                    }
+                    if (! $this->authorization->departmentHasProgram((int) $validated['department_id'])) {
+                        return response()->json(['message' => 'Create at least one Program under this Department before scheduling.'], 422);
+                    }
+                    if (! $this->authorization->programIsWritable($request, (int) $validated['program_id'])) {
+                        return $this->programForbidden();
+                    }
 
-        $duplicateMessage = $this->delegatedCourseScheduleMessage($validated);
-        if ($duplicateMessage !== null) {
-            return response()->json(['message' => $duplicateMessage], 422);
+                    $duplicateMessage = $this->delegatedCourseScheduleMessage($validated);
+                    if ($duplicateMessage !== null) {
+                        return response()->json(['message' => $duplicateMessage], 422);
+                    }
+
+                    $violations = $this->ruleEngine->validate($validated);
+
+                    if (! empty($violations)) {
+                        return response()->json([
+                            'message' => 'Schedule conflicts with existing entries.',
+                            'violations' => $violations,
+                        ], 422);
+                    }
+
+                    $schedule = Schedule::create($validated);
+                    $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'program']);
+                    SchedulingAuditLog::create([
+                        'user_id' => $request->user()?->id,
+                        'semester_id' => $schedule->semester_id,
+                        'section_id' => $schedule->section_id,
+                        'department_id' => $schedule->department_id,
+                        'action' => 'schedule_created',
+                        'metadata' => [
+                            'schedule_id' => (int) $schedule->id,
+                            'course_id' => $schedule->course_id,
+                            'day' => $schedule->day,
+                            'start_time' => $schedule->start_time,
+                            'end_time' => $schedule->end_time,
+                        ],
+                        'created_at' => now(),
+                    ]);
+                    return $schedule;
+                });
+            });
+        } catch (ScheduleConflictException $exception) {
+            return response()->json($exception->payload(), 422);
         }
-
-        $violations = $this->ruleEngine->validate($validated);
-
-        if (! empty($violations)) {
-            return response()->json([
-                'message' => 'Schedule conflicts with existing entries.',
-                'violations' => $violations,
-            ], 422);
+        if ($result instanceof JsonResponse) {
+            return $result;
         }
-
-        $schedule = Schedule::create($validated);
-        $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'program']);
+        $schedule = $result;
         $this->notifyScheduleSaved($request, $schedule, 'created');
-        SchedulingAuditLog::create([
-            'user_id' => $request->user()?->id,
-            'semester_id' => $schedule->semester_id,
-            'section_id' => $schedule->section_id,
-            'department_id' => $schedule->department_id,
-            'action' => 'schedule_created',
-            'metadata' => [
-                'schedule_id' => (int) $schedule->id,
-                'course_id' => $schedule->course_id,
-                'day' => $schedule->day,
-                'start_time' => $schedule->start_time,
-                'end_time' => $schedule->end_time,
-            ],
-            'created_at' => now(),
-        ]);
         ApiCache::forgetGroups(['faculty.index', 'initial.data']);
 
         return response()->json($schedule, 201);
@@ -1228,6 +1244,10 @@ class ScheduleController extends Controller
             return response()->json(['message' => 'This schedule has not been approved yet.'], 403);
         }
 
+        if (! $this->authorization->scopeReadableSchedules(Schedule::query(), $request)->whereKey($schedule->id)->exists()) {
+            return response()->json(['message' => 'You cannot view this schedule.'], 403);
+        }
+
         return response()->json($schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'program']));
     }
 
@@ -1255,18 +1275,10 @@ class ScheduleController extends Controller
 
     private function scopedScheduleListQuery(Request $request): Builder
     {
-        $scope = $this->authorization->departmentScope($request);
-        $statuses = $this->authorization->visibleScheduleStatuses($request);
-
-        return Schedule::query()
-            ->with(Schedule::RESPONSE_RELATIONS)
-            ->when($scope !== null, fn (Builder $query) => $query->where(
-                fn (Builder $owned) => $owned
-                    ->where('department_id', $scope)
-                    ->orWhereHas('course', fn (Builder $course) => $course->where('teaching_department_id', $scope)),
-            ))
-            ->when($statuses !== null, fn (Builder $query) => $query->whereIn('status', $statuses))
-            ->tap(fn (Builder $query) => $this->authorization->scopeSchedulesToProgram($query, $request));
+        return $this->authorization->scopeReadableSchedules(
+            Schedule::query()->with(Schedule::RESPONSE_RELATIONS),
+            $request,
+        );
     }
 
     public function update(Request $request, Schedule $schedule)
@@ -1590,52 +1602,80 @@ class ScheduleController extends Controller
             return $this->programForbidden();
         }
 
-        $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'split']);
-        $deletedSchedule = clone $schedule;
-
-        $splitGroupId = $schedule->split_group_id;
-
-        if ($request->query('delete_group') === 'true' && $splitGroupId) {
-            $schedules = Schedule::whereHas('split', function ($q) use ($splitGroupId) {
-                $q->where('split_group_id', $splitGroupId);
-            })->get();
-
-            if (! $this->authorization->scheduleIdsBelongToDepartment($request, $schedules->pluck('id')->all())) {
-                return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
-            }
-            if (! $this->authorization->scheduleIdsWritable($request, $schedules->pluck('id')->all())) {
-                return $this->programForbidden();
-            }
-            if ($schedules->contains(static fn (Schedule $s): bool => ! in_array($s->status, self::DELETABLE_STATUSES, true))) {
-                return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
-            }
-
-            foreach ($schedules as $s) {
-                $s->delete();
-            }
-            $removed = $schedules;
-        } else {
-            if (! in_array($schedule->status, self::DELETABLE_STATUSES, true)) {
-                return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
-            }
-            $schedule->delete();
-            $removed = collect([$schedule]);
+        $semesterIds = [(int) $schedule->semester_id];
+        if ($request->query('delete_group') === 'true' && $schedule->split_group_id) {
+            $semesterIds = Schedule::whereHas('split', fn ($query) => $query->where('split_group_id', $schedule->split_group_id))
+                ->pluck('semester_id')->map('intval')->unique()->values()->all();
         }
-        $this->revisionChanges->recordScheduleChanges($removed, [], $request->user()?->id, 'delete');
+        try {
+            $result = $this->withScheduleWriteLock($semesterIds, function () use ($request, $schedule, $semesterIds) {
+                return DB::transaction(function () use ($request, $schedule, $semesterIds) {
+                    $schedule = Schedule::query()->lockForUpdate()->findOrFail($schedule->id);
+                    if (! in_array((int) $schedule->semester_id, $semesterIds, true)) {
+                        return response()->json(['message' => 'The schedule changed. Refresh and try again.'], 422);
+                    }
+                    if (! $this->authorization->scheduleIsWritable($request, $schedule)) {
+                        return $this->programForbidden();
+                    }
+                    $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'split']);
+                    $deletedSchedule = clone $schedule;
 
-        $this->notifyScheduleSaved($request, $deletedSchedule, 'deleted');
-        SchedulingAuditLog::create([
-            'user_id' => $request->user()?->id,
-            'semester_id' => $deletedSchedule->semester_id,
-            'section_id' => $deletedSchedule->section_id,
-            'department_id' => $deletedSchedule->department_id,
-            'action' => 'schedule_deleted',
-            'metadata' => [
-                'schedule_id' => (int) $deletedSchedule->id,
-                'course_id' => $deletedSchedule->course_id,
-            ],
-            'created_at' => now(),
-        ]);
+                    $splitGroupId = $schedule->split_group_id;
+
+                    if ($request->query('delete_group') === 'true' && $splitGroupId) {
+                        $schedules = Schedule::whereHas('split', function ($q) use ($splitGroupId) {
+                            $q->where('split_group_id', $splitGroupId);
+                        })->lockForUpdate()->get();
+
+                        if (! $this->authorization->scheduleIdsBelongToDepartment($request, $schedules->pluck('id')->all())) {
+                            return response()->json(['message' => 'You can only manage schedules for your department.'], 403);
+                        }
+                        if (! $this->authorization->scheduleIdsWritable($request, $schedules->pluck('id')->all())) {
+                            return $this->programForbidden();
+                        }
+                        if ($schedules->contains(static fn (Schedule $s): bool => ! in_array($s->status, self::DELETABLE_STATUSES, true))) {
+                            return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
+                        }
+
+                        if ($schedules->contains(fn (Schedule $row) => ! in_array((int) $row->semester_id, $semesterIds, true))) {
+                            return response()->json(['message' => 'The meeting group changed. Refresh and try again.'], 422);
+                        }
+
+                        foreach ($schedules as $s) {
+                            $s->delete();
+                        }
+                        $removed = $schedules;
+                    } else {
+                        if (! in_array($schedule->status, self::DELETABLE_STATUSES, true)) {
+                            return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
+                        }
+                        $schedule->delete();
+                        $removed = collect([$schedule]);
+                    }
+                    $this->revisionChanges->recordScheduleChanges($removed, [], $request->user()?->id, 'delete');
+
+                    SchedulingAuditLog::create([
+                        'user_id' => $request->user()?->id,
+                        'semester_id' => $deletedSchedule->semester_id,
+                        'section_id' => $deletedSchedule->section_id,
+                        'department_id' => $deletedSchedule->department_id,
+                        'action' => 'schedule_deleted',
+                        'metadata' => [
+                            'schedule_id' => (int) $deletedSchedule->id,
+                            'course_id' => $deletedSchedule->course_id,
+                        ],
+                        'created_at' => now(),
+                    ]);
+                    return $deletedSchedule;
+                });
+            });
+        } catch (ScheduleConflictException $exception) {
+            return response()->json($exception->payload(), 422);
+        }
+        if ($result instanceof JsonResponse) {
+            return $result;
+        }
+        $this->notifyScheduleSaved($request, $result, 'deleted');
         ApiCache::forgetGroups(['faculty.index', 'initial.data']);
 
         return response()->json(['message' => 'Schedule archived successfully']);

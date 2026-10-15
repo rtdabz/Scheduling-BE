@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Faculty;
 use App\Http\Controllers\Controller;
 use App\Models\Faculty;
 use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -122,6 +123,8 @@ class FacultyAvailabilityController extends Controller
                 DB::table('faculty_availabilities')->insert($windows);
             }
         });
+
+        ApiCache::forgetGroups(['faculty.index', 'initial.data', 'instructor_assignments.index']);
 
         return response()->json([
             'faculty_id' => $faculty->id,

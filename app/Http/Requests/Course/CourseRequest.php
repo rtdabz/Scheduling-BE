@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Course;
 
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -11,9 +12,29 @@ abstract class CourseRequest extends FormRequest
     {
         if ($this->has('course_code')) {
             $this->merge([
-                'course_code' => trim(preg_replace('/\s+/', ' ', strtoupper((string) $this->input('course_code')))),
+                'course_code' => $this->normalizeCode($this->input('course_code')),
             ]);
         }
+    }
+
+    protected function normalizeCode(mixed $code): mixed
+    {
+        return is_string($code) ? trim(preg_replace('/\s+/', ' ', strtoupper($code))) : $code;
+    }
+
+    /** @return array<string, array<int, string>> */
+    protected function courseRules(bool $partial = false): array
+    {
+        $required = $partial ? ['sometimes', 'required'] : ['required'];
+
+        return [
+            'course_code' => [...$required, 'string', 'max:255'],
+            'course_name' => [...$required, 'string', 'max:255'],
+            'lecture_hours' => [...$required, 'integer', 'min:0', 'max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LECTURE_SLOTS_PER_UNIT)],
+            'lab_hours' => [...$required, 'integer', 'min:0', 'max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LABORATORY_SLOTS_PER_UNIT)],
+            'units' => [...$required, 'integer', 'min:0'],
+            'course_category' => [...$required, 'string', 'in:major,minor'],
+        ];
     }
 
     /** @return array<string, string> */
@@ -30,13 +51,13 @@ abstract class CourseRequest extends FormRequest
     protected function programRule(mixed $departmentId): array
     {
         if ($departmentId === null || $departmentId === '') {
-            return ['nullable', 'integer', 'exists:programs,id'];
+            return ['nullable', 'integer', Rule::exists('programs', 'id')->whereNull('deleted_at')];
         }
 
         return [
             'nullable',
             'integer',
-            Rule::exists('programs', 'id')->where(
+            Rule::exists('programs', 'id')->whereNull('deleted_at')->where(
                 fn ($query) => $query->where('department_id', (int) $departmentId),
             ),
         ];

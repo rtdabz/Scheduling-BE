@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Course;
+use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Rooms;
@@ -10,7 +11,9 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -20,6 +23,91 @@ use Tests\TestCase;
 class ScheduleWorkflowIntegrityTest extends TestCase
 {
     use RefreshDatabase;
+
+    #[DataProvider('initialDraftStatuses')]
+    public function test_single_create_starts_as_draft(array $status): void
+    {
+        $f = $this->fixture();
+
+        $response = $this->actingAs($f['user'])->postJson('/api/schedules', [
+            ...$this->creationPayload($f),
+            ...$status,
+        ])->assertCreated()->assertJsonPath('status', 'draft');
+
+        $this->assertDatabaseHas('schedules', ['id' => $response->json('id'), 'status' => 'draft']);
+    }
+
+    public static function initialDraftStatuses(): array
+    {
+        return ['omitted' => [[]], 'explicit draft' => [['status' => 'draft']]];
+    }
+
+    #[DataProvider('invalidInitialStatuses')]
+    public function test_single_create_rejects_non_draft_status_without_writing(mixed $status): void
+    {
+        $f = $this->fixture();
+
+        $this->actingAs($f['user'])->postJson('/api/schedules', [
+            ...$this->creationPayload($f),
+            'status' => $status,
+        ])->assertStatus(422)->assertJsonValidationErrors('status');
+
+        $this->assertDatabaseCount('schedules', 0);
+        $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'schedule_created']);
+    }
+
+    public static function invalidInitialStatuses(): iterable
+    {
+        foreach (SchedulingPolicy::SCHEDULE_STATUSES as $status) {
+            if ($status !== 'draft') {
+                yield $status => [$status];
+            }
+        }
+        yield 'unknown' => ['unknown'];
+        yield 'null' => [null];
+        yield 'empty' => [''];
+        yield 'array' => [['draft']];
+    }
+
+    public function test_single_create_still_rejects_a_conflicting_draft(): void
+    {
+        $f = $this->fixture();
+        $payload = $this->creationPayload($f);
+        $this->schedule($f, $f['courseA']);
+
+        $this->actingAs($f['user'])->postJson('/api/schedules', [
+            ...$payload,
+            'status' => 'draft',
+        ])->assertStatus(422)->assertJsonStructure(['violations']);
+
+        $this->assertDatabaseCount('schedules', 1);
+    }
+
+    private function creationPayload(array $f): array
+    {
+        $curriculum = Curriculum::create([
+            'department_id' => $f['department']->id,
+            'program_id' => $f['section']->program_id,
+            'name' => 'Program A Curriculum',
+            'code' => 'PA-2026',
+            'effective_school_year' => '2026-2027',
+            'status' => 'active',
+        ]);
+        $curriculum->courses()->attach($f['courseA']->id, ['year_level' => 1, 'semester' => 1]);
+        $f['section']->update(['curriculum_id' => $curriculum->id]);
+
+        return [
+            'semester_id' => $f['semester']->id,
+            'section_id' => $f['section']->id,
+            'course_id' => $f['courseA']->id,
+            'room_id' => $f['room']->id,
+            'department_id' => $f['department']->id,
+            'day' => 'Monday',
+            'start_time' => '08:00',
+            'end_time' => '09:00',
+            'mode' => 'on-site',
+        ];
+    }
 
     public function test_batch_status_cannot_approve_a_draft_directly(): void
     {

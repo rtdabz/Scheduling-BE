@@ -111,7 +111,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
                 'end_time' => '11:00',
                 'room_id' => $fixture['casRoom']->id,
                 'mode' => 'on-site',
-                'status' => 'faculty_assignment',
+                'status' => 'draft',
             ])
             ->assertStatus(422)
             // The section belongs to the source department, so the request is

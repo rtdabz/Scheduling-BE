@@ -121,8 +121,8 @@ class RoomRequestController extends Controller
         }
 
         $validated = $request->validate([
-            'room_id' => 'required|integer|exists:rooms,id',
-            'semester_id' => 'nullable|integer|exists:semesters,id',
+            'room_id' => 'required|integer|exists:rooms,id,deleted_at,NULL',
+            'semester_id' => 'nullable|integer|exists:semesters,id,deleted_at,NULL',
             'purpose' => 'required|string|max:1000',
             'windows' => 'required|array|min:1|max:21',
             'windows.*.day' => ['required', 'string', Rule::in(SchedulingPolicy::PERSISTABLE_DAYS)],

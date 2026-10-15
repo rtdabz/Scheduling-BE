@@ -73,9 +73,11 @@ class ProgramController extends Controller
 
     public function destroy(Program $program): JsonResponse
     {
-        if ($program->users()->exists() || $program->faculties()->exists() || $program->courses()->exists()) {
+        $blockers = app(\App\Services\AcademicArchiveDependencies::class)->blockers($program);
+        if ($blockers !== []) {
             return response()->json([
-                'message' => 'This program cannot be archived while users, faculty, or courses are assigned to it.',
+                'message' => 'This program cannot be archived while these live dependencies remain: '.implode(', ', $blockers).'.',
+                'blocking_relations' => $blockers,
             ], 422);
         }
 

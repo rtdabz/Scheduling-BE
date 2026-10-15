@@ -50,7 +50,7 @@ class StoreRoomRequest extends FormRequest
             'room_type' => SchedulingPolicy::allowedRoomTypesRule('required|string'),
             'allow_lecture_usage' => 'sometimes|boolean',
             'status' => SchedulingPolicy::allowedRoomStatusesRule('nullable|string'),
-            'department_id' => 'nullable|exists:departments,id',
+            'department_id' => 'nullable|exists:departments,id,deleted_at,NULL',
         ];
     }
 }

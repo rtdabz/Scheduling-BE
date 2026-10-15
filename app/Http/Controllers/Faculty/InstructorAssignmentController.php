@@ -51,7 +51,10 @@ class InstructorAssignmentController extends Controller
             ? (int) ($request->user()?->program_id ?? 0)
             : null;
 
-        $cacheKey = ApiCache::key('instructor_assignments.index', [
+        $cacheKey = ApiCache::compositeKey('instructor_assignments.index', [
+            'departments.index', 'courses.index', 'faculty.index', 'rooms.index',
+            'sections.index', 'semesters.index', 'initial.data', 'initial.data.schedules',
+        ], [
             'department_id' => $departmentId,
             'program_id' => $programId,
             'version' => 4,

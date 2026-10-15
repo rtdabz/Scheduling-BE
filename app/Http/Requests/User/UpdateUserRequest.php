@@ -30,12 +30,12 @@ class UpdateUserRequest extends FormRequest
             'role' => 'required|string|in:dean,program_head,secretary',
             'is_active' => 'required|boolean',
             'allow_google_login' => 'sometimes|boolean',
-            'department_id' => 'required|exists:departments,id',
+            'department_id' => 'required|exists:departments,id,deleted_at,NULL',
             'profile_picture' => ProfilePicture::rules(),
             'program_id' => [
                 'nullable',
                 Rule::requiredIf(fn () => $this->input('role') === 'program_head'),
-                Rule::exists('programs', 'id')->where(fn ($query) => $query->where('department_id', $this->input('department_id'))),
+                Rule::exists('programs', 'id')->whereNull('deleted_at')->where(fn ($query) => $query->where('department_id', $this->input('department_id'))),
             ],
         ];
     }

@@ -139,15 +139,14 @@ class YearLevelGenerationDiagnostics
             $courseCode = (string) ($bottleneck['course_code'] ?? '');
             $sectionName = (string) ($bottleneck['section_name'] ?? '');
             $stuckOn = match (true) {
-                $courseCode !== '' && $sectionName !== '' => sprintf(' The search got stuck on %s in %s.', $courseCode, $sectionName),
-                $sectionName !== '' => sprintf(' The search got stuck on %s.', $sectionName),
+                $courseCode !== '' && $sectionName !== '' => sprintf(' while scheduling %s in %s', $courseCode, $sectionName),
+                $sectionName !== '' => sprintf(' while scheduling %s', $sectionName),
                 default => '',
             };
 
             return sprintf(
-                'The generator ran out of search time after %d attempt%s, before it could check every arrangement, so a timetable may still fit. Generate again with the same settings before changing any.%s',
-                $triedCount,
-                $triedCount === 1 ? '' : 's',
+                'The system reached its search time limit after %s%s. A valid schedule may still be possible. Next step: Try generating again with the same settings before making changes.',
+                $triedCount === 1 ? 'one attempt' : sprintf('%d attempts', $triedCount),
                 $stuckOn,
             );
         }

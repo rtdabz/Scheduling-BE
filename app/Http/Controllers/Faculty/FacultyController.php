@@ -46,7 +46,7 @@ class FacultyController extends Controller
             : null;
 
         $faculty = Cache::remember(
-            ApiCache::key('faculty.index', [
+            ApiCache::compositeKey('faculty.index', ['departments.index', 'courses.index', 'sections.index'], [
                 'department_id' => $departmentId,
                 'semester_id' => $semesterId,
                 'program_id' => $programId,
@@ -70,7 +70,7 @@ class FacultyController extends Controller
             'max_units' => 'sometimes|integer|min:0',
             'overload_units' => 'nullable|integer|min:0',
             'deload_units' => 'nullable|integer|min:0',
-            'department_id' => 'required|exists:departments,id',
+            'department_id' => 'required|exists:departments,id,deleted_at,NULL',
             'program_id' => $this->programRule($departmentId ?? $request->input('department_id')),
             'status' => 'nullable|in:active,inactive',
             'profile_picture' => ProfilePicture::rules(),
@@ -246,7 +246,7 @@ class FacultyController extends Controller
                 'middle_name' => 'nullable|string|max:255',
                 'suffix' => ['nullable', Rule::in(self::NAME_SUFFIXES)],
                 'employment_type' => 'sometimes|required|in:full-time,part-time',
-                'department_id' => 'sometimes|required|exists:departments,id',
+                'department_id' => 'sometimes|required|exists:departments,id,deleted_at,NULL',
                 'program_id' => $this->programRule(
                     $departmentId
                         ?? $request->input('department_id')
@@ -376,12 +376,12 @@ class FacultyController extends Controller
         $rules = ['nullable', 'integer'];
 
         if ($departmentId === null || $departmentId === '') {
-            return [...$rules, 'exists:programs,id'];
+            return [...$rules, 'exists:programs,id,deleted_at,NULL'];
         }
 
         return [
             ...$rules,
-            Rule::exists('programs', 'id')->where(
+            Rule::exists('programs', 'id')->whereNull('deleted_at')->where(
                 fn ($query) => $query->where('department_id', (int) $departmentId),
             ),
         ];

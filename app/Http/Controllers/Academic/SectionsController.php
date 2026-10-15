@@ -14,6 +14,7 @@ use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -36,7 +37,7 @@ class SectionsController extends Controller
         $departmentId = $this->authorization->departmentScope($request);
         $programId = $this->authorization->programScope($request);
         $sections = Cache::remember(
-            ApiCache::key('sections.index', ['department_id' => $departmentId, 'program_id' => $programId]),
+            ApiCache::compositeKey('sections.index', ['departments.index', 'curriculum.index', 'semesters.index'], ['department_id' => $departmentId, 'program_id' => $programId]),
             ApiCache::LOOKUP_TTL_SECONDS,
             fn () => Sections::with(['department:id,department_name,department_code', 'program', 'academicSemester', 'curriculum'])
                 ->when($departmentId !== null, fn ($query) => $query->where('department_id', $departmentId))
@@ -186,68 +187,92 @@ class SectionsController extends Controller
 
     public function update(UpdateSectionRequest $request, Sections $section)
     {
-        $validated = $request->validated();
+        $response = DB::transaction(function () use ($request, $section) {
+            $section = Sections::whereKey($section->id)->lockForUpdate()->firstOrFail();
+            $validated = $request->validated();
 
-        if (! $this->authorization->payloadBelongsToProgram($request, $section->program_id)
-            || (array_key_exists('program_id', $validated) && ! $this->authorization->payloadBelongsToProgram($request, $validated['program_id']))) {
-            return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
-        }
-
-        unset($validated['semester']);
-        if (isset($validated['semester_id'])) {
-            $validated['semester'] = Semester::query()->whereKey($validated['semester_id'])->value('semester');
-        }
-
-        $changesStructure = collect(self::STRUCTURAL_FIELDS)->contains(
-            fn (string $field): bool => array_key_exists($field, $validated)
-                && (string) $validated[$field] !== (string) $section->getAttribute($field),
-        );
-        if ($changesStructure && $section->hasLockedSchedules()) {
-            return response()->json(['message' => self::LOCKED_SECTION_MESSAGE], 422);
-        }
-
-        if (isset($validated['department_id']) && ! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
-            return response()->json(['message' => 'You can only move sections within your department.'], 403);
-        }
-
-        if (isset($validated['program_id']) && ! Program::whereKey($validated['program_id'])->where('department_id', $validated['department_id'] ?? $section->department_id)->exists()) {
-            return response()->json(['message' => 'The selected program must belong to the section department.'], 422);
-        }
-
-        if (array_key_exists('curriculum_id', $validated) && $validated['curriculum_id'] !== null) {
-            $targetDepartment = (int) ($validated['department_id'] ?? $section->department_id);
-            $targetProgram = $validated['program_id'] ?? $section->program_id;
-            if (! $this->selectableCurriculumIds($targetDepartment, $targetProgram === null ? null : (int) $targetProgram)
-                ->contains((int) $validated['curriculum_id'])) {
-                return response()->json(['message' => 'The selected curriculum is not available to this department and program.'], 422);
+            if (! $this->authorization->payloadBelongsToDepartment($request, (int) $section->department_id)) {
+                return response()->json(['message' => 'You can only manage sections for your department.'], 403);
             }
+
+            if (! $this->authorization->payloadBelongsToProgram($request, $section->program_id)
+                || (array_key_exists('program_id', $validated) && ! $this->authorization->payloadBelongsToProgram($request, $validated['program_id']))) {
+                return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
+            }
+
+            unset($validated['semester']);
+            if (isset($validated['semester_id'])) {
+                $validated['semester'] = Semester::query()->whereKey($validated['semester_id'])->value('semester');
+            }
+
+            $changesStructure = collect(self::STRUCTURAL_FIELDS)->contains(
+                fn (string $field): bool => array_key_exists($field, $validated)
+                    && (string) $validated[$field] !== (string) $section->getAttribute($field),
+            );
+            if ($changesStructure && $section->hasLockedSchedules()) {
+                return response()->json(['message' => self::LOCKED_SECTION_MESSAGE], 422);
+            }
+
+            if (isset($validated['department_id']) && ! $this->authorization->payloadBelongsToDepartment($request, (int) $validated['department_id'])) {
+                return response()->json(['message' => 'You can only move sections within your department.'], 403);
+            }
+
+            if ($changesStructure) {
+                $target = array_replace($section->getAttributes(), $validated);
+                if ($target['program_id'] !== null && ! Program::whereKey($target['program_id'])->where('department_id', $target['department_id'])->exists()) {
+                    return response()->json(['message' => 'The selected program must belong to the section department.'], 422);
+                }
+                if ($target['curriculum_id'] !== null && ! $this->selectableCurriculumIds((int) $target['department_id'], $target['program_id'] === null ? null : (int) $target['program_id'])->contains((int) $target['curriculum_id'])) {
+                    return response()->json(['message' => 'The selected curriculum is not available to this department and program.'], 422);
+                }
+                foreach ($section->schedules()->lockForUpdate()->get() as $schedule) {
+                    foreach (['department_id', 'program_id', 'semester_id'] as $field) {
+                        if ((string) $schedule->$field !== (string) $target[$field]) {
+                            return response()->json(['message' => 'This change would leave existing classes in a different department, program, or semester. Clear those classes first.'], 422);
+                        }
+                    }
+                    if ($schedule->curriculum_id !== null && (string) $schedule->curriculum_id !== (string) $target['curriculum_id']) {
+                        return response()->json(['message' => 'This change would leave existing classes in a different curriculum. Clear those classes first.'], 422);
+                    }
+                    if ($target['curriculum_id'] !== null) {
+                        $period = match ($target['semester']) { '1st' => 1, '2nd' => 2, default => 3 };
+                        if (! DB::table('curriculum_course')->where('curriculum_id', $target['curriculum_id'])->where('course_id', $schedule->course_id)->where('year_level', $target['year_level'])->where('semester', $period)->exists()) {
+                            return response()->json(['message' => 'Existing classes are not placed in the selected curriculum year and semester. Clear those classes first.'], 422);
+                        }
+                    }
+                }
+            }
+
+            $targetName = $validated['section_name'] ?? $section->section_name;
+            $targetDepartmentId = (int) ($validated['department_id'] ?? $section->department_id);
+            $targetSemesterId = (int) ($validated['semester_id'] ?? $section->semester_id);
+            if (Sections::nameTaken($targetDepartmentId, $targetSemesterId, (string) $targetName, (int) $section->id)) {
+                return $this->duplicateNameResponse(['section_name' => [$this->duplicateNameMessage((string) $targetName)]]);
+            }
+
+            $section->update($validated);
+
+            return response()->json($section->load(['department', 'program', 'academicSemester', 'curriculum']));
+        });
+        if ($response->isSuccessful()) {
+            ApiCache::forgetGroups([
+                'sections.index',
+                'sections.by_semester',
+                'sections.by_department',
+                'departments.index',
+                'initial.data',
+                'curriculum.index',
+            ]);
         }
 
-        $targetName = $validated['section_name'] ?? $section->section_name;
-        $targetDepartmentId = (int) ($validated['department_id'] ?? $section->department_id);
-        $targetSemesterId = (int) ($validated['semester_id'] ?? $section->semester_id);
-        if (Sections::nameTaken($targetDepartmentId, $targetSemesterId, (string) $targetName, (int) $section->id)) {
-            return $this->duplicateNameResponse(['section_name' => [$this->duplicateNameMessage((string) $targetName)]]);
-        }
-
-        $section->update($validated);
-        ApiCache::forgetGroups([
-            'sections.index',
-            'sections.by_semester',
-            'sections.by_department',
-            'departments.index',
-            'initial.data',
-            'curriculum.index',
-        ]);
-
-        return response()->json($section->load(['department', 'program', 'academicSemester', 'curriculum']));
+        return $response;
     }
 
     public function assignCurriculumToYearLevel(Request $request)
     {
         $validated = $request->validate([
-            'semester_id' => 'required|integer|exists:semesters,id',
-            'department_id' => 'required|integer|exists:departments,id',
+            'semester_id' => 'required|integer|exists:semesters,id,deleted_at,NULL',
+            'department_id' => 'required|integer|exists:departments,id,deleted_at,NULL',
             'year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
             'curriculum_id' => 'required|integer|exists:curriculum,id',
             'section_ids' => 'sometimes|array|min:1',
@@ -299,7 +324,23 @@ class SectionsController extends Controller
         }
 
         DB::transaction(function () use ($sections, $curriculum): void {
-            Sections::whereIn('id', $sections->pluck('id'))
+            $freshSections = Sections::whereIn('id', $sections->pluck('id'))
+                ->orderBy('id')->lockForUpdate()->get();
+
+            // Hold existing schedule rows while checking workflow status and
+            // applying the curriculum change.
+            foreach ($freshSections as $section) {
+                if ((int) $section->curriculum_id === (int) $curriculum->id) {
+                    continue;
+                }
+
+                $section->schedules()->orderBy('id')->lockForUpdate()->get(['id']);
+                if ($section->hasLockedSchedules()) {
+                    throw new HttpResponseException(response()->json(['message' => self::LOCKED_SECTION_MESSAGE], 422));
+                }
+            }
+
+            Sections::whereIn('id', $freshSections->pluck('id'))
                 ->update(['curriculum_id' => (int) $curriculum->id]);
         });
 
@@ -355,19 +396,36 @@ class SectionsController extends Controller
         return response()->json(['message' => 'Section deleted successfully']);
     }
 
-    public function bySemester($semesterId)
+    public function bySemester(Request $request, $semesterId)
     {
-        $sections = Cache::remember(ApiCache::key('sections.by_semester', ['semester_id' => $semesterId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'curriculum'])
+        $departmentId = $this->authorization->departmentScope($request);
+        $programId = $this->authorization->programScope($request);
+        $sections = Cache::remember(ApiCache::compositeKey('sections.by_semester', ['departments.index', 'curriculum.index'], [
+            'semester_id' => $semesterId,
+            'department_id' => $departmentId,
+            'program_id' => $programId,
+        ]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['department', 'program', 'curriculum'])
             ->where('semester_id', $semesterId)
+            ->when($departmentId !== null, fn ($query) => $query->where('department_id', $departmentId))
+            ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
             ->get());
 
         return response()->json($sections);
     }
 
-    public function byDepartment($departmentId)
+    public function byDepartment(Request $request, $departmentId)
     {
-        $sections = Cache::remember(ApiCache::key('sections.by_department', ['department_id' => $departmentId]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['program', 'academicSemester', 'curriculum'])
+        if ($this->authorization->rejectsRequestedDepartment($request, $departmentId)) {
+            return response()->json(['message' => 'You can only view sections for your department.'], 403);
+        }
+
+        $programId = $this->authorization->programScope($request);
+        $sections = Cache::remember(ApiCache::compositeKey('sections.by_department', ['departments.index', 'curriculum.index', 'semesters.index'], [
+            'department_id' => $departmentId,
+            'program_id' => $programId,
+        ]), ApiCache::LOOKUP_TTL_SECONDS, fn () => Sections::with(['program', 'academicSemester', 'curriculum'])
             ->where('department_id', $departmentId)
+            ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
             ->get());
 
         return response()->json($sections);

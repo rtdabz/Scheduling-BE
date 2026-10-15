@@ -162,6 +162,46 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         );
     }
 
+    public function test_bulk_curriculum_assignment_rejects_the_whole_batch_when_a_section_is_locked(): void
+    {
+        $fixture = $this->fixture();
+        $fixture['year1']->update(['year_level' => '2', 'curriculum_id' => $fixture['old']->id]);
+        $schedule = $this->plot($fixture, $fixture['year2'], $fixture['old'], $fixture['oldCourse']);
+        foreach (['submitted', 'approved_by_dean', 'conditionally_approved', 'approved', 'faculty_assignment', 'reassignment', 'finalized'] as $status) {
+            $schedule->update(['status' => $status]);
+            $this->actingAs($fixture['secretary'])->postJson('/api/sections/assign-curriculum', [
+                'semester_id' => $fixture['semester']->id,
+                'department_id' => $fixture['department']->id,
+                'year_level' => 2,
+                'curriculum_id' => $fixture['new']->id,
+            ])->assertUnprocessable()->assertJsonPath('message', 'This section has classes at an approval stage. Recall the submission first, then try again.');
+            $this->assertEquals($fixture['old']->id, $fixture['year1']->fresh()->curriculum_id);
+            $this->assertEquals($fixture['old']->id, $fixture['year2']->fresh()->curriculum_id);
+            $this->assertEquals($fixture['old']->id, $schedule->fresh()->curriculum_id);
+        }
+    }
+
+    public function test_bulk_curriculum_assignment_allows_no_op_on_locked_sections_and_explicit_unlocked_targets(): void
+    {
+        $fixture = $this->fixture();
+        $fixture['year1']->update(['year_level' => '2', 'curriculum_id' => $fixture['old']->id]);
+        $schedule = $this->plot($fixture, $fixture['year2'], $fixture['old'], $fixture['oldCourse']);
+        $schedule->update(['status' => 'approved_by_dean']);
+        $payload = [
+            'semester_id' => $fixture['semester']->id,
+            'department_id' => $fixture['department']->id,
+            'year_level' => 2,
+            'curriculum_id' => $fixture['old']->id,
+        ];
+        $this->actingAs($fixture['secretary'])->postJson('/api/sections/assign-curriculum', $payload)->assertOk();
+        $this->postJson('/api/sections/assign-curriculum', [
+            ...$payload, 'curriculum_id' => $fixture['new']->id, 'section_ids' => [$fixture['year1']->id],
+        ])->assertOk()->assertJsonPath('section_ids', [$fixture['year1']->id]);
+        $this->assertEquals($fixture['new']->id, $fixture['year1']->fresh()->curriculum_id);
+        $this->assertEquals($fixture['old']->id, $fixture['year2']->fresh()->curriculum_id);
+        $this->assertEquals($fixture['old']->id, $schedule->fresh()->curriculum_id);
+    }
+
     /**
      * A curriculum is in service or out of it — deactivating is the only way out
      * short of archiving, and there is no third "draft" state to land in.
@@ -414,6 +454,217 @@ class MultipleCurriculaPerSemesterTest extends TestCase
      *
      * @return array<string, mixed>
      */
+    public function test_section_program_only_change_validates_retained_curriculum_and_schedules(): void
+    {
+        $f = $this->fixture();
+        $other = Program::create(['department_id' => $f['department']->id, 'code' => 'OTHER']);
+        $f['old']->update(['program_id' => $f['program']->id]);
+        $this->actingAs($f['secretary'])->patchJson('/api/sections/'.$f['year2']->id, ['program_id' => $other->id])->assertUnprocessable();
+        $f['old']->update(['program_id' => null]);
+        $schedule = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $this->patchJson('/api/sections/'.$f['year2']->id, ['program_id' => $other->id])->assertUnprocessable();
+        $this->patchJson('/api/sections/'.$f['year2']->id, ['year_level' => '1'])->assertUnprocessable();
+        $this->patchJson('/api/sections/'.$f['year2']->id, ['curriculum_id' => $f['new']->id])->assertUnprocessable();
+        $this->assertEquals($f['program']->id, $f['year2']->fresh()->program_id);
+        $this->assertEquals($f['old']->id, $schedule->fresh()->curriculum_id);
+        $this->patchJson('/api/sections/'.$f['year2']->id, ['section_name' => 'Renamed'])->assertOk();
+        $schedule->delete();
+        $this->patchJson('/api/sections/'.$f['year2']->id, ['program_id' => $other->id])->assertOk();
+    }
+
+    public function test_course_replacement_and_placement_moves_share_the_detach_guard(): void
+    {
+        $f = $this->fixture();
+        $schedule = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $url = '/api/curriculum/'.$f['old']->id.'/courses';
+        $this->actingAs($f['secretary']);
+        $removal = $this->deleteJson($url.'/'.$f['oldCourse']->id)->assertUnprocessable();
+        $this->postJson($url, ['course_id' => $f['newCourse']->id, 'replace_course_id' => $f['oldCourse']->id, 'year_level' => 2, 'semester' => 1])
+            ->assertUnprocessable()->assertJsonPath('message', $removal->json('message'));
+        $this->postJson($url, ['course_id' => $f['oldCourse']->id, 'year_level' => 1, 'semester' => 1])->assertUnprocessable();
+        $this->postJson($url.'/batch', ['courses' => [
+            ['course_id' => $f['newCourse']->id, 'year_level' => 2, 'semester' => 1],
+            ['course_id' => $f['oldCourse']->id, 'year_level' => 1, 'semester' => 1],
+        ]])->assertUnprocessable();
+        $this->assertFalse($f['old']->courses()->whereKey($f['newCourse']->id)->exists());
+        $this->assertDatabaseHas('curriculum_course', ['curriculum_id' => $f['old']->id, 'course_id' => $f['oldCourse']->id, 'year_level' => 2]);
+        $this->postJson($url, ['course_id' => $f['oldCourse']->id, 'year_level' => 2, 'semester' => 1])->assertOk();
+        $schedule->delete();
+        $this->postJson($url, ['course_id' => $f['newCourse']->id, 'replace_course_id' => $f['oldCourse']->id, 'year_level' => 2, 'semester' => 1])->assertOk();
+        $this->assertFalse($f['old']->courses()->whereKey($f['oldCourse']->id)->exists());
+    }
+
+    public function test_split_mutations_reject_locked_and_archived_parents(): void
+    {
+        $f = $this->fixture();
+        $schedule = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $schedule->update(['status' => 'finalized']);
+        $data = ['schedule_id' => $schedule->id, 'split_group_id' => 'test-group', 'meeting_type' => 'lecture', 'meeting_index' => 1];
+        $this->actingAs($f['secretary'])->postJson('/api/schedule-splits', $data)->assertUnprocessable();
+        $split = \App\Models\ScheduleSplit::create($data);
+        $this->patchJson('/api/schedule-splits/'.$split->id, ['meeting_type' => 'laboratory'])->assertUnprocessable();
+        $this->deleteJson('/api/schedule-splits/'.$split->id)->assertUnprocessable();
+        $this->assertSame('lecture', $split->fresh()->meeting_type);
+        $this->assertNotSoftDeleted($split);
+        $schedule->delete();
+        $this->postJson('/api/schedule-splits', $data)->assertUnprocessable();
+    }
+
+    public function test_valid_split_changes_record_history_and_invalid_changes_roll_back(): void
+    {
+        $f = $this->fixture();
+        $schedule = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $schedule->update(['end_time' => '11:00:00']);
+        $this->actingAs($f['secretary']);
+        $response = $this->postJson('/api/schedule-splits', ['schedule_id' => $schedule->id, 'split_group_id' => 'test-group', 'meeting_type' => 'lecture', 'meeting_index' => 1])->assertCreated();
+        $id = $response->json('id');
+        $this->assertDatabaseHas('schedule_history_versions', ['source' => 'schedule_split']);
+        $this->assertDatabaseHas('scheduling_audit_logs', ['action' => 'schedule_updated']);
+        $this->patchJson('/api/schedule-splits/'.$id, ['meeting_type' => 'laboratory'])->assertUnprocessable();
+        $this->assertDatabaseHas('schedule_splits', ['id' => $id, 'meeting_type' => 'lecture']);
+        $this->deleteJson('/api/schedule-splits/'.$id)->assertOk();
+        $this->assertSoftDeleted('schedule_splits', ['id' => $id]);
+    }
+
+    public function test_split_reassignment_checks_both_parents_and_required_metadata_cannot_be_removed(): void
+    {
+        $f = $this->fixture();
+        $source = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $target = $this->plot($f, $f['year1'], $f['new'], $f['newCourse']);
+        $target->update(['status' => 'finalized']);
+        $split = \App\Models\ScheduleSplit::create(['schedule_id' => $source->id, 'split_group_id' => 'required-group', 'meeting_type' => 'lecture', 'meeting_index' => 1]);
+        $this->actingAs($f['secretary'])->patchJson('/api/schedule-splits/'.$split->id, ['schedule_id' => $target->id])->assertUnprocessable();
+        $target->delete();
+        $this->patchJson('/api/schedule-splits/'.$split->id, ['schedule_id' => $target->id])->assertUnprocessable();
+        $source->update(['is_hybrid' => true]);
+        $this->deleteJson('/api/schedule-splits/'.$split->id)->assertUnprocessable();
+        $this->assertNotSoftDeleted($split);
+        $this->assertEquals($source->id, $split->fresh()->schedule_id);
+    }
+
+    public function test_split_group_indexes_are_validated_and_success_invalidates_cached_payloads(): void
+    {
+        $f = $this->fixture();
+        $first = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $second = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $first->update(['end_time' => '11:00:00']);
+        $second->update(['day' => 'Tuesday', 'end_time' => '11:00:00']);
+        \App\Models\ScheduleSplit::create(['schedule_id' => $first->id, 'split_group_id' => 'linked', 'meeting_type' => 'lecture', 'meeting_index' => 1]);
+        $split = \App\Models\ScheduleSplit::create(['schedule_id' => $second->id, 'split_group_id' => 'linked', 'meeting_type' => 'lecture', 'meeting_index' => 2]);
+        $this->actingAs($f['secretary'])->patchJson('/api/schedule-splits/'.$split->id, ['meeting_index' => 1])->assertUnprocessable();
+        $this->assertEquals(2, $split->fresh()->meeting_index);
+        $cacheKey = \App\Support\ApiCache::key('initial.data');
+        $this->patchJson('/api/schedule-splits/'.$split->id, ['meeting_index' => 3])->assertOk();
+        $this->assertNotSame($cacheKey, \App\Support\ApiCache::key('initial.data'));
+    }
+
+    public function test_room_changes_reject_incompatible_classes_and_allow_compatible_edits(): void
+    {
+        $f = $this->fixture();
+        $class = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $class->update(['status' => 'finalized']);
+        $room = Rooms::findOrFail($class->room_id);
+        $this->actingAs(User::factory()->create(['role' => 'vpaa']));
+        $this->putJson('/api/rooms/'.$room->id, ['room_type' => 'field'])->assertUnprocessable();
+        $this->assertSame('lecture', $room->fresh()->room_type);
+        $this->putJson('/api/rooms/'.$room->id, ['building' => 'Renamed'])->assertOk();
+        $other = Departments::create(['department_name' => 'Other', 'department_code' => 'OTHER']);
+        $this->putJson('/api/rooms/'.$room->id, ['department_id' => $other->id])->assertUnprocessable();
+        $this->assertEquals($f['department']->id, $room->fresh()->department_id);
+        $this->putJson('/api/rooms/'.$room->id, ['room_type' => 'laboratory', 'allow_lecture_usage' => true])->assertOk();
+        $this->putJson('/api/rooms/'.$room->id, ['allow_lecture_usage' => false])->assertUnprocessable();
+        $this->assertTrue($room->fresh()->allow_lecture_usage);
+    }
+
+    public function test_schedule_restoration_uses_current_room_and_curriculum_rules(): void
+    {
+        $f = $this->fixture();
+        $class = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $class->update(['end_time' => '11:00:00']);
+        $room = Rooms::findOrFail($class->room_id);
+        $class->delete();
+        $this->actingAs(User::factory()->create(['role' => 'vpaa']));
+        $room->update(['status' => 'not available']);
+        $url = '/api/archives/schedules/'.$class->id.'/restore';
+        $this->postJson($url)->assertUnprocessable();
+        $this->assertSoftDeleted($class);
+        $room->update(['status' => 'available']);
+        $f['old']->courses()->detach($f['oldCourse']->id);
+        $this->postJson($url)->assertUnprocessable();
+        $this->assertSoftDeleted($class);
+        $this->place($f['old'], $f['oldCourse'], 2);
+        $this->postJson($url)->assertOk();
+        $this->assertNotSoftDeleted($class);
+    }
+
+    public function test_archiving_programs_and_departments_reports_live_dependencies(): void
+    {
+        $f = $this->fixture();
+        $this->actingAs(User::factory()->create(['role' => 'vpaa']));
+        $this->deleteJson('/api/programs/'.$f['program']->id)->assertUnprocessable()->assertJsonFragment(['sections']);
+        $isolated = Departments::create(['department_name' => 'Isolated', 'department_code' => 'ISO']);
+        $course = $this->course('ISO101', $isolated->id);
+        $this->deleteJson('/api/departments/'.$isolated->id)->assertUnprocessable()->assertJsonPath('blocking_relations.0', 'courses');
+        $course->delete();
+        $this->deleteJson('/api/departments/'.$isolated->id)->assertOk();
+        $program = Program::create(['department_id' => $f['department']->id, 'code' => 'CUR']);
+        $f['old']->update(['program_id' => $program->id]);
+        $this->deleteJson('/api/programs/'.$program->id)->assertUnprocessable()->assertJsonFragment(['curricula']);
+        $f['old']->update(['status' => 'archived']);
+        $this->deleteJson('/api/programs/'.$program->id)->assertOk();
+    }
+
+    public function test_remaining_authoring_routes_reject_archived_parents(): void
+    {
+        $f = $this->fixture();
+        Program::create(['department_id' => $f['department']->id, 'code' => 'LIVE']);
+        $f['program']->delete();
+        $this->actingAs($f['secretary']);
+        $this->postJson('/api/curriculum', ['name' => 'Invalid', 'code' => 'INVALID', 'effective_school_year' => '2026-2027', 'program_id' => $f['program']->id])
+            ->assertUnprocessable()->assertJsonValidationErrors('program_id');
+        $this->postJson('/api/sections', ['section_name' => 'INVALID', 'year_level' => '1', 'department_id' => $f['department']->id, 'program_id' => $f['program']->id, 'status' => 'active'])
+            ->assertUnprocessable()->assertJsonValidationErrors('program_id');
+        $f['department']->delete();
+        $this->actingAs(User::factory()->create(['role' => 'vpaa']));
+        $this->postJson('/api/rooms', ['room_code' => 'INVALID', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $f['department']->id])
+            ->assertUnprocessable()->assertJsonValidationErrors('department_id');
+    }
+
+    public function test_required_meeting_groups_restore_atomically(): void
+    {
+        $f = $this->fixture();
+        $first = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $second = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $first->update(['preferred_pattern' => 'consecutive:2', 'split_group_id' => 'restore-group', 'meeting_type' => 'lecture', 'meeting_index' => 1]);
+        $second->update(['preferred_pattern' => 'consecutive:2', 'day' => 'Tuesday', 'split_group_id' => 'restore-group', 'meeting_type' => 'lecture', 'meeting_index' => 2]);
+        $first->delete();
+        $second->delete();
+        $room = Rooms::findOrFail($first->room_id);
+        $room->update(['status' => 'not available']);
+        $this->actingAs(User::factory()->create(['role' => 'vpaa']));
+        $this->postJson('/api/archives/schedules/'.$first->id.'/restore')->assertUnprocessable();
+        $this->assertSoftDeleted($first);
+        $this->assertSoftDeleted($second);
+        $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'record_restored']);
+        $room->update(['status' => 'available']);
+        $this->postJson('/api/archives/schedules/'.$first->id.'/restore')->assertOk();
+        $this->assertNotSoftDeleted($first);
+        $this->assertNotSoftDeleted($second);
+        $this->assertDatabaseCount('schedule_splits', 2);
+    }
+
+    public function test_room_ownership_change_preserves_program_allocations(): void
+    {
+        $f = $this->fixture();
+        $room = Rooms::firstOrFail();
+        $room->forceFill(['home_program_id' => $f['program']->id])->save();
+        $other = Departments::create(['department_name' => 'Other', 'department_code' => 'OTHER']);
+        $this->actingAs(User::factory()->create(['role' => 'vpaa']))->putJson('/api/rooms/'.$room->id, ['department_id' => $other->id])
+            ->assertUnprocessable()->assertJsonValidationErrors('department_id');
+        $this->assertEquals($f['program']->id, $room->fresh()->home_program_id);
+        $this->assertEquals($f['department']->id, $room->department_id);
+    }
+
     private function fixture(): array
     {
         $semester = Semester::create([

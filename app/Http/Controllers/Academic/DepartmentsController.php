@@ -100,11 +100,11 @@ class DepartmentsController extends Controller
 
     public function destroy(Departments $department)
     {
-        if ($department->programs()->exists() || $department->sections()->exists()
-            || $department->faculties()->exists() || $department->users()->exists()
-            || $department->rooms()->exists()) {
+        $blockers = app(\App\Services\AcademicArchiveDependencies::class)->blockers($department);
+        if ($blockers !== []) {
             return response()->json([
-                'message' => 'This department cannot be archived while programs, sections, faculty, users, or rooms are assigned to it.',
+                'message' => 'This department cannot be archived while these live dependencies remain: '.implode(', ', $blockers).'.',
+                'blocking_relations' => $blockers,
             ], 422);
         }
 

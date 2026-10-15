@@ -54,8 +54,12 @@ class YearLevelBottleneckDetectionTest extends TestCase
         $this->assertStringNotContainsString('could not claim', $bottleneck['detected_cause']);
 
         $message = $diagnostics->searchMessage($bottleneck, $attempts, true);
-        $this->assertStringContainsString('a timetable may still fit', $message);
-        $this->assertStringContainsString('stuck on IT 101 in BSIT 3E', $message);
+        $this->assertSame(
+            'The system reached its search time limit after one attempt while scheduling IT 101 in BSIT 3E. '
+            .'A valid schedule may still be possible. '
+            .'Next step: Try generating again with the same settings before making changes.',
+            $message,
+        );
 
         // Rooms were never shown to run out, so no room-time advice.
         $ids = array_column($diagnostics->searchRecommendations($bottleneck, [], collect(), [], null, true), 'id');

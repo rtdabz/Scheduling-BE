@@ -23,7 +23,7 @@ class RoomsController extends Controller
     {
         $programId = $this->authorization->programScope($request);
         $rooms = Cache::remember(
-            ApiCache::key('rooms.index', ['program_id' => $programId]),
+            ApiCache::compositeKey('rooms.index', ['departments.index'], ['program_id' => $programId]),
             ApiCache::LOOKUP_TTL_SECONDS,
             fn () => $this->authorization->scopeRoomsToProgram(Rooms::with('department'), $request)->get(),
         );
@@ -83,7 +83,11 @@ class RoomsController extends Controller
             }
         }
 
-        $room->update($validated);
+        try {
+            app(\App\Services\RoomStructuralUpdate::class)->apply($room, $validated);
+        } catch (\App\Exceptions\ScheduleConflictException $exception) {
+            return response()->json($exception->payload(), 422);
+        }
         ApiCache::forgetGroups([
             'rooms.index',
             'departments.index',
@@ -204,12 +208,14 @@ class RoomsController extends Controller
         $room = Rooms::findOrFail($id);
 
         $validated = $request->validate([
-            'department_id' => 'nullable|exists:departments,id',
+            'department_id' => 'nullable|exists:departments,id,deleted_at,NULL',
         ]);
 
-        $room->update([
-            'department_id' => $validated['department_id'],
-        ]);
+        try {
+            app(\App\Services\RoomStructuralUpdate::class)->apply($room, ['department_id' => $validated['department_id']]);
+        } catch (\App\Exceptions\ScheduleConflictException $exception) {
+            return response()->json($exception->payload(), 422);
+        }
         ApiCache::forgetGroups([
             'rooms.index',
             'departments.index',

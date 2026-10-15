@@ -81,12 +81,8 @@ class ArchiveController extends Controller
             ], 422);
         }
 
-        if ($record instanceof Schedule && ($message = $this->scheduleRestoreBlock($record)) !== null) {
-            return response()->json(['message' => $message], 422);
-        }
-
-        if ($record instanceof ScheduleSplit && Schedule::onlyTrashed()->whereKey($record->schedule_id)->exists()) {
-            return response()->json(['message' => 'Restore the schedule this meeting belongs to first.'], 422);
+        if ($record instanceof Schedule || $record instanceof ScheduleSplit) {
+            return $this->restoreTimetable($request, $record);
         }
 
         if ($record instanceof Designation && ($message = $this->designationRestoreBlock($record)) !== null) {
@@ -110,35 +106,15 @@ class ArchiveController extends Controller
         }
 
         try {
-            $clash = null;
-            DB::transaction(function () use ($record, &$clash): void {
+            DB::transaction(function () use ($record): void {
                 $record->restore();
                 if ($record instanceof User) {
                     $this->facultyProfiles->sync($record);
                 }
-
-                if ($record instanceof Schedule) {
-                    $cases = $this->conflicts->scan((int) $record->semester_id, onlyScheduleIds: [(int) $record->id]);
-                    if ($cases !== []) {
-                        $clash = str_replace('_', ' ', (string) $cases[0]->rule);
-
-                        throw new \RuntimeException('restore_clash');
-                    }
-                }
             });
-        } catch (\RuntimeException $exception) {
-            if ($exception->getMessage() !== 'restore_clash') {
-                throw $exception;
-            }
         } catch (QueryException) {
             return response()->json([
                 'message' => 'This record cannot be restored because an active record now uses the same unique value.',
-            ], 422);
-        }
-
-        if ($clash !== null) {
-            return response()->json([
-                'message' => "This class cannot be restored: it would cause a {$clash} conflict with the current timetable. Move or remove the clashing class first.",
             ], 422);
         }
 
@@ -153,6 +129,79 @@ class ArchiveController extends Controller
             'semesters.active',
             'initial.data',
         ]);
+
+        return response()->json(['message' => 'Record restored successfully.']);
+    }
+
+    private function restoreTimetable(Request $request, Schedule|ScheduleSplit $record): JsonResponse
+    {
+        $seed = $record instanceof Schedule ? $record : Schedule::find($record->schedule_id);
+        if ($seed === null) {
+            return response()->json(['message' => 'Restore the schedule this meeting belongs to first.'], 422);
+        }
+        $split = $record instanceof ScheduleSplit ? $record : ScheduleSplit::withTrashed()->where('schedule_id', $seed->id)->first();
+        $ids = [(int) $seed->id];
+        $requiredGroup = $seed->is_hybrid
+            || \App\Services\Scheduling\Support\SchedulingPolicy::isFixedMeetingPattern($seed->preferred_pattern)
+            || \App\Services\Scheduling\Support\SchedulingPolicy::consecutiveDayCount($seed->preferred_pattern) !== null;
+        if ($record instanceof Schedule && $requiredGroup && $split !== null) {
+            $ids = ScheduleSplit::withTrashed()->where('split_group_id', $split->split_group_id)->pluck('schedule_id')->map('intval')->all();
+        }
+        $semesterIds = Schedule::withTrashed()->whereIn('id', $ids)->pluck('semester_id')->unique()->map('intval')->all();
+        try {
+            app(\App\Services\Scheduling\Lock\SchedulingScopeLock::class)->execute($semesterIds, function () use ($request, $record, $ids): void {
+                DB::transaction(function () use ($request, $record, $ids): void {
+                    $rows = Schedule::withTrashed()->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->get();
+                    foreach ($rows as $row) {
+                        $message = $this->archivedParent($row);
+                        if ($message !== null) {
+                            abort(422, 'Restore the '.$message.' from Archives first.');
+                        }
+                        if (($message = $this->scheduleRestoreBlock($row)) !== null) {
+                            abort(422, $message);
+                        }
+                        if ($record instanceof ScheduleSplit) {
+                            abort_unless(in_array($row->status, Schedule::PLOTTING_EDITABLE_STATUSES, true), 422, 'This schedule is locked at its current approval stage. Recall it before restoring split metadata.');
+                        } elseif ($row->trashed()) {
+                            $row->restore();
+                            $this->audit($request, 'schedules', $row);
+                        }
+                    }
+                    if ($record instanceof ScheduleSplit) {
+                        ScheduleSplit::onlyTrashed()->whereKey($record->id)->lockForUpdate()->firstOrFail()->restore();
+                        $this->audit($request, 'schedule-splits', $record);
+                    }
+                    $rows = Schedule::whereIn('id', $ids)->get();
+                    $engine = app(\App\Services\Scheduling\Engine\RuleEngine::class);
+                    $violations = [];
+                    foreach ($rows as $row) {
+                        if ($row->split === null && ($row->is_hybrid
+                            || \App\Services\Scheduling\Support\SchedulingPolicy::isFixedMeetingPattern($row->preferred_pattern)
+                            || \App\Services\Scheduling\Support\SchedulingPolicy::consecutiveDayCount($row->preferred_pattern) !== null)) {
+                            $violations[] = ['rule' => 'meeting_group_required', 'message' => 'This meeting pattern requires its linked split metadata before restoration.'];
+                        }
+                        $violations = [...$violations, ...$engine->validate([...$row->toArray(), 'ignore_schedule_id' => $row->id])];
+                    }
+                    $groups = $rows->pluck('split_group_id')->filter()->unique()->all();
+                    $partners = Schedule::whereHas('split', fn ($query) => $query->whereIn('split_group_id', $groups))->get();
+                    $violations = [...$violations, ...$engine->validateConfiguredMeetingGroups($partners->toArray())];
+                    if ($violations !== []) {
+                        throw new \App\Exceptions\ScheduleConflictException($violations, 'This class cannot be restored under the current scheduling rules. Resolve the listed violations first.');
+                    }
+                    foreach ($rows->pluck('semester_id')->unique() as $semesterId) {
+                        $cases = $this->conflicts->scan((int) $semesterId, onlyScheduleIds: $ids);
+                        if ($cases !== []) {
+                            abort(422, 'This class cannot be restored: it would cause a '.str_replace('_', ' ', (string) $cases[0]->rule).' conflict with the current timetable. Move or remove the clashing class first.');
+                        }
+                    }
+                });
+            });
+        } catch (\App\Exceptions\ScheduleConflictException $exception) {
+            return response()->json($exception->payload(), 422);
+        } catch (QueryException) {
+            return response()->json(['message' => 'This record cannot be restored because an active record now uses the same unique value.'], 422);
+        }
+        ApiCache::forgetGroups(['departments.index', 'rooms.index', 'faculty.index', 'courses.index', 'semesters.index', 'semesters.active', 'initial.data', 'instructor_assignments.index']);
 
         return response()->json(['message' => 'Record restored successfully.']);
     }
@@ -177,18 +226,24 @@ class ArchiveController extends Controller
 
     private function archivedParent(Model $record): ?string
     {
-        $departmentId = $record->getAttribute('department_id');
-        if ($departmentId !== null) {
-            $department = Departments::onlyTrashed()->find($departmentId);
-            if ($department !== null) {
+        $departmentColumns = $record instanceof Course
+            ? ['department_id', 'teaching_department_id'] : ['department_id'];
+        foreach ($departmentColumns as $column) {
+            $id = $record->getAttribute($column);
+            if ($id !== null && ($department = Departments::onlyTrashed()->find($id)) !== null) {
                 return "{$department->department_name} department";
             }
         }
 
-        $programId = $record instanceof Program ? null : $record->getAttribute('program_id');
-        if ($programId !== null) {
-            $program = Program::onlyTrashed()->find($programId);
-            if ($program !== null) {
+        $programColumns = match (true) {
+            $record instanceof Program => [],
+            $record instanceof Rooms => ['home_program_id'],
+            $record instanceof Course => ['program_id', 'teaching_program_id', 'teaching_source_program_id'],
+            default => ['program_id'],
+        };
+        foreach ($programColumns as $column) {
+            $id = $record->getAttribute($column);
+            if ($id !== null && ($program = Program::onlyTrashed()->find($id)) !== null) {
                 return "{$program->code} program";
             }
         }

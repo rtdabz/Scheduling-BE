@@ -27,9 +27,9 @@ class UpdateSectionRequest extends FormRequest
             'section_name' => 'sometimes|string|max:255',
             'year_level' => SchedulingPolicy::allowedYearLevelsRule('sometimes'),
             'semester' => SchedulingPolicy::allowedSemestersRule('sometimes'),
-            'department_id' => 'sometimes|exists:departments,id',
-            'program_id' => ['sometimes', 'integer', Rule::exists('programs', 'id')->where(fn ($q) => $q->where('department_id', $departmentId))],
-            'semester_id' => 'sometimes|exists:semesters,id',
+            'department_id' => 'sometimes|exists:departments,id,deleted_at,NULL',
+            'program_id' => ['sometimes', 'integer', Rule::exists('programs', 'id')->whereNull('deleted_at')->where(fn ($q) => $q->where('department_id', $departmentId))],
+            'semester_id' => 'sometimes|exists:semesters,id,deleted_at,NULL',
             'curriculum_id' => 'sometimes|nullable|integer|exists:curriculum,id',
             'status' => SchedulingPolicy::allowedActiveStatusesRule('sometimes'),
         ];

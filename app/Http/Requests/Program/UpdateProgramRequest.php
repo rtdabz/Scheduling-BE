@@ -25,6 +25,13 @@ class UpdateProgramRequest extends FormRequest
     }
 
     /** @return array<string, mixed> */
+    public function validationData(): array
+    {
+        // Program ownership is immutable through this endpoint.
+        return [...parent::validationData(), 'department_id' => $this->route('program')->department_id];
+    }
+
+    /** @return array<string, mixed> */
     public function rules(): array
     {
         /** @var Program $program */
@@ -34,6 +41,7 @@ class UpdateProgramRequest extends FormRequest
         $code = $this->has('code') ? (string) $this->input('code') : (string) $program->code;
 
         return [
+            'department_id' => ['required', Rule::exists('departments', 'id')->whereNull('deleted_at')],
             'major' => [
                 'sometimes', 'nullable', 'string', 'max:255',
                 Rule::unique('programs', 'major')

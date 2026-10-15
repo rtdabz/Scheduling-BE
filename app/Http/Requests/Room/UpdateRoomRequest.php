@@ -21,7 +21,7 @@ class UpdateRoomRequest extends FormRequest
             'room_type' => SchedulingPolicy::allowedRoomTypesRule('sometimes|required|string'),
             'allow_lecture_usage' => 'sometimes|boolean',
             'status' => SchedulingPolicy::allowedRoomStatusesRule('sometimes|nullable|string'),
-            'department_id' => 'nullable|exists:departments,id',
+            'department_id' => 'nullable|exists:departments,id,deleted_at,NULL',
         ];
     }
 

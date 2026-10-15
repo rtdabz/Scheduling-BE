@@ -19,8 +19,8 @@ class BatchStoreSectionsRequest extends FormRequest
             'sections' => 'required|array|min:1|max:50',
             'sections.*.section_name' => 'required|string|max:255',
             'sections.*.year_level' => SchedulingPolicy::allowedYearLevelsRule('required'),
-            'sections.*.department_id' => 'required|exists:departments,id',
-            'sections.*.program_id' => 'required|integer|exists:programs,id',
+            'sections.*.department_id' => 'required|exists:departments,id,deleted_at,NULL',
+            'sections.*.program_id' => 'required|integer|exists:programs,id,deleted_at,NULL',
             'sections.*.curriculum_id' => 'nullable|integer|exists:curriculum,id',
         ];
     }

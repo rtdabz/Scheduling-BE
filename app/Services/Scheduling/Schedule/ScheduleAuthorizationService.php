@@ -111,6 +111,22 @@ final class ScheduleAuthorizationService
         );
     }
 
+    public function scopeReadableSchedules(EloquentBuilder $schedules, Request $request): EloquentBuilder
+    {
+        $departmentId = $this->departmentScope($request);
+        $statuses = $this->visibleScheduleStatuses($request);
+
+        $schedules
+            ->when($departmentId !== null, fn (EloquentBuilder $query) => $query->where(
+                fn (EloquentBuilder $owned) => $owned
+                    ->where('schedules.department_id', $departmentId)
+                    ->orWhereHas('course', fn (EloquentBuilder $course) => $course->where('teaching_department_id', $departmentId)),
+            ))
+            ->when($statuses !== null, fn (EloquentBuilder $query) => $query->whereIn('schedules.status', $statuses));
+
+        return $this->scopeSchedulesToProgram($schedules, $request);
+    }
+
     public function requestedDepartment(Request $request, mixed $requestedDepartmentId = null): ?int
     {
         $scope = $this->departmentScope($request);

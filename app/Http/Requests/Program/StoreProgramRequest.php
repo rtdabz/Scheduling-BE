@@ -25,7 +25,7 @@ class StoreProgramRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'department_id' => ['required', 'exists:departments,id'],
+            'department_id' => ['required', Rule::exists('departments', 'id')->whereNull('deleted_at')],
             'major' => ['nullable', 'string', 'max:255'],
             'code' => [
                 'required',

@@ -13,6 +13,8 @@ class Schedule extends Model
 
     public const UNLOCKED_STATUSES = ['draft', 'completed', 'revision', 'rejected', 'rejected_by_dean'];
 
+    public const PLOTTING_EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
+
     public const RESPONSE_RELATIONS = [
         'academicSemester:id,academic_year,semester',
         'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
