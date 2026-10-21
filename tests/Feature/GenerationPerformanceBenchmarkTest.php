@@ -102,7 +102,6 @@ class GenerationPerformanceBenchmarkTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
-            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
 
@@ -181,7 +180,6 @@ class GenerationPerformanceBenchmarkTest extends TestCase
             ];
             $config['requirements_by_course_id'] = app(ScheduleRequirementBuilderResolver::class)
                 ->build($section, $courseIds, $config);
-            $config['department_profile'] = 'laboratory_enabled';
             $configs[(int) $section->id] = $config;
         }
 

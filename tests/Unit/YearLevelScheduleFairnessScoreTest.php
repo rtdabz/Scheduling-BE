@@ -2,7 +2,6 @@
 
 namespace Tests\Unit;
 
-use App\Enums\DepartmentSchedulingProfile;
 use App\Models\Sections;
 use App\Services\Scheduling\Engine\CspSolver;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
@@ -74,8 +73,7 @@ class YearLevelScheduleFairnessScoreTest extends TestCase
     {
         $preflight = $this->createMock(ScheduleGenerationPreflightService::class);
         $preflight->expects($this->once())
-            ->method('validate')
-            ->willReturn(DepartmentSchedulingProfile::LABORATORY_ENABLED);
+            ->method('validate');
         $builders = $this->createMock(ScheduleRequirementBuilderResolver::class);
         $builders->expects($this->once())
             ->method('build')
@@ -95,7 +93,6 @@ class YearLevelScheduleFairnessScoreTest extends TestCase
             [$section],
             [7 => [
                 'course_ids' => [301, 302],
-                'department_profile' => 'laboratory_enabled',
                 'is_hybrid' => true,
                 'selected_split_session_course_ids' => [301, 302],
             ]],

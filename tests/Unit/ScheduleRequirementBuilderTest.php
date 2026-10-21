@@ -5,26 +5,25 @@ namespace Tests\Unit;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Sections;
-use App\Services\Scheduling\Generation\LaboratoryScheduleRequirementBuilder;
-use App\Services\Scheduling\Generation\StandardScheduleRequirementBuilder;
+use App\Services\Scheduling\Generation\CourseScheduleRequirementBuilder;
 use Illuminate\Database\Eloquent\Collection;
 use Tests\TestCase;
 
 class ScheduleRequirementBuilderTest extends TestCase
 {
-    public function test_standard_builder_never_allows_a_laboratory_room_for_a_lecture_course(): void
+    public function test_builder_never_allows_a_laboratory_room_for_a_minor_lecture_course(): void
     {
         $course = new Course([
             'id' => 10,
             'units' => 3,
             'lecture_hours' => 3,
             'lab_hours' => 0,
-            'course_category' => 'major',
+            'course_category' => 'minor',
             'room_type_required' => 'lecture',
         ]);
         $course->id = 10;
 
-        $requirements = app(StandardScheduleRequirementBuilder::class)->build(
+        $requirements = app(CourseScheduleRequirementBuilder::class)->build(
             new Sections,
             new Collection([$course]),
         );
@@ -34,7 +33,7 @@ class ScheduleRequirementBuilderTest extends TestCase
         $this->assertFalse($requirements[10][0]['allow_lecture_laboratory_fallback']);
     }
 
-    public function test_standard_builder_schedules_nstp_as_a_normal_minor_unless_the_department_made_it_field(): void
+    public function test_builder_schedules_nstp_as_a_normal_minor_unless_the_department_made_it_field(): void
     {
         $course = new Course([
             'id' => 11,
@@ -47,7 +46,7 @@ class ScheduleRequirementBuilderTest extends TestCase
         ]);
         $course->id = 11;
 
-        $requirements = app(StandardScheduleRequirementBuilder::class)->build(
+        $requirements = app(CourseScheduleRequirementBuilder::class)->build(
             new Sections,
             new Collection([$course]),
             ['mode' => 'on-site'],
@@ -59,7 +58,7 @@ class ScheduleRequirementBuilderTest extends TestCase
         $this->assertNotContains('field', $requirements[11][0]['allowed_delivery_modes']);
     }
 
-    public function test_laboratory_builder_emits_separate_lecture_and_laboratory_components(): void
+    public function test_builder_emits_separate_lecture_and_laboratory_components(): void
     {
         $department = new Departments(['lecture_lab_schedule_override_enabled' => true]);
         $section = new Sections;
@@ -74,7 +73,7 @@ class ScheduleRequirementBuilderTest extends TestCase
         ]);
         $course->id = 20;
 
-        $requirements = app(LaboratoryScheduleRequirementBuilder::class)->build(
+        $requirements = app(CourseScheduleRequirementBuilder::class)->build(
             $section,
             new Collection([$course]),
             ['selected_split_session_course_ids' => [20]],
@@ -87,7 +86,7 @@ class ScheduleRequirementBuilderTest extends TestCase
         $this->assertTrue($requirements[20][1]['is_split_component']);
     }
 
-    public function test_laboratory_builder_keeps_the_unit_derived_lab_length_without_the_override(): void
+    public function test_builder_keeps_the_unit_derived_lab_length_without_the_override(): void
     {
         $requirements = $this->splitRequirements(new Departments([
             'lecture_lab_schedule_override_enabled' => true,
@@ -176,7 +175,7 @@ class ScheduleRequirementBuilderTest extends TestCase
         ]);
         $course->id = 20;
 
-        return app(LaboratoryScheduleRequirementBuilder::class)->build(
+        return app(CourseScheduleRequirementBuilder::class)->build(
             $section,
             new Collection([$course]),
             ['selected_split_session_course_ids' => [20]],

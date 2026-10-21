@@ -36,7 +36,6 @@ class MajorLectureSplitSessionTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
-            'scheduling_profile' => $labHours > 0 ? 'laboratory_enabled' : 'standard',
             'major_lecture_split_schedule_override_enabled' => $majorLectureSplitEnabled,
         ]);
         $program = Program::create([

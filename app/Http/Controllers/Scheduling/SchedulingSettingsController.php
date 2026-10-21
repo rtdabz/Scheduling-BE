@@ -63,22 +63,6 @@ class SchedulingSettingsController extends Controller
             ], 403);
         }
 
-        $laboratorySettingKeys = [
-            'lecture_lab_schedule_override_enabled',
-            'custom_lab_duration_override_enabled',
-            'custom_lab_duration_6_hours_enabled',
-            'custom_lab_duration_5_hours_enabled',
-            'custom_lab_duration_other_enabled',
-        ];
-        $enablingLaboratorySetting = collect($laboratorySettingKeys)
-            ->contains(fn (string $key): bool => array_key_exists($key, $validated) && (bool) $validated[$key]);
-        if (($department->scheduling_profile ?? 'standard') === 'standard' && $enablingLaboratorySetting) {
-            return response()->json([
-                'error_code' => 'invalid_department_setting',
-                'department_profile' => 'standard',
-                'message' => 'Laboratory scheduling settings cannot be enabled for a standard department.',
-            ], 422);
-        }
         if (array_key_exists('lecture_lab_schedule_override_enabled', $validated)) {
             if ((bool) $validated['lecture_lab_schedule_override_enabled'] && ! $this->hasLectureLabCourses($department)) {
                 return response()->json([
@@ -191,7 +175,6 @@ class SchedulingSettingsController extends Controller
 
         return [
             'department_id' => $department->id,
-            'scheduling_profile' => (string) ($department->scheduling_profile ?? 'standard'),
             'lecture_lab_schedule_override_enabled' => (bool) $department->lecture_lab_schedule_override_enabled,
             'custom_lab_duration_override_enabled' => (bool) $department->custom_lab_duration_override_enabled,
             'custom_lab_duration_minutes' => $department->custom_lab_duration_minutes,

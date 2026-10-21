@@ -273,18 +273,6 @@ final class SchedulingPolicy
             'description' => 'Every selected course must have a positive duration representable on the scheduling grid.',
             'enforced_by' => ['schedule_generation_preflight', 'generation_configuration_validation', 'csp'],
         ],
-        'department_profile_mismatch' => [
-            'severity' => 'hard',
-            'category' => 'configuration',
-            'description' => 'A standard scheduling profile cannot generate laboratory course components.',
-            'enforced_by' => ['schedule_generation_preflight', 'generation_configuration_validation'],
-        ],
-        'invalid_department_setting' => [
-            'severity' => 'hard',
-            'category' => 'configuration',
-            'description' => 'Department scheduling settings must be compatible with the selected scheduling profile.',
-            'enforced_by' => ['schedule_generation_preflight', 'generation_configuration_validation'],
-        ],
         'no_physical_rooms' => [
             'severity' => 'hard',
             'category' => 'resource_capacity',

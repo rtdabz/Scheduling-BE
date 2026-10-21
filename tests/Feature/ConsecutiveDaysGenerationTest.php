@@ -182,7 +182,6 @@ class ConsecutiveDaysGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Nursing',
             'department_code' => 'NUR',
-            'scheduling_profile' => 'laboratory_enabled',
         ]);
         $section = Sections::create([
             'section_name' => 'NUR 1A',

@@ -131,12 +131,7 @@ class SchedulingSettingsControllerTest extends TestCase
         ])->assertStatus(422);
     }
 
-    /**
-     * A department running two curricula keeps its laboratories wherever they
-     * live. Reading only the first active curriculum let it onto the standard
-     * profile, and every section on the other curriculum then failed preflight.
-     */
-    public function test_the_standard_profile_is_refused_for_a_lab_in_a_second_curriculum(): void
+    public function test_legacy_profile_input_is_ignored_and_preserves_laboratory_defaults(): void
     {
         [$user, $department] = $this->laboratoryDepartment();
 
@@ -148,15 +143,20 @@ class SchedulingSettingsControllerTest extends TestCase
         $laboratory = Course::create(['course_code' => 'IT 101', 'course_name' => 'Programming 1', 'lecture_hours' => 2, 'lab_hours' => 1, 'units' => 3, 'course_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'status' => 'active']);
         $newer->courses()->attach($laboratory->id, ['year_level' => 1, 'semester' => 1]);
 
-        // Only the VPAA may change a department's profile.
+        // A stale client may still send the retired field with a normal edit.
+        $department->update(['custom_lab_duration_override_enabled' => true, 'custom_lab_duration_6_hours_enabled' => true]);
         $vpaa = $this->grantCapabilities(User::factory()->create(['role' => 'vpaa']));
 
         $this->actingAs($vpaa)
-            ->putJson('/api/departments/'.$department->id, ['scheduling_profile' => 'standard'])
-            ->assertStatus(422)
-            ->assertJsonPath('error_code', 'department_profile_mismatch');
+            ->putJson('/api/departments/'.$department->id, ['scheduling_profile' => 'standard', 'department_name' => 'Updated IT'])
+            ->assertOk()
+            ->assertJsonPath('department_name', 'Updated IT')
+            ->assertJsonMissingPath('scheduling_profile');
 
-        $this->assertSame('laboratory_enabled', $department->refresh()->scheduling_profile);
+        $department->refresh();
+        $this->assertTrue($department->custom_lab_duration_override_enabled);
+        $this->assertTrue($department->custom_lab_duration_6_hours_enabled);
+        $this->assertFalse(\Illuminate\Support\Facades\Schema::hasColumn('departments', 'scheduling_profile'));
     }
 
     /** @return array{0: User, 1: Departments} */
@@ -305,7 +305,6 @@ class SchedulingSettingsControllerTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
-            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => $splitEnabled,
         ]);
         \App\Models\Program::create([

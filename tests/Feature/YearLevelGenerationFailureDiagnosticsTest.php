@@ -323,7 +323,6 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
     {
         Queue::fake();
         ['user' => $user, 'semester' => $semester, 'department' => $department, 'section' => $section, 'course' => $course] = $this->patternFixture();
-        $department->update(['scheduling_profile' => 'laboratory_enabled']);
         $course->update(['course_category' => 'major', 'lecture_hours' => 2, 'lab_hours' => 1, 'room_type_required' => 'laboratory']);
         Rooms::create(['room_code' => 'LAB', 'building' => 'IT', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => $department->id]);
         $selected = [['type' => 'set_integrated_hybrid', 'section_id' => $section->id, 'course_id' => $course->id, 'value' => null]];
@@ -710,7 +709,6 @@ class YearLevelGenerationFailureDiagnosticsTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
-            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
             'gec_split_schedule_override_enabled' => true,
         ]);

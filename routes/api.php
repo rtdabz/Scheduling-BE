@@ -19,6 +19,7 @@ use App\Http\Controllers\Faculty\CourseTeachingAssignmentController;
 use App\Http\Controllers\Faculty\FacultyAvailabilityController;
 use App\Http\Controllers\Faculty\FacultyController;
 use App\Http\Controllers\Faculty\InstructorAssignmentController;
+use App\Http\Controllers\Reports\PdfPreviewController;
 use App\Http\Controllers\Reports\ReportsController;
 use App\Http\Controllers\Reports\VpaaDashboardController;
 use App\Http\Controllers\Rooms\ProgramRoomController;
@@ -41,6 +42,11 @@ Route::post('/reset-password', [AuthController::class, 'resetPassword'])->middle
 Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect'])->middleware('throttle:20,1');
 Route::get('/auth/google/callback', [AuthController::class, 'googleCallback'])->middleware('throttle:20,1');
 Route::post('/auth/google/exchange', [AuthController::class, 'googleExchange'])->middleware('throttle:20,1');
+
+Route::get('/pdf-previews/{preview}/{filename}', [PdfPreviewController::class, 'show'])
+    ->whereUuid('preview')
+    ->name('pdf-previews.show')
+    ->middleware([\App\Http\Middleware\ResolvePdfPreview::class, 'auth:sanctum', 'active', 'capability:schedule.view', 'throttle:60,1']);
 
 Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
@@ -81,6 +87,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('capability:schedule.view')->get('/schedule-history', [ScheduleHistoryController::class, 'index']);
 
     Route::middleware('capability:schedule.view')->group(function () {
+        Route::post('/pdf-previews', [PdfPreviewController::class, 'store'])->middleware('throttle:10,1');
+        Route::delete('/pdf-previews/{preview}', [PdfPreviewController::class, 'destroy'])->whereUuid('preview');
         Route::get('/reports', [ReportsController::class, 'index']);
         Route::get('/reports/departments/{department}', [ReportsController::class, 'show'])
             ->whereNumber('department');

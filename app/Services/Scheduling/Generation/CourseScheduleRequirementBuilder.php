@@ -3,11 +3,10 @@
 namespace App\Services\Scheduling\Generation;
 
 use App\Models\Sections;
-use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
-class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
+class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
 {
     public function build(Sections $section, Collection $courses, array $options = []): array
     {
@@ -71,13 +70,15 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                 'online' => ['online'],
                 default => $isExplicitMode ? [$mode] : ['on-site', 'online'],
             };
+            $lectureLabFallback = $componentType === 'lecture' && SchedulingPolicy::isLectureOnlyMajor($course);
+            $lectureRoomTypes = $lectureLabFallback ? ['lecture', 'laboratory'] : ['lecture'];
             $roomTypes = match ($componentType) {
                 'online' => ['online'],
                 'field' => ['field'],
                 'laboratory' => SchedulingPolicy::labRoomTypes((int) $section->department_id),
                 default => in_array('online', $allowedModes, true)
-                    ? ['lecture', 'laboratory', 'online']
-                    : ['lecture', 'laboratory'],
+                    ? [...$lectureRoomTypes, 'online']
+                    : $lectureRoomTypes,
             };
 
             $customSlots = CourseSetupOverrides::durationSlots($options, $courseId);
@@ -89,7 +90,7 @@ class LaboratoryScheduleRequirementBuilder implements ScheduleRequirementBuilder
                     durationSlots: $customSlots ?? max(1, (int) round((float) ($course->units ?? 0) * 2)),
                     eligibleRoomTypes: $roomTypes,
                     allowedDeliveryModes: $allowedModes,
-                    allowLectureLaboratoryFallback: $componentType === 'lecture' && $isMajor,
+                    allowLectureLaboratoryFallback: $lectureLabFallback,
                     customDuration: $customSlots !== null,
                     preferredRoomId: $componentType === 'online' ? null : $preferredRoomId,
                 ))->toArray(),

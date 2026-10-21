@@ -83,7 +83,6 @@ class ConsecutiveDaysYearLevelGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Nursing',
             'department_code' => 'NUR',
-            'scheduling_profile' => 'laboratory_enabled',
         ]);
         $program = Program::create(['department_id' => $department->id, 'code' => 'BSN', 'name' => 'Nursing']);
         $curriculum = Curriculum::create(['name' => 'Nursing Curriculum', 'department_id' => $department->id, 'code' => 'BSN-2026', 'effective_school_year' => '2026-2027', 'status' => 'active']);

@@ -52,7 +52,6 @@ final class ValidateGenerationConfiguration
         $this->validateSection($section, $snapshot, $violations);
         $this->validateReferences($configuration, $snapshot, $violations, $recommendations);
         $this->validateCourses($configuration, $section, $snapshot, $violations, $recommendations);
-        $this->validateDepartmentProfile($configuration, $snapshot, $violations, $recommendations);
         $this->validateRooms($configuration, $snapshot, $violations, $recommendations);
         $this->validateForcedDays($configuration, $snapshot, $violations, $recommendations);
 
@@ -308,50 +307,6 @@ final class ValidateGenerationConfiguration
      * @param  list<ConstraintViolation>  $violations
      * @param  list<GenerationConfigurationRecommendation>  $recommendations
      */
-    private function validateDepartmentProfile(
-        GenerationConfiguration $configuration,
-        SchedulingSnapshot $snapshot,
-        array &$violations,
-        array &$recommendations,
-    ): void {
-        if (($snapshot->departmentSettings['scheduling_profile'] ?? 'standard') !== 'standard') {
-            return;
-        }
-
-        foreach ($configuration->courseIds as $courseId) {
-            $course = $snapshot->coursesById[$courseId] ?? null;
-            if (is_array($course) && SchedulingConstraintPredicates::isLaboratoryCourse($course)) {
-                $violations[] = $this->violation(
-                    'department_profile_mismatch',
-                    'A standard department profile cannot generate laboratory course components.',
-                    $this->courseContext($course),
-                );
-                $recommendations[] = $this->removeCourseRecommendation($configuration, $courseId, $course, 'The department profile does not support laboratory components.');
-            }
-        }
-
-        foreach ([
-            'custom_lab_duration_override_enabled',
-            'custom_lab_duration_6_hours_enabled',
-            'custom_lab_duration_5_hours_enabled',
-            'custom_lab_duration_other_enabled',
-        ] as $setting) {
-            if (! (bool) ($snapshot->departmentSettings[$setting] ?? false)) {
-                continue;
-            }
-
-            $violations[] = $this->violation(
-                'invalid_department_setting',
-                "The standard department profile has {$setting} enabled.",
-                ['setting' => $setting],
-            );
-        }
-    }
-
-    /**
-     * @param  list<ConstraintViolation>  $violations
-     * @param  list<GenerationConfigurationRecommendation>  $recommendations
-     */
     private function validateRooms(
         GenerationConfiguration $configuration,
         SchedulingSnapshot $snapshot,
@@ -361,7 +316,9 @@ final class ValidateGenerationConfiguration
         $availableRooms = array_values(array_filter(
             $snapshot->roomsById,
             fn (array $room): bool => (string) ($room['status'] ?? '') === 'available'
-                && (($room['department_id'] ?? null) === null || (int) $room['department_id'] === $snapshot->departmentId),
+                && (($room['department_id'] ?? null) === null
+                    || (int) $room['department_id'] === $snapshot->departmentId
+                    || ! empty($room['grant_windows'])),
         ));
         $hasLectureRoom = collect($availableRooms)->contains(static fn (array $room): bool => ($room['room_type'] ?? null) === 'lecture');
         $labRoomTypes = SchedulingPolicy::labRoomTypes($snapshot->departmentId);
@@ -380,9 +337,12 @@ final class ValidateGenerationConfiguration
             $isLaboratory = SchedulingConstraintPredicates::isLaboratoryCourse($course);
 
             $explicitlyOnSite = ($configuration->deliveryModesByCourseId[$courseId] ?? null) === 'on-site';
-            $standardProfile = ($snapshot->departmentSettings['scheduling_profile'] ?? 'standard') === 'standard';
-            if ($mode === 'on-site' && ! $isLaboratory && ! $isLectureLabSplit && ! $isHybridSplit && ! $hasLectureRoom
-                && ($standardProfile || $explicitlyOnSite)) {
+            $isField = $mode === 'field' || SchedulingConstraintPredicates::isFieldCourse($course, $snapshot->fieldCourseCodes);
+            $hasCompatibleLectureRoom = $hasLectureRoom || collect($availableRooms)->contains(
+                static fn (array $room): bool => SchedulingPolicy::laboratoryServesLecture($course, $room),
+            );
+            if ($mode === 'on-site' && ! $isField && ! $isLaboratory && ! $isLectureLabSplit && ! $isHybridSplit
+                && ! $hasCompatibleLectureRoom && $explicitlyOnSite) {
                 $violations[] = $this->violation(
                     'no_physical_rooms',
                     'No eligible lecture room is available for an on-site course.',
@@ -402,7 +362,7 @@ final class ValidateGenerationConfiguration
                     );
             }
 
-            if (($isLaboratory || $isLectureLabSplit) && ! $hasLaboratoryRoom) {
+            if (! $isField && ($mode !== 'online' || $isLectureLabSplit) && ($isLaboratory || $isLectureLabSplit) && ! $hasLaboratoryRoom) {
                 $severity = $configuration->allowRoomTbaFallback ? 'warning' : 'hard';
                 $ruleId = $configuration->allowRoomTbaFallback ? 'laboratory_room_unresolved' : 'no_physical_rooms';
                 $violations[] = $this->violation(

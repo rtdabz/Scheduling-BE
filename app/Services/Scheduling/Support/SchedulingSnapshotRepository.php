@@ -476,7 +476,6 @@ final class SchedulingSnapshotRepository
     private function departmentSettings(Departments $department): array
     {
         return [
-            'scheduling_profile' => (string) ($department->scheduling_profile ?? 'standard'),
             'lecture_lab_schedule_override_enabled' => (bool) $department->lecture_lab_schedule_override_enabled,
             'custom_lab_duration_override_enabled' => (bool) $department->custom_lab_duration_override_enabled,
             'custom_lab_duration_minutes' => $department->custom_lab_duration_minutes === null ? null : (int) $department->custom_lab_duration_minutes,

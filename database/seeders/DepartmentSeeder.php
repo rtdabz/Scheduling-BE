@@ -10,14 +10,14 @@ class DepartmentSeeder extends Seeder
     public function run(): void
     {
         $departments = [
-            ['department_name' => 'College of Arts and Sciences', 'department_code' => 'CAS', 'scheduling_profile' => 'standard'],
-            ['department_name' => 'College of Business Administration', 'department_code' => 'CBA', 'scheduling_profile' => 'standard'],
-            ['department_name' => 'College of Criminal Justice and Public Safety', 'department_code' => 'CCJPS', 'scheduling_profile' => 'standard'],
-            ['department_name' => 'College of Education', 'department_code' => 'CED', 'scheduling_profile' => 'standard'],
-            ['department_name' => 'College of Hospitality Management', 'department_code' => 'CHM', 'scheduling_profile' => 'laboratory_enabled'],
-            ['department_name' => 'College of Information Technology', 'department_code' => 'CIT', 'scheduling_profile' => 'laboratory_enabled'],
-            ['department_name' => 'College of Library and Information Science', 'department_code' => 'CLIS', 'scheduling_profile' => 'standard'],
-            ['department_name' => 'College of Midwifery', 'department_code' => 'CM', 'scheduling_profile' => 'laboratory_enabled'],
+            ['department_name' => 'College of Arts and Sciences', 'department_code' => 'CAS'],
+            ['department_name' => 'College of Business Administration', 'department_code' => 'CBA'],
+            ['department_name' => 'College of Criminal Justice and Public Safety', 'department_code' => 'CCJPS'],
+            ['department_name' => 'College of Education', 'department_code' => 'CED'],
+            ['department_name' => 'College of Hospitality Management', 'department_code' => 'CHM'],
+            ['department_name' => 'College of Information Technology', 'department_code' => 'CIT'],
+            ['department_name' => 'College of Library and Information Science', 'department_code' => 'CLIS'],
+            ['department_name' => 'College of Midwifery', 'department_code' => 'CM'],
         ];
 
         foreach ($departments as $department) {
@@ -25,7 +25,6 @@ class DepartmentSeeder extends Seeder
                 ['department_code' => $department['department_code']],
                 [
                     'department_name' => $department['department_name'],
-                    'scheduling_profile' => $department['scheduling_profile'],
                 ],
             );
         }

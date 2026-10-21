@@ -5,10 +5,7 @@ namespace App\Http\Controllers\Academic;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Department\StoreDepartmentRequest;
 use App\Http\Requests\Department\UpdateDepartmentRequest;
-use App\Models\Course;
-use App\Models\Curriculum;
 use App\Models\Departments;
-use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -68,24 +65,6 @@ class DepartmentsController extends Controller
     {
         $validated = $request->validated();
 
-        if (($validated['scheduling_profile'] ?? null) === 'standard' && $this->hasLaboratoryCourses($department)) {
-            return response()->json([
-                'error_code' => 'department_profile_mismatch',
-                'department_profile' => 'standard',
-                'message' => 'This department still has laboratory courses in its active curriculum, so specialized rooms must stay on.',
-            ], 422);
-        }
-
-        if (($validated['scheduling_profile'] ?? null) === 'standard') {
-            $validated += [
-                'lecture_lab_schedule_override_enabled' => false,
-                'custom_lab_duration_override_enabled' => false,
-                'custom_lab_duration_6_hours_enabled' => false,
-                'custom_lab_duration_5_hours_enabled' => false,
-                'custom_lab_duration_other_enabled' => false,
-            ];
-        }
-
         $department->update($validated);
         ApiCache::forgetGroups(['departments.index', 'initial.data']);
 
@@ -114,20 +93,4 @@ class DepartmentsController extends Controller
         return response()->json(['message' => 'Department archived successfully']);
     }
 
-    private function hasLaboratoryCourses(Departments $department): bool
-    {
-        $activeCurriculumIds = Curriculum::query()
-            ->where('department_id', $department->id)
-            ->where('status', 'active')
-            ->pluck('id');
-
-        if ($activeCurriculumIds->isEmpty()) {
-            return false;
-        }
-
-        return Course::query()
-            ->whereHas('curriculum', fn ($scope) => $scope->whereIn('curriculum.id', $activeCurriculumIds))
-            ->get(['id', 'lab_hours', 'room_type_required'])
-            ->contains(fn (Course $course): bool => SchedulingPolicy::isLaboratoryCourse($course));
-    }
 }

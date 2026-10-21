@@ -181,7 +181,6 @@ class SetupCoursesConfigureOverridesTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
-            'scheduling_profile' => 'laboratory_enabled',
         ]);
         $section = Sections::create([
             'section_name' => 'IT 1A',

@@ -1726,7 +1726,7 @@ class CspSolver
 
             if ($throwOnEmptyDomain && $emptyAfterRequirements) {
                 throw new RuntimeException(sprintf(
-                    '%s / %s has no eligible scheduling candidates for the configured department profile.',
+                    '%s / %s has no eligible scheduling candidates for the selected course configuration.',
                     $this->sectionLabel($sectionId),
                     (string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id)),
                 ));

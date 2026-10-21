@@ -104,7 +104,6 @@ class YearLevelScheduleGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
-            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
         // Schedule capabilities and section scheduling both require the
@@ -149,7 +148,6 @@ class YearLevelScheduleGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
-            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
         // Schedule capabilities and section scheduling both require the
@@ -235,7 +233,6 @@ class YearLevelScheduleGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
-            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
         // Schedule capabilities and section scheduling both require the
@@ -328,7 +325,6 @@ class YearLevelScheduleGenerationTest extends TestCase
             $department = Departments::create([
                 'department_name' => "Information Technology {$yearLevel}",
                 'department_code' => "IT{$yearLevel}",
-                'scheduling_profile' => 'laboratory_enabled',
                 'lecture_lab_schedule_override_enabled' => true,
                 'gec_split_schedule_override_enabled' => true,
             ]);
@@ -426,7 +422,6 @@ class YearLevelScheduleGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'IT',
-            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
             'gec_split_schedule_override_enabled' => true,
         ]);

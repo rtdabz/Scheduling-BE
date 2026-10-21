@@ -334,14 +334,13 @@ class ScheduleRecommendationController extends Controller
 
         $configsBySectionId = [];
         try {
-            ['configs' => $configsBySectionId, 'profile' => $profile] = $this->prepareYearLevelConfigs($sections, $configs, $validated);
+            ['configs' => $configsBySectionId] = $this->prepareYearLevelConfigs($sections, $configs, $validated);
 
             $result = $this->yearLevelGenerator->preview($sections->all(), $configsBySectionId);
         } catch (ScheduleGenerationPreflightException $exception) {
             return response()->json($exception->payload(), 422);
         } catch (YearLevelGenerationException $exception) {
             return response()->json(array_merge($exception->payload(), [
-                'department_profile' => $profile->value ?? null,
                 'year_level' => (int) $validated['year_level'],
                 'sections' => $sections->map(fn (Sections $section): array => [
                     'id' => (int) $section->id,
@@ -354,7 +353,6 @@ class ScheduleRecommendationController extends Controller
 
         return response()->json([
             'message' => 'Year-level schedule recommendations generated successfully.',
-            'department_profile' => $profile->value,
             'year_level' => (int) $validated['year_level'],
             'applied_strategy' => $result['applied_strategy'] ?? null,
             'applied_adjustments' => $result['applied_adjustments'] ?? [],
@@ -650,16 +648,15 @@ class ScheduleRecommendationController extends Controller
             $sectionConfig[CourseSetupOverrides::PREFERRED_ROOMS_KEY] = CourseSetupOverrides::normalizePreferredRooms(
                 $section, $config['preferred_rooms_by_course_id'] ?? [], $courseIds, $sectionConfig,
             );
-            $profile = $this->preflight->validate($section, $courseIds, $sectionConfig);
+            $this->preflight->validate($section, $courseIds, $sectionConfig);
             $sectionConfig['requirements_by_course_id'] = $this->requirementBuilders->build($section, $courseIds, $sectionConfig);
-            $sectionConfig['department_profile'] = $profile->value;
             $prepared[$sectionId] = $sectionConfig;
         }
         if ($result['applied'] !== []) {
             $prepared[array_key_first($prepared)]['_selected_adjustments'] = $result['applied'];
         }
 
-        return ['configs' => $prepared, 'profile' => $profile, 'applied' => $result['applied']];
+        return ['configs' => $prepared, 'applied' => $result['applied']];
     }
 
     private function selectedAdjustmentRules(): array

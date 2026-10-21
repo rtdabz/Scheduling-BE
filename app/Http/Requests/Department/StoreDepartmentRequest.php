@@ -17,7 +17,6 @@ class StoreDepartmentRequest extends FormRequest
         return [
             'department_name' => 'required|string|max:255|unique:departments,department_name',
             'department_code' => 'required|string|max:20|unique:departments,department_code',
-            'scheduling_profile' => 'sometimes|in:standard,laboratory_enabled',
             'logo' => ['nullable', 'string', 'max:200000', 'regex:/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/]+={0,2}$/'],
         ];
     }

@@ -231,7 +231,6 @@ class ProgramRoomShareTest extends TestCase
         $cas = Departments::create([
             'department_name' => 'College of Arts and Sciences',
             'department_code' => 'CAS',
-            'scheduling_profile' => 'laboratory_enabled',
         ]);
         $x = Program::create(['department_id' => $cas->id, 'code' => 'X', 'name' => 'Program X']);
         $y = Program::create(['department_id' => $cas->id, 'code' => 'Y', 'name' => 'Program Y']);

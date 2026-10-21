@@ -24,9 +24,9 @@ class DepartmentSchedulingPreflightTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_standard_department_generates_lecture_course_without_laboratory_room(): void
+    public function test_department_generates_lecture_course_without_laboratory_room(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         $this->attachCourse($department, $course, $section);
         Rooms::create([
             'room_code' => 'BA 101',
@@ -46,12 +46,12 @@ class DepartmentSchedulingPreflightTest extends TestCase
         );
 
         $response->assertOk();
-        $this->assertSame('standard', $response->json('department_profile'));
+        $response->assertJsonMissingPath('department_profile');
     }
 
     public function test_preflight_uses_the_active_curriculum_period_instead_of_global_course_metadata(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         $course->update([
             'year_level' => '2',
             'semester' => '2nd',
@@ -75,12 +75,12 @@ class DepartmentSchedulingPreflightTest extends TestCase
         );
 
         $response->assertOk();
-        $this->assertSame('standard', $response->json('department_profile'));
+        $response->assertJsonMissingPath('department_profile');
     }
 
-    public function test_standard_department_does_not_use_an_available_laboratory_for_a_lecture_course(): void
+    public function test_lecture_course_prefers_a_classroom_over_a_laboratory(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         $this->attachCourse($department, $course, $section);
         $lecture = Rooms::create([
             'room_code' => 'BA 101',
@@ -114,9 +114,9 @@ class DepartmentSchedulingPreflightTest extends TestCase
         }
     }
 
-    public function test_standard_department_rejects_laboratory_course_before_solver(): void
+    public function test_department_generates_a_laboratory_course_without_a_profile(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         $course->update([
             'course_code' => 'BA LAB 101',
             'lab_hours' => 1,
@@ -126,7 +126,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
         $room = Rooms::create([
             'room_code' => 'BA 102',
             'building' => 'Building 1',
-            'room_type' => 'lecture',
+            'room_type' => 'laboratory',
             'status' => 'available',
             'department_id' => $department->id,
         ]);
@@ -152,16 +152,18 @@ class DepartmentSchedulingPreflightTest extends TestCase
             $course,
         );
 
-        $response->assertStatus(422)
-            ->assertJsonPath('error_code', 'schedule_generation_preflight_failed')
-            ->assertJsonPath('department_profile', 'standard')
-            ->assertJsonPath('issues.0.code', 'department_profile_mismatch');
+        $response->assertOk()->assertJsonMissingPath('department_profile');
+        $this->assertNotEmpty($response->json('schedules'));
+        foreach ($response->json('schedules') as $row) {
+            $this->assertSame($room->id, $row['room_id']);
+            $this->assertSame('on-site', $row['mode']);
+        }
         $this->assertDatabaseHas('schedules', ['id' => $existing->id]);
     }
 
-    public function test_standard_department_reports_missing_lecture_room(): void
+    public function test_department_reports_missing_physical_rooms_without_a_profile_error(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('EDUC', 'Education', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('EDUC', 'Education');
         $this->attachCourse($department, $course, $section);
 
         $user = User::factory()->create([
@@ -173,18 +175,18 @@ class DepartmentSchedulingPreflightTest extends TestCase
         $response = $this->previewYearLevel($user, $section, $course);
 
         $response->assertStatus(422)
-            ->assertJsonPath('error_code', 'schedule_generation_preflight_failed')
-            ->assertJsonPath('issues.0.code', 'missing_lecture_room');
+            ->assertJsonPath('error_code', 'year_level_generation_failed')
+            ->assertJsonPath('blocking_constraints.0.code', 'no_physical_rooms')
+            ->assertJsonMissingPath('department_profile');
     }
 
     /**
-     * With no lecture room the preflight above reports the gap, but the solver
-     * itself no longer dead-ends: a lecture-only course falls back to online
+     * With no lecture room a lecture-only course falls back to online
      * delivery rather than taking a laboratory it is not entitled to.
      */
-    public function test_standard_solver_moves_a_lecture_online_when_no_lecture_room_is_usable(): void
+    public function test_solver_moves_a_lecture_online_when_no_lecture_room_is_usable(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         $this->attachCourse($department, $course, $section);
         Rooms::create([
             'room_code' => 'BA Lab',
@@ -214,7 +216,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_a_forced_day_the_course_cannot_use_is_named_as_the_cause(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         // With Sunday classes on, a Required Day only empties the domain when
         // something else rules that day out -- here an MW meeting pattern,
         // whose candidates never fall on Sunday.
@@ -239,7 +241,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_a_sunday_required_day_names_the_disabled_sunday_setting(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         $this->attachCourse($department, $course, $section);
         DepartmentCourseRules::put((int) $department->id, (int) $course->id, null, ['forced_day' => 'Sunday']);
         $requirements = app(ScheduleRequirementBuilderResolver::class)->build($section, [$course->id]);
@@ -259,7 +261,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
     public function test_an_fs_pattern_places_both_meetings_on_friday_and_saturday(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         $this->attachCourse($department, $course, $section);
         Rooms::create([
             'room_code' => 'BA 102',
@@ -286,9 +288,9 @@ class DepartmentSchedulingPreflightTest extends TestCase
         $this->assertSame(['Friday', 'Saturday'], $days);
     }
 
-    public function test_department_audit_reports_profile_and_room_counts(): void
+    public function test_department_audit_reports_course_requirements_and_room_counts(): void
     {
-        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration', 'standard');
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         $this->attachCourse($department, $course, $section);
         Rooms::create([
             'room_code' => 'BA 103',
@@ -300,10 +302,83 @@ class DepartmentSchedulingPreflightTest extends TestCase
 
         $row = app(DepartmentSchedulingAuditService::class)->audit($department->id)[0];
 
-        $this->assertSame('standard', $row['profile']);
+        $this->assertArrayNotHasKey('profile', $row);
         $this->assertSame(1, $row['active_course_count']);
         $this->assertSame(1, $row['available_lecture_rooms']);
-        $this->assertFalse($row['profile_mismatch']);
+        $this->assertSame(0, $row['laboratory_course_count']);
+    }
+
+    public function test_an_eligible_lecture_major_can_use_a_lab_marked_for_lecture_use(): void
+    {
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
+        $this->attachCourse($department, $course, $section);
+        $room = Rooms::create([
+            'room_code' => 'BA Lab',
+            'building' => 'Building 1',
+            'room_type' => 'laboratory',
+            'allow_lecture_usage' => true,
+            'status' => 'available',
+            'department_id' => $department->id,
+        ]);
+        $user = $this->grantCapabilities(User::factory()->create([
+            'role' => 'secretary', 'department_id' => $department->id,
+        ]));
+
+        $response = $this->previewYearLevel($user, $section, $course)->assertOk();
+        $this->assertNotEmpty($response->json('schedules'));
+        foreach ($response->json('schedules') as $row) {
+            $this->assertSame($room->id, $row['room_id']);
+            $this->assertSame('on-site', $row['mode']);
+        }
+    }
+
+    public static function configurationRoomCases(): array
+    {
+        return [
+            'lab course with a lab' => ['laboratory', false, false, true],
+            'borrowed lab with a grant' => ['laboratory', true, true, true],
+            'foreign lab without a grant' => ['laboratory', true, false, false],
+            'classroom cannot serve a lab by default' => ['lecture', false, false, false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('configurationRoomCases')]
+    public function test_configuration_checks_course_requirements_and_room_access_even_with_legacy_profile_metadata(
+        string $roomType, bool $foreign, bool $granted, bool $canGenerate,
+    ): void {
+        [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
+        $course->update(['lecture_hours' => 2, 'lab_hours' => 1, 'room_type_required' => 'laboratory']);
+        $this->attachCourse($department, $course, $section);
+        $room = Rooms::create([
+            'room_code' => 'Room 101', 'building' => 'Building 1', 'room_type' => $roomType,
+            'status' => 'available', 'department_id' => $department->id,
+        ]);
+        $configuration = new \App\Services\Scheduling\Domain\GenerationConfiguration(
+            sectionId: $section->id, courseIds: [$course->id], allowRoomTbaFallback: false,
+        );
+        $payload = app(\App\Services\Scheduling\Support\SchedulingSnapshotRepository::class)
+            ->captureForConfiguration($semester->id, $department->id, $configuration)->toArray();
+        // Old serialized metadata cannot veto course eligibility. Foreign rooms
+        // referenced by schedules in a snapshot still require an access grant.
+        $payload['department_settings']['scheduling_profile'] = 'standard';
+        if ($foreign) {
+            $payload['rooms'][$room->id]['department_id'] = $department->id + 100;
+        }
+        if ($granted) {
+            $payload['rooms'][$room->id]['grant_windows'] = [
+                ['day' => 'Monday', 'start_time' => '07:00:00', 'end_time' => '17:00:00'],
+            ];
+        }
+        $snapshot = \App\Services\Scheduling\Domain\SchedulingSnapshot::fromArray($payload);
+        $result = app(\App\Services\Scheduling\Generation\ValidateGenerationConfiguration::class)
+            ->validateSnapshot($configuration, $snapshot);
+
+        $this->assertSame($canGenerate, $result->canGenerate(), json_encode($result->toArray()));
+        $rules = array_column($result->toArray()['violations'], 'rule_id');
+        $this->assertNotContains('department_profile_mismatch', $rules);
+        if (! $canGenerate) {
+            $this->assertContains('no_physical_rooms', $rules);
+        }
     }
 
     private function previewYearLevel(User $user, Sections $section, Course $course): TestResponse
@@ -320,7 +395,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
         ]);
     }
 
-    private function createBase(string $code, string $name, string $profile): array
+    private function createBase(string $code, string $name): array
     {
         $semester = Semester::create([
             'academic_year' => '2026-2027',
@@ -331,7 +406,6 @@ class DepartmentSchedulingPreflightTest extends TestCase
         $department = Departments::create([
             'department_name' => $name,
             'department_code' => $code,
-            'scheduling_profile' => $profile,
         ]);
         // Scheduling endpoints require the department to own at least one
         // program before they will generate anything.

@@ -14,7 +14,6 @@ class Departments extends Model
     protected $fillable = [
         'department_name',
         'department_code',
-        'scheduling_profile',
         'logo',
         'lecture_lab_schedule_override_enabled',
         'custom_lab_duration_override_enabled',
@@ -37,7 +36,6 @@ class Departments extends Model
         'major_lecture_split_schedule_override_enabled' => 'boolean',
         'sunday_classes_enabled' => 'boolean',
         'room_sharing_policy' => 'string',
-        'scheduling_profile' => 'string',
     ];
 
     public const ROOM_SHARING_OPEN = 'open';

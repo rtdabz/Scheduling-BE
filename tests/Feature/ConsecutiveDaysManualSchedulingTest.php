@@ -217,7 +217,6 @@ class ConsecutiveDaysManualSchedulingTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Nursing',
             'department_code' => 'NUR',
-            'scheduling_profile' => 'laboratory_enabled',
             'sunday_classes_enabled' => $sundayClasses,
         ]);
         $program = Program::create(['department_id' => $department->id, 'code' => 'BSN', 'name' => 'Nursing']);

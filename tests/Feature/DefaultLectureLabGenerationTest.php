@@ -1116,7 +1116,6 @@ class DefaultLectureLabGenerationTest extends TestCase
         $department = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
-            'scheduling_profile' => 'laboratory_enabled',
             'lecture_lab_schedule_override_enabled' => true,
         ]);
         $section = Sections::create([

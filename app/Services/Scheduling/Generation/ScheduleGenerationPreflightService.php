@@ -2,22 +2,16 @@
 
 namespace App\Services\Scheduling\Generation;
 
-use App\Enums\DepartmentSchedulingProfile;
 use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Models\Course;
-use App\Models\Departments;
-use App\Models\Rooms;
 use App\Models\Sections;
-use App\Services\Scheduling\Department\DepartmentSchedulingProfileResolver;
 use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
-use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
 class ScheduleGenerationPreflightService
 {
     public function __construct(
-        private readonly DepartmentSchedulingProfileResolver $profiles,
         private readonly SectionCurriculumResolver $curricula,
     ) {}
 
@@ -27,29 +21,19 @@ class ScheduleGenerationPreflightService
      *
      * @throws ScheduleGenerationPreflightException
      */
-    public function validate(Sections $section, array $courseIds, array $options = []): DepartmentSchedulingProfile
+    public function validate(Sections $section, array $courseIds, array $options = []): void
     {
-        $department = $section->department ?: Departments::query()->findOrFail((int) $section->department_id);
-        $profile = $this->profiles->resolve($department);
         $courses = Course::query()
             ->whereIn('id', array_values(array_unique(array_map('intval', $courseIds))))
             ->orderBy('course_code')
             ->get();
 
-        $issues = [];
-        $issues = [...$issues, ...$this->commonIssues($section, $courses, $courseIds)];
-
-        if ($profile === DepartmentSchedulingProfile::STANDARD) {
-            $issues = [...$issues, ...$this->standardIssues($section, $department, $courses, $options)];
-        } else {
-            $issues = [...$issues, ...$this->laboratoryIssues($section, $department, $courses, $options)];
-        }
-
+        // Resource feasibility and fallbacks belong to configuration validation and
+        // the solver. Course eligibility is independent of department classification.
+        $issues = $this->commonIssues($section, $courses, $courseIds);
         if ($issues !== []) {
-            throw new ScheduleGenerationPreflightException($issues, $profile);
+            throw new ScheduleGenerationPreflightException($issues);
         }
-
-        return $profile;
     }
 
     /** @return list<array<string, mixed>> */
@@ -144,90 +128,6 @@ class ScheduleGenerationPreflightService
             'summer' => 3,
             default => 0,
         };
-    }
-
-    /** @return list<array<string, mixed>> */
-    private function standardIssues(Sections $section, Departments $department, Collection $courses, array $options): array
-    {
-        $issues = [];
-        $laboratoryCourses = $courses->filter(fn (Course $course): bool => SchedulingPolicy::isLaboratoryCourse($course));
-
-        foreach ($laboratoryCourses as $course) {
-            $issues[] = $this->courseIssue(
-                'department_profile_mismatch',
-                "Standard department {$department->department_code} contains laboratory course {$course->course_code}.",
-                $section,
-                $course,
-                'Correct the course data or change the department profile to laboratory-enabled.',
-            );
-        }
-
-        $labSettings = [
-            'custom_lab_duration_override_enabled',
-            'custom_lab_duration_6_hours_enabled',
-            'custom_lab_duration_5_hours_enabled',
-            'custom_lab_duration_other_enabled',
-        ];
-        foreach ($labSettings as $setting) {
-            if ((bool) $department->{$setting}) {
-                $issues[] = $this->issue(
-                    'invalid_department_setting',
-                    "Standard department {$department->department_code} has laboratory setting {$setting} enabled.",
-                    $section,
-                    ['setting' => $setting],
-                    'Disable the laboratory setting before generating a standard schedule.',
-                );
-            }
-        }
-
-        if ($this->requiresPhysicalLectureRoom($courses, $options, (int) $section->department_id) && ! $this->hasRoom($section, 'lecture')) {
-            $issues[] = $this->issue(
-                'missing_lecture_room',
-                "No eligible lecture room is available for standard department {$department->department_code}.",
-                $section,
-                ['room_type' => 'lecture'],
-                'Assign an available lecture room to the department or mark a shared lecture room.',
-            );
-        }
-
-        return $issues;
-    }
-
-    /** @return list<array<string, mixed>> */
-    private function laboratoryIssues(Sections $section, Departments $department, Collection $courses, array $options): array
-    {
-        $issues = [];
-
-        return $issues;
-    }
-
-    private function requiresPhysicalLectureRoom(Collection $courses, array $options, int $departmentId): bool
-    {
-        $defaultMode = (string) ($options['mode'] ?? 'on-site');
-        $deliveryModes = array_map('strval', $options['delivery_modes_by_course_id'] ?? []);
-        $hybridSplitIds = array_map('intval', $options['hybrid_split_course_ids'] ?? []);
-
-        return $courses->contains(function (Course $course) use ($defaultMode, $deliveryModes, $departmentId, $hybridSplitIds): bool {
-            $mode = $deliveryModes[(string) $course->id] ?? $deliveryModes[(int) $course->id] ?? $defaultMode;
-
-            return $mode === 'on-site'
-                && ! SchedulingPolicy::isFieldCourse($course, $departmentId)
-                && ! SchedulingPolicy::isLaboratoryCourse($course)
-                && ! in_array((int) $course->id, $hybridSplitIds, true);
-        });
-    }
-
-    private function hasRoom(Sections $section, string $roomType): bool
-    {
-        return Rooms::query()
-            ->where('status', 'available')
-            ->where('room_type', $roomType)
-            ->tap(fn ($query) => app(RoomAccessPolicy::class)->scopeReachableRooms(
-                $query,
-                (int) $section->department_id,
-                (int) $section->semester_id,
-            ))
-            ->exists();
     }
 
     /** @param array<string, mixed> $context */

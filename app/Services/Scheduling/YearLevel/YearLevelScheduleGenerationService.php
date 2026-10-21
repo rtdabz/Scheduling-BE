@@ -871,19 +871,17 @@ class YearLevelScheduleGenerationService
     {
         $laboratoryRequired = [];
         foreach ($courses as $course) {
-            if ((float) ($course->lab_hours ?? 0) > 0 || (string) ($course->room_type_required ?? '') === 'laboratory') {
+            if (SchedulingPolicy::isLaboratoryCourse($course)) {
                 $laboratoryRequired[(int) $course->id] = true;
             }
         }
 
         foreach ($configsBySectionId as $sectionId => $config) {
             $courseIds = array_map('intval', $config['course_ids'] ?? []);
-            $config['_laboratory_required_course_count'] = ($config['department_profile'] ?? null) === 'standard'
-                ? 0
-                : count(array_filter(
-                    $courseIds,
-                    static fn (int $courseId): bool => isset($laboratoryRequired[$courseId]),
-                ));
+            $config['_laboratory_required_course_count'] = count(array_filter(
+                $courseIds,
+                static fn (int $courseId): bool => isset($laboratoryRequired[$courseId]),
+            ));
             $config['_estimated_room_demand'] = $this->estimatedRoomDemand($config);
             $configsBySectionId[$sectionId] = $config;
         }
@@ -932,12 +930,11 @@ class YearLevelScheduleGenerationService
 
             $courseIds = array_map('intval', $next[$sectionId]['course_ids'] ?? []);
             try {
-                $profile = $this->preflight()->validate($section, $courseIds, $next[$sectionId]);
+                $this->preflight()->validate($section, $courseIds, $next[$sectionId]);
             } catch (ScheduleGenerationPreflightException) {
                 return null;
             }
 
-            $next[$sectionId]['department_profile'] = $profile->value;
             $next[$sectionId]['requirements_by_course_id'] = $this->requirementBuilders()->build(
                 $section,
                 $courseIds,

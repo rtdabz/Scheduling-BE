@@ -60,7 +60,6 @@ Table departments {
   id bigint(20) [primary key, not null, note: 'unsigned']
   department_name varchar(255) [not null, unique]
   department_code varchar(255) [not null, unique]
-  scheduling_profile varchar(32) [not null, default: ''standard'']
   logo longtext [null, default: 'NULL']
   lecture_lab_schedule_override_enabled tinyint(1) [not null, default: '0']
   custom_lab_duration_override_enabled tinyint(1) [not null, default: '0']

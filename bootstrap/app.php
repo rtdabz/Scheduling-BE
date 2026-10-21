@@ -19,6 +19,10 @@ return Application::configure(basePath: dirname(__DIR__))
         ['prefix' => 'api', 'middleware' => ['api', 'auth:sanctum', 'active']],
     )
     ->withMiddleware(function (Middleware $middleware) {
+        $middleware->prependToPriorityList(
+            \Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class,
+            \App\Http\Middleware\ResolvePdfPreview::class,
+        );
         $middleware->appendToGroup('api', [
             \App\Http\Middleware\ConditionalGetJson::class,
             \App\Http\Middleware\IdempotentRequests::class,

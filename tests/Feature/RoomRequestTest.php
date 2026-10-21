@@ -511,7 +511,6 @@ class RoomRequestTest extends TestCase
         $requester = Departments::create([
             'department_name' => 'College of Information Technology',
             'department_code' => 'CIT',
-            'scheduling_profile' => 'laboratory_enabled',
         ]);
         $owner = Departments::create([
             'department_name' => 'College of Arts and Sciences',

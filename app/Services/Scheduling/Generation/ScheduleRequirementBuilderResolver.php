@@ -2,11 +2,8 @@
 
 namespace App\Services\Scheduling\Generation;
 
-use App\Enums\DepartmentSchedulingProfile;
 use App\Models\Course;
-use App\Models\Departments;
 use App\Models\Sections;
-use App\Services\Scheduling\Department\DepartmentSchedulingProfileResolver;
 
 class ScheduleRequirementBuilderResolver
 {
@@ -14,15 +11,12 @@ class ScheduleRequirementBuilderResolver
     private array $courseCache = [];
 
     public function __construct(
-        private readonly DepartmentSchedulingProfileResolver $profiles,
-        private readonly StandardScheduleRequirementBuilder $standard,
-        private readonly LaboratoryScheduleRequirementBuilder $laboratory,
+        private readonly CourseScheduleRequirementBuilder $builder,
     ) {}
 
     /** @return array<int, list<array<string, mixed>>> */
     public function build(Sections $section, array $courseIds, array $options = []): array
     {
-        $department = $section->department ?: Departments::query()->findOrFail((int) $section->department_id);
         $normalizedIds = array_values(array_unique(array_map('intval', $courseIds)));
         $missingIds = array_values(array_filter(
             $normalizedIds,
@@ -39,10 +33,6 @@ class ScheduleRequirementBuilderResolver
         $courses = collect($normalizedIds)
             ->map(fn (int $courseId): ?Course => $this->courseCache[$courseId] ?? null)
             ->filter();
-        $builder = $this->profiles->resolve($department) === DepartmentSchedulingProfile::LABORATORY_ENABLED
-            ? $this->laboratory
-            : $this->standard;
-
-        return $builder->build($section, $courses, $options);
+        return $this->builder->build($section, $courses, $options);
     }
 }

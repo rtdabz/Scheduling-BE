@@ -79,7 +79,7 @@ class EngineParityMatrixTest extends TestCase
         app(TimeslotService::class)->settings();
 
         $this->semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
-        $this->department = Departments::create(['department_name' => 'Matrix', 'department_code' => 'MTX', 'scheduling_profile' => 'laboratory_enabled']);
+        $this->department = Departments::create(['department_name' => 'Matrix', 'department_code' => 'MTX']);
         $this->otherDepartment = Departments::create(['department_name' => 'Other', 'department_code' => 'OTH']);
         $this->curriculum = Curriculum::create([
             'name' => 'Matrix Curriculum', 'department_id' => $this->department->id, 'code' => 'MTX-2026',

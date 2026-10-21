@@ -184,7 +184,7 @@ class LaboratoryRoomRequirementParityTest extends TestCase
         );
         $dept = Departments::firstOrCreate(
             ['department_code' => 'LABD'],
-            ['department_name' => 'Lab Dept', 'scheduling_profile' => 'laboratory_enabled'],
+            ['department_name' => 'Lab Dept'],
         );
         $section = Sections::firstOrCreate(
             ['section_name' => 'LAB-1A', 'department_id' => $dept->id, 'semester_id' => $semester->id],
