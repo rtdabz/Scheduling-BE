@@ -79,6 +79,24 @@ class ScheduleApprovalTargetingTest extends TestCase
         $this->assertSame('submitted', $second->refresh()->status);
     }
 
+    public function test_online_classes_remain_visible_and_eligible_for_regular_dean_and_vpaa_approval(): void
+    {
+        [$department, $semester, $room, $course, $section] = $this->fixture();
+        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
+        $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
+        $online = $this->schedule($department, $semester, $room, $course, $section, ['mode' => 'online', 'room_id' => null, 'status' => 'submitted']);
+        $submission = $this->submission($department, $semester, [$section], 'pending_dean');
+        foreach ([[$dean, 'dean', 'approved_by_dean'], [$vpaa, 'vpaa', 'faculty_assignment']] as [$reviewer, $stage, $status]) {
+            $response = $this->actingAs($reviewer)->getJson('/api/initial-data?approval_queue=1')->assertOk();
+            $this->assertContains($online->id, array_column($response->json('schedules'), 'id'));
+            $this->postJson("/api/departments/{$department->id}/approve-by-{$stage}", ['schedule_submission_id' => $submission->id])->assertOk();
+            $this->assertSame($status, $online->refresh()->status);
+            $this->assertSame('online', $online->mode);
+            $this->assertNull($online->room_id);
+        }
+        $this->assertSame('approved', $submission->refresh()->status);
+    }
+
     public function test_the_sections_left_in_a_partially_recalled_submission_can_be_reviewed(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();

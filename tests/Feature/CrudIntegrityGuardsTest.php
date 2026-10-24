@@ -126,10 +126,14 @@ class CrudIntegrityGuardsTest extends TestCase
             ->assertJsonValidationErrors('status');
         $this->assertDatabaseHas('rooms', ['id' => $room->id, 'status' => 'available']);
 
-        // A past semester's classes do not hold the room open.
+        // Every physical closure uses recovery, including when only another term has bookings.
         $fixture['semester']->update(['is_active' => false]);
         $this->actingAs($fixture['vpaa'], 'sanctum')
             ->putJson("/api/rooms/{$room->id}", ['status' => 'not available'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('status');
+        $this->actingAs($fixture['vpaa'], 'sanctum')
+            ->postJson("/api/rooms/{$room->id}/close", ['reason' => 'Maintenance'])
             ->assertOk();
         $this->assertDatabaseHas('rooms', ['id' => $room->id, 'status' => 'not available']);
     }

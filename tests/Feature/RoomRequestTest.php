@@ -325,6 +325,10 @@ class RoomRequestTest extends TestCase
             ->assertJsonPath('released_schedule_count', 1);
 
         $this->assertNull($class->fresh()->room_id, 'The class kept a room its department can no longer use.');
+        $this->assertDatabaseHas('room_recovery_cases', ['room_id' => $f['room']->id, 'trigger' => 'grant_ended']);
+        $original = \App\Models\RoomRecoveryCase::firstOrFail()->original_rows;
+        $this->assertEquals($class->id, $original[0]['id']);
+        $this->assertEquals($f['room']->id, $original[0]['room_id'], 'Recovery preserves the original assignment before Room TBA.');
         $this->assertTrue(SystemNotification::query()
             ->where('user_id', $f['vpaa']->id)
             ->where('type', 'room_request_returned')

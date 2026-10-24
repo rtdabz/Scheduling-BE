@@ -10,6 +10,7 @@ use App\Models\Faculty;
 use App\Models\FacultyAvailability;
 use App\Models\InstitutionSetting;
 use App\Models\Program;
+use App\Models\RoomRecoveryPlan;
 use App\Models\RoomRequest;
 use App\Models\RoomRequestWindow;
 use App\Models\Rooms;
@@ -37,6 +38,7 @@ final class LiveUpdateRecorder
         Sections::class => ['sections', 'schedules'],
         Rooms::class => ['rooms'],
         RoomRequest::class => ['rooms'],
+        RoomRecoveryPlan::class => ['rooms', 'approvals'],
         RoomRequestWindow::class => ['rooms'],
         Faculty::class => ['faculty', 'assignments'],
         FacultyAvailability::class => ['faculty'],

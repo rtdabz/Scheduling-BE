@@ -134,7 +134,7 @@ class RoomRequestController extends Controller
         $windows = $this->normalizeWindows($validated['windows']);
         $departmentId = (int) $user->department_id;
 
-        $roomRequest = DB::transaction(function () use ($validated, $semester, $windows, $departmentId, $user): RoomRequest {
+        $roomRequest = $this->schedulingTransaction(function () use ($validated, $semester, $windows, $departmentId, $user): RoomRequest {
             /** @var Rooms $room */
             $room = Rooms::query()->lockForUpdate()->findOrFail((int) $validated['room_id']);
             $this->assertLendable($room, $departmentId);
@@ -194,7 +194,7 @@ class RoomRequestController extends Controller
         $user = $request->user();
         $validated = $request->validate(['remarks' => 'nullable|string|max:1000']);
 
-        $model = DB::transaction(function () use ($roomRequest, $validated, $user): RoomRequest {
+        $model = $this->schedulingTransaction(function () use ($roomRequest, $validated, $user): RoomRequest {
             /** @var RoomRequest $model */
             $model = RoomRequest::query()->with('windows')->lockForUpdate()->findOrFail($roomRequest);
             $this->assertOwnerReviewer($model, $user);
@@ -275,7 +275,7 @@ class RoomRequestController extends Controller
         /** @var Collection<int, Schedule> $released */
         $released = collect();
 
-        DB::transaction(function () use (&$model, $user, $status, $remarks, $allowedFrom, &$wasApproved, &$released): void {
+        $this->schedulingTransaction(function () use (&$model, $user, $status, $remarks, $allowedFrom, &$wasApproved, &$released): void {
             $model = RoomRequest::query()->lockForUpdate()->findOrFail($model->id);
             $this->assertStatus($model, $allowedFrom);
             $wasApproved = $model->status === RoomRequest::STATUS_APPROVED;
@@ -475,9 +475,14 @@ class RoomRequestController extends Controller
             ]);
     }
 
-    /**
-     * @return Collection<int, Schedule>
-     */
+    private function schedulingTransaction(callable $callback): mixed
+    {
+        return app(\App\Services\Scheduling\Lock\SchedulingScopeLock::class)->execute(
+            Semester::pluck('id')->map('intval')->all(), fn () => DB::transaction($callback),
+        );
+    }
+
+    /** @return Collection<int, Schedule> */
     private function releaseDependentSchedules(RoomRequest $model): Collection
     {
         $windows = $model->windows->map(fn ($window): array => RoomAccessPolicy::window(
@@ -502,6 +507,10 @@ class RoomRequestController extends Controller
             ) !== null)
             ->values();
 
+        app(\App\Services\RoomRecoveryService::class)->recordImpact(
+            (int) $model->room_id, $schedules, 'grant_ended',
+            'Approved borrowing access ended. A replacement room is required.', auth()->id(),
+        );
         foreach ($schedules as $schedule) {
             $schedule->room_id = null;
             $schedule->save();

@@ -24,6 +24,7 @@ use App\Http\Controllers\Reports\ReportsController;
 use App\Http\Controllers\Reports\VpaaDashboardController;
 use App\Http\Controllers\Rooms\ProgramRoomController;
 use App\Http\Controllers\Rooms\RoomRequestController;
+use App\Http\Controllers\Rooms\RoomRecoveryController;
 use App\Http\Controllers\Rooms\RoomsController;
 use App\Http\Controllers\Scheduling\DepartmentScheduleController;
 use App\Http\Controllers\Scheduling\InitialDataController;
@@ -85,6 +86,18 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     Route::middleware('capability:schedule.view')->get('/schedule-history', [ScheduleHistoryController::class, 'index']);
+    Route::middleware('capability:schedule.view')->get('room-recovery', [RoomRecoveryController::class, 'index']);
+    Route::middleware('capability:schedule.view')->get('room-recovery/transfers', [RoomRecoveryController::class, 'transfers']);
+    Route::middleware(['capability:schedule.update', 'throttle:10,1'])->group(function () {
+        Route::post('room-recovery/preview', [RoomRecoveryController::class, 'preview']);
+        Route::post('room-recovery/plans/{plan}/apply', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary');
+        Route::post('room-recovery/plans/{plan}/submit', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary');
+    });
+    Route::middleware(['role:dean,vpaa', 'capability:schedule.approve_dean,schedule.approve_vpaa'])->group(function () {
+        Route::post('room-recovery/plans/{plan}/approve', [RoomRecoveryController::class, 'approve']);
+        Route::post('room-recovery/plans/{plan}/reject', [RoomRecoveryController::class, 'reject']);
+    });
+    Route::middleware(['capability:schedule.view', 'role:vpaa'])->post('rooms/{room}/close', [RoomRecoveryController::class, 'close'])->whereNumber('room');
 
     Route::middleware('capability:schedule.view')->group(function () {
         Route::post('/pdf-previews', [PdfPreviewController::class, 'store'])->middleware('throttle:10,1');

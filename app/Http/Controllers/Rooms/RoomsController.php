@@ -2,13 +2,16 @@
 
 namespace App\Http\Controllers\Rooms;
 
+use App\Exceptions\ScheduleConflictException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Room\StoreRoomRequest;
 use App\Http\Requests\Room\UpdateRoomRequest;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Services\RoomStructuralUpdate;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\ApiCache;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -67,25 +70,9 @@ class RoomsController extends Controller
             $validated['allow_lecture_usage'] = false;
         }
 
-        $closing = array_key_exists('status', $validated)
-            && $validated['status'] !== 'available'
-            && $room->status === 'available';
-        if ($closing) {
-            $activeClasses = Schedule::query()
-                ->where('room_id', $room->id)
-                ->whereHas('academicSemester', fn ($query) => $query->where('is_active', true))
-                ->count();
-            if ($activeClasses > 0) {
-                return response()->json([
-                    'message' => "This room cannot be marked unavailable while {$activeClasses} class meeting(s) this semester are scheduled in it. Move them to another room first.",
-                    'errors' => ['status' => ['This room still has classes scheduled this semester.']],
-                ], 422);
-            }
-        }
-
         try {
-            app(\App\Services\RoomStructuralUpdate::class)->apply($room, $validated);
-        } catch (\App\Exceptions\ScheduleConflictException $exception) {
+            app(RoomStructuralUpdate::class)->apply($room, $validated);
+        } catch (ScheduleConflictException $exception) {
             return response()->json($exception->payload(), 422);
         }
         ApiCache::forgetGroups([
@@ -195,7 +182,7 @@ class RoomsController extends Controller
         ]);
     }
 
-    /** @return \Illuminate\Database\Eloquent\Collection<int, Rooms> */
+    /** @return Collection<int, Rooms> */
     private function roomsInBuilding(string $building)
     {
         return Rooms::query()
@@ -212,8 +199,8 @@ class RoomsController extends Controller
         ]);
 
         try {
-            app(\App\Services\RoomStructuralUpdate::class)->apply($room, ['department_id' => $validated['department_id']]);
-        } catch (\App\Exceptions\ScheduleConflictException $exception) {
+            app(RoomStructuralUpdate::class)->apply($room, ['department_id' => $validated['department_id']]);
+        } catch (ScheduleConflictException $exception) {
             return response()->json($exception->payload(), 422);
         }
         ApiCache::forgetGroups([

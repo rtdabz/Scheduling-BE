@@ -10,9 +10,21 @@ class RoomSeeder extends Seeder
 {
     public function run(): void
     {
-        $departments = Departments::query()
-            ->get(['id', 'department_code'])
-            ->keyBy('department_code');
+        $existingDepartments = Departments::withTrashed()
+            ->get(['id', 'department_code', 'department_name', 'deleted_at']);
+        $departments = $existingDepartments->keyBy('department_code');
+
+        // Resolve seed codes through the same names used by DepartmentSeeder,
+        // without renaming departments already configured by the institution.
+        foreach (DepartmentSeeder::DEPARTMENTS as $department) {
+            if (! $departments->has($department['department_code'])) {
+                $existing = $existingDepartments->firstWhere('department_name', $department['department_name']);
+
+                if ($existing !== null) {
+                    $departments->put($department['department_code'], $existing);
+                }
+            }
+        }
 
         $requiredDepartments = ['CAS', 'CBA', 'CED', 'CHM', 'CIT', 'CLIS', 'CM'];
 
@@ -73,6 +85,11 @@ class RoomSeeder extends Seeder
         foreach ($rooms as $room) {
             $departmentCode = $room['department_code'];
             unset($room['department_code']);
+
+            // Seeding should not recreate rooms for an archived department.
+            if ($departments->get($departmentCode)->trashed()) {
+                continue;
+            }
 
             Rooms::updateOrCreate(
                 ['room_code' => $room['room_code']],

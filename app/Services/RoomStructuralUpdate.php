@@ -21,6 +21,15 @@ final class RoomStructuralUpdate
         $this->lock->execute($semesterIds, function () use ($room, $values): void {
             DB::transaction(function () use ($room, $values): void {
                 $current = Rooms::whereKey($room->id)->lockForUpdate()->firstOrFail();
+                // Physical closures must capture impact and require a reason, even outside the active term.
+                if (! Rooms::isSharedType($current->room_type)
+                    && $current->status === 'available'
+                    && array_key_exists('status', $values)
+                    && $values['status'] !== 'available') {
+                    throw ValidationException::withMessages([
+                        'status' => 'Use Room and laboratory recovery to close this room with a reason and notify affected departments.',
+                    ]);
+                }
                 $current->fill($values);
                 $structural = $current->isDirty(['room_type', 'allow_lecture_usage', 'department_id', 'status']);
                 if (($current->isDirty('department_id') || ($current->isDirty('room_type') && Rooms::isSharedType($current->room_type))) && (
