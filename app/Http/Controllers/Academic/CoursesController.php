@@ -79,10 +79,19 @@ class CoursesController extends Controller
                             'curriculum_course.curriculum_id',
                             'curriculum_course.year_level',
                             'curriculum_course.semester',
+                            'curriculum_course.lecture_minutes',
+                            'curriculum_course.laboratory_minutes',
                         ]);
 
                     $placements = [];
+                    $classMinutes = [];
                     foreach ($pivotData as $p) {
+                        if ($p->lecture_minutes !== null || $p->laboratory_minutes !== null) {
+                            $classMinutes[$p->course_id][(int) $p->curriculum_id] = [
+                                'lecture' => $p->lecture_minutes === null ? null : (int) $p->lecture_minutes,
+                                'laboratory' => $p->laboratory_minutes === null ? null : (int) $p->laboratory_minutes,
+                            ];
+                        }
                         $placements[$p->course_id][] = [
                             'curriculum_id' => (int) $p->curriculum_id,
                             'year_level' => (string) $p->year_level,
@@ -90,9 +99,11 @@ class CoursesController extends Controller
                         ];
                     }
 
-                    $courses->transform(function ($course) use ($placements) {
+                    $courses->transform(function ($course) use ($placements, $classMinutes) {
                         $rows = $placements[$course->id] ?? [];
                         $course->setAttribute('curriculum_placements', $rows);
+                        // Class minutes each curriculum recorded on import; scheduling sizes the course from them.
+                        $course->setAttribute('class_minutes_by_curriculum', (object) ($classMinutes[$course->id] ?? []));
 
                         if ($rows !== []) {
                             $course->year_level = $rows[0]['year_level'];

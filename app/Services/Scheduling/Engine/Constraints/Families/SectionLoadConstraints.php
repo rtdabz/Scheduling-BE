@@ -36,10 +36,6 @@ final class SectionLoadConstraints
     private function classDuration(ScheduleRow $row, array $course, array $sameSection, SchedulingSnapshot $snapshot): ?ConstraintViolation
     {
         $isIntegratedSession = SchedulingPolicy::isIntegratedSession($course, $row->meetingType, $row->splitGroupId);
-        $dayMinutes = static fn (): int => SchedulingPolicy::integratedSessionCeilingMinutes(
-            isset($snapshot->operatingHours['opening_time']) ? (string) $snapshot->operatingHours['opening_time'] : null,
-            isset($snapshot->operatingHours['closing_time']) ? (string) $snapshot->operatingHours['closing_time'] : null,
-        );
         $counts = static fn (array|ScheduleRow $other): bool => ! $isIntegratedSession
             || (ConstraintSupport::stringValue($other, 'meeting_type') === $row->meetingType
                 && SchedulingPolicy::isIntegratedSession(
@@ -49,25 +45,15 @@ final class SectionLoadConstraints
                 ));
 
         $total = self::minutes($row);
-        $longest = $total;
         foreach ($sameSection as $other) {
             if (ConstraintSupport::intValue($other, 'course_id') === $row->courseId && $counts($other)) {
                 $total += self::minutes($other);
-                $longest = max($longest, self::minutes($other));
             }
         }
 
-        if ($isIntegratedSession) {
-            $allowed = $dayMinutes();
-        } else {
-            $ceiling = SchedulingPolicy::courseWeeklyCeilingMinutes($course, $snapshot->departmentSettings);
-            $allowed = SchedulingPolicy::classDurationAllowanceMinutes(
-                $ceiling,
-                $longest,
-                $longest > $ceiling ? $dayMinutes() : $ceiling,
-                $row->preferredPattern,
-            );
-        }
+        $allowed = $isIntegratedSession
+            ? SchedulingPolicy::componentMinutes($course, $row->meetingType)
+            : SchedulingPolicy::courseDurationMinutes($course);
         if ($allowed <= 0) {
             return null;
         }
@@ -90,7 +76,7 @@ final class SectionLoadConstraints
             'class_duration',
             sprintf(
                 $isIntegratedSession
-                    ? '%s would meet %s minutes of '.$row->meetingType.' a week for this section, but one session is at most %s.'
+                    ? '%s would meet %s minutes of '.$row->meetingType.' a week for this section, but its '.$row->meetingType.' holds %s.'
                     : '%s would meet %s minutes a week for this section, but the course carries at most %s.',
                 (string) ($course['course_code'] ?? 'This course'),
                 $total,

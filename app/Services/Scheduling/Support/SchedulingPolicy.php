@@ -35,6 +35,9 @@ final class SchedulingPolicy
     /** @var array<int, list<int>> */
     private static array $cachedStartSlotsByDuration = [];
 
+    /** @var array<int, array<int, array{lecture_minutes: int|null, laboratory_minutes: int|null}>> */
+    private static array $cachedRecordedMinutesByCurriculum = [];
+
     /** @var array<string, true>|null */
     /** @var array<string, array<string, true>> */
     private static array $cachedFieldCourseCodeMap = [];
@@ -178,18 +181,12 @@ final class SchedulingPolicy
         return $allowedDays === null ? count($days) : count(array_intersect($days, $allowedDays));
     }
 
-    public const LECTURE_SLOTS_PER_UNIT = 2;
+    public const SLOTS_PER_HOUR = 60 / self::SLOT_MINUTES;
 
-    public const LABORATORY_SLOTS_PER_UNIT = 6;
-
-    public static function unitMinutes(mixed $units): int
+    /** The most whole hours one course component can hold and still fit inside the teaching day. */
+    public static function maxHoursPerComponent(): int
     {
-        return (int) round((float) ($units ?? 0) * 60);
-    }
-
-    public static function maxUnitsPerComponent(int $slotsPerUnit): int
-    {
-        return max(1, intdiv(self::totalSlots(), max(1, $slotsPerUnit)));
+        return max(1, intdiv(self::totalSlots(), self::SLOTS_PER_HOUR));
     }
 
     public const CUSTOM_PATTERN_REGEX = '/^days:([0-6])-([0-6])$/';
@@ -1113,16 +1110,7 @@ final class SchedulingPolicy
         return (int) $matches[1];
     }
 
-    public static function weeklyCeilingMeetings(mixed $pattern): int
-    {
-        return self::consecutiveDayCount($pattern) ?? 1;
-    }
 
-    public static function classDurationAllowanceMinutes(int $courseCeilingMinutes, int $longestMeetingMinutes, int $dayMinutes, mixed $pattern): int
-    {
-        return max($courseCeilingMinutes, min($longestMeetingMinutes, $dayMinutes))
-            * self::weeklyCeilingMeetings($pattern);
-    }
 
     public static function maxConsecutiveDays(bool $sundayClassesEnabled): int
     {
@@ -1372,47 +1360,130 @@ final class SchedulingPolicy
     }
 
     /**
-     * @param  array<string, mixed>|Departments|null  $settings
+     * The class minutes Curriculum Import recorded for each course placed in a curriculum. Courses
+     * from curricula entered by hand have none.
+     *
+     * @return array<int, array{lecture_minutes: int|null, laboratory_minutes: int|null}>
      */
-    public static function laboratoryComponentSlots(Course $course, array|Departments|null $settings = null): int
+    public static function recordedMinutes(?int $curriculumId): array
     {
-        return self::customLaboratoryDurationSlots($settings)
-            ?? max(0, (int) ($course->lab_hours ?? 0)) * self::LABORATORY_SLOTS_PER_UNIT;
-    }
+        if ($curriculumId === null) {
+            return [];
+        }
 
-    /** @param array<string, mixed>|Departments|null $settings */
-    public static function laboratoryComponentMinutes(Course $course, array|Departments|null $settings = null): int
-    {
-        return self::laboratoryComponentSlots($course, $settings) * self::SLOT_MINUTES;
+        if (! isset(self::$cachedRecordedMinutesByCurriculum[$curriculumId])) {
+            try {
+                $rows = DB::table('curriculum_course')
+                    ->where('curriculum_id', $curriculumId)
+                    ->where(fn ($query) => $query->whereNotNull('lecture_minutes')->orWhereNotNull('laboratory_minutes'))
+                    ->get(['course_id', 'lecture_minutes', 'laboratory_minutes']);
+            } catch (QueryException) {
+                return [];
+            }
+            self::$cachedRecordedMinutesByCurriculum[$curriculumId] = $rows->mapWithKeys(static fn (object $row): array => [
+                (int) $row->course_id => [
+                    'lecture_minutes' => $row->lecture_minutes === null ? null : (int) $row->lecture_minutes,
+                    'laboratory_minutes' => $row->laboratory_minutes === null ? null : (int) $row->laboratory_minutes,
+                ],
+            ])->all();
+        }
+
+        return self::$cachedRecordedMinutesByCurriculum[$curriculumId];
     }
 
     /**
-     * @param  array<string, mixed>|Course  $course
+     * The course as placed in a section's curriculum: it carries the class minutes that curriculum
+     * recorded on import, which take precedence over the course's own lecture and laboratory hours.
+     *
+     * @template T of Course|array<string, mixed>
+     *
+     * @param  T  $course
+     * @return T
      */
-    public static function lectureComponentSlots(array|Course $course): int
+    public static function placedCourse(Course|array $course, ?int $curriculumId): Course|array
     {
-        $lectureUnits = (int) ($course instanceof Course ? ($course->lecture_hours ?? 0) : ($course['lecture_hours'] ?? 0));
+        $recorded = self::recordedMinutes($curriculumId)[(int) (self::courseAttribute($course, 'id') ?? 0)] ?? null;
+        if ($recorded === null) {
+            return $course;
+        }
+        if (is_array($course)) {
+            return [...$course, ...$recorded];
+        }
+        $placed = clone $course;
+        foreach ($recorded as $key => $minutes) {
+            $placed->setAttribute($key, $minutes);
+        }
 
-        return max(0, $lectureUnits) * self::LECTURE_SLOTS_PER_UNIT;
+        return $placed;
     }
 
     /**
+     * A course's lecture time: the minutes its curriculum recorded on import, otherwise its lecture
+     * hours as recorded. Converting credit units to time belongs to Curriculum Management.
+     *
+     * @param  Course|array<string, mixed>  $course  ideally from placedCourse()
+     */
+    public static function lectureComponentSlots(Course|array $course): int
+    {
+        return self::componentSlots($course, 'lecture_minutes', 'lecture_hours');
+    }
+
+    /** @param Course|array<string, mixed> $course ideally from placedCourse() */
+    public static function laboratoryComponentSlots(Course|array $course): int
+    {
+        return self::componentSlots($course, 'laboratory_minutes', 'lab_hours');
+    }
+
+    /** @param Course|array<string, mixed> $course */
+    private static function componentSlots(Course|array $course, string $minutesKey, string $hoursKey): int
+    {
+        $minutes = self::courseAttribute($course, $minutesKey);
+        if ($minutes !== null) {
+            return intdiv(max(0, (int) $minutes), self::SLOT_MINUTES);
+        }
+
+        return max(0, (int) (self::courseAttribute($course, $hoursKey) ?? 0)) * self::SLOTS_PER_HOUR;
+    }
+
+    /**
+     * The course's Total Hours a week: its lecture plus laboratory time. Every meeting shape
+     * divides this time; none changes it.
+     *
      * @param  Course|array<string, mixed>  $course
-     * @param  array<string, mixed>|Departments|null  $settings
      */
-    public static function courseWeeklyCeilingMinutes(Course|array $course, array|Departments|null $settings = null): int
+    public static function courseDurationSlots(Course|array $course): int
     {
-        $value = static fn (string $key): mixed => is_array($course) ? ($course[$key] ?? 0) : ($course->{$key} ?? 0);
+        return self::lectureComponentSlots($course) + self::laboratoryComponentSlots($course);
+    }
 
-        $singleBlock = self::unitMinutes($value('units'));
-        $lectureMinutes = max(0, (int) $value('lecture_hours')) * self::LECTURE_SLOTS_PER_UNIT * self::SLOT_MINUTES;
-        $laboratoryMinutes = (int) $value('lab_hours') > 0
-            ? (is_array($course)
-                ? self::laboratoryComponentSlotsForArray($course, $settings) * self::SLOT_MINUTES
-                : self::laboratoryComponentMinutes($course, $settings))
-            : 0;
+    /** @param Course|array<string, mixed> $course */
+    public static function courseDurationMinutes(Course|array $course): int
+    {
+        return self::courseDurationSlots($course) * self::SLOT_MINUTES;
+    }
 
-        return max($singleBlock, $lectureMinutes + $laboratoryMinutes);
+    /**
+     * The hours an integrated lecture or laboratory meeting holds.
+     *
+     * @param  Course|array<string, mixed>  $course
+     */
+    public static function componentMinutes(Course|array $course, ?string $meetingType): int
+    {
+        return ($meetingType === 'laboratory' ? self::laboratoryComponentSlots($course) : self::lectureComponentSlots($course))
+            * self::SLOT_MINUTES;
+    }
+
+    /**
+     * Each consecutive-day meeting's share of the Total Hours, or null when the days cannot split it
+     * into equal whole slots.
+     *
+     * @param  Course|array<string, mixed>  $course
+     */
+    public static function consecutiveMeetingSlots(Course|array $course, int $dayCount): ?int
+    {
+        $total = self::courseDurationSlots($course);
+
+        return $dayCount > 0 && $total > 0 && $total % $dayCount === 0 ? intdiv($total, $dayCount) : null;
     }
 
     /**
@@ -1424,53 +1495,6 @@ final class SchedulingPolicy
             && trim((string) $splitGroupId) !== ''
             && (int) (self::courseAttribute($course, 'lecture_hours') ?? 0) > 0
             && (int) (self::courseAttribute($course, 'lab_hours') ?? 0) > 0;
-    }
-
-    public static function integratedSessionCeilingMinutes(?string $openingTime = null, ?string $closingTime = null): int
-    {
-        return max(0, self::timeToMinutes($closingTime ?? self::closingTime())
-            - self::timeToMinutes($openingTime ?? self::openingTime()));
-    }
-
-    /**
-     * @param  array<string, mixed>  $course
-     * @param  array<string, mixed>|Departments|null  $settings
-     */
-    public static function laboratoryComponentSlotsForArray(array $course, array|Departments|null $settings = null): int
-    {
-        return self::customLaboratoryDurationSlots($settings)
-            ?? max(0, (int) ($course['lab_hours'] ?? 0)) * self::LABORATORY_SLOTS_PER_UNIT;
-    }
-
-    /**
-     * @param  array<string, mixed>|Departments|null  $settings
-     */
-    public static function customLaboratoryDurationSlots(array|Departments|null $settings): ?int
-    {
-        if ($settings === null) {
-            return null;
-        }
-
-        $read = $settings instanceof Departments
-            ? static fn (string $key): mixed => $settings->{$key}
-            : static fn (string $key): mixed => $settings[$key] ?? null;
-
-        if (! (bool) $read('custom_lab_duration_override_enabled')) {
-            return null;
-        }
-
-        $minutes = match (true) {
-            (bool) $read('custom_lab_duration_6_hours_enabled') => 360,
-            (bool) $read('custom_lab_duration_5_hours_enabled') => 300,
-            (bool) $read('custom_lab_duration_other_enabled') => (int) $read('custom_lab_duration_minutes'),
-            default => 0,
-        };
-
-        if ($minutes <= 0 || $minutes % self::SLOT_MINUTES !== 0) {
-            return null;
-        }
-
-        return intdiv($minutes, self::SLOT_MINUTES);
     }
 
     /**
@@ -1578,13 +1602,12 @@ final class SchedulingPolicy
 
     public static function hybridSplitEligible(array|Course $course): bool
     {
-        $units = (float) ($course instanceof Course ? ($course->units ?? 0) : ($course['units'] ?? 0));
         $lectureHours = (int) ($course instanceof Course ? ($course->lecture_hours ?? 0) : ($course['lecture_hours'] ?? 0));
         $laboratoryHours = (int) ($course instanceof Course ? ($course->lab_hours ?? 0) : ($course['lab_hours'] ?? 0));
 
-        return self::unitMinutes($units) === 2 * self::HYBRID_SPLIT_MEETING_MINUTES
-            && $lectureHours > 0
-            && $laboratoryHours === 0;
+        return $lectureHours > 0
+            && $laboratoryHours === 0
+            && self::courseDurationMinutes($course) === 2 * self::HYBRID_SPLIT_MEETING_MINUTES;
     }
 
     public static function hybridSplitMeetingSlots(): int
@@ -1711,6 +1734,7 @@ final class SchedulingPolicy
     {
         self::$cachedFieldCourseCodeMap = [];
         self::$cachedLabRoomTypeByDepartment = [];
+        self::$cachedRecordedMinutesByCurriculum = [];
     }
 
     private static function courseRulesTableExists(): bool

@@ -56,7 +56,7 @@ final class DeliveryModeRule
         }
 
         return self::hybridShapeMismatch(
-            $course,
+            SchedulingPolicy::placedCourse($course, $section->curriculum_id === null ? null : (int) $section->curriculum_id),
             (string) ($attempt['mode'] ?? 'on-site'),
             $attempt['meeting_type'] ?? null,
             RuleSupport::durationMinutes((string) ($attempt['start_time'] ?? ''), (string) ($attempt['end_time'] ?? '')),

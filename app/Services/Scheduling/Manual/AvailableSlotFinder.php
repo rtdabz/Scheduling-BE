@@ -57,7 +57,7 @@ final class AvailableSlotFinder
         $isRun = $consecutiveDays !== null;
 
         $section = $snapshot->sectionsById[$sectionId] ?? null;
-        $course = $snapshot->coursesById[$courseId] ?? null;
+        $course = $snapshot->courseFor($sectionId, $courseId);
         if (! is_array($section) || ! is_array($course)) {
             return ['slots' => [], 'rooms' => [], 'total' => 0, 'truncated' => false];
         }

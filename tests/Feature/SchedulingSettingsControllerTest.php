@@ -57,25 +57,6 @@ class SchedulingSettingsControllerTest extends TestCase
         $this->assertSame(['IT 101'], collect($response->json('field_course_options'))->pluck('code')->all());
     }
 
-    public function test_the_three_lab_duration_presets_behave_as_one_choice(): void
-    {
-        [$user, $department] = $this->laboratoryDepartment();
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
-            'custom_lab_duration_override_enabled' => true,
-            'custom_lab_duration_6_hours_enabled' => true,
-        ])->assertOk();
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
-            'custom_lab_duration_5_hours_enabled' => true,
-        ])->assertOk();
-
-        $department->refresh();
-        $this->assertTrue((bool) $department->custom_lab_duration_5_hours_enabled);
-        $this->assertFalse((bool) $department->custom_lab_duration_6_hours_enabled, 'picking one preset clears the others');
-        $this->assertFalse((bool) $department->custom_lab_duration_other_enabled);
-    }
-
     public function test_the_default_lab_room_requirement_is_saved_for_the_department(): void
     {
         [$user, $department] = $this->laboratoryDepartment();
@@ -91,44 +72,18 @@ class SchedulingSettingsControllerTest extends TestCase
             ->assertStatus(422);
     }
 
-    public function test_custom_lab_duration_cannot_be_enabled_without_the_lecture_lab_split(): void
-    {
-        [$user, $department] = $this->laboratoryDepartment(splitEnabled: false);
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
-            'custom_lab_duration_override_enabled' => true,
-        ])->assertStatus(422);
-
-        $this->assertFalse((bool) $department->refresh()->custom_lab_duration_override_enabled);
-    }
-
-    public function test_turning_the_split_off_clears_the_lab_duration_override(): void
+    public function test_custom_lab_duration_settings_are_gone(): void
     {
         [$user, $department] = $this->laboratoryDepartment();
 
         $this->actingAs($user)->patchJson('/api/scheduling-settings', [
             'custom_lab_duration_override_enabled' => true,
             'custom_lab_duration_6_hours_enabled' => true,
-        ])->assertOk();
+        ])->assertOk()->assertJsonMissingPath('custom_lab_duration_override_enabled');
 
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
-            'lecture_lab_schedule_override_enabled' => false,
-        ])->assertOk();
-
-        $department->refresh();
-        $this->assertFalse((bool) $department->custom_lab_duration_override_enabled);
-        $this->assertFalse((bool) $department->custom_lab_duration_6_hours_enabled);
-    }
-
-    public function test_a_lab_duration_off_the_half_hour_grid_is_rejected(): void
-    {
-        [$user] = $this->laboratoryDepartment();
-
-        $this->actingAs($user)->patchJson('/api/scheduling-settings', [
-            'custom_lab_duration_override_enabled' => true,
-            'custom_lab_duration_other_enabled' => true,
-            'custom_lab_duration_minutes' => 200,
-        ])->assertStatus(422);
+        foreach (['custom_lab_duration_override_enabled', 'custom_lab_duration_minutes', 'custom_lab_duration_6_hours_enabled', 'custom_lab_duration_5_hours_enabled', 'custom_lab_duration_other_enabled'] as $column) {
+            $this->assertFalse(\Illuminate\Support\Facades\Schema::hasColumn('departments', $column), $column);
+        }
     }
 
     public function test_legacy_profile_input_is_ignored_and_preserves_laboratory_defaults(): void
@@ -143,8 +98,7 @@ class SchedulingSettingsControllerTest extends TestCase
         $laboratory = Course::create(['course_code' => 'IT 101', 'course_name' => 'Programming 1', 'lecture_hours' => 2, 'lab_hours' => 1, 'units' => 3, 'course_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'status' => 'active']);
         $newer->courses()->attach($laboratory->id, ['year_level' => 1, 'semester' => 1]);
 
-        // A stale client may still send the retired field with a normal edit.
-        $department->update(['custom_lab_duration_override_enabled' => true, 'custom_lab_duration_6_hours_enabled' => true]);
+        $department->update(['lecture_lab_schedule_override_enabled' => true]);
         $vpaa = $this->grantCapabilities(User::factory()->create(['role' => 'vpaa']));
 
         $this->actingAs($vpaa)
@@ -154,8 +108,7 @@ class SchedulingSettingsControllerTest extends TestCase
             ->assertJsonMissingPath('scheduling_profile');
 
         $department->refresh();
-        $this->assertTrue($department->custom_lab_duration_override_enabled);
-        $this->assertTrue($department->custom_lab_duration_6_hours_enabled);
+        $this->assertTrue((bool) $department->lecture_lab_schedule_override_enabled);
         $this->assertFalse(\Illuminate\Support\Facades\Schema::hasColumn('departments', 'scheduling_profile'));
     }
 

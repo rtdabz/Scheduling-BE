@@ -13,4 +13,7 @@ Schedule::command('cache:prune-expired')
     ->withoutOverlapping()
     ->runInBackground();
 
-
+Schedule::command('model:prune', ['--model' => [\App\Models\RoomRecoveryPlan::class]])
+    ->daily()
+    ->withoutOverlapping()
+    ->runInBackground();

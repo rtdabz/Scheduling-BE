@@ -38,11 +38,11 @@ class ConsecutiveDaysYearLevelGenerationTest extends TestCase
         foreach ($runs as $sectionRows) {
             $days = $sectionRows->pluck('day')->all();
             sort($days);
-            // Every section meets on the ticked days, three hours each day.
+            // Every section meets on the ticked days, sharing its 3 hours: one hour each day.
             $this->assertSame(['Monday', 'Tuesday', 'Wednesday'], $days);
             $this->assertCount(1, $sectionRows->pluck('split_group_id')->unique());
             $this->assertCount(1, $sectionRows->pluck('start_time')->unique());
-            $this->assertSame(180, SchedulingPolicy::timeToMinutes($sectionRows->first()['end_time']) - SchedulingPolicy::timeToMinutes($sectionRows->first()['start_time']));
+            $this->assertSame(60, SchedulingPolicy::timeToMinutes($sectionRows->first()['end_time']) - SchedulingPolicy::timeToMinutes($sectionRows->first()['start_time']));
         }
         // One laboratory: the two sections share it at different times.
         $this->assertCount(2, $runs->map(static fn ($sectionRows) => $sectionRows->first()['start_time'])->unique());

@@ -59,6 +59,7 @@ final class MeetingGroupRule
                         ? $this->lookups->remember('section:'.$sectionId, fn () => Sections::with('department')->find($sectionId))
                         : null;
                     $splitSettings = SchedulingPolicy::balancedSplitSettings($section?->department);
+                    $course = SchedulingPolicy::placedCourse($course, $section?->curriculum_id === null ? null : (int) $section->curriculum_id);
                 }
             }
 
@@ -150,8 +151,7 @@ final class MeetingGroupRule
                     static fn (array $row): int => max(0, SchedulingPolicy::timeToMinutes((string) ($row['end_time'] ?? '00:00')) - SchedulingPolicy::timeToMinutes((string) ($row['start_time'] ?? '00:00'))),
                     $rows,
                 ));
-                $units = is_array($course) ? ($course['units'] ?? 0) : ($course->units ?? 0);
-                if ($totalMinutes <= 0 || $totalMinutes > max(1, SchedulingPolicy::unitMinutes($units))) {
+                if ($totalMinutes <= 0 || $totalMinutes > max(1, SchedulingPolicy::courseDurationMinutes($course))) {
                     $mismatches[] = ['rule' => 'minor_split_duration', 'message' => 'Split Session meeting durations must not add up to more than the course contact hours.'];
                 }
             }

@@ -24,7 +24,7 @@ final class GenerationCourseSelection
     {
         $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
         $splitIds = $this->resolveLectureLabSplitCourseIds($section, $config['selected_split_session_course_ids'] ?? [], $courseIds);
-        $hybridSplitIds = $this->resolveHybridSplitCourseIds($config['hybrid_split_course_ids'] ?? [], $courseIds);
+        $hybridSplitIds = $this->resolveHybridSplitCourseIds($section, $config['hybrid_split_course_ids'] ?? [], $courseIds);
         $balancedSplitIds = array_values(array_unique([
             ...$this->resolveMinorSplitCourseIds($section, $config['selected_gec_course_ids'] ?? [], $courseIds),
             ...$hybridSplitIds,
@@ -134,7 +134,7 @@ final class GenerationCourseSelection
     }
 
     /** @param list<int|string> $requestedCourseIds @param list<int|string> $validCourseIds */
-    private function resolveHybridSplitCourseIds(array $requestedCourseIds, array $validCourseIds): array
+    private function resolveHybridSplitCourseIds(Sections $section, array $requestedCourseIds, array $validCourseIds): array
     {
         $candidateIds = array_values(array_intersect(
             array_map('intval', $requestedCourseIds),
@@ -148,7 +148,10 @@ final class GenerationCourseSelection
         return Course::query()
             ->whereIn('id', $candidateIds)
             ->get()
-            ->filter(static fn (Course $course): bool => SchedulingPolicy::hybridSplitEligible($course))
+            ->filter(static fn (Course $course): bool => SchedulingPolicy::hybridSplitEligible(SchedulingPolicy::placedCourse(
+                $course,
+                $section->curriculum_id === null ? null : (int) $section->curriculum_id,
+            )))
             ->pluck('id')
             ->map(static fn ($courseId): int => (int) $courseId)
             ->values()

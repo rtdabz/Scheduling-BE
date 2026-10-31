@@ -125,6 +125,19 @@ final readonly class SchedulingSnapshot implements SchedulingContract
     }
 
     /**
+     * The course as placed in the section's curriculum, carrying the class minutes that curriculum
+     * recorded on import.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function courseFor(int $sectionId, int $courseId): ?array
+    {
+        $course = $this->coursesById[$courseId] ?? null;
+
+        return $course === null ? null : SchedulingPolicy::placedCourse($course, $this->curriculumIdBySectionId[$sectionId] ?? null);
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function periodFor(int $sectionId, int $courseId): ?array

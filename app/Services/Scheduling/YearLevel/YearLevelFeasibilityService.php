@@ -7,7 +7,6 @@ use App\Models\Departments;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
-use App\Services\Scheduling\Generation\CourseSetupOverrides;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
@@ -17,6 +16,9 @@ class YearLevelFeasibilityService
     private const REPLACEABLE_STATUSES = ['draft', 'completed', 'revision'];
 
     private ?int $semesterId = null;
+
+    /** The year level's curriculum, whose imported class minutes size its courses. */
+    private ?int $curriculumId = null;
 
     /**
      * @var list<string>|null
@@ -34,6 +36,8 @@ class YearLevelFeasibilityService
             return [];
         }
 
+        $first = $sections[array_key_first($sections)];
+        $this->curriculumId = $first->curriculum_id === null ? null : (int) $first->curriculum_id;
         $department = $this->resolveDepartment($sections);
         $this->semesterId = (int) $sections[array_key_first($sections)]->semester_id ?: null;
         $this->allowedDays = SchedulingPolicy::normalizeAllowedDays(
@@ -88,8 +92,8 @@ class YearLevelFeasibilityService
                     && $laboratoryUnits > 0;
 
                 $components = $isSplit
-                    ? $this->integratedHybridSlots($course, $department, $config)
-                    : ['meeting' => $this->configuredSlots($course, $config)];
+                    ? $this->integratedHybridSlots($course, $section)
+                    : ['meeting' => $this->courseSlots($course, $section)];
 
                 foreach ($components as $label => $slots) {
                     if ($slots <= 0 || SchedulingPolicy::generatedStartSlotsForDuration($slots) !== []) {
@@ -108,13 +112,13 @@ class YearLevelFeasibilityService
                         ),
                         'suggested_action' => $isSplit
                             ? sprintf(
-                                'Split %s across more than one weekly session, reduce its laboratory units, '
+                                'Split %s across more than one weekly session, reduce its laboratory hours, '
                                 .'or extend the operating hours so a block of %s fits.',
                                 (string) ($course->course_code ?? ''),
                                 $this->describeHours($slots),
                             )
                             : sprintf(
-                                'Reduce the units on %s or extend the operating hours so a block of %s fits.',
+                                'Reduce the hours on %s or extend the operating hours so a block of %s fits.',
                                 (string) ($course->course_code ?? ''),
                                 $this->describeHours($slots),
                             ),
@@ -378,7 +382,7 @@ class YearLevelFeasibilityService
                     continue;
                 }
 
-                $slots = $this->configuredSlots($course, $config);
+                $slots = $this->courseSlots($course, $section);
                 $candidates[$courseId] ??= ['course' => $course, 'online' => 0, 'hybrid' => 0, 'targets' => []];
                 $candidates[$courseId]['online'] += $slots;
                 $candidates[$courseId]['hybrid'] += max(0, $slots - SchedulingPolicy::hybridSplitMeetingSlots());
@@ -395,8 +399,8 @@ class YearLevelFeasibilityService
         foreach (['hybrid_split' => 'hybrid', 'online' => 'online'] as $kind => $saving) {
             $pool = array_values(array_filter(
                 $candidates,
-                static fn (array $candidate): bool => $candidate[$saving] > 0
-                    && ($saving !== 'hybrid' || SchedulingPolicy::hybridSplitEligible($candidate['course'])),
+                fn (array $candidate): bool => $candidate[$saving] > 0
+                    && ($saving !== 'hybrid' || SchedulingPolicy::hybridSplitEligible($this->placed($candidate['course'], null))),
             ));
             usort($pool, static fn (array $left, array $right): int => [
                 $left['course']->course_category === 'major',
@@ -480,7 +484,7 @@ class YearLevelFeasibilityService
 
                 $key = (string) $pattern;
                 $demandByPattern[$key] = ($demandByPattern[$key] ?? 0)
-                    + (int) ceil($this->configuredSlots($course, $config) / count($days));
+                    + (int) ceil($this->courseSlots($course, $section) / count($days));
                 $sectionsByPattern[$key][(int) $section->id] = (string) $section->section_name;
                 $targetsByPattern[$key][] = [
                     'section_id' => (int) $section->id,
@@ -601,45 +605,36 @@ class YearLevelFeasibilityService
                 continue;
             }
 
-            $slots += $this->configuredSlots($course, $config);
+            $slots += $this->courseSlots($course);
         }
 
         return $slots;
     }
 
-    /**
-     * @param  array<string, mixed>  $config
-     */
-    private function configuredSlots(Course $course, array $config): int
+    /** @return array{lecture: int, laboratory: int} */
+    private function integratedHybridSlots(Course $course, ?Sections $section = null): array
     {
-        return CourseSetupOverrides::durationSlots($config, (int) $course->id)
-            ?? $this->courseSlots($course);
-    }
-
-    /**
-     * @param  array<string, mixed>  $config
-     * @return array{lecture: int, laboratory: int}
-     */
-    private function integratedHybridSlots(Course $course, Departments $department, array $config): array
-    {
-        $courseId = (int) $course->id;
+        $placed = $this->placed($course, $section);
 
         return [
-            'lecture' => CourseSetupOverrides::componentSlots($config, $courseId, 'lecture')
-                ?? SchedulingPolicy::lectureComponentSlots($course),
-            'laboratory' => CourseSetupOverrides::componentSlots($config, $courseId, 'laboratory')
-                ?? SchedulingPolicy::laboratoryComponentSlots($course, $department),
+            'lecture' => SchedulingPolicy::lectureComponentSlots($placed),
+            'laboratory' => SchedulingPolicy::laboratoryComponentSlots($placed),
         ];
     }
 
-    private function courseSlots(Course $course): int
+    private function courseSlots(Course $course, ?Sections $section = null): int
     {
-        $units = (float) ($course->units ?? 0);
-        if ($units <= 0) {
-            $units = (float) ($course->lecture_hours ?? 0) + (float) ($course->lab_hours ?? 0);
-        }
+        return max(1, SchedulingPolicy::courseDurationSlots($this->placed($course, $section)));
+    }
 
-        return max(1, (int) ceil(SchedulingPolicy::unitMinutes($units) / SchedulingPolicy::SLOT_MINUTES));
+    /** The course as placed in the section's curriculum, or the year level's when no section is given. */
+    private function placed(Course $course, ?Sections $section): Course
+    {
+        $curriculumId = $section === null
+            ? $this->curriculumId
+            : ($section->curriculum_id === null ? null : (int) $section->curriculum_id);
+
+        return SchedulingPolicy::placedCourse($course, $curriculumId);
     }
 
     /**

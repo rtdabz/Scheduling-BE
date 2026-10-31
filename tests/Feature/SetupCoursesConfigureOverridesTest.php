@@ -17,7 +17,6 @@ use App\Services\Scheduling\Generation\CourseSetupOverrides;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
 /**
@@ -30,39 +29,36 @@ class SetupCoursesConfigureOverridesTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_a_custom_single_block_duration_reaches_the_generated_row_and_saves(): void
-    {
-        [$section, $course] = $this->scenario();
-
-        $rows = $this->generate($section, $course, [
-            CourseSetupOverrides::DURATIONS_KEY => [(int) $course->id => 4],
-        ]);
-
-        $this->assertCount(1, $rows);
-        $this->assertSame(120, $this->minutes($rows[0]), 'a 3-unit course set to 2 hours meets for 2 hours');
-        $this->assertNotContains('class_duration', $this->violations($section, $course, $rows[0]));
-    }
-
-    public function test_without_a_custom_duration_the_course_keeps_its_units(): void
+    public function test_a_single_meeting_holds_the_course_total_hours(): void
     {
         [$section, $course] = $this->scenario();
 
         $rows = $this->generate($section, $course, []);
 
+        $this->assertCount(1, $rows);
         $this->assertSame(180, $this->minutes($rows[0]));
+        $this->assertNotContains('class_duration', $this->violations($section, $course, $rows[0]));
     }
 
-    public function test_a_custom_split_session_duration_is_halved_across_both_meetings(): void
+    public function test_a_stale_custom_duration_from_an_old_client_is_ignored(): void
+    {
+        [$section, $course] = $this->scenario();
+
+        $rows = $this->generate($section, $course, ['duration_slots_by_course_id' => [(int) $course->id => 4]]);
+
+        $this->assertSame(180, $this->minutes($rows[0]), 'the course keeps its Total Hours');
+    }
+
+    public function test_a_split_session_shares_the_total_hours_across_both_meetings(): void
     {
         [$section, $course] = $this->scenario();
 
         $rows = $this->generate($section, $course, [
             'balanced_split_course_ids' => [(int) $course->id],
-            CourseSetupOverrides::DURATIONS_KEY => [(int) $course->id => 4],
         ], balancedSplit: true);
 
         $this->assertCount(2, $rows, 'the Split Session keeps its two meetings');
-        $this->assertSame([60, 60], array_map(fn (array $row): int => $this->minutes($row), $rows));
+        $this->assertSame([90, 90], array_map(fn (array $row): int => $this->minutes($row), $rows));
     }
 
     public function test_a_shortened_split_session_passes_the_meeting_group_rule_and_a_longer_one_does_not(): void
@@ -100,53 +96,6 @@ class SetupCoursesConfigureOverridesTest extends TestCase
                 $this->assertSame((int) $preferred->id, (int) $rows[0]['room_id'], "seed {$seed} ignored {$code}");
             }
         }
-    }
-
-    public function test_one_class_may_run_eight_hours_but_not_past_the_teaching_day(): void
-    {
-        [$section, $course] = $this->scenario();
-
-        // Eight hours straight is one valid class, whatever the course's units.
-        $this->assertSame(
-            [(int) $course->id => 16],
-            CourseSetupOverrides::normalizeDurations($section, [(int) $course->id => 480], [(int) $course->id], []),
-        );
-
-        $this->expectException(ValidationException::class);
-
-        CourseSetupOverrides::normalizeDurations($section, [(int) $course->id => 15 * 60], [(int) $course->id], []);
-    }
-
-    public function test_a_split_session_may_not_exceed_the_course_units(): void
-    {
-        [$section, $course] = $this->scenario();
-
-        $this->expectException(ValidationException::class);
-
-        CourseSetupOverrides::normalizeDurations(
-            $section,
-            [(int) $course->id => 240],
-            [(int) $course->id],
-            ['balanced_split_course_ids' => [(int) $course->id]],
-        );
-    }
-
-    public function test_hybrid_shapes_keep_their_fixed_lengths(): void
-    {
-        [$section, $course] = $this->scenario();
-
-        $this->assertSame([], CourseSetupOverrides::normalizeDurations(
-            $section,
-            [(int) $course->id => 120],
-            [(int) $course->id],
-            ['hybrid_split_course_ids' => [(int) $course->id]],
-        ));
-        $this->assertSame([(int) $course->id => 4], CourseSetupOverrides::normalizeDurations(
-            $section,
-            [(int) $course->id => 120],
-            [(int) $course->id],
-            [],
-        ));
     }
 
     public function test_preferred_room_options_follow_room_access(): void

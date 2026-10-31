@@ -213,14 +213,23 @@ class InitialDataController extends Controller
                 ->get();
 
             $pivotMap = [];
+            $classMinutes = [];
             foreach ($pivotData as $p) {
                 if (! isset($pivotMap[$p->course_id])) {
                     $pivotMap[$p->course_id] = $p;
                 }
+                if ($p->lecture_minutes !== null || $p->laboratory_minutes !== null) {
+                    $classMinutes[$p->course_id][(int) $p->curriculum_id] = [
+                        'lecture' => $p->lecture_minutes === null ? null : (int) $p->lecture_minutes,
+                        'laboratory' => $p->laboratory_minutes === null ? null : (int) $p->laboratory_minutes,
+                    ];
+                }
             }
 
             $curricularIds = $activeSemesterCourseIds->flip();
-            $courses = $courses->map(function ($c) use ($pivotMap, $curricularIds, $departmentId, $configuredFieldCodes) {
+            $courses = $courses->map(function ($c) use ($pivotMap, $classMinutes, $curricularIds, $departmentId, $configuredFieldCodes) {
+                // Class minutes each curriculum recorded on import; scheduling sizes the course from them.
+                $c->setAttribute('class_minutes_by_curriculum', (object) ($classMinutes[$c->id] ?? []));
                 $c->setAttribute('delegated_only', $departmentId !== null && ! (
                     $curricularIds->has((int) $c->id)
                     && ($c->department_id === null

@@ -61,7 +61,7 @@ class CourseValidationParityTest extends TestCase
 
     public function test_boundary_values_normalization_and_numeric_batch_placement_are_preserved(): void
     {
-        $values = ['lecture_hours' => SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LECTURE_SLOTS_PER_UNIT), 'lab_hours' => SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LABORATORY_SLOTS_PER_UNIT), 'course_name' => str_repeat('N', 255)];
+        $values = ['lecture_hours' => SchedulingPolicy::maxHoursPerComponent(), 'lab_hours' => SchedulingPolicy::maxHoursPerComponent(), 'course_name' => str_repeat('N', 255)];
         $this->postJson('/api/courses', [...$this->payload(), ...$values, 'course_code' => '  single   101  '])
             ->assertCreated()->assertJsonPath('course_code', 'SINGLE 101');
         $response = $this->postJson($this->batchUrl(), ['courses' => [[...$this->row(), ...$values, 'course_code' => '  batch   101  ', 'semester' => 3]]])

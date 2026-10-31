@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Academic\CoursesController;
 use App\Http\Controllers\Academic\CurriculumController;
+use App\Http\Controllers\Academic\CurriculumImportController;
 use App\Http\Controllers\Academic\DepartmentsController;
 use App\Http\Controllers\Academic\DesignationController;
 use App\Http\Controllers\Academic\ProgramController;
@@ -320,5 +321,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::delete('/curriculum/{curriculum}', [CurriculumController::class, 'destroy']);
         Route::post('/curriculum/{curriculum}/duplicate', [CurriculumController::class, 'duplicate']);
         Route::patch('/curriculum/{curriculum}/status', [CurriculumController::class, 'updateStatus']);
+
+        Route::get('curriculum-import-settings', [CurriculumImportController::class, 'showSettings']);
+        Route::put('curriculum-import-settings', [CurriculumImportController::class, 'updateSettings'])->middleware('throttle:20,1');
+        Route::post('curriculum-imports/validate', [CurriculumImportController::class, 'validateDraft'])->middleware('throttle:30,1');
+        Route::post('curriculum-imports', [CurriculumImportController::class, 'store'])->middleware('throttle:10,1');
     });
 });

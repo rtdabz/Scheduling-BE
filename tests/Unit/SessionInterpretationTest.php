@@ -124,7 +124,8 @@ class SessionInterpretationTest extends TestCase
         $this->assertSame(SessionAlternativePolicy::hybridSplitMeetings(), $description->meetings);
         $description = SessionInterpreter::fromConfiguration(100, $config, ['day_count' => 3]);
         $this->assertSame('consecutive', $description->kind);
-        $this->assertSame([6, 6, 6], array_column($description->meetings, 'duration_slots'));
+        // The three days share the six slots equally.
+        $this->assertSame([2, 2, 2], array_column($description->meetings, 'duration_slots'));
         $config['requirements_by_course_id'][100][0]['component_type'] = 'field';
         $this->assertSame('field', SessionInterpreter::fromConfiguration(100, $config)->kind);
     }
@@ -135,10 +136,11 @@ class SessionInterpretationTest extends TestCase
         $this->assertTrue(SessionAlternativePolicy::draftHybridEligible($course, 'split'));
         $this->assertFalse(SessionAlternativePolicy::draftHybridEligible($course, 'online_split'));
         $this->assertSame(3, SessionAlternativePolicy::draftOnlineMeetingSlots($course));
-        $this->assertFalse(SessionAlternativePolicy::draftHybridEligible([...$course, 'units' => 2], null));
+        // Eligibility follows the recorded hours; units no longer decide it.
+        $this->assertFalse(SessionAlternativePolicy::draftHybridEligible([...$course, 'lecture_hours' => 2], null));
         $this->assertFalse(SessionAlternativePolicy::draftHybridEligible([...$course, 'lab_hours' => 1], null));
         $this->assertNull(SessionAlternativePolicy::draftOnlineMeetingSlots([...$course, 'lab_hours' => 1]));
-        $this->assertNull(SessionAlternativePolicy::draftOnlineMeetingSlots([...$course, 'units' => 1.5]));
+        $this->assertNull(SessionAlternativePolicy::draftOnlineMeetingSlots([...$course, 'lecture_hours' => 0]));
     }
 
     public function test_odd_configured_split_duration_is_not_silently_shortened(): void

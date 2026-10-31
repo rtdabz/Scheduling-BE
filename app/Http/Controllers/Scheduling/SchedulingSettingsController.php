@@ -37,13 +37,6 @@ class SchedulingSettingsController extends Controller
     {
         $validated = $request->validate([
             'lecture_lab_schedule_override_enabled' => 'sometimes|required|boolean',
-            'custom_lab_duration_override_enabled' => 'sometimes|required|boolean',
-            'custom_lab_duration_minutes' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES
-                .'|max:'.(SchedulingPolicy::totalSlots() * SchedulingPolicy::SLOT_MINUTES)
-                .'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
-            'custom_lab_duration_6_hours_enabled' => 'sometimes|required|boolean',
-            'custom_lab_duration_5_hours_enabled' => 'sometimes|required|boolean',
-            'custom_lab_duration_other_enabled' => 'sometimes|required|boolean',
             'gec_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'major_lecture_split_schedule_override_enabled' => 'sometimes|required|boolean',
             'sunday_classes_enabled' => 'sometimes|required|boolean',
@@ -70,55 +63,6 @@ class SchedulingSettingsController extends Controller
                 ], 422);
             }
             $department->lecture_lab_schedule_override_enabled = (bool) $validated['lecture_lab_schedule_override_enabled'];
-            if (! $department->lecture_lab_schedule_override_enabled) {
-                $department->custom_lab_duration_override_enabled = false;
-            }
-        }
-        if (array_key_exists('custom_lab_duration_override_enabled', $validated)) {
-            $wantsCustomLab = (bool) $validated['custom_lab_duration_override_enabled'];
-            $splitEnabled = array_key_exists('lecture_lab_schedule_override_enabled', $validated)
-                ? (bool) $validated['lecture_lab_schedule_override_enabled']
-                : (bool) $department->lecture_lab_schedule_override_enabled;
-            if ($wantsCustomLab && ! $splitEnabled) {
-                return response()->json([
-                    'message' => 'Custom Lab Duration applies to Lecture + Laboratory splits. Enable Apply Hybrid first.',
-                ], 422);
-            }
-            $department->custom_lab_duration_override_enabled = $wantsCustomLab;
-        }
-        if (array_key_exists('custom_lab_duration_minutes', $validated)) {
-            $department->custom_lab_duration_minutes = $validated['custom_lab_duration_minutes'];
-        }
-        $durationChoiceKeys = [
-            'custom_lab_duration_6_hours_enabled',
-            'custom_lab_duration_5_hours_enabled',
-            'custom_lab_duration_other_enabled',
-        ];
-        $chosenDuration = collect($durationChoiceKeys)
-            ->first(fn (string $key): bool => array_key_exists($key, $validated) && (bool) $validated[$key]);
-        foreach ($durationChoiceKeys as $key) {
-            if ($chosenDuration !== null) {
-                $department->{$key} = $key === $chosenDuration;
-
-                continue;
-            }
-            if (array_key_exists($key, $validated)) {
-                $department->{$key} = (bool) $validated[$key];
-            }
-        }
-
-        if (! (bool) $department->custom_lab_duration_override_enabled) {
-            foreach ($durationChoiceKeys as $key) {
-                $department->{$key} = false;
-            }
-        }
-
-        if ((bool) $department->custom_lab_duration_override_enabled
-            && (bool) $department->custom_lab_duration_other_enabled
-            && SchedulingPolicy::customLaboratoryDurationSlots($department) === null) {
-            return response()->json([
-                'message' => 'Enter a custom laboratory duration in whole half-hours that fits inside the teaching day.',
-            ], 422);
         }
         if (array_key_exists('gec_split_schedule_override_enabled', $validated)) {
             $department->gec_split_schedule_override_enabled = (bool) $validated['gec_split_schedule_override_enabled'];
@@ -176,11 +120,6 @@ class SchedulingSettingsController extends Controller
         return [
             'department_id' => $department->id,
             'lecture_lab_schedule_override_enabled' => (bool) $department->lecture_lab_schedule_override_enabled,
-            'custom_lab_duration_override_enabled' => (bool) $department->custom_lab_duration_override_enabled,
-            'custom_lab_duration_minutes' => $department->custom_lab_duration_minutes,
-            'custom_lab_duration_6_hours_enabled' => (bool) $department->custom_lab_duration_6_hours_enabled,
-            'custom_lab_duration_5_hours_enabled' => (bool) $department->custom_lab_duration_5_hours_enabled,
-            'custom_lab_duration_other_enabled' => (bool) $department->custom_lab_duration_other_enabled,
             'gec_split_schedule_override_enabled' => (bool) $department->gec_split_schedule_override_enabled,
             'major_lecture_split_schedule_override_enabled' => (bool) $department->major_lecture_split_schedule_override_enabled,
             'lecture_lab_available' => $lectureLabAvailable,

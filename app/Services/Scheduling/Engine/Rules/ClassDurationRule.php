@@ -2,14 +2,11 @@
 
 namespace App\Services\Scheduling\Engine\Rules;
 
-use App\Models\Departments;
 use App\Models\Schedule;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 final class ClassDurationRule
 {
-    public function __construct(private readonly RuleLookupCache $lookups) {}
-
     /**
      * @param  array<string, mixed>  $attempt
      * @return array<string, mixed>|null
@@ -17,6 +14,7 @@ final class ClassDurationRule
     public function check(array $attempt, AttemptRecords $records): ?array
     {
         $course = $records->course;
+        $placed = SchedulingPolicy::placedCourse($course, $records->section->curriculum_id === null ? null : (int) $records->section->curriculum_id);
         $meetingType = isset($attempt['meeting_type']) ? (string) $attempt['meeting_type'] : null;
         $isIntegratedSession = SchedulingPolicy::isIntegratedSession($course, $meetingType, $attempt['split_group_id'] ?? null);
         $ignoreIds = RuleSupport::ignoreIds($attempt['ignore_schedule_id'] ?? null);
@@ -37,15 +35,9 @@ final class ClassDurationRule
         $attemptMinutes = max(0, RuleSupport::durationMinutes((string) $attempt['start_time'], (string) $attempt['end_time']));
         $totalMinutes = $kept->sum($minutesOf) + $attemptMinutes;
 
-        $dayMinutes = SchedulingPolicy::integratedSessionCeilingMinutes();
         $allowedMinutes = $isIntegratedSession
-            ? $dayMinutes
-            : SchedulingPolicy::classDurationAllowanceMinutes(
-                $this->allowedWeeklyMinutes($records),
-                max($attemptMinutes, (int) $kept->map($minutesOf)->max()),
-                $dayMinutes,
-                $attempt['preferred_pattern'] ?? null,
-            );
+            ? SchedulingPolicy::componentMinutes($placed, $meetingType)
+            : SchedulingPolicy::courseDurationMinutes($placed);
         if ($allowedMinutes <= 0) {
             return null;
         }
@@ -58,7 +50,7 @@ final class ClassDurationRule
             'rule' => 'class_duration',
             'message' => $isIntegratedSession
                 ? sprintf(
-                    '%s would meet %s of %s a week for this section, but its %s is one meeting of at most %s.',
+                    '%s would meet %s of %s a week for this section, but its %s holds %s.',
                     (string) $course->course_code,
                     $this->hours($totalMinutes),
                     $meetingType,
@@ -74,28 +66,6 @@ final class ClassDurationRule
             'scheduled_minutes' => $totalMinutes,
             'allowed_minutes' => $allowedMinutes,
         ];
-    }
-
-    private function allowedWeeklyMinutes(AttemptRecords $records): int
-    {
-        return SchedulingPolicy::courseWeeklyCeilingMinutes(
-            $records->course,
-            $this->labDurationSettings($records->departmentId()),
-        );
-    }
-
-    private function labDurationSettings(int $departmentId): ?Departments
-    {
-        return $this->lookups->remember('labDurationSettings:'.$departmentId, fn () => Departments::query()
-            ->select([
-                'id',
-                'custom_lab_duration_override_enabled',
-                'custom_lab_duration_6_hours_enabled',
-                'custom_lab_duration_5_hours_enabled',
-                'custom_lab_duration_other_enabled',
-                'custom_lab_duration_minutes',
-            ])
-            ->find($departmentId));
     }
 
     private function hours(int $minutes): string

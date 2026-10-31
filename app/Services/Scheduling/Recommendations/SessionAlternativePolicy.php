@@ -23,7 +23,7 @@ final class SessionAlternativePolicy
             && SchedulingPolicy::balancedSplitEligible($course, $settings)
             && (int) ($course['lecture_hours'] ?? 0) > 0
             && ($total = (int) $meetings[0]['duration_slots']) >= 2 && $total % 2 === 0
-            && $total * SchedulingPolicy::SLOT_MINUTES <= SchedulingPolicy::unitMinutes($course['units'] ?? 0)) {
+            && $total <= SchedulingPolicy::courseDurationSlots($course)) {
             $half = intdiv($total, 2);
             $modes = $meetings[0]['modes'];
             $mode = in_array('on-site', $modes, true) ? 'on-site' : (in_array('online', $modes, true) ? 'online' : null);
@@ -73,7 +73,7 @@ final class SessionAlternativePolicy
         if ((int) ($course['lab_hours'] ?? 0) !== 0 || (int) ($course['lecture_hours'] ?? 0) <= 0) {
             return null;
         }
-        $slots = intdiv(SchedulingPolicy::unitMinutes($course['units'] ?? 0), SchedulingPolicy::SLOT_MINUTES);
+        $slots = SchedulingPolicy::courseDurationSlots($course);
 
         return $slots >= 2 && $slots % 2 === 0 ? intdiv($slots, 2) : null;
     }

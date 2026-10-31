@@ -178,7 +178,13 @@ class CspSolver
     /**
      * @var array<string, mixed>|Departments|null
      */
-    private array|Departments|null $departmentLabSettings = null;
+    private array|Departments|null $departmentSettings = null;
+
+    /** The section's curriculum, whose imported class minutes size its courses. */
+    private ?int $curriculumId = null;
+
+    /** @var array<int, Course> */
+    private array $placedCourses = [];
 
     /**
      * @return array{
@@ -418,6 +424,8 @@ class CspSolver
             throw new RuntimeException('The scheduling snapshot belongs to a different semester or department than the section being solved.');
         }
 
+        $this->curriculumId = $snapshot->curriculumIdBySectionId[(int) $section->id] ?? null;
+        $this->placedCourses = [];
         $this->validateSectionForScheduling($section);
 
         $courses = collect($snapshot->coursesById)
@@ -531,7 +539,7 @@ class CspSolver
 
         $settings = $snapshot->departmentSettings;
         $lectureLabScheduleOverrideEnabled = (bool) ($settings['lecture_lab_schedule_override_enabled'] ?? false);
-        $this->departmentLabSettings = $settings;
+        $this->departmentSettings = $settings;
         $this->sundayClassesEnabled = (bool) ($settings['sunday_classes_enabled'] ?? false);
         $forcedDaysByCourseId = $this->forcedDaysByCourseId((int) $section->department_id, $courseIds);
         $this->generationForcedDaysByCourseId = $forcedDaysByCourseId;
@@ -1405,36 +1413,6 @@ class CspSolver
         return 1;
     }
 
-    /**
-     * @param  list<array<string, mixed>>  $requirements
-     */
-    private function requirementCustomSlots(array $requirements): ?int
-    {
-        if (count($requirements) !== 1 || ! (bool) ($requirements[0]['custom_duration'] ?? false)) {
-            return null;
-        }
-        $slots = (int) ($requirements[0]['duration_slots'] ?? 0);
-
-        return $slots > 0 ? $slots : null;
-    }
-
-    /**
-     * @param  list<array<string, mixed>>  $requirements
-     */
-    private function requirementComponentSlots(array $requirements, string $componentType): ?int
-    {
-        foreach ($requirements as $requirement) {
-            if (($requirement['component_type'] ?? null) === $componentType
-                && (bool) ($requirement['custom_duration'] ?? false)) {
-                $slots = (int) ($requirement['duration_slots'] ?? 0);
-
-                return $slots > 0 ? $slots : null;
-            }
-        }
-
-        return null;
-    }
-
     /** @param list<array<string, mixed>> $requirements */
     private function requirementPreferredRoomId(array $requirements): ?int
     {
@@ -1524,16 +1502,15 @@ class CspSolver
             $lectureComponentSlots = null;
             $laboratoryComponentSlots = null;
             if ($hasBothComponents) {
-                $lectureComponentSlots = $this->requirementComponentSlots($requirements, 'lecture')
-                    ?? SchedulingPolicy::lectureComponentSlots($course);
-                $laboratoryComponentSlots = $this->requirementComponentSlots($requirements, 'laboratory')
-                    ?? $this->laboratoryComponentSlots($course);
+                $lectureComponentSlots = $this->lectureComponentSlots($course);
+                $laboratoryComponentSlots = $this->laboratoryComponentSlots($course);
                 $durationSlots = $lectureComponentSlots + $laboratoryComponentSlots;
             } elseif ($requiresHybridSplit) {
                 $durationSlots = 2 * SchedulingPolicy::hybridSplitMeetingSlots();
+            } elseif ($consecutiveRule !== null) {
+                $durationSlots = $this->consecutiveMeetingSlots($course, $sectionId, (int) $consecutiveRule['day_count']);
             } else {
-                $durationSlots = $this->requirementCustomSlots($requirements)
-                    ?? $this->getDurationSlots($course);
+                $durationSlots = $this->getDurationSlots($course);
             }
 
             $forcedDay = $forcedDaysByCourseId[(int) $course->id] ?? null;
@@ -1781,6 +1758,23 @@ class CspSolver
     /**
      * @param  array{day_count: int, preferred_start_day: string|null, meeting_days?: list<string>|null}  $rule
      */
+    /** Consecutive days share the course's Total Hours equally; they never repeat it. */
+    private function consecutiveMeetingSlots(Course $course, int $sectionId, int $dayCount): int
+    {
+        $slots = SchedulingPolicy::consecutiveMeetingSlots($this->placed($course), $dayCount);
+        if ($slots === null) {
+            throw new RuntimeException(sprintf(
+                '%s / %s has %s hours a week, which %d consecutive days cannot share in equal half-hour meetings. Choose a number of days that divides its Total Hours evenly.',
+                $this->sectionLabel($sectionId),
+                (string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id)),
+                rtrim(rtrim(number_format(SchedulingPolicy::courseDurationMinutes($this->placed($course)) / 60, 1), '0'), '.'),
+                $dayCount,
+            ));
+        }
+
+        return $slots;
+    }
+
     private function assertConsecutiveDaysPlaceable(Course $course, int $sectionId, array $rule, ?string $forcedDay): void
     {
         $label = $this->sectionLabel($sectionId).' / '.(string) ($course->course_code ?? $course->course_name ?? ('Course '.$course->id));
@@ -2224,7 +2218,7 @@ class CspSolver
             return [];
         }
 
-        $lectureSlots ??= SchedulingPolicy::lectureComponentSlots($course);
+        $lectureSlots ??= $this->lectureComponentSlots($course);
         $labSlots = $laboratorySlots ?? $this->laboratoryComponentSlots($course);
 
         if ($lectureSlots <= 0 || $labSlots <= 0) {
@@ -2594,7 +2588,7 @@ class CspSolver
         int $durationSlots,
         string $preferredPattern,
     ): array {
-        if ($durationSlots < 2 || $durationSlots % 2 !== 0 || ! SchedulingPolicy::hybridSplitEligible($course)) {
+        if ($durationSlots < 2 || $durationSlots % 2 !== 0 || ! SchedulingPolicy::hybridSplitEligible($this->placed($course))) {
             return [];
         }
 
@@ -3513,7 +3507,7 @@ class CspSolver
                         $blockSlots = $block['end_slot'] - $block['start_slot'];
                         if ($blockSlots === $this->laboratoryComponentSlots($courseObj)) {
                             $row['meeting_type'] = 'laboratory';
-                        } elseif ($blockSlots === (int) $courseObj->lecture_hours * SchedulingPolicy::LECTURE_SLOTS_PER_UNIT) {
+                        } elseif ($blockSlots === $this->lectureComponentSlots($courseObj)) {
                             $row['meeting_type'] = 'lecture';
                         } else {
                             $row['meeting_type'] = ($index === 0) ? 'lecture' : 'laboratory';
@@ -3551,18 +3545,7 @@ class CspSolver
 
     private function getDurationSlots(Course $course): int
     {
-        $rawSlots = $this->rawDurationSlots($course);
-
-        if (abs($rawSlots - round($rawSlots)) > 0.00001) {
-            throw new RuntimeException(sprintf(
-                'Course %d has units %.2f, which cannot be represented '
-                .'using 30-minute scheduling slots.',
-                $course->id,
-                $course->units,
-            ));
-        }
-
-        $durationSlots = (int) round($rawSlots);
+        $durationSlots = SchedulingPolicy::courseDurationSlots($this->placed($course));
 
         if ($durationSlots <= 0) {
             throw new RuntimeException(sprintf(
@@ -3584,12 +3567,7 @@ class CspSolver
 
     private function isSchedulableCourse(Course $course): bool
     {
-        return $this->rawDurationSlots($course) > 0;
-    }
-
-    private function rawDurationSlots(Course $course): float
-    {
-        return (float) $course->units * 2;
+        return SchedulingPolicy::courseDurationSlots($this->placed($course)) > 0;
     }
 
     /** @return array{0: string, 1: string} */
@@ -3912,9 +3890,20 @@ class CspSolver
         return $departmentId > 0 ? $departmentId : null;
     }
 
+    private function lectureComponentSlots(Course $course): int
+    {
+        return SchedulingPolicy::lectureComponentSlots($this->placed($course));
+    }
+
     private function laboratoryComponentSlots(Course $course): int
     {
-        return SchedulingPolicy::laboratoryComponentSlots($course, $this->departmentLabSettings);
+        return SchedulingPolicy::laboratoryComponentSlots($this->placed($course));
+    }
+
+    /** The course as placed in the section's curriculum, for sizing its meetings. */
+    private function placed(Course $course): Course
+    {
+        return $this->placedCourses[(int) $course->id] ??= SchedulingPolicy::placedCourse($course, $this->curriculumId);
     }
 
     private function hasLectureAndLabHours(Course $course): bool

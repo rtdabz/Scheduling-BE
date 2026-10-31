@@ -29,15 +29,15 @@ class GenerationDraftReviewTest extends TestCase
 
     public static function unplacedRequirements(): array
     {
-        return ['even total' => [3, 2, 3, false], 'off-grid halves' => [2.5, 1, 5, false], 'request-local run' => [3, 1, 6, true]];
+        return ['even total' => [3, 2, 3, false], 'request-local run' => [3, 1, 2, true]];
     }
 
     #[DataProvider('unplacedRequirements')]
-    public function test_a_run_without_a_complete_timetable_returns_a_draft_with_the_courses_left_out(float $units, int $meetingCount, int $meetingSlots, bool $consecutive): void
+    public function test_a_run_without_a_complete_timetable_returns_a_draft_with_the_courses_left_out(int $hours, int $meetingCount, int $meetingSlots, bool $consecutive): void
     {
         $fixture = $this->fixture();
         ['section' => $section, 'blocked' => $blocked, 'placed' => $placed] = $fixture;
-        $blocked->update(['units' => $units]);
+        $blocked->update(['lecture_hours' => $hours, 'units' => $hours]);
 
         // Every search that includes GEC 101 dead-ends on it; without it the
         // section solves.

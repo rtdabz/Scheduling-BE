@@ -584,6 +584,13 @@ class YearLevelScheduleGenerationService
             default => "No free time and room fits it alongside the section's other classes.",
         };
 
+        $runRule = ($this->generationSnapshot?->consecutiveDayRulesFor((int) $section->id) ?? [])[$courseId] ?? null;
+        $dayCount = (int) ($runRule['day_count'] ?? 0);
+        if ($dayCount > 0 && count($meetings) === 1 && $meetings[0]['duration_slots'] % $dayCount === 0) {
+            // Each day of a run holds an equal share of the Total Hours.
+            $meetings[0]['duration_slots'] = intdiv($meetings[0]['duration_slots'], $dayCount);
+        }
+
         return [
             'section_id' => (int) $section->id,
             'section_name' => (string) $section->section_name,
@@ -592,8 +599,7 @@ class YearLevelScheduleGenerationService
             'reason' => $reason,
             'shape' => $shape,
             'meetings' => $meetings,
-            ...(($runRule = ($this->generationSnapshot?->consecutiveDayRulesFor((int) $section->id) ?? [])[$courseId] ?? null) !== null
-                ? ['consecutive_rule' => $runRule] : []),
+            ...($runRule !== null ? ['consecutive_rule' => $runRule] : []),
         ];
     }
 

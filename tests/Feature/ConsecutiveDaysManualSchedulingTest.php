@@ -77,29 +77,21 @@ class ConsecutiveDaysManualSchedulingTest extends TestCase
         $this->assertSame(['Monday,Wednesday,Friday'], array_values($runs));
     }
 
-    public function test_each_day_of_a_run_may_take_the_full_class_length(): void
+    public function test_the_days_of_a_run_share_the_total_hours(): void
     {
         $context = $this->scaffold();
-        // Four hours a day: three days (12 h) are more than the course's own
-        // week (9 h, its three laboratory units), but within a 3-day run's.
-        $this->savedRun($context, ['Thursday', 'Friday', 'Saturday'], '07:00', '11:00');
+        // Three laboratory hours over three days: one hour a day, never more in total.
+        $this->savedRun($context, ['Thursday', 'Friday', 'Saturday']);
         Schedule::query()->where('day', 'Saturday')->delete();
-        $saturday = [
-            ...$this->row($context),
-            'day' => 'Saturday',
-            'start_time' => '07:00',
-            'end_time' => '11:00',
-        ];
+        $saturday = [...$this->row($context), 'day' => 'Saturday', 'start_time' => '07:00', 'end_time' => '08:00', 'preferred_pattern' => 'consecutive:3'];
         $durationRules = static fn (array $violations): array => array_values(array_filter(
             array_column($violations, 'rule'),
             static fn (string $rule): bool => $rule === 'class_duration',
         ));
+        $engine = app(\App\Services\Scheduling\Engine\RuleEngine::class);
 
-        $this->assertSame([], $durationRules(app(\App\Services\Scheduling\Engine\RuleEngine::class)->validate([
-            ...$saturday,
-            'preferred_pattern' => 'consecutive:3',
-        ])), 'a 3-day run holds three classes\' worth of time');
-        $this->assertSame(['class_duration'], $durationRules(app(\App\Services\Scheduling\Engine\RuleEngine::class)->validate($saturday)), 'an extra plain meeting is still refused');
+        $this->assertSame([], $durationRules($engine->validate($saturday)), 'the third day completes the 3 hours');
+        $this->assertSame(['class_duration'], $durationRules($engine->validate([...$saturday, 'end_time' => '11:00'])), 'a full-length day would exceed them');
     }
 
     public function test_moving_one_day_shifts_the_whole_run(): void

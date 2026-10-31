@@ -196,26 +196,25 @@ class EngineParityMatrixTest extends TestCase
         }
     }
 
-    public function test_class_duration_leaves_an_integrated_sessions_length_to_the_user(): void
+    public function test_class_duration_holds_each_integrated_session_to_its_own_hours(): void
     {
-        // 2 lecture + 1 laboratory unit carries 5 h as a unit total. A linked
-        // 3 h laboratory plus a 3 h lecture is 6 h, but each Integrated session
-        // takes the length the user set, so neither engine holds it to 5 h.
+        // 2 lecture hours + 1 laboratory hour: a linked lecture holds its 2 hours
+        // in both engines, and no more.
         $course = $this->course(['lecture_hours' => 2, 'lab_hours' => 1, 'units' => 3]);
         $this->persist([
             'course_id' => $course->id, 'split_group_id' => 'integrated-1', 'meeting_type' => 'laboratory',
-            'day' => 'Friday', 'start_time' => '08:00', 'end_time' => '11:00', 'room_id' => null, 'mode' => 'online',
+            'day' => 'Friday', 'start_time' => '08:00', 'end_time' => '09:00', 'room_id' => null, 'mode' => 'online',
         ]);
 
         $this->assertParity([], $this->attempt([
             'course_id' => $course->id, 'split_group_id' => 'integrated-1', 'meeting_type' => 'lecture',
-            'start_time' => '08:00', 'end_time' => '11:00',
+            'start_time' => '08:00', 'end_time' => '10:00',
         ]), 'linked lecture');
 
-        // An unlinked block is not an Integrated session and keeps the ceiling.
         $this->assertParity(['class_duration'], $this->attempt([
-            'course_id' => $course->id, 'start_time' => '08:00', 'end_time' => '11:00', 'room_id' => $this->room('laboratory')->id,
-        ]), 'unlinked block');
+            'course_id' => $course->id, 'split_group_id' => 'integrated-1', 'meeting_type' => 'lecture',
+            'start_time' => '08:00', 'end_time' => '11:00',
+        ]), 'linked lecture past its hours');
     }
 
     /**
@@ -337,13 +336,6 @@ class EngineParityMatrixTest extends TestCase
             $this->assertGreaterThanOrEqual('08:00', substr($row['start_time'], 0, 5));
             $this->assertLessThanOrEqual('17:00', substr($row['end_time'], 0, 5));
         }
-    }
-
-    public function test_generated_plans_pass_both_validators_with_a_custom_lab_duration(): void
-    {
-        $this->department->update(['custom_lab_duration_override_enabled' => true, 'custom_lab_duration_5_hours_enabled' => true]);
-
-        $this->assertGeneratedPlanAccepted();
     }
 
     public function test_generated_plans_pass_both_validators_when_sunday_is_not_online_only(): void

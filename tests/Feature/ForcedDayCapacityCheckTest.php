@@ -53,9 +53,9 @@ class ForcedDayCapacityCheckTest extends TestCase
 
     public function test_a_laboratory_block_longer_than_the_day_is_reported_against_its_own_course(): void
     {
-        // Six laboratory units convert to an eighteen-hour block against a
+        // Fourteen laboratory hours are one block longer than the
         // thirteen-and-a-half hour teaching day.
-        $context = $this->scaffold(sectionCount: 2, forcedDay: null, splitCourse: [2, 6]);
+        $context = $this->scaffold(sectionCount: 2, forcedDay: null, splitCourse: [2, 14]);
 
         $blocking = array_values(array_filter(
             app(YearLevelFeasibilityService::class)->check($context['sections'], $context['configs']),
@@ -65,7 +65,7 @@ class ForcedDayCapacityCheckTest extends TestCase
         $this->assertCount(1, $blocking, 'An unschedulable laboratory block was not reported.');
         $this->assertSame('IT 122', $blocking[0]['context']['course_code']);
         $this->assertSame('laboratory', $blocking[0]['context']['component']);
-        $this->assertStringContainsString('18 hours', $blocking[0]['message']);
+        $this->assertStringContainsString('14 hours', $blocking[0]['message']);
         $this->assertStringContainsString('13.5 hours', $blocking[0]['message']);
     }
 

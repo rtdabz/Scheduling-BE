@@ -99,9 +99,12 @@ class ScheduleGenerationPreflightService
                 $issues[] = $this->courseIssue('invalid_curriculum_assignment', "Major course {$course->course_code} belongs to another department.", $section, $course, 'Assign the course to the correct department curriculum.');
             }
 
-            $rawSlots = (float) ($course->units ?? 0) * 2;
-            if ($rawSlots <= 0 || abs($rawSlots - round($rawSlots)) > 0.00001 || $rawSlots > SchedulingPolicy::totalSlots()) {
-                $issues[] = $this->courseIssue('invalid_course_duration', "Course {$course->course_code} has a duration that cannot fit the scheduling grid.", $section, $course, 'Correct the course units and duration configuration.');
+            $slots = SchedulingPolicy::courseDurationSlots(SchedulingPolicy::placedCourse(
+                $course,
+                $section->curriculum_id === null ? null : (int) $section->curriculum_id,
+            ));
+            if ($slots <= 0 || $slots > SchedulingPolicy::totalSlots()) {
+                $issues[] = $this->courseIssue('invalid_course_duration', "Course {$course->course_code} has a duration that cannot fit the scheduling grid.", $section, $course, "Correct the course's lecture and laboratory hours.");
             }
         }
 

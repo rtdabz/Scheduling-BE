@@ -177,7 +177,7 @@ final class ValidateGenerationConfiguration
         $sectionSemester = $this->semesterNumber((string) ($section['semester'] ?? ''));
 
         foreach ($configuration->courseIds as $courseId) {
-            $course = $snapshot->coursesById[$courseId] ?? null;
+            $course = $snapshot->courseFor($configuration->sectionId, $courseId);
             if (! is_array($course)) {
                 $violations[] = $this->violation('subject_exists', 'A selected course could not be loaded.', ['course_id' => $courseId]);
                 $recommendations[] = $this->removeCourseRecommendation($configuration, $courseId, [], 'The selected course no longer exists or is outside the snapshot scope.');
@@ -326,7 +326,7 @@ final class ValidateGenerationConfiguration
         $hybridSplitIds = array_map('intval', $configuration->hybridSplitCourseIds);
 
         foreach ($configuration->courseIds as $courseId) {
-            $course = $snapshot->coursesById[$courseId] ?? null;
+            $course = $snapshot->courseFor($configuration->sectionId, $courseId);
             if (! is_array($course)) {
                 continue;
             }
@@ -436,7 +436,7 @@ final class ValidateGenerationConfiguration
             }
 
             $requiredSlots = array_sum(array_map(
-                fn (int $courseId): int => $this->courseSlots($snapshot->coursesById[$courseId] ?? []),
+                fn (int $courseId): int => $this->courseSlots($snapshot->courseFor($configuration->sectionId, $courseId) ?? []),
                 $singleMeetingIds,
             ));
             $availableSlots = $this->dailySlots($snapshot);
@@ -488,7 +488,7 @@ final class ValidateGenerationConfiguration
         $demandCourseIds = ['lecture' => [], 'laboratory' => []];
 
         foreach ($courseIds as $courseId) {
-            $course = $snapshot->coursesById[$courseId] ?? null;
+            $course = $snapshot->courseFor($configuration->sectionId, $courseId);
             if (! is_array($course)) {
                 continue;
             }
@@ -800,17 +800,15 @@ final class ValidateGenerationConfiguration
     /** @param array<string, mixed> $course */
     private function hasValidDuration(array $course, SchedulingSnapshot $snapshot): bool
     {
-        $rawSlots = (float) ($course['units'] ?? 0) * 2;
+        $slots = SchedulingPolicy::courseDurationSlots($course);
 
-        return $rawSlots > 0
-            && abs($rawSlots - round($rawSlots)) <= 0.00001
-            && $rawSlots <= $this->dailySlots($snapshot);
+        return $slots > 0 && $slots <= $this->dailySlots($snapshot);
     }
 
     /** @param array<string, mixed> $course */
     private function courseSlots(array $course): int
     {
-        return max(0, (int) round((float) ($course['units'] ?? 0) * 2));
+        return SchedulingPolicy::courseDurationSlots($course);
     }
 
     private function dailySlots(SchedulingSnapshot $snapshot): int

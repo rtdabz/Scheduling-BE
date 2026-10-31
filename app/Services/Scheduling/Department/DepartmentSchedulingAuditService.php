@@ -46,11 +46,7 @@ class DepartmentSchedulingAuditService
             'laboratory_course_count' => $laboratoryCourses->count(),
             'available_lecture_rooms' => $this->roomCount($department, 'lecture'),
             'available_laboratory_rooms' => $this->roomCount($department, 'laboratory'),
-            'laboratory_settings_enabled' => (bool) $department->lecture_lab_schedule_override_enabled
-                || (bool) $department->custom_lab_duration_override_enabled
-                || (bool) $department->custom_lab_duration_6_hours_enabled
-                || (bool) $department->custom_lab_duration_5_hours_enabled
-                || (bool) $department->custom_lab_duration_other_enabled,
+            'laboratory_settings_enabled' => (bool) $department->lecture_lab_schedule_override_enabled,
             'balanced_split_settings_enabled' => (bool) $department->gec_split_schedule_override_enabled
                 || (bool) $department->major_lecture_split_schedule_override_enabled,
         ];

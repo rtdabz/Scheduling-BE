@@ -125,7 +125,8 @@ class PlacementRecommendationGroupTest extends TestCase
             'section_ids' => [$f['section']->id], 'rows' => [], 'unplaced' => [[
                 'section_id' => $f['section']->id, 'course_id' => $f['course']->id,
                 'consecutive_rule' => ['day_count' => 3, 'meeting_days' => ['Tuesday', 'Wednesday', 'Thursday']],
-                'meetings' => [['duration_slots' => 8, 'meeting_type' => null, 'modes' => ['on-site']]],
+                // Three days share the 3-hour course: one hour a day.
+                'meetings' => [['duration_slots' => 2, 'meeting_type' => null, 'modes' => ['on-site']]],
             ]],
         ])->assertOk()->json('issues.0.options');
         $this->assertNotEmpty($options);
@@ -142,15 +143,15 @@ class PlacementRecommendationGroupTest extends TestCase
     public function test_manual_runs_include_every_day_and_reject_a_blocked_day(): void
     {
         $f = $this->fixture();
-        $rows = array_map(fn (string $day): array => [...$this->pair($f)[0], 'day' => $day, 'preferred_pattern' => 'consecutive:3'], ['Monday', 'Tuesday', 'Wednesday']);
-        $response = $this->manual($f, $rows, ['consecutive_days' => 3])->assertOk();
+        $rows = array_map(fn (string $day): array => [...$this->pair($f)[0], 'day' => $day, 'end_time' => '09:00', 'preferred_pattern' => 'consecutive:3'], ['Monday', 'Tuesday', 'Wednesday']);
+        $response = $this->manual($f, $rows, ['consecutive_days' => 3, 'duration_slots' => 2])->assertOk();
         $this->assertNotEmpty($response->json('placements'));
         foreach ($response->json('placements') as $slot) {
             $this->assertCount(3, $slot['group_rows']);
             $this->assertSame($slot['run_days'], array_column($slot['group_rows'], 'day'));
         }
         $this->booking($f, 'Tuesday', '00:00', '23:30');
-        $response = $this->manual($f, $rows, ['consecutive_days' => 3])->assertOk();
+        $response = $this->manual($f, $rows, ['consecutive_days' => 3, 'duration_slots' => 2])->assertOk();
         $slots = $response->json('placements');
         foreach ($slots as $slot) {
             $this->assertNotContains('Tuesday', $slot['run_days']);
@@ -197,7 +198,7 @@ class PlacementRecommendationGroupTest extends TestCase
         $f['course']->update(['lecture_hours' => 2, 'lab_hours' => 1, 'room_type_required' => 'laboratory', 'course_category' => 'major']);
         $lab = Rooms::create(['room_code' => 'IT LAB', 'building' => 'IT', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => $f['department']->id]);
         $rows = [
-            ['day' => 'Tuesday', 'start_time' => '10:00', 'end_time' => '13:00', 'mode' => 'on-site', 'room_id' => $lab->id,
+            ['day' => 'Tuesday', 'start_time' => '10:00', 'end_time' => '11:00', 'mode' => 'on-site', 'room_id' => $lab->id,
                 'is_hybrid' => true, 'preferred_pattern' => 'days:1-2', 'meeting_type' => 'laboratory'],
             ['day' => 'Wednesday', 'start_time' => '08:00', 'end_time' => '10:00', 'mode' => 'online', 'room_id' => null,
                 'is_hybrid' => true, 'preferred_pattern' => 'days:1-2', 'meeting_type' => 'lecture'],
@@ -209,7 +210,7 @@ class PlacementRecommendationGroupTest extends TestCase
         foreach ($placements as $slot) {
             $this->assertSame('Tuesday', $slot['group_rows'][0]['day']);
             $this->assertSame('10:00', $slot['group_rows'][0]['start_time']);
-            $this->assertSame('13:00', $slot['group_rows'][0]['end_time']);
+            $this->assertSame('11:00', $slot['group_rows'][0]['end_time']);
             $this->assertSame($lab->id, $slot['group_rows'][0]['room_id']);
         }
         $online = collect($placements)->firstWhere('mode', 'online');
@@ -389,7 +390,7 @@ class PlacementRecommendationGroupTest extends TestCase
         }
         $f['course']->update(['course_category' => 'major', 'lecture_hours' => 2, 'lab_hours' => 1, 'room_type_required' => 'laboratory']);
         $lab = Rooms::create(['room_code' => 'LAB', 'building' => 'IT', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => $f['department']->id]);
-        $options = $this->catalog($f, [$row, [...$row, 'day' => 'Wednesday', 'end_time' => '10:00', 'meeting_type' => 'laboratory', 'room_id' => $lab->id]]);
+        $options = $this->catalog($f, [$row, [...$row, 'day' => 'Wednesday', 'end_time' => '08:00', 'meeting_type' => 'laboratory', 'room_id' => $lab->id]]);
         $this->assertNotEmpty($options);
         $this->assertSame([], array_filter($options, static fn (array $option): bool => isset($option['adjustment_type'])));
     }
@@ -443,7 +444,7 @@ class PlacementRecommendationGroupTest extends TestCase
         }
         $rows = [
             [...$this->pair($f)[0], 'start_time' => '07:00', 'end_time' => '09:00', 'preferred_pattern' => 'days:0-2'],
-            [...$this->pair($f)[1], 'start_time' => '07:00', 'end_time' => '10:00', 'meeting_type' => 'laboratory', 'room_id' => $lab->id, 'preferred_pattern' => 'days:0-2'],
+            [...$this->pair($f)[1], 'start_time' => '07:00', 'end_time' => '08:00', 'meeting_type' => 'laboratory', 'room_id' => $lab->id, 'preferred_pattern' => 'days:0-2'],
         ];
         $payload = ['duration_slots' => 4, 'placement' => ['rows' => $rows, 'selected_meeting' => 0, 'session_alternatives' => true]];
         $options = $this->manual($f, $rows, $payload)->assertOk()->json('recommendations');
@@ -457,7 +458,7 @@ class PlacementRecommendationGroupTest extends TestCase
         $config = ['course_ids' => [$f['course']->id], 'selected_split_session_course_ids' => [$f['course']->id],
             'delivery_modes_by_course_id' => [$f['course']->id => 'on-site'], 'requirements_by_course_id' => [$f['course']->id => [
                 ['component_type' => 'lecture', 'duration_slots' => 4, 'allowed_delivery_modes' => ['on-site']],
-                ['component_type' => 'laboratory', 'duration_slots' => 6, 'allowed_delivery_modes' => ['on-site']],
+                ['component_type' => 'laboratory', 'duration_slots' => 2, 'allowed_delivery_modes' => ['on-site']],
             ]]];
         $generation = app(RecommendationEngine::class)->recommend(new RecommendationContext(RecommendationSource::Search, [
             'snapshot' => $snapshot, 'bottleneck' => null, 'strategies' => [], 'configsBySectionId' => [$f['section']->id => $config],

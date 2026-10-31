@@ -18,7 +18,6 @@ final readonly class ScheduleRequirement
         public array $allowedDeliveryModes,
         public bool $allowLectureLaboratoryFallback = false,
         public bool $isSplitComponent = false,
-        public bool $customDuration = false,
         public ?int $preferredRoomId = null,
     ) {}
 
@@ -33,7 +32,6 @@ final readonly class ScheduleRequirement
             allowedDeliveryModes: array_values(array_map('strval', (array) ($payload['allowed_delivery_modes'] ?? []))),
             allowLectureLaboratoryFallback: (bool) ($payload['allow_lecture_laboratory_fallback'] ?? false),
             isSplitComponent: (bool) ($payload['is_split_component'] ?? false),
-            customDuration: (bool) ($payload['custom_duration'] ?? false),
             preferredRoomId: isset($payload['preferred_room_id']) ? (int) $payload['preferred_room_id'] : null,
         );
     }
@@ -49,7 +47,6 @@ final readonly class ScheduleRequirement
             'allowed_delivery_modes' => $this->allowedDeliveryModes,
             'allow_lecture_laboratory_fallback' => $this->allowLectureLaboratoryFallback,
             'is_split_component' => $this->isSplitComponent,
-            'custom_duration' => $this->customDuration,
             'preferred_room_id' => $this->preferredRoomId,
         ];
     }

@@ -132,6 +132,7 @@ class CurriculumController extends Controller
             'effective_school_year' => ['required', 'string', $this->schoolYearRule()],
             'status' => 'nullable|string|in:active,deactivated,archived',
             'description' => 'nullable|string',
+            ...$this->cmoRules(),
         ];
 
         $validated = $request->validate($rules);
@@ -181,6 +182,15 @@ class CurriculumController extends Controller
             || ($user->program_id !== null && (int) $curriculum->program_id === (int) $user->program_id);
     }
 
+    /** @return array<string, mixed> */
+    private function cmoRules(): array
+    {
+        return [
+            'cmo_number' => ['nullable', 'string', 'max:32', 'regex:/^[0-9A-Za-z-]+$/'],
+            'cmo_series' => 'nullable|integer|between:1900,2100',
+        ];
+    }
+
     private function schoolYearRule(): \Closure
     {
         return function (string $attribute, mixed $value, \Closure $fail): void {
@@ -207,6 +217,7 @@ class CurriculumController extends Controller
             'effective_school_year' => ['sometimes', 'string', $this->schoolYearRule()],
             'status' => 'nullable|string|in:active,deactivated,archived',
             'description' => 'nullable|string',
+            ...$this->cmoRules(),
         ];
 
         $validated = $request->validate($rules);
@@ -259,6 +270,8 @@ class CurriculumController extends Controller
             $newCurriculum = Curriculum::create([
                 'name' => $curriculum->name.' (Copy)',
                 'code' => $curriculum->code.'-COPY-'.time(),
+                'cmo_number' => $curriculum->cmo_number,
+                'cmo_series' => $curriculum->cmo_series,
                 'department_id' => $curriculum->department_id,
                 'program_id' => $curriculum->program_id,
                 'effective_school_year' => $curriculum->effective_school_year,
@@ -269,11 +282,11 @@ class CurriculumController extends Controller
             $courses = $curriculum->courses()->get();
             if ($courses->isNotEmpty()) {
                 $attachData = [];
+                // Frozen placement snapshots travel with the copy; it is never re-converted with current rates.
                 foreach ($courses as $course) {
-                    $attachData[$course->id] = [
-                        'year_level' => $course->pivot->year_level,
-                        'semester' => $course->pivot->semester,
-                    ];
+                    $attachData[$course->id] = collect(Curriculum::PLACEMENT_COLUMNS)
+                        ->mapWithKeys(fn (string $column): array => [$column => $course->pivot->{$column}])
+                        ->all();
                 }
                 $newCurriculum->courses()->attach($attachData);
             }
@@ -590,6 +603,15 @@ class CurriculumController extends Controller
                         'total_units' => $c->units,
                         'program_id' => $c->program_id,
                         'department_id' => $c->department_id,
+                        'prerequisites_text' => $c->pivot->prerequisites_text,
+                        // Null for placements written before imports: those keep the legacy credit-derived durations.
+                        'placement' => $c->pivot->conversion_snapshot === null ? null : [
+                            'lecture_units' => $c->pivot->lecture_units,
+                            'lab_units' => $c->pivot->lab_units,
+                            'lecture_minutes' => $c->pivot->lecture_minutes,
+                            'laboratory_minutes' => $c->pivot->laboratory_minutes,
+                            'conversion_snapshot' => json_decode((string) $c->pivot->conversion_snapshot, true),
+                        ],
                     ])->values(),
                     'totals' => [
                         'lec' => $group->sum('lecture_hours'),
@@ -604,6 +626,8 @@ class CurriculumController extends Controller
                 'id' => $curriculum->id,
                 'name' => $curriculum->name,
                 'code' => $curriculum->code,
+                'cmo_number' => $curriculum->cmo_number,
+                'cmo_series' => $curriculum->cmo_series,
                 'department_id' => $curriculum->department_id,
                 'department' => $curriculum->department,
                 'program_id' => $curriculum->program_id,

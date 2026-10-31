@@ -45,7 +45,7 @@ class ConsecutiveDaysGenerationTest extends TestCase
         foreach ($rows as $row) {
             $this->assertSame('consecutive:3', $row['preferred_pattern']);
             $this->assertNull($row['meeting_type'] ?? null, 'a run is not an Integrated session');
-            $this->assertSame(180, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']), 'a 3-unit class meets 3 hours every day');
+            $this->assertSame(60, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']), 'the three days share a 3-hour class');
         }
         $this->assertSame([], app(RuleEngine::class)->validateConfiguredMeetingGroups($rows));
     }
@@ -136,18 +136,30 @@ class ConsecutiveDaysGenerationTest extends TestCase
         $this->assertNull($rows[0]['preferred_pattern']);
     }
 
-    public function test_an_eight_unit_class_meets_eight_hours_straight_on_every_day(): void
+    public function test_the_days_share_the_total_hours_without_exceeding_them(): void
+    {
+        $context = $this->scaffold();
+        $clinical = $this->clinicalCourse($context, units: 8);
+        $this->rule($context, $clinical, days: 2, startDay: 'Thursday');
+
+        $rows = $this->generate($context, [$clinical]);
+
+        $this->assertSame(['Thursday', 'Friday'], $this->days($rows));
+        foreach ($rows as $row) {
+            $this->assertSame(240, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']));
+        }
+    }
+
+    public function test_a_day_count_that_cannot_split_the_total_hours_evenly_is_refused(): void
     {
         $context = $this->scaffold();
         $clinical = $this->clinicalCourse($context, units: 8);
         $this->rule($context, $clinical, days: 3, startDay: 'Thursday');
 
-        $rows = $this->generate($context, [$clinical]);
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('NUR 1A / CLIN 101 has 8 hours a week, which 3 consecutive days cannot share in equal half-hour meetings.');
 
-        $this->assertSame(['Thursday', 'Friday', 'Saturday'], $this->days($rows));
-        foreach ($rows as $row) {
-            $this->assertSame(480, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']));
-        }
+        $this->generate($context, [$clinical]);
     }
 
     public function test_a_required_day_on_a_run_is_refused_with_its_fix(): void

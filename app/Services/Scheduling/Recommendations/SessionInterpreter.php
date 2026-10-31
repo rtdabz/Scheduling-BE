@@ -87,8 +87,9 @@ final class SessionInterpreter
             // Equal meetings must retain the supplied total; an odd total stays unresolved.
             $meeting = [...$meetings[0], 'meeting_type' => 'lecture', 'duration_slots' => intdiv($meetings[0]['duration_slots'], 2)];
             $meetings = [$meeting, $meeting];
-        } elseif ($kind === 'consecutive' && count($meetings) === 1) {
-            $meetings = array_fill(0, $expected, $meetings[0]);
+        } elseif ($kind === 'consecutive' && count($meetings) === 1 && $meetings[0]['duration_slots'] > 0 && $meetings[0]['duration_slots'] % $expected === 0) {
+            // The days share the supplied total equally; an uneven total stays unresolved.
+            $meetings = array_fill(0, $expected, [...$meetings[0], 'duration_slots' => intdiv($meetings[0]['duration_slots'], $expected)]);
         }
 
         return new SessionDescription(

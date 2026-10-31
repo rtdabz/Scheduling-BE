@@ -15,7 +15,9 @@ class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
         $deliveryModes = $options['delivery_modes_by_course_id'] ?? [];
         $splitIds = array_map('intval', $options['selected_split_session_course_ids'] ?? []);
 
+        $curriculumId = $section->curriculum_id === null ? null : (int) $section->curriculum_id;
         foreach ($courses as $course) {
+            $course = SchedulingPolicy::placedCourse($course, $curriculumId);
             $courseId = (int) $course->id;
             $mode = (string) ($deliveryModes[$courseId] ?? $deliveryModes[(string) $courseId] ?? $defaultMode);
             $isLaboratory = SchedulingPolicy::isLaboratoryCourse($course);
@@ -29,26 +31,22 @@ class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
 
             if ($hasLectureAndLaboratory) {
                 $lectureOnSite = SchedulingPolicy::isIntegratedOnSite($deliveryModes, $courseId);
-                $lectureSlots = CourseSetupOverrides::componentSlots($options, $courseId, 'lecture');
-                $laboratorySlots = CourseSetupOverrides::componentSlots($options, $courseId, 'laboratory');
                 $requirements[$courseId] = [
                     (new ScheduleRequirement(
                         courseId: $courseId,
                         componentType: 'lecture',
-                        durationSlots: $lectureSlots ?? SchedulingPolicy::lectureComponentSlots($course),
+                        durationSlots: SchedulingPolicy::lectureComponentSlots($course),
                         eligibleRoomTypes: $lectureOnSite ? ['lecture'] : ['online'],
                         allowedDeliveryModes: $lectureOnSite ? ['on-site'] : ['online'],
                         isSplitComponent: true,
-                        customDuration: $lectureSlots !== null,
                     ))->toArray(),
                     (new ScheduleRequirement(
                         courseId: $courseId,
                         componentType: 'laboratory',
-                        durationSlots: $laboratorySlots ?? SchedulingPolicy::laboratoryComponentSlots($course, $section->department),
+                        durationSlots: SchedulingPolicy::laboratoryComponentSlots($course),
                         eligibleRoomTypes: SchedulingPolicy::labRoomTypes((int) $section->department_id),
                         allowedDeliveryModes: ['on-site'],
                         isSplitComponent: true,
-                        customDuration: $laboratorySlots !== null,
                         preferredRoomId: $preferredRoomId,
                     ))->toArray(),
                 ];
@@ -81,17 +79,14 @@ class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
                     : $lectureRoomTypes,
             };
 
-            $customSlots = CourseSetupOverrides::durationSlots($options, $courseId);
-
             $requirements[$courseId] = [
                 (new ScheduleRequirement(
                     courseId: $courseId,
                     componentType: $componentType,
-                    durationSlots: $customSlots ?? max(1, (int) round((float) ($course->units ?? 0) * 2)),
+                    durationSlots: max(1, SchedulingPolicy::courseDurationSlots($course)),
                     eligibleRoomTypes: $roomTypes,
                     allowedDeliveryModes: $allowedModes,
                     allowLectureLaboratoryFallback: $lectureLabFallback,
-                    customDuration: $customSlots !== null,
                     preferredRoomId: $componentType === 'online' ? null : $preferredRoomId,
                 ))->toArray(),
             ];

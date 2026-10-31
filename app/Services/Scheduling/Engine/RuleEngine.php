@@ -61,7 +61,7 @@ class RuleEngine
         $this->operatingHours = new OperatingHoursRule;
         $this->meetingDays = new MeetingDayRule($lookups);
         $this->deliveryModes = new DeliveryModeRule($lookups);
-        $this->classDuration = new ClassDurationRule($lookups);
+        $this->classDuration = new ClassDurationRule();
         $this->meetingGroups = new MeetingGroupRule($lookups);
     }
 

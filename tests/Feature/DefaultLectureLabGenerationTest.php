@@ -666,8 +666,9 @@ class DefaultLectureLabGenerationTest extends TestCase
         $this->assertNull($lecture['room_id']);
         $this->assertSame($labRoom->id, $laboratory['room_id']);
         $this->assertSame('on-site', $laboratory['mode']);
+        // Two lecture hours and one laboratory hour, read as recorded.
         $this->assertSame(120, $this->durationMinutes($lecture));
-        $this->assertSame(180, $this->durationMinutes($laboratory));
+        $this->assertSame(60, $this->durationMinutes($laboratory));
     }
 
     public function test_hybrid_split_components_are_always_scheduled_on_different_days(): void

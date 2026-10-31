@@ -93,7 +93,7 @@ final class SchedulingConstraintKernel
         array $candidateRows = [],
         array $ignoreScheduleIds = [],
     ): array {
-        $course = $snapshot->coursesById[$row->courseId] ?? null;
+        $course = $snapshot->courseFor($row->sectionId, $row->courseId);
         if (! is_array($course)) {
             return [];
         }
@@ -121,7 +121,7 @@ final class SchedulingConstraintKernel
     /** @return list<ConstraintViolation> */
     public function evaluateMeetingGroup(MeetingGroup $group, SchedulingSnapshot $snapshot): array
     {
-        $course = $snapshot->coursesById[$group->courseId] ?? null;
+        $course = $snapshot->courseFor($group->sectionId, $group->courseId);
         if (! is_array($course)) {
             return [];
         }

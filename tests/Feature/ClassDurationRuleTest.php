@@ -32,19 +32,16 @@ class ClassDurationRuleTest extends TestCase
         $this->assertSame(180, $violation['allowed_minutes']);
     }
 
-    /**
-     * One class may run as long as the teaching day (a department's eight-hour
-     * class), but a second meeting on top of it is a duplicate, not a longer
-     * class.
-     */
-    public function test_one_class_may_fill_the_day_but_a_second_meeting_is_refused(): void
+    public function test_a_meeting_longer_than_the_course_total_hours_is_refused(): void
     {
         $f = $this->fixture();
 
-        $this->assertNull($this->durationViolation($f, 'Monday', '08:00', '16:00'));
+        $this->assertNull($this->durationViolation($f, 'Monday', '08:00', '11:00'));
 
-        $this->persist($f, 'Monday', '08:00', '16:00');
-        $this->assertNotNull($this->durationViolation($f, 'Tuesday', '08:00', '09:00'));
+        $violation = $this->durationViolation($f, 'Monday', '08:00', '16:00');
+        $this->assertNotNull($violation);
+        $this->assertSame(480, $violation['scheduled_minutes']);
+        $this->assertSame(180, $violation['allowed_minutes']);
     }
 
     public function test_a_duplicated_meeting_is_refused(): void
@@ -64,34 +61,29 @@ class ClassDurationRuleTest extends TestCase
         $this->assertNull($this->durationViolation($f, 'Friday', '08:00', '09:00'));
     }
 
-    public function test_a_lecture_and_laboratory_split_may_use_its_longer_generator_shape(): void
+    public function test_a_lecture_and_laboratory_course_meets_its_total_hours_and_no_more(): void
     {
-        // 3 units as a single block is 3 hours, but split it is 2 lecture hours
-        // plus one 3-hour laboratory: 5 hours, which the Generator can produce.
+        // 2 lecture hours + 1 laboratory hour: 3 Total Hours, with no unit conversion.
         $f = $this->fixture(lectureHours: 2, labHours: 1);
         $this->persist($f, 'Monday', '08:00', '10:00');
 
-        $this->assertNull($this->durationViolation($f, 'Tuesday', '08:00', '11:00'));
-        $this->assertNotNull($this->durationViolation($f, 'Tuesday', '08:00', '11:30'));
+        $this->assertNull($this->durationViolation($f, 'Tuesday', '08:00', '09:00'));
+        $this->assertNotNull($this->durationViolation($f, 'Tuesday', '08:00', '09:30'));
     }
 
-    public function test_an_integrated_session_takes_the_length_the_user_set(): void
+    public function test_each_integrated_session_holds_its_own_hours(): void
     {
-        // IT 101: 2 lecture units, 1 laboratory unit (5 h as a unit total). The
-        // laboratory is 3 h and the lecture set to 3 h: 6 h, used exactly.
         $f = $this->fixture(lectureHours: 2, labHours: 1);
         $laboratory = ['meeting_type' => 'laboratory', 'split_group_id' => 'integrated-1'];
         $lecture = ['meeting_type' => 'lecture', 'split_group_id' => 'integrated-1'];
-        $this->persist($f, 'Monday', '08:00', '11:00', $laboratory);
+        $this->persist($f, 'Monday', '08:00', '09:00', $laboratory);
 
-        $this->assertNull($this->durationViolation($f, 'Tuesday', '08:00', '11:00', link: $lecture));
+        $this->assertNull($this->durationViolation($f, 'Tuesday', '08:00', '10:00', link: $lecture));
 
-        // Each session is still one meeting: a lecture longer than the teaching
-        // day in total is a duplicate, not a longer class.
-        $this->persist($f, 'Tuesday', '07:00', '19:00', $lecture);
-        $violation = $this->durationViolation($f, 'Wednesday', '08:00', '11:00', link: $lecture);
+        $violation = $this->durationViolation($f, 'Tuesday', '08:00', '11:00', link: $lecture);
         $this->assertNotNull($violation);
-        $this->assertSame(900, $violation['scheduled_minutes']);
+        $this->assertSame(120, $violation['allowed_minutes']);
+        $this->assertNotNull($this->durationViolation($f, 'Wednesday', '08:00', '09:00', link: $laboratory));
     }
 
     public function test_data_already_over_does_not_block_an_edit_that_adds_no_time(): void

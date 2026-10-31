@@ -10,7 +10,16 @@ class Curriculum extends Model
 {
     protected $table = 'curriculum';
 
-    protected $fillable = ['name', 'department_id', 'program_id', 'code', 'effective_school_year', 'status', 'description'];
+    protected $fillable = ['name', 'department_id', 'program_id', 'code', 'cmo_number', 'cmo_series', 'effective_school_year', 'status', 'description'];
+
+    protected $casts = [
+        'cmo_series' => 'integer',
+    ];
+
+    public const PLACEMENT_COLUMNS = [
+        'year_level', 'semester', 'lecture_units', 'lab_units', 'lecture_minutes', 'laboratory_minutes',
+        'conversion_snapshot', 'prerequisites_text',
+    ];
 
     protected static function booted(): void
     {
@@ -59,7 +68,7 @@ class Curriculum extends Model
     public function courses()
     {
         return $this->belongsToMany(Course::class, 'curriculum_course', 'curriculum_id', 'course_id')
-            ->withPivot(['year_level', 'semester'])
+            ->withPivot(self::PLACEMENT_COLUMNS)
             ->withTimestamps();
     }
 

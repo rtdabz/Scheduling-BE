@@ -304,85 +304,27 @@ class HybridShapesAndPreferredRoomTest extends TestCase
 
     public function test_integrated_hybrid_sizes_each_session_from_the_course(): void
     {
-        // 3 lecture units + 2 laboratory units: a 3 h online lecture and a
-        // 6 h on-site laboratory, not a fixed 2 h + 3 h.
+        // 3 lecture hours + 2 laboratory hours: a 3 h online lecture and a
+        // 2 h on-site laboratory, each exactly as recorded.
         $course = $this->course('IT 205', lecture: 3, laboratory: 2, units: 5, category: 'major');
         $this->room('LAB 1', 'laboratory');
 
         $rows = $this->generate($course, ['integrated_hybrid' => true]);
 
-        $this->assertIntegratedHybrid($rows, lectureMinutes: 180, laboratoryMinutes: 360);
+        $this->assertIntegratedHybrid($rows, lectureMinutes: 180, laboratoryMinutes: 120);
         $this->assertSaveAccepts($course, $rows);
     }
 
     public function test_integrated_hybrid_stays_two_sessions_even_with_a_preferred_pattern(): void
     {
         // Used to fall through to the generic pattern builder, which split the
-        // combined 5 h across two days as if it were one class.
+        // combined hours across two days as if it were one class.
         $course = $this->course('IT 103', lecture: 2, laboratory: 1, units: 3, category: 'major');
         $this->room('LAB 1', 'laboratory');
 
         $rows = $this->generate($course, ['integrated_hybrid' => true, 'pattern' => 'MW']);
 
-        $this->assertIntegratedHybrid($rows, lectureMinutes: 120, laboratoryMinutes: 180);
-    }
-
-    public function test_integrated_hybrid_uses_the_lengths_chosen_for_each_session(): void
-    {
-        // Default would be 2 h + 3 h; the user picks 1.5 h online + 3.5 h F2F.
-        $course = $this->course('IT 103', lecture: 2, laboratory: 1, units: 3, category: 'major');
-        $this->room('LAB 1', 'laboratory');
-        $config = ['selected_split_session_course_ids' => [(int) $course->id]];
-        $components = CourseSetupOverrides::normalizeComponents(
-            $this->section,
-            [(int) $course->id => ['lecture' => 90, 'laboratory' => 210]],
-            [(int) $course->id],
-            $config,
-        );
-
-        $rows = $this->generate($course, ['integrated_hybrid' => true], options: [
-            CourseSetupOverrides::COMPONENTS_KEY => $components,
-        ]);
-
-        $this->assertIntegratedHybrid($rows, lectureMinutes: 90, laboratoryMinutes: 210);
-        $this->assertSaveAccepts($course, $rows);
-    }
-
-    public function test_integrated_lengths_are_used_exactly_past_the_unit_total(): void
-    {
-        // 2 lecture + 1 laboratory unit is 5 h as a unit total; the user sets
-        // a 3 h lecture beside the 3 h laboratory, and gets exactly that.
-        $course = $this->course('IT 103', lecture: 2, laboratory: 1, units: 3, category: 'major');
-        $this->room('LAB 1', 'laboratory');
-        $components = CourseSetupOverrides::normalizeComponents(
-            $this->section,
-            [(int) $course->id => ['lecture' => 180]],
-            [(int) $course->id],
-            ['selected_split_session_course_ids' => [(int) $course->id]],
-        );
-        // A blank laboratory keeps the course's own length.
-        $this->assertSame([(int) $course->id => ['lecture' => 6, 'laboratory' => 6]], $components);
-
-        $rows = $this->generate($course, ['integrated_hybrid' => true], options: [
-            CourseSetupOverrides::COMPONENTS_KEY => $components,
-        ]);
-
-        $this->assertIntegratedHybrid($rows, lectureMinutes: 180, laboratoryMinutes: 180);
-        $this->assertSaveAccepts($course, $rows);
-    }
-
-    public function test_an_integrated_length_must_be_whole_half_hours(): void
-    {
-        $course = $this->course('IT 103', lecture: 2, laboratory: 1, units: 3, category: 'major');
-
-        $this->expectException(ValidationException::class);
-
-        CourseSetupOverrides::normalizeComponents(
-            $this->section,
-            [(int) $course->id => ['lecture' => 100]],
-            [(int) $course->id],
-            ['selected_split_session_course_ids' => [(int) $course->id]],
-        );
+        $this->assertIntegratedHybrid($rows, lectureMinutes: 120, laboratoryMinutes: 60);
     }
 
     public function test_the_preferred_laboratory_is_chosen_for_an_integrated_hybrid(): void

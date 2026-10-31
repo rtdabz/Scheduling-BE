@@ -477,11 +477,6 @@ final class SchedulingSnapshotRepository
     {
         return [
             'lecture_lab_schedule_override_enabled' => (bool) $department->lecture_lab_schedule_override_enabled,
-            'custom_lab_duration_override_enabled' => (bool) $department->custom_lab_duration_override_enabled,
-            'custom_lab_duration_minutes' => $department->custom_lab_duration_minutes === null ? null : (int) $department->custom_lab_duration_minutes,
-            'custom_lab_duration_6_hours_enabled' => (bool) $department->custom_lab_duration_6_hours_enabled,
-            'custom_lab_duration_5_hours_enabled' => (bool) $department->custom_lab_duration_5_hours_enabled,
-            'custom_lab_duration_other_enabled' => (bool) $department->custom_lab_duration_other_enabled,
             'gec_split_schedule_override_enabled' => (bool) $department->gec_split_schedule_override_enabled,
             'major_lecture_split_schedule_override_enabled' => (bool) $department->major_lecture_split_schedule_override_enabled,
             'sunday_classes_enabled' => (bool) $department->sunday_classes_enabled,

@@ -276,12 +276,6 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.allowed_days' => 'sometimes|nullable|array',
             'section_configs.*.allow_friday_saturday_split' => 'sometimes|boolean',
             'section_configs.*.allowed_days.*' => SchedulingPolicy::allowedDaysRule(),
-            'section_configs.*.duration_minutes_by_course_id' => 'sometimes|array',
-            'section_configs.*.duration_minutes_by_course_id.*' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
-            'section_configs.*.component_minutes_by_course_id' => 'sometimes|array',
-            'section_configs.*.component_minutes_by_course_id.*' => 'array',
-            'section_configs.*.component_minutes_by_course_id.*.lecture' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
-            'section_configs.*.component_minutes_by_course_id.*.laboratory' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
             'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
             'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
             'section_configs.*.delivery_modes_by_course_id.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
@@ -410,12 +404,6 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.allowed_days' => 'sometimes|nullable|array',
             'section_configs.*.allow_friday_saturday_split' => 'sometimes|boolean',
             'section_configs.*.allowed_days.*' => SchedulingPolicy::allowedDaysRule(),
-            'section_configs.*.duration_minutes_by_course_id' => 'sometimes|array',
-            'section_configs.*.duration_minutes_by_course_id.*' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
-            'section_configs.*.component_minutes_by_course_id' => 'sometimes|array',
-            'section_configs.*.component_minutes_by_course_id.*' => 'array',
-            'section_configs.*.component_minutes_by_course_id.*.lecture' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
-            'section_configs.*.component_minutes_by_course_id.*.laboratory' => 'nullable|integer|min:'.SchedulingPolicy::SLOT_MINUTES.'|multiple_of:'.SchedulingPolicy::SLOT_MINUTES,
             'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
             'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
             ...$this->ruleOverrideRules(),
@@ -639,12 +627,6 @@ class ScheduleRecommendationController extends Controller
             );
             CourseSetupOverrides::assertSundayAllowed($section, $sectionConfig['allowed_days']);
             CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
-            $sectionConfig[CourseSetupOverrides::DURATIONS_KEY] = CourseSetupOverrides::normalizeDurations(
-                $section, $config['duration_minutes_by_course_id'] ?? [], $courseIds, $sectionConfig,
-            );
-            $sectionConfig[CourseSetupOverrides::COMPONENTS_KEY] = CourseSetupOverrides::normalizeComponents(
-                $section, $config['component_minutes_by_course_id'] ?? [], $courseIds, $sectionConfig,
-            );
             $sectionConfig[CourseSetupOverrides::PREFERRED_ROOMS_KEY] = CourseSetupOverrides::normalizePreferredRooms(
                 $section, $config['preferred_rooms_by_course_id'] ?? [], $courseIds, $sectionConfig,
             );

@@ -102,7 +102,7 @@ final class PlacementRecommendationProvider implements RecommendationProvider
             : $this->shapeOptions($snapshot, $issue, $draft, $preferredDays, false);
 
         $alternative = [];
-        $course = $snapshot->coursesById[$courseId] ?? null;
+        $course = $snapshot->courseFor($sectionId, $courseId);
         if (! $consecutive && is_array($course)
             && SessionAlternativePolicy::draftHybridEligible($course, $issue['shape'] ?? null)) {
             $alternative = $this->shapeOptions($snapshot, [
@@ -175,7 +175,7 @@ final class PlacementRecommendationProvider implements RecommendationProvider
     public function sessionEnhancements(SchedulingSnapshot $snapshot, array $issue, array $draft, ?array $allowedDays = null): array
     {
         $courseId = (int) $issue['course_id'];
-        $course = $snapshot->coursesById[$courseId] ?? null;
+        $course = $snapshot->courseFor((int) $issue['section_id'], $courseId);
         $rows = [...$issue['replaces'], ...$issue['keeps']];
         if ($course === null || ($issue['shape'] ?? null) !== null
             || ($issue['consecutive_rule'] ?? $snapshot->consecutiveDayRulesFor((int) $issue['section_id'])[$courseId] ?? null) !== null) {

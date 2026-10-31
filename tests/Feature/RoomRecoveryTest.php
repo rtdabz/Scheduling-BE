@@ -190,7 +190,9 @@ class RoomRecoveryTest extends TestCase
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'approved',
             'reviewed_by' => $f['admin']->id, 'dean_reviewed_by' => $f['dean']->id]);
         $this->assertDatabaseCount('schedule_history_versions', 1);
-        $this->assertSame(1, DB::table('system_notifications')->where('type', 'room_transfer_approved')->count());
+        // The requester and the forwarding Dean both learn the final decision.
+        $this->assertDatabaseHas('system_notifications', ['user_id' => $f['dean']->id, 'type' => 'room_transfer_approved']);
+        $this->assertSame(2, DB::table('system_notifications')->where('type', 'room_transfer_approved')->count());
     }
 
     public function test_foreign_dean_and_reviewers_without_their_stage_permission_are_denied(): void
@@ -295,7 +297,7 @@ class RoomRecoveryTest extends TestCase
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'rejected_by_'.$stage,
             'rejection_reason' => 'Use the original room after maintenance', 'applied_at' => null, 'reviewed_by' => $reviewer->id]);
         $this->assertDatabaseHas('system_notifications', ['user_id' => $f['user']->id, 'type' => 'room_transfer_rejected', 'remarks' => 'Use the original room after maintenance']);
-        $this->assertSame(1, DB::table('system_notifications')->where('type', 'room_transfer_rejected')->count());
+        $this->assertSame($stage === 'vpaa' ? 2 : 1, DB::table('system_notifications')->where('type', 'room_transfer_rejected')->count());
         $this->actingAs($f['user'])->postJson($url.'/submit', $body)->assertConflict();
         $new = $this->preview($f);
         $this->postJson('/api/room-recovery/plans/'.$new['plan_id'].'/submit', ['group_keys' => array_column($new['groups'], 'key')])->assertOk();
@@ -303,7 +305,7 @@ class RoomRecoveryTest extends TestCase
 
     public static function pendingChanges(): array
     {
-        return array_map(fn ($change) => [$change], ['source', 'booking', 'room', 'rules']);
+        return array_map(fn ($change) => [$change], ['source', 'booking', 'room', 'access']);
     }
 
     #[DataProvider('pendingChanges')]
@@ -324,7 +326,8 @@ class RoomRecoveryTest extends TestCase
         } elseif ($change === 'room') {
             $f['replacement']->update(['status' => 'not available']);
         } else {
-            $f['department']->forceFill(['sunday_classes_enabled' => true])->save();
+            $owner = Departments::create(['department_name' => 'Owner', 'department_code' => 'OWN']);
+            $f['replacement']->update(['department_id' => $owner->id]);
         }
         $before = Schedule::orderBy('id')->get()->map->getRawOriginal()->all();
         $this->actingAs($f['admin'])->postJson($url.'/approve')->assertConflict();
@@ -362,7 +365,7 @@ class RoomRecoveryTest extends TestCase
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'preview']);
     }
 
-    public function test_submission_rolls_back_if_the_vpaa_notification_cannot_be_persisted(): void
+    public function test_submission_rolls_back_if_the_dean_notification_cannot_be_persisted(): void
     {
         $f = $this->fixture();
         $this->close($f);
@@ -723,12 +726,17 @@ class RoomRecoveryTest extends TestCase
         $this->assertEquals($f['replacement']->id, $f['row']->fresh()->room_id);
     }
 
-    public function test_transfer_details_hide_online_partners_without_removing_them_from_the_stored_plan(): void
+    public function test_transfer_details_list_linked_online_sessions_and_print_the_full_section_timetable(): void
     {
         $f = $this->fixture();
         $f['course']->update(['units' => 3, 'lecture_hours' => 3, 'course_category' => 'minor']);
         $f['row']->update(['status' => 'faculty_assignment', 'is_hybrid' => true, 'split_group_id' => 'details-pair', 'meeting_type' => 'lecture', 'meeting_index' => 1, 'end_time' => '09:30']);
         $online = Schedule::create([...$f['row']->toArray(), 'day' => 'Wednesday', 'mode' => 'online', 'room_id' => null, 'meeting_index' => 2]);
+        $otherCourse = $f['course']->replicate()->fill(['course_code' => 'REC102']);
+        $otherCourse->save();
+        // An unaffected class of the same section still appears in the printed timetable.
+        $unaffected = Schedule::create([...$f['row']->toArray(), 'course_id' => $otherCourse->id, 'split_group_id' => null, 'is_hybrid' => false,
+            'day' => 'Friday', 'room_id' => $f['replacement']->id, 'meeting_index' => 1]);
         $before = Schedule::orderBy('id')->get()->map->getRawOriginal()->all();
         $this->close($f);
         $plan = $this->preview($f);
@@ -736,8 +744,19 @@ class RoomRecoveryTest extends TestCase
         $this->postJson($url.'/submit', ['group_keys' => array_column($plan['groups'], 'key')])->assertOk();
         foreach ([$f['user'], $f['dean']] as $reviewer) {
             $details = $this->actingAs($reviewer)->getJson('/api/room-recovery/transfers')->assertOk();
+            $details->assertJsonPath('transfers.0.changes.1.schedule_id', $online->id)
+                ->assertJsonPath('transfers.0.changes.1.mode', 'online')
+                ->assertJsonPath('transfers.0.changes.1.before.room', 'Online')->assertJsonPath('transfers.0.changes.1.after.room', 'Online');
+            $timetable = collect($details->json('transfers.0.preview_schedules'))->keyBy('id');
+            $this->assertEqualsCanonicalizing([$f['row']->id, $online->id, $unaffected->id], $timetable->keys()->all());
+            $this->assertSame('R2', $timetable[$f['row']->id]['room']['room_code']);
+            $this->assertEquals($f['replacement']->id, $timetable[$f['row']->id]['room_id']);
+            $this->assertNull($timetable[$online->id]['room']);
+            $this->assertSame('online', $timetable[$online->id]['mode']);
+            $this->assertSame('REC102', $timetable[$unaffected->id]['course']['course_code']);
+            $this->assertSame('REC-1', $timetable[$unaffected->id]['section']['section_name']);
             $details->assertJsonPath('transfers.0.department_id', $f['department']->id)
-                ->assertJsonCount(1, 'transfers.0.changes')->assertJsonPath('transfers.0.changes.0.mode', 'on-site')
+                ->assertJsonCount(2, 'transfers.0.changes')->assertJsonPath('transfers.0.changes.0.mode', 'on-site')
                 ->assertJsonPath('transfers.0.changes.0.schedule_id', $f['row']->id)
                 ->assertJsonPath('transfers.0.changes.0.preview_schedule.id', $f['row']->id)
                 ->assertJsonPath('transfers.0.changes.0.preview_schedule.room.room_code', 'R2')
@@ -750,7 +769,7 @@ class RoomRecoveryTest extends TestCase
         $this->approveByDean($f, $plan);
         $this->assertSame($before, Schedule::orderBy('id')->get()->map->getRawOriginal()->all());
         $this->actingAs($f['admin'])->getJson('/api/room-recovery/transfers')->assertOk()
-            ->assertJsonCount(1, 'transfers.0.changes')->assertJsonPath('transfers.0.status', 'pending_vpaa');
+            ->assertJsonCount(2, 'transfers.0.changes')->assertJsonPath('transfers.0.status', 'pending_vpaa');
         $this->postJson($url.'/approve')->assertOk()->assertJsonPath('applied', true);
         $this->assertEquals($f['replacement']->id, $f['row']->fresh()->room_id);
         $this->assertSame($before[1], $online->fresh()->getRawOriginal());
@@ -814,7 +833,7 @@ class RoomRecoveryTest extends TestCase
         $f['room']->update(['room_type' => 'laboratory']);
         $f['replacement']->update(['room_type' => 'laboratory']);
         $f['row']->update(['status' => 'faculty_assignment', 'is_hybrid' => true, 'split_group_id' => 'lab-replacement',
-            'day' => 'Saturday', 'start_time' => '07:00', 'end_time' => '10:00', 'meeting_type' => 'laboratory', 'meeting_index' => 1]);
+            'day' => 'Saturday', 'start_time' => '07:00', 'end_time' => '08:00', 'meeting_type' => 'laboratory', 'meeting_index' => 1]);
         $online = Schedule::create([...$f['row']->toArray(), 'day' => 'Friday', 'start_time' => '17:30', 'end_time' => '19:30',
             'mode' => 'online', 'room_id' => null, 'meeting_type' => 'lecture', 'meeting_index' => 2]);
         $untouched = $online->fresh()->getAttributes();
@@ -824,7 +843,7 @@ class RoomRecoveryTest extends TestCase
         $this->travel(1)->minutes();
         $this->approveTransfer($f, $plan)->assertOk();
         $this->assertEquals($untouched, $online->fresh()->getAttributes());
-        $this->assertDatabaseHas('schedules', ['id' => $f['row']->id, 'day' => 'Saturday', 'start_time' => '07:00', 'end_time' => '10:00',
+        $this->assertDatabaseHas('schedules', ['id' => $f['row']->id, 'day' => 'Saturday', 'start_time' => '07:00', 'end_time' => '08:00',
             'room_id' => $f['replacement']->id, 'status' => 'faculty_assignment']);
         $this->assertDatabaseCount('schedules', 2);
     }
@@ -1128,7 +1147,7 @@ class RoomRecoveryTest extends TestCase
         $faculty = Faculty::create(['first_name' => 'Hybrid', 'last_name' => 'Instructor', 'employment_type' => 'full-time',
             'max_units' => 18, 'department_id' => $f['department']->id, 'status' => 'active']);
         $f['row']->update(['is_hybrid' => true, 'split_group_id' => 'custom-sunday', 'preferred_pattern' => 'days:5-4',
-            'meeting_type' => 'laboratory', 'meeting_index' => 1, 'day' => 'Saturday', 'start_time' => '07:00', 'end_time' => '10:00',
+            'meeting_type' => 'laboratory', 'meeting_index' => 1, 'day' => 'Saturday', 'start_time' => '07:00', 'end_time' => '08:00',
             'status' => 'faculty_assignment', 'faculty_id' => $faculty->id, 'faculty_assignment_done' => true]);
         $online = Schedule::create([...$f['row']->toArray(), 'day' => 'Friday', 'mode' => 'online', 'room_id' => null,
             'start_time' => '17:30', 'end_time' => '19:30', 'meeting_type' => 'lecture', 'meeting_index' => 2]);
@@ -1152,7 +1171,7 @@ class RoomRecoveryTest extends TestCase
         $afterOnline = $online->fresh()->getAttributes();
         unset($beforeOnline['preferred_pattern'], $beforeOnline['updated_at'], $afterOnline['preferred_pattern'], $afterOnline['updated_at']);
         $this->assertSame($beforeOnline, $afterOnline);
-        $this->assertSame([], (new RuleEngine)->validateStanding($f['row']->fresh()->toArray()));
+        $this->assertSame([], (new RuleEngine)->validateStanding([...$f['row']->fresh()->toArray(), 'ignore_schedule_id' => $f['row']->id]));
     }
 
     public function test_seven_hybrid_groups_share_search_budget_and_transfer_to_sunday_without_moving_online_partners(): void
@@ -1183,7 +1202,7 @@ class RoomRecoveryTest extends TestCase
             $onlineStart = 7 + 2 * ($index < 5 ? $index : $index - 5);
             $attributes = ['section_id' => $section->id, 'is_hybrid' => true, 'split_group_id' => 'sunday-batch-'.$index,
                 'preferred_pattern' => 'days:'.SchedulingPolicy::dayIndex($day).'-'.SchedulingPolicy::dayIndex($onlineDay), 'meeting_type' => 'laboratory', 'meeting_index' => 1,
-                'day' => $day, 'start_time' => sprintf('%02d:00', $start), 'end_time' => sprintf('%02d:00', $start + 3), 'status' => 'faculty_assignment'];
+                'day' => $day, 'start_time' => sprintf('%02d:00', $start), 'end_time' => sprintf('%02d:00', $start + 1), 'status' => 'faculty_assignment'];
             if ($index === 0) {
                 $f['row']->update($attributes);
                 $labRow = $f['row']->fresh();
@@ -1210,5 +1229,144 @@ class RoomRecoveryTest extends TestCase
         foreach (Schedule::whereIn('id', $onlineIds)->get() as $online) {
             $this->assertSame($onlinePlacements[$online->id], [$online->day, $online->start_time, $online->end_time]);
         }
+    }
+
+    private function submitForVpaa(array $f, Schedule $row): string
+    {
+        $plan = $this->actingAs($f['user'])->postJson('/api/room-recovery/preview', ['schedule_ids' => [$row->id]])->assertOk()->json();
+        $this->assertCount(1, $plan['groups']);
+        $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/submit', ['group_keys' => array_column($plan['groups'], 'key')])->assertOk();
+        $this->approveByDean($f, $plan);
+
+        return $plan['plan_id'];
+    }
+
+    private function secondClosedMeeting(array $f, string $day): Schedule
+    {
+        $section = $f['section']->replicate()->fill(['section_name' => 'REC-2']);
+        $section->save();
+        $room = Rooms::create(['room_code' => 'R3', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $f['department']->id]);
+        $row = Schedule::create([...$f['row']->toArray(), 'section_id' => $section->id, 'room_id' => $room->id, 'day' => $day]);
+        $this->actingAs($f['admin'])->postJson('/api/rooms/'.$room->id.'/close', ['reason' => 'Maintenance'])->assertOk();
+
+        return $row;
+    }
+
+    public function test_approving_one_transfer_does_not_invalidate_an_unrelated_pending_transfer(): void
+    {
+        $f = $this->fixture();
+        $second = $this->secondClosedMeeting($f, 'Tuesday');
+        $this->close($f);
+        $first = $this->submitForVpaa($f, $f['row']);
+        $other = $this->submitForVpaa($f, $second);
+        $this->actingAs($f['admin'])->postJson('/api/room-recovery/plans/'.$first.'/approve')->assertOk()->assertJsonPath('applied', true);
+        $this->postJson('/api/room-recovery/plans/'.$other.'/approve')->assertOk()->assertJsonPath('applied', true);
+        $this->assertEquals($f['replacement']->id, $f['row']->fresh()->room_id);
+        $this->assertEquals($f['replacement']->id, $second->fresh()->room_id);
+    }
+
+    public function test_unrelated_activity_elsewhere_in_the_semester_does_not_block_approval(): void
+    {
+        $f = $this->fixture();
+        $other = Departments::create(['department_name' => 'Other', 'department_code' => 'OTH']);
+        $program = Program::create(['department_id' => $other->id, 'code' => 'OTH', 'name' => 'Other']);
+        $section = Sections::create(['section_name' => 'OTH-1', 'year_level' => '1', 'semester' => '1st', 'department_id' => $other->id,
+            'program_id' => $program->id, 'semester_id' => $f['semester']->id, 'status' => 'active']);
+        $room = Rooms::create(['room_code' => 'FAR', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $other->id]);
+        $foreign = Schedule::create(['semester_id' => $f['semester']->id, 'section_id' => $section->id, 'course_id' => $f['course']->id,
+            'room_id' => $room->id, 'department_id' => $other->id, 'day' => 'Friday', 'start_time' => '15:00', 'end_time' => '16:00',
+            'mode' => 'on-site', 'status' => 'approved_by_dean']);
+        $this->close($f);
+        $id = $this->submitForVpaa($f, $f['row']);
+        $foreign->update(['status' => 'approved']);
+        Schedule::create([...$foreign->toArray(), 'day' => 'Thursday']);
+        $f['department']->forceFill(['sunday_classes_enabled' => true])->save();
+        $this->actingAs($f['admin'])->postJson('/api/room-recovery/plans/'.$id.'/approve')->assertOk()->assertJsonPath('applied', true);
+        $this->assertEquals($f['replacement']->id, $f['row']->fresh()->room_id);
+    }
+
+    public function test_dean_cannot_forward_a_transfer_that_is_no_longer_valid(): void
+    {
+        $f = $this->fixture();
+        $this->close($f);
+        $plan = $this->preview($f);
+        $url = '/api/room-recovery/plans/'.$plan['plan_id'];
+        $this->postJson($url.'/submit', ['group_keys' => array_column($plan['groups'], 'key')])->assertOk();
+        $section = $f['section']->replicate()->fill(['section_name' => 'New booking']);
+        $section->save();
+        Schedule::create([...$f['row']->toArray(), 'section_id' => $section->id, 'room_id' => $f['replacement']->id]);
+        $this->actingAs($f['dean'])->postJson($url.'/approve')->assertConflict()
+            ->assertJsonPath('message', 'Room availability, bookings or scheduling rules changed, so the selected transfer is no longer valid. Reject this request and ask for a new proposal.');
+        $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'pending_dean', 'dean_reviewed_at' => null]);
+        $this->assertDatabaseMissing('system_notifications', ['type' => 'room_transfer_dean_approved']);
+        $this->postJson($url.'/reject', ['reason' => 'Room was booked'])->assertOk();
+    }
+
+    public function test_pending_transfers_cannot_claim_the_same_destination(): void
+    {
+        $f = $this->fixture();
+        $second = $this->secondClosedMeeting($f, 'Monday');
+        $this->close($f);
+        $first = $this->preview($f);
+        $other = $this->preview($f, ['schedule_ids' => [$second->id]]);
+        $this->assertEquals($f['replacement']->id, $other['groups'][0]['after'][0]['room_id']);
+        $this->postJson('/api/room-recovery/plans/'.$first['plan_id'].'/submit', ['group_keys' => array_column($first['groups'], 'key')])->assertOk();
+        $this->postJson('/api/room-recovery/plans/'.$other['plan_id'].'/submit', ['group_keys' => array_column($other['groups'], 'key')])
+            ->assertConflict()->assertJsonPath('message', 'Another room transfer awaiting approval already proposes a conflicting room or time. Refresh recommendations.');
+        $this->assertDatabaseHas('room_recovery_plans', ['id' => $other['plan_id'], 'status' => 'preview']);
+    }
+
+    public function test_decisions_on_closed_requests_explain_their_status(): void
+    {
+        $f = $this->fixture();
+        $this->close($f);
+        $plan = $this->preview($f);
+        $url = '/api/room-recovery/plans/'.$plan['plan_id'];
+        $this->postJson($url.'/submit', ['group_keys' => array_column($plan['groups'], 'key')])->assertOk();
+        $this->actingAs($f['dean'])->postJson($url.'/reject', ['reason' => 'No'])->assertOk();
+        $message = 'This transfer was rejected and cannot be approved. Create a new proposal.';
+        $this->postJson($url.'/approve')->assertConflict()->assertJsonPath('message', $message);
+        $this->actingAs($f['admin'])->postJson($url.'/approve')->assertConflict()->assertJsonPath('message', $message);
+    }
+
+    public function test_transfers_applied_before_the_approval_workflow_remain_listed(): void
+    {
+        $f = $this->fixture();
+        $this->close($f);
+        $plan = $this->preview($f);
+        DB::table('room_recovery_plans')->where('id', $plan['plan_id'])->update(['status' => 'applied', 'selected_groups' => null,
+            'applied_groups' => json_encode(array_column($plan['groups'], 'key')), 'applied_at' => now(), 'submitted_at' => null]);
+        $this->getJson('/api/room-recovery/transfers')->assertOk()->assertJsonPath('transfers.0.status', 'applied')
+            ->assertJsonCount(1, 'transfers.0.changes')->assertJsonPath('transfers.0.changes.0.after.room', 'R2');
+        $this->assertNotNull($this->getJson('/api/room-recovery/transfers')->json('transfers.0.submitted_at'));
+        $this->actingAs($f['admin'])->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/approve')->assertConflict()
+            ->assertJsonPath('message', 'This transfer was already approved.');
+    }
+
+    public function test_requests_flag_automatic_sunday_enablement_for_reviewers(): void
+    {
+        $f = $this->fixture();
+        $f['department']->forceFill(['sunday_classes_enabled' => false])->save();
+        $this->blockReplacementDays($f, SchedulingPolicy::WEEKDAYS_AND_SATURDAY);
+        $this->close($f);
+        $plan = $this->preview($f, ['allow_time_changes' => true]);
+        $this->assertSame('Sunday', $plan['groups'][0]['after'][0]['day']);
+        $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/submit', ['group_keys' => array_column($plan['groups'], 'key')])->assertOk();
+        $this->actingAs($f['dean'])->getJson('/api/room-recovery/transfers')->assertOk()->assertJsonPath('transfers.0.enables_sunday', true);
+        $f['department']->forceFill(['sunday_classes_enabled' => true])->save();
+        $this->getJson('/api/room-recovery/transfers')->assertOk()->assertJsonPath('transfers.0.enables_sunday', false);
+    }
+
+    public function test_expired_previews_are_pruned_and_submitted_requests_are_kept(): void
+    {
+        $f = $this->fixture();
+        $this->close($f);
+        $abandoned = $this->preview($f);
+        $submitted = $this->preview($f);
+        $this->postJson('/api/room-recovery/plans/'.$submitted['plan_id'].'/submit', ['group_keys' => array_column($submitted['groups'], 'key')])->assertOk();
+        $this->travel(2)->days();
+        $this->artisan('model:prune', ['--model' => [RoomRecoveryPlan::class]])->assertSuccessful();
+        $this->assertDatabaseMissing('room_recovery_plans', ['id' => $abandoned['plan_id']]);
+        $this->assertDatabaseHas('room_recovery_plans', ['id' => $submitted['plan_id'], 'status' => 'pending_dean']);
     }
 }

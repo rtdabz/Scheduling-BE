@@ -30,8 +30,8 @@ abstract class CourseRequest extends FormRequest
         return [
             'course_code' => [...$required, 'string', 'max:255'],
             'course_name' => [...$required, 'string', 'max:255'],
-            'lecture_hours' => [...$required, 'integer', 'min:0', 'max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LECTURE_SLOTS_PER_UNIT)],
-            'lab_hours' => [...$required, 'integer', 'min:0', 'max:'.SchedulingPolicy::maxUnitsPerComponent(SchedulingPolicy::LABORATORY_SLOTS_PER_UNIT)],
+            'lecture_hours' => [...$required, 'integer', 'min:0', 'max:'.SchedulingPolicy::maxHoursPerComponent()],
+            'lab_hours' => [...$required, 'integer', 'min:0', 'max:'.SchedulingPolicy::maxHoursPerComponent()],
             'units' => [...$required, 'integer', 'min:0'],
             'course_category' => [...$required, 'string', 'in:major,minor'],
         ];
