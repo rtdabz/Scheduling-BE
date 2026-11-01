@@ -11,7 +11,6 @@ use App\Models\Schedule;
 use App\Services\RoomStructuralUpdate;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\ApiCache;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -113,18 +112,14 @@ class RoomsController extends Controller
             'building' => 'required|string|max:100',
             'name' => 'required|string|max:100',
         ]);
-        $from = trim($validated['building']);
-        $to = preg_replace('/\s+/', ' ', trim($validated['name']));
+        $to = Rooms::normalizeBuilding($validated['name']);
 
-        $rooms = $this->roomsInBuilding($from);
+        $rooms = Rooms::inBuilding($validated['building']);
         if ($rooms->isEmpty()) {
             return response()->json(['message' => 'This building has no rooms.'], 404);
         }
 
-        $taken = Rooms::query()
-            ->whereNotIn('id', $rooms->pluck('id'))
-            ->whereRaw('LOWER(TRIM(building)) = ?', [mb_strtolower($to)])
-            ->exists();
+        $taken = Rooms::inBuilding((string) $to)->whereNotIn('id', $rooms->pluck('id'))->isNotEmpty();
         if ($taken) {
             return response()->json([
                 'message' => "A building named \"{$to}\" already exists.",
@@ -152,7 +147,7 @@ class RoomsController extends Controller
             'building' => 'required|string|max:100',
         ]);
 
-        $rooms = $this->roomsInBuilding(trim($validated['building']));
+        $rooms = Rooms::inBuilding($validated['building']);
         if ($rooms->isEmpty()) {
             return response()->json(['message' => 'This building has no rooms.'], 404);
         }
@@ -180,14 +175,6 @@ class RoomsController extends Controller
             'message' => 'Building archived successfully.',
             'archived_room_ids' => $rooms->pluck('id'),
         ]);
-    }
-
-    /** @return Collection<int, Rooms> */
-    private function roomsInBuilding(string $building)
-    {
-        return Rooms::query()
-            ->whereRaw('TRIM(building) = ?', [$building])
-            ->get();
     }
 
     public function assign(Request $request, $id)

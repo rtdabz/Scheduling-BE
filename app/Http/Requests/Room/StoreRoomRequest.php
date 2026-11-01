@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Room;
 
+use App\Models\Rooms;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\DB;
@@ -33,6 +34,9 @@ class StoreRoomRequest extends FormRequest
     {
         if ($this->has('room_code')) {
             $this->merge(['room_code' => self::normalizeRoomCode($this->input('room_code'))]);
+        }
+        if ($this->has('building')) {
+            $this->merge(['building' => Rooms::canonicalBuilding($this->input('building'))]);
         }
     }
 

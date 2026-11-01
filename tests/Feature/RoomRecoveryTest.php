@@ -1312,7 +1312,7 @@ class RoomRecoveryTest extends TestCase
         $this->assertEquals($f['replacement']->id, $other['groups'][0]['after'][0]['room_id']);
         $this->postJson('/api/room-recovery/plans/'.$first['plan_id'].'/submit', ['group_keys' => array_column($first['groups'], 'key')])->assertOk();
         $this->postJson('/api/room-recovery/plans/'.$other['plan_id'].'/submit', ['group_keys' => array_column($other['groups'], 'key')])
-            ->assertConflict()->assertJsonPath('message', 'Another room transfer awaiting approval already proposes a conflicting room or time. Refresh recommendations.');
+            ->assertConflict()->assertJsonPath('message', 'Another room schedule reassignment awaiting approval already proposes a conflicting room or time. Refresh recommendations.');
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $other['plan_id'], 'status' => 'preview']);
     }
 

@@ -84,7 +84,7 @@ final class RoomRecoveryService
                 try {
                     app(SystemNotificationService::class)->notifyRoles(
                         ['secretary'], 'room_recovery', 'Room or laboratory needs attention',
-                        'Room availability changed. Review affected schedules in Room Transfer.',
+                        'Room availability changed. Review affected schedules in Facilities > Reassign Room Schedule.',
                         departmentId: $case->department_id, semesterId: $case->semester_id,
                         remarks: $case->reason, metadata: ['recovery_case_id' => $case->id, 'room_id' => $case->room_id, 'semester_id' => $case->semester_id],
                     );
@@ -546,7 +546,7 @@ final class RoomRecoveryService
 
     public function submit(Request $request, RoomRecoveryPlan $plan, array $selected): array
     {
-        abort_unless($request->user()->isSecretary(), 403, 'Only the Secretary can submit room transfers.');
+        abort_unless($request->user()->isSecretary(), 403, 'Only the Secretary can submit room schedule reassignments.');
         abort_unless((int) $plan->created_by === (int) $request->user()->id, 404);
 
         return $this->processTransfer($request, $plan, $selected, false);
@@ -587,7 +587,7 @@ final class RoomRecoveryService
         $stage = $user->role;
         abort_unless(in_array($stage, ['dean', 'vpaa'], true) && $user->hasCapability('schedule.approve_'.$stage), 403);
         abort_unless($stage === 'vpaa' || ($user->department_id !== null && (int) $user->department_id === (int) $plan->department_id), 403,
-            'You can review room transfers only for your department.');
+            'You can review room schedule reassignments only for your department.');
 
         return $stage;
     }
@@ -634,11 +634,11 @@ final class RoomRecoveryService
                     foreach ($pending as $other) {
                         $otherGroups = collect($other->payload['groups'])->whereIn('key', $other->selected_groups);
                         $otherIds = $otherGroups->flatMap(fn ($group) => array_column($group['before'], 'id'))->all();
-                        abort_if(array_intersect($ids, $otherIds) !== [], 409, 'A room transfer for these schedules is already awaiting approval.');
+                        abort_if(array_intersect($ids, $otherIds) !== [], 409, 'A room schedule reassignment for these schedules is already awaiting approval.');
                         // Pending requests do not book rooms, so two of them must not claim the same room, section or instructor time.
                         $claimed = $otherGroups->flatMap(fn ($group) => $group['after'])->values()->all();
                         abort_if(app(BatchConflictValidator::class)->validate([...$proposed, ...$claimed]) !== [], 409,
-                            'Another room transfer awaiting approval already proposes a conflicting room or time. Refresh recommendations.');
+                            'Another room schedule reassignment awaiting approval already proposes a conflicting room or time. Refresh recommendations.');
                     }
                     $plan->update(['status' => 'pending_dean', 'selected_groups' => $selected, 'submitted_at' => now()]);
                     SchedulingAuditLog::create(['user_id' => $request->user()->id, 'semester_id' => $plan->semester_id,
@@ -683,7 +683,7 @@ final class RoomRecoveryService
                     'applied_at' => now(), 'applied_groups' => $selected]);
                 $this->notifyTransfer($request, $plan, 'approved');
 
-                return ['message' => 'Room transfer approved and schedule changes applied.'
+                return ['message' => 'Room schedule reassignment approved and schedule changes applied.'
                     .($enableSunday ? ' Sunday classes were enabled automatically for your department.' : ''), 'status' => 'approved', 'applied' => true];
             });
         });
@@ -713,7 +713,7 @@ final class RoomRecoveryService
                     'metadata' => ['plan_id' => $plan->id, 'reason' => $reason, 'stage' => $stage], 'created_at' => now()]);
                 $this->notifyTransfer($request, $plan, 'rejected');
 
-                return ['message' => 'Room transfer rejected. Existing schedules are unchanged.', 'status' => $rejected, 'applied' => false];
+                return ['message' => 'Room schedule reassignment rejected. Existing schedules are unchanged.', 'status' => $rejected, 'applied' => false];
             });
         });
     }
@@ -726,15 +726,15 @@ final class RoomRecoveryService
         // Persist the in-app notification with the decision; realtime delivery is flushed after the request.
         if (in_array($action, ['submitted', 'dean_approved'], true)) {
             $approver = $action === 'submitted' ? 'Dean' : 'VPAA';
-            $notifications->notifyRoles([$action === 'submitted' ? 'dean' : 'vpaa'], 'room_transfer_'.$action, 'Room transfer pending '.$approver.' approval',
-                "Room transfer {$reference} requires {$approver} approval. Review the proposed changes in Schedule Approval.",
+            $notifications->notifyRoles([$action === 'submitted' ? 'dean' : 'vpaa'], 'room_transfer_'.$action, 'Room schedule reassignment pending '.$approver.' approval',
+                "Room schedule reassignment {$reference} requires {$approver} approval. Review the proposed changes in Schedule Approval.",
                 actor: $request->user(), departmentId: $plan->department_id, semesterId: $plan->semester_id, metadata: $metadata);
         } else {
             $reviewer = $request->user()->isVpaa() ? 'VPAA' : 'Dean';
             // The Dean who forwarded the request also learns the VPAA's final decision.
             $recipients = array_filter([$plan->created_by, $reviewer === 'VPAA' ? $plan->dean_reviewed_by : null]);
             $notifications->createForUsers(User::whereKey($recipients)->get(), 'room_transfer_'.$action,
-                'Room transfer '.$action, "Room transfer {$reference} was {$action} by the {$reviewer}. "
+                'Room schedule reassignment '.$action, "Room schedule reassignment {$reference} was {$action} by the {$reviewer}. "
                     .($action === 'approved' ? 'Schedule changes have been applied.' : 'Existing schedules are unchanged.'),
                 actor: $request->user(), departmentId: $plan->department_id, semesterId: $plan->semester_id,
                 remarks: $plan->rejection_reason, metadata: $metadata);

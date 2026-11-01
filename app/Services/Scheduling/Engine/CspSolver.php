@@ -977,6 +977,32 @@ class CspSolver
             return [$domain];
         }
 
+        // Sunday is the overflow day: it is searched only after every Monday
+        // to Saturday candidate, and before a class goes roomless (Room TBA,
+        // or an on-site class pushed online for lack of a room).
+        $byPhase = [];
+        foreach ($domain as $candidate) {
+            $roomless = ($candidate['_room_tba'] ?? false) || ($candidate['_lecture_online_fallback'] ?? false);
+            $phase = ($roomless ? 2 : 0)
+                + ($this->candidateContainsDay($candidate, 'Sunday') ? 1 : 0);
+            $byPhase[$phase][] = $candidate;
+        }
+        if (count($byPhase) > 1) {
+            ksort($byPhase);
+
+            $groups = [];
+            foreach ($byPhase as $phaseCandidates) {
+                array_push($groups, ...$this->candidateGroupsByDayPriority(
+                    domain: $phaseCandidates,
+                    hasRoomTbaCandidates: $hasRoomTbaCandidates,
+                    dayPriority: $dayPriority,
+                    sectionId: $sectionId,
+                ));
+            }
+
+            return $groups;
+        }
+
         $byAllocation = [];
         foreach ($domain as $candidate) {
             $priority = $this->candidateAllocationPriority($candidate, $sectionId);
@@ -4144,6 +4170,17 @@ class CspSolver
         }
 
         return true;
+    }
+
+    private function candidateContainsDay(array $candidate, string $day): bool
+    {
+        foreach ($candidate['blocks'] ?? [] as $block) {
+            if (($block['day'] ?? null) === $day) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function candidateContainsWeekendBlock(array $candidate): bool

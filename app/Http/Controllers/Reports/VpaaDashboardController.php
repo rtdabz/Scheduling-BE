@@ -139,7 +139,7 @@ class VpaaDashboardController extends Controller
             return [
                 'id' => (int) $room->id,
                 'room_code' => $room->room_code,
-                'building' => trim((string) ($room->building ?? '')) ?: null,
+                'building' => Rooms::normalizeBuilding($room->building),
                 'room_type' => $room->room_type,
                 'meetings' => $classesByRoom[$room->id] ?? 0,
                 'booked_minutes' => $booked,
@@ -150,8 +150,9 @@ class VpaaDashboardController extends Controller
         })->values();
 
         $buildings = $rows
-            ->groupBy(fn (array $row) => $row['building'] ?? 'Unassigned')
-            ->map(function (Collection $group, string $building): array {
+            ->groupBy(fn (array $row) => $row['building'] === null ? '' : Rooms::buildingKey($row['building']))
+            ->map(function (Collection $group): array {
+                $building = $group->first()['building'] ?? 'Unassigned';
                 $booked = (int) $group->sum('booked_minutes');
                 $capacity = (int) $group->sum('capacity_minutes');
 
