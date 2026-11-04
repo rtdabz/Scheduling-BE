@@ -75,6 +75,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('/user/{user}/invitation', [UserController::class, 'resendInvitation']);
 
         Route::get('/archives', [ArchiveController::class, 'index']);
+        Route::get('/archives/{type}/{id}', [ArchiveController::class, 'show'])
+            ->whereNumber('id');
         Route::post('/archives/{type}/{id}/restore', [ArchiveController::class, 'restore'])
             ->whereNumber('id');
 

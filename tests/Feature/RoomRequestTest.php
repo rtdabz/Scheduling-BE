@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\DeliverSystemNotifications;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
@@ -9,10 +10,14 @@ use App\Models\Program;
 use App\Models\RoomRequest;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\ScheduleHistoryItem;
+use App\Models\ScheduleHistoryVersion;
+use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\SystemNotification;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintKernel;
@@ -20,7 +25,9 @@ use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Generation\GenerateSchedulePlan;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
+use App\Services\SystemNotificationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 /**
@@ -400,6 +407,283 @@ class RoomRequestTest extends TestCase
             ->assertJsonCount(1, 'schedules')
             ->assertJsonPath('schedules.0.room_id', $f['room']->id)
             ->assertJsonPath('schedules.0.department_id', $f['owner']->id);
+    }
+
+    // RR-01: approval must come from the room's current owner.
+
+    /** A legacy request whose room was reassigned after submission cannot be approved by anyone. */
+    public function test_a_stale_owner_cannot_approve_after_the_room_is_reassigned(): void
+    {
+        $f = $this->fixture();
+        $third = Departments::create(['department_name' => 'College of Engineering', 'department_code' => 'COE']);
+        $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
+        // Simulates data saved before the reassignment guard existed.
+        Rooms::whereKey($f['room']->id)->update(['department_id' => $third->id]);
+
+        $this->actingAs($f['ownerSecretary'])->getJson('/api/room-requests')->assertOk()->assertJsonPath('0.owner_changed', true);
+        $this->actingAs($f['ownerSecretary'])
+            ->postJson("/api/room-requests/{$id}/approve")
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('room_request');
+        $this->actingAs($this->secretaryFor($third))->postJson("/api/room-requests/{$id}/approve")->assertForbidden();
+        $this->assertSame('pending', RoomRequest::findOrFail($id)->status);
+
+        // The requester can withdraw the stale request and ask the current owner instead.
+        $this->actingAs($f['secretary'])->postJson("/api/room-requests/{$id}/cancel")->assertOk()->assertJsonPath('data.status', 'cancelled');
+        $this->actingAs($f['secretary'])
+            ->postJson('/api/room-requests', $this->payload($f))
+            ->assertCreated()
+            ->assertJsonPath('data.owner_department.code', 'COE')
+            ->assertJsonPath('data.owner_changed', false);
+    }
+
+    /** The reproduced sequence: a future-term request now blocks reassigning its room. */
+    public function test_an_open_future_term_request_blocks_reassigning_the_room(): void
+    {
+        $f = $this->fixture();
+        $future = Semester::create(['academic_year' => '2026-2027', 'semester' => '2nd', 'is_active' => false, 'is_enabled' => true]);
+        $third = Departments::create(['department_name' => 'College of Engineering', 'department_code' => 'COE']);
+        $this->actingAs($f['secretary'])
+            ->postJson('/api/room-requests', ['semester_id' => $future->id] + $this->payload($f))
+            ->assertCreated()
+            ->assertJsonPath('data.academic_semester.semester', '2nd');
+
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/rooms/{$f['room']->id}/assign", ['department_id' => $third->id])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('department_id');
+        $this->assertSame((int) $f['owner']->id, (int) $f['room']->fresh()->department_id);
+    }
+
+    /** Closed requests, and open ones in disabled terms, are history and do not block reassignment. */
+    public function test_historical_requests_do_not_block_reassigning_the_room(): void
+    {
+        $f = $this->fixture();
+        $third = Departments::create(['department_name' => 'College of Engineering', 'department_code' => 'COE']);
+        $old = Semester::create(['academic_year' => '2025-2026', 'semester' => '2nd', 'is_active' => false, 'is_enabled' => false]);
+        $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/reject", ['remarks' => 'Fully booked.'])->assertOk();
+        RoomRequest::create([
+            'room_id' => $f['room']->id, 'semester_id' => $old->id, 'requesting_department_id' => $f['requester']->id,
+            'owner_department_id' => $f['owner']->id, 'status' => RoomRequest::STATUS_APPROVED, 'purpose' => 'Old term',
+        ]);
+
+        $this->actingAs($f['vpaa'])
+            ->patchJson("/api/rooms/{$f['room']->id}/assign", ['department_id' => $third->id])
+            ->assertOk();
+        $this->assertSame('CAS', RoomRequest::findOrFail($id)->ownerDepartment->department_code, 'Historical ownership was rewritten.');
+    }
+
+    // RR-02: grant-ending displacement is part of the timetable record.
+
+    public function test_revoking_records_the_room_tba_change_in_history_and_audit(): void
+    {
+        $f = $this->fixture();
+        $id = $this->approvedGrant($f);
+        $class = $this->bookRoom($f, $f['requester'], 'Monday', '11:00:00', '13:00:00', $f['section'], $f['course']);
+        $owners = $this->bookRoom($f, $f['owner'], 'Tuesday', '07:00:00', '09:00:00');
+
+        $this->actingAs($f['ownerSecretary'])
+            ->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'CAS needs it back.'])
+            ->assertOk()
+            ->assertJsonPath('released_schedule_ids', [$class->id]);
+
+        $version = ScheduleHistoryVersion::where('action', 'room_grant_ended')->sole();
+        $this->assertSame((int) $f['ownerSecretary']->id, (int) $version->actor_user_id);
+        $this->assertSame('CAS needs it back.', $version->reason);
+        $this->assertSame('owner_revoked', $version->change_summary['ended_by']);
+        $this->assertSame((int) $id, $version->change_summary['room_request_id']);
+        $item = ScheduleHistoryItem::where('history_version_id', $version->id)->sole();
+        $this->assertSame((int) $class->id, (int) $item->original_schedule_id);
+        $this->assertEquals($f['room']->id, $item->before_snapshot['room_id']);
+        $this->assertNull($item->after_snapshot['room_id']);
+
+        $audit = SchedulingAuditLog::where('action', 'room_grant_ended')->sole();
+        $this->assertSame((int) $version->id, (int) $audit->history_version_id);
+        $this->assertSame([$class->id], $audit->metadata['released_schedule_ids']);
+        $this->assertSame('finalized', $class->fresh()->status, 'Releasing a grant must not change schedule status.');
+        $this->assertSame((int) $f['room']->id, (int) $owners->fresh()->room_id);
+    }
+
+    public function test_giving_back_records_history_and_audit_for_the_borrower(): void
+    {
+        $f = $this->fixture();
+        $id = $this->approvedGrant($f);
+        $this->bookRoom($f, $f['requester'], 'Monday', '11:00:00', '13:00:00', $f['section'], $f['course']);
+
+        $this->actingAs($f['secretary'])->postJson("/api/room-requests/{$id}/cancel")->assertOk();
+
+        $version = ScheduleHistoryVersion::where('action', 'room_grant_ended')->sole();
+        $this->assertSame((int) $f['secretary']->id, (int) $version->actor_user_id);
+        $this->assertSame('borrower_returned', $version->change_summary['ended_by']);
+        $this->assertTrue(SchedulingAuditLog::where('action', 'room_grant_ended')->where('user_id', $f['secretary']->id)->exists());
+    }
+
+    /** If the history write fails, the grant, recovery case, and Room TBA change all roll back. */
+    public function test_a_history_failure_rolls_back_the_whole_grant_release(): void
+    {
+        $f = $this->fixture();
+        $id = $this->approvedGrant($f);
+        $class = $this->bookRoom($f, $f['requester'], 'Monday', '11:00:00', '13:00:00', $f['section'], $f['course']);
+        $this->mock(ScheduleHistoryRecorder::class)
+            ->shouldReceive('record')->andThrow(new \RuntimeException('history store unavailable'));
+
+        $this->actingAs($f['ownerSecretary'])
+            ->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'CAS needs it back.'])
+            ->assertServerError();
+
+        $this->assertSame('approved', RoomRequest::findOrFail($id)->status);
+        $this->assertSame((int) $f['room']->id, (int) $class->fresh()->room_id);
+        $this->assertDatabaseCount('room_recovery_cases', 0);
+        $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'room_grant_ended']);
+    }
+
+    // RR-03: a committed action reports success even when notifications fail.
+
+    public function test_notification_failures_do_not_misreport_committed_actions(): void
+    {
+        $f = $this->fixture();
+        $this->mock(SystemNotificationService::class)
+            ->shouldReceive('createForUsers')->andThrow(new \RuntimeException('notifications unavailable'));
+
+        $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))
+            ->assertCreated()->json('data.id');
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/approve")
+            ->assertOk()->assertJsonPath('data.status', 'approved');
+        $this->actingAs($f['secretary'])->postJson("/api/room-requests/{$id}/cancel")
+            ->assertOk()->assertJsonPath('data.status', 'cancelled');
+
+        $second = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))
+            ->assertCreated()->json('data.id');
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$second}/reject", ['remarks' => 'Booked.'])
+            ->assertOk()->assertJsonPath('data.status', 'rejected');
+
+        $this->assertSame(2, RoomRequest::count(), 'A failed notification duplicated or lost a request.');
+    }
+
+    /** Delivery is queued with retries; a failed attempt writes nothing, so a retry cannot duplicate. */
+    public function test_notifications_are_queued_and_a_retry_delivers_them_once(): void
+    {
+        $f = $this->fixture();
+        Queue::fake();
+
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated();
+
+        $job = null;
+        Queue::assertPushed(DeliverSystemNotifications::class, function (DeliverSystemNotifications $pushed) use (&$job): bool {
+            $job = $pushed;
+
+            return true;
+        });
+        $this->assertGreaterThan(1, $job->tries);
+        $recipients = collect($job->deliveries)->pluck('user_ids')->flatten()->all();
+        $this->assertContains((int) $f['ownerSecretary']->id, $recipients);
+        $this->assertContains((int) $f['vpaa']->id, $recipients);
+
+        $real = app(SystemNotificationService::class);
+        $calls = 0;
+        $flaky = \Mockery::mock(SystemNotificationService::class);
+        $flaky->shouldReceive('createForUsers')->andReturnUsing(function (...$args) use ($real, &$calls): void {
+            if (++$calls === 2) {
+                throw new \RuntimeException('second delivery failed');
+            }
+            $real->createForUsers(...$args);
+        });
+        try {
+            $job->handle($flaky);
+            $this->fail('The flaky delivery did not fail.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('second delivery failed', $exception->getMessage());
+        }
+        $this->assertDatabaseCount('system_notifications', 0);
+
+        $job->handle($real);
+        $this->assertSame(1, SystemNotification::where('user_id', $f['ownerSecretary']->id)->where('type', 'room_request_submitted')->count());
+        $this->assertSame(1, SystemNotification::where('user_id', $f['vpaa']->id)->where('type', 'room_request_submitted')->count());
+    }
+
+    // RR-06: an explicit semester scopes lists and occupancy.
+
+    public function test_requests_are_listed_and_checked_for_an_explicit_semester(): void
+    {
+        $f = $this->fixture();
+        $future = Semester::create(['academic_year' => '2026-2027', 'semester' => '2nd', 'is_active' => false, 'is_enabled' => true]);
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated();
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', ['semester_id' => $future->id] + $this->payload($f))->assertCreated();
+
+        $this->actingAs($f['ownerSecretary'])
+            ->getJson("/api/room-requests?semester_id={$f['semester']->id}")
+            ->assertOk()
+            ->assertJsonCount(1)
+            ->assertJsonPath('0.academic_semester.id', $f['semester']->id);
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy?semester_id={$future->id}")
+            ->assertOk()
+            ->assertJsonPath('semester.id', $future->id);
+    }
+
+    // RR-08: rooms with open requests or grants cannot be archived.
+
+    public function test_a_pending_request_blocks_archiving_its_room(): void
+    {
+        $f = $this->fixture();
+        $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
+
+        $this->actingAs($f['vpaa'])->deleteJson("/api/rooms/{$f['room']->id}")
+            ->assertStatus(422)
+            ->assertJsonFragment(['message' => 'This room cannot be archived while it has pending room requests or approved room grants. Reject, cancel, or revoke them first.']);
+        $this->assertNotSoftDeleted('rooms', ['id' => $f['room']->id]);
+
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/reject", ['remarks' => 'Closing the room.'])->assertOk();
+        $this->actingAs($f['vpaa'])->deleteJson("/api/rooms/{$f['room']->id}")->assertOk();
+
+        $this->actingAs($f['secretary'])->getJson('/api/room-requests')
+            ->assertOk()
+            ->assertJsonPath('0.room.room_code', 'RM-1')
+            ->assertJsonPath('0.room.is_archived', true)
+            ->assertJsonPath('0.status', 'rejected');
+    }
+
+    public function test_an_approved_grant_blocks_archiving_its_building(): void
+    {
+        $f = $this->fixture();
+        $id = $this->approvedGrant($f);
+
+        $this->actingAs($f['vpaa'])->postJson('/api/buildings/archive', ['building' => 'Main'])
+            ->assertStatus(422)
+            ->assertJsonFragment(['message' => 'This building cannot be archived while its rooms have pending room requests or approved room grants: RM-1. Reject, cancel, or revoke them first.']);
+        $this->assertNotSoftDeleted('rooms', ['id' => $f['room']->id]);
+
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'Building closing.'])->assertOk();
+        $this->actingAs($f['vpaa'])->postJson('/api/buildings/archive', ['building' => 'Main'])->assertOk();
+        $this->assertSoftDeleted('rooms', ['id' => $f['room']->id]);
+    }
+
+    /** A request whose room was archived before this guard existed is refused clearly, and can still be closed. */
+    public function test_a_request_for_an_already_archived_room_cannot_be_approved_but_can_be_rejected(): void
+    {
+        $f = $this->fixture();
+        $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
+        $f['room']->delete();
+
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/approve")
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('room_request');
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/reject", ['remarks' => 'Room archived.'])->assertOk();
+    }
+
+    // RR-09: the backend compares exact minutes, so off-grid boundaries are honoured.
+
+    public function test_off_grid_occupancy_is_compared_by_exact_minutes(): void
+    {
+        $f = $this->fixture();
+        $this->bookRoom($f, $f['owner'], 'Monday', '07:00:00', '08:40:00');
+        $window = fn (string $start, string $end): array => ['windows' => [['day' => 'Monday', 'start_time' => $start, 'end_time' => $end]]] + $this->payload($f);
+
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', $window('08:30', '10:00'))
+            ->assertStatus(422)->assertJsonValidationErrors('windows');
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', $window('08:40', '10:40'))
+            ->assertCreated()->assertJsonPath('data.windows.0.end_time', '10:40');
     }
 
     private function violatesRoomOwnership(array $attempt): bool

@@ -18,6 +18,7 @@ use App\Services\Scheduling\Recommendations\RecommendationEngine;
 use App\Services\Scheduling\Recommendations\RecommendationSource;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingQueryCounter;
+use App\Support\ArchiveAuditRecorder;
 use App\Support\LiveUpdateRecorder;
 use App\Support\LiveUpdates;
 use Illuminate\Queue\Events\JobProcessing;
@@ -60,6 +61,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         LiveUpdateRecorder::register($this->app);
+        ArchiveAuditRecorder::register();
 
         Event::listen(JobProcessing::class, static function (): void {
             SchedulingPolicy::clearFieldCourseCache();

@@ -6,9 +6,12 @@ use App\Exceptions\ScheduleConflictException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Room\StoreRoomRequest;
 use App\Http\Requests\Room\UpdateRoomRequest;
+use App\Models\RoomRequest;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\Semester;
 use App\Services\RoomStructuralUpdate;
+use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
@@ -89,12 +92,20 @@ class RoomsController extends Controller
     public function destroy($id)
     {
         $room = Rooms::findOrFail($id);
-        if (Schedule::where('room_id', $room->id)->exists()) {
-            return response()->json([
-                'message' => 'This room cannot be archived while classes are scheduled in it.',
-            ], 422);
+        $blocked = $this->archiveRooms([$room->id], function ($rooms, $booked, $requested) {
+            if ($booked->isNotEmpty()) {
+                return 'This room cannot be archived while classes are scheduled in it.';
+            }
+            if ($requested->isNotEmpty()) {
+                return 'This room cannot be archived while it has pending room requests or approved room grants. '
+                    .'Reject, cancel, or revoke them first.';
+            }
+
+            return null;
+        });
+        if ($blocked !== null) {
+            return response()->json(['message' => $blocked], 422);
         }
-        $room->delete();
         ApiCache::forgetGroups([
             'rooms.index',
             'departments.index',
@@ -152,19 +163,21 @@ class RoomsController extends Controller
             return response()->json(['message' => 'This building has no rooms.'], 404);
         }
 
-        $booked = Schedule::query()
-            ->whereIn('room_id', $rooms->pluck('id'))
-            ->distinct()
-            ->pluck('room_id');
-        if ($booked->isNotEmpty()) {
-            $codes = $rooms->whereIn('id', $booked)->pluck('room_code')->sort()->implode(', ');
+        $blocked = $this->archiveRooms($rooms->pluck('id')->all(), function ($locked, $booked, $requested) {
+            $codes = fn ($ids) => $locked->whereIn('id', $ids)->pluck('room_code')->sort()->implode(', ');
+            if ($booked->isNotEmpty()) {
+                return "This building cannot be archived while classes are scheduled in its rooms: {$codes($booked)}.";
+            }
+            if ($requested->isNotEmpty()) {
+                return "This building cannot be archived while its rooms have pending room requests or approved room grants: {$codes($requested)}. "
+                    .'Reject, cancel, or revoke them first.';
+            }
 
-            return response()->json([
-                'message' => "This building cannot be archived while classes are scheduled in its rooms: {$codes}.",
-            ], 422);
+            return null;
+        });
+        if ($blocked !== null) {
+            return response()->json(['message' => $blocked], 422);
         }
-
-        DB::transaction(fn () => $rooms->each->delete());
         ApiCache::forgetGroups([
             'rooms.index',
             'departments.index',
@@ -175,6 +188,34 @@ class RoomsController extends Controller
             'message' => 'Building archived successfully.',
             'archived_room_ids' => $rooms->pluck('id'),
         ]);
+    }
+
+    /**
+     * Archive rooms only when no class or unresolved room request depends on them.
+     * Runs under the same scheduling lock and room-row locks as room-request
+     * submission and approval, so neither can slip in between the check and the archive.
+     *
+     * @param  list<int>  $roomIds
+     * @param  callable(\Illuminate\Support\Collection, \Illuminate\Support\Collection, \Illuminate\Support\Collection): ?string  $blocker
+     */
+    private function archiveRooms(array $roomIds, callable $blocker): ?string
+    {
+        return app(SchedulingScopeLock::class)->execute(
+            Semester::pluck('id')->map('intval')->all(),
+            fn () => DB::transaction(function () use ($roomIds, $blocker): ?string {
+                $rooms = Rooms::query()->whereIn('id', $roomIds)->lockForUpdate()->get();
+                $booked = Schedule::query()->whereIn('room_id', $rooms->pluck('id'))->distinct()->pluck('room_id');
+                $requested = RoomRequest::query()->whereIn('room_id', $rooms->pluck('id'))
+                    ->unresolvedOperational()->distinct()->pluck('room_id');
+
+                $message = $blocker($rooms, $booked, $requested);
+                if ($message === null) {
+                    $rooms->each->delete();
+                }
+
+                return $message;
+            }),
+        );
     }
 
     public function assign(Request $request, $id)

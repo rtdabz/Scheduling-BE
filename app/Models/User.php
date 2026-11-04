@@ -84,7 +84,7 @@ class User extends Authenticatable
         return $this->hasOne(Faculty::class);
     }
 
-    public static function activeRoleHolder(string $role, ?int $departmentId, ?int $programId, ?int $ignoreUserId = null): ?self
+    public static function activeRoleHolder(string $role, ?int $departmentId, ?int $programId, ?int $ignoreUserId = null, bool $lock = false): ?self
     {
         if (! in_array($role, ['dean', 'secretary', 'program_head'], true)) {
             return null;
@@ -100,6 +100,7 @@ class User extends Authenticatable
                 fn ($query) => $query->where('program_id', $programId),
                 fn ($query) => $query->where('department_id', $departmentId),
             )
+            ->when($lock, fn ($query) => $query->lockForUpdate())
             ->first();
     }
 
@@ -124,6 +125,7 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        'active_role_slot',
     ];
 
     /**

@@ -2537,5 +2537,33 @@
       }
     }
   ],
-  "acknowledgements": {}
+  "acknowledgements": {},
+  "notes": [
+    {
+      "id": "n1",
+      "source_text": "_______Note: Math prep(Pre-Calculus for NON-STEM(Algebra & Trigo) for GAS, HUMSS, ABM to be taken only",
+      "text": "Note: Math prep(Pre-Calculus for NON-STEM(Algebra & Trigo) for GAS, HUMSS, ABM to be taken only",
+      "runs": [
+        {
+          "length": 95,
+          "color": "#C00000"
+        }
+      ],
+      "scope": {
+        "level": "year",
+        "year_level": 1
+      },
+      "provenance": {
+        "kind": "pdf",
+        "page": 1,
+        "bbox": [
+          23.28,
+          304.43999999999994,
+          295.2768786400002,
+          310.79999999999995
+        ]
+      },
+      "flags": []
+    }
+  ]
 }

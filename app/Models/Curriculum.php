@@ -10,10 +10,11 @@ class Curriculum extends Model
 {
     protected $table = 'curriculum';
 
-    protected $fillable = ['name', 'department_id', 'program_id', 'code', 'cmo_number', 'cmo_series', 'effective_school_year', 'status', 'description'];
+    protected $fillable = ['name', 'department_id', 'program_id', 'code', 'cmo_number', 'cmo_series', 'effective_school_year', 'status', 'description', 'notes'];
 
     protected $casts = [
         'cmo_series' => 'integer',
+        'notes' => 'array',
     ];
 
     public const PLACEMENT_COLUMNS = [

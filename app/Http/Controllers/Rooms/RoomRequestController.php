@@ -3,15 +3,21 @@
 namespace App\Http\Controllers\Rooms;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\DeliverSystemNotifications;
 use App\Models\RoomRequest;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\SchedulingAuditLog;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\RoomRecoveryService;
+use App\Services\ScheduleHistoryRecorder;
+use App\Services\Scheduling\Lock\SchedulingScopeLock;
+use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
-use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
+use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -23,7 +29,10 @@ class RoomRequestController extends Controller
 {
     private const LENDABLE_ROOM_TYPES = ['lecture'];
 
-    public function __construct(private readonly SystemNotificationService $notifications) {}
+    public function __construct(
+        private readonly ScheduleHistoryRecorder $history,
+        private readonly RevisionChangeRecorder $revisionChanges,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -136,7 +145,10 @@ class RoomRequestController extends Controller
 
         $roomRequest = $this->schedulingTransaction(function () use ($validated, $semester, $windows, $departmentId, $user): RoomRequest {
             /** @var Rooms $room */
-            $room = Rooms::query()->lockForUpdate()->findOrFail((int) $validated['room_id']);
+            $room = Rooms::query()->lockForUpdate()->find((int) $validated['room_id']);
+            if ($room === null) {
+                throw ValidationException::withMessages(['room_id' => 'This room has just been archived and can no longer be requested.']);
+            }
             $this->assertLendable($room, $departmentId);
 
             $duplicate = RoomRequest::query()
@@ -168,8 +180,10 @@ class RoomRequestController extends Controller
         });
 
         $roomRequest->load($this->relations());
-        $this->notifySubmitted($roomRequest, $user);
-        $this->notifyVpaa($roomRequest, $user, 'room_request_submitted');
+        $this->deliverNotifications(fn (): array => [
+            $this->submittedNotification($roomRequest, $user),
+            $this->vpaaNotification($roomRequest, $user, 'room_request_submitted'),
+        ]);
 
         return response()->json([
             'message' => sprintf('Room request sent to %s for approval.', $roomRequest->ownerDepartment?->department_code ?? 'the room\'s department'),
@@ -201,7 +215,19 @@ class RoomRequestController extends Controller
             $this->assertStatus($model, [RoomRequest::STATUS_PENDING]);
 
             /** @var Rooms $room */
-            $room = Rooms::query()->lockForUpdate()->findOrFail($model->room_id);
+            $room = Rooms::query()->lockForUpdate()->find($model->room_id);
+            if ($room === null) {
+                throw ValidationException::withMessages([
+                    'room_request' => 'This room has been archived, so the request can no longer be approved. Reject it instead.',
+                ]);
+            }
+            // Only the room's current owner may lend it; a reassignment after submission makes the request stale.
+            if ((int) $room->department_id !== (int) $model->owner_department_id) {
+                throw ValidationException::withMessages([
+                    'room_request' => "{$room->room_code} no longer belongs to your department, so this request cannot be approved. "
+                        .'The requesting department must cancel it and send a new request to the current owner.',
+                ]);
+            }
             $this->assertLendable($room, (int) $model->requesting_department_id);
 
             $this->assertVacant(
@@ -227,8 +253,10 @@ class RoomRequestController extends Controller
 
         $model->load($this->relations());
         $this->flushSchedulingCaches();
-        $this->notifyReviewed($model, $user, 'approved');
-        $this->notifyVpaa($model, $user, 'room_request_borrowed');
+        $this->deliverNotifications(fn (): array => [
+            $this->reviewedNotification($model, $user, 'approved'),
+            $this->vpaaNotification($model, $user, 'room_request_borrowed'),
+        ]);
 
         return response()->json([
             'message' => 'Room request approved.',
@@ -281,10 +309,10 @@ class RoomRequestController extends Controller
             $wasApproved = $model->status === RoomRequest::STATUS_APPROVED;
 
             if ($wasApproved) {
-                $released = $this->releaseDependentSchedules($model);
+                $released = $this->endGrant($model, $user, $status, $remarks);
             }
 
-        $model->update([
+            $model->update([
                 'status' => $status,
                 'review_remarks' => $status === RoomRequest::STATUS_CANCELLED ? $model->review_remarks : $remarks,
                 'reviewed_by' => $status === RoomRequest::STATUS_CANCELLED ? $model->reviewed_by : $user->id,
@@ -299,13 +327,12 @@ class RoomRequestController extends Controller
 
         $releasedNote = $this->releasedNote($model, $released);
 
-        if ($status === RoomRequest::STATUS_CANCELLED) {
-            $this->notifyCancelled($model, $user);
-        } else {
-            $this->notifyReviewed($model, $user, $status, $releasedNote);
-        }
-
-        $this->notifyVpaa($model, $user, $wasApproved ? 'room_request_returned' : 'room_request_'.$status);
+        $this->deliverNotifications(fn (): array => [
+            $status === RoomRequest::STATUS_CANCELLED
+                ? $this->cancelledNotification($model, $user)
+                : $this->reviewedNotification($model, $user, $status, $releasedNote),
+            $this->vpaaNotification($model, $user, $wasApproved ? 'room_request_returned' : 'room_request_'.$status),
+        ]);
 
         return response()->json([
             'message' => trim(match ($status) {
@@ -314,6 +341,7 @@ class RoomRequestController extends Controller
                 default => $wasApproved ? 'Room given back.' : 'Room request cancelled.',
             }.' '.$releasedNote),
             'released_schedule_count' => $released->count(),
+            'released_schedule_ids' => $released->pluck('id')->map('intval')->values()->all(),
             'data' => $this->present($model),
         ]);
     }
@@ -477,13 +505,19 @@ class RoomRequestController extends Controller
 
     private function schedulingTransaction(callable $callback): mixed
     {
-        return app(\App\Services\Scheduling\Lock\SchedulingScopeLock::class)->execute(
+        return app(SchedulingScopeLock::class)->execute(
             Semester::pluck('id')->map('intval')->all(), fn () => DB::transaction($callback),
         );
     }
 
-    /** @return Collection<int, Schedule> */
-    private function releaseDependentSchedules(RoomRequest $model): Collection
+    /**
+     * Release the borrower's classes held under this grant to Room TBA and record the
+     * displacement in recovery, timetable history, revision tracking, and the scheduling
+     * audit. Runs inside the grant transaction: any failure rolls the whole transition back.
+     *
+     * @return Collection<int, Schedule>
+     */
+    private function endGrant(RoomRequest $model, User $user, string $status, ?string $remarks): Collection
     {
         $windows = $model->windows->map(fn ($window): array => RoomAccessPolicy::window(
             (string) $window->day,
@@ -498,6 +532,7 @@ class RoomRequestController extends Controller
             ->where('department_id', $model->requesting_department_id)
             ->orderBy('day')
             ->orderBy('start_time')
+            ->lockForUpdate()
             ->get()
             ->filter(fn (Schedule $schedule): bool => RoomAccessPolicy::overlappingWindow(
                 $windows,
@@ -507,16 +542,65 @@ class RoomRequestController extends Controller
             ) !== null)
             ->values();
 
-        app(\App\Services\RoomRecoveryService::class)->recordImpact(
+        $endedBy = $status === RoomRequest::STATUS_REVOKED ? 'owner_revoked' : 'borrower_returned';
+        $reason = $remarks ?? 'The borrowing department gave the room back.';
+        $ids = $schedules->pluck('id')->map('intval')->values()->all();
+        $metadata = [
+            'room_request_id' => (int) $model->id,
+            'room_id' => (int) $model->room_id,
+            'previous_room_id' => (int) $model->room_id,
+            'ended_by' => $endedBy,
+            'reason' => $reason,
+            'released_schedule_ids' => $ids,
+        ];
+
+        $before = $schedules->map(fn (Schedule $schedule): array => $schedule->getAttributes())->all();
+        app(RoomRecoveryService::class)->recordImpact(
             (int) $model->room_id, $schedules, 'grant_ended',
-            'Approved borrowing access ended. A replacement room is required.', auth()->id(),
+            'Approved borrowing access ended. A replacement room is required.', (int) $user->id,
         );
         foreach ($schedules as $schedule) {
             $schedule->room_id = null;
             $schedule->save();
         }
 
+        $versionId = null;
+        if ($ids !== []) {
+            $after = Schedule::query()->whereIn('id', $ids)->orderBy('id')->get();
+            $versionId = $this->history->record(
+                'room_grant_ended', $before, $after, (int) $user->id,
+                (int) $model->semester_id, (int) $model->requesting_department_id,
+                'room_request', $reason, $metadata,
+            )->id;
+            $this->revisionChanges->recordScheduleChanges($before, $after, (int) $user->id, 'room_grant_ended');
+        }
+
+        SchedulingAuditLog::create([
+            'user_id' => (int) $user->id,
+            'semester_id' => (int) $model->semester_id,
+            'department_id' => (int) $model->requesting_department_id,
+            'history_version_id' => $versionId,
+            'action' => 'room_grant_ended',
+            'metadata' => $metadata,
+            'created_at' => now(),
+        ]);
+
         return $schedules;
+    }
+
+    /**
+     * Queue notifications for an action that has already committed. The action's
+     * response must not depend on delivery, so a failure to queue is reported, not thrown.
+     *
+     * @param  callable(): list<array<string, mixed>>  $build
+     */
+    private function deliverNotifications(callable $build): void
+    {
+        try {
+            app(Dispatcher::class)->dispatch(new DeliverSystemNotifications($build()));
+        } catch (\Throwable $exception) {
+            report($exception);
+        }
     }
 
     /** @param Collection<int, Schedule> $released */
@@ -571,26 +655,26 @@ class RoomRequestController extends Controller
         ApiCache::forgetGroups(['rooms.index', 'initial.data']);
     }
 
-    private function notifySubmitted(RoomRequest $model, User $actor): void
+    /** @return array<string, mixed> */
+    private function submittedNotification(RoomRequest $model, User $actor): array
     {
         $room = $model->room?->room_code ?? 'a room';
         $requester = $model->requestingDepartment?->department_code ?? 'A department';
         $windows = RoomAccessPolicy::describe($this->windowArrays($model));
 
-        $this->notifications->notifyRoles(
-            ['secretary'],
+        return $this->notification(
+            $this->ownerSecretaries($model),
             'room_request_submitted',
             'Room request awaiting your review',
-            "{$requester} requests {$room} ({$windows}). Purpose: {$model->purpose}",
+            "{$requester} requests {$room} ({$windows}) for {$this->semesterLabel($model)}. Purpose: {$model->purpose}",
             $actor,
+            $model,
             (int) $model->owner_department_id,
-            (int) $model->semester_id,
-            null,
-            $this->notificationMetadata($model),
         );
     }
 
-    private function notifyReviewed(RoomRequest $model, User $actor, string $outcome, string $releasedNote = ''): void
+    /** @return array<string, mixed> */
+    private function reviewedNotification(RoomRequest $model, User $actor, string $outcome, string $releasedNote = ''): array
     {
         $room = $model->room?->room_code ?? 'the room';
         $windows = RoomAccessPolicy::describe($this->windowArrays($model));
@@ -609,23 +693,23 @@ class RoomRequestController extends Controller
             $recipients->push($model->requester);
         }
 
-        $this->notifications->createForUsers(
+        return $this->notification(
             $recipients,
             'room_request_'.$outcome,
             $title,
             $message,
             $actor,
+            $model,
             (int) $model->requesting_department_id,
-            (int) $model->semester_id,
             $model->review_remarks,
-            $this->notificationMetadata($model),
         );
     }
 
-    private function notifyCancelled(RoomRequest $model, User $actor): void
+    /** @return array<string, mixed> */
+    private function cancelledNotification(RoomRequest $model, User $actor): array
     {
-        $this->notifications->notifyRoles(
-            ['secretary'],
+        return $this->notification(
+            $this->ownerSecretaries($model),
             'room_request_cancelled',
             'Room request cancelled',
             sprintf(
@@ -634,14 +718,13 @@ class RoomRequestController extends Controller
                 $model->room?->room_code ?? 'a room',
             ),
             $actor,
+            $model,
             (int) $model->owner_department_id,
-            (int) $model->semester_id,
-            null,
-            $this->notificationMetadata($model),
         );
     }
 
-    private function notifyVpaa(RoomRequest $model, User $actor, string $type): void
+    /** @return array<string, mixed> */
+    private function vpaaNotification(RoomRequest $model, User $actor, string $type): array
     {
         $requester = $model->requestingDepartment?->department_code ?? 'A department';
         $owner = $model->ownerDepartment?->department_code ?? 'another department';
@@ -656,17 +739,58 @@ class RoomRequestController extends Controller
             default => ['Room returned', "{$requester} is no longer borrowing {$room} from {$owner} ({$windows})."],
         };
 
-        $this->notifications->createForUsers(
+        return $this->notification(
             User::query()->where('role', 'vpaa')->get(),
             $type,
             $title,
             $message,
             $actor,
+            $model,
             (int) $model->requesting_department_id,
-            (int) $model->semester_id,
-            null,
-            $this->notificationMetadata($model),
         );
+    }
+
+    /** @return Collection<int, User> */
+    private function ownerSecretaries(RoomRequest $model): Collection
+    {
+        return User::query()
+            ->where('role', 'secretary')
+            ->where('department_id', $model->owner_department_id)
+            ->get();
+    }
+
+    /**
+     * @param  Collection<int, User>  $recipients
+     * @return array<string, mixed>
+     */
+    private function notification(
+        Collection $recipients,
+        string $type,
+        string $title,
+        string $message,
+        User $actor,
+        RoomRequest $model,
+        int $departmentId,
+        ?string $remarks = null,
+    ): array {
+        return [
+            'user_ids' => $recipients->pluck('id')->map('intval')->unique()->values()->all(),
+            'type' => $type,
+            'title' => $title,
+            'message' => $message,
+            'actor_id' => (int) $actor->id,
+            'department_id' => $departmentId,
+            'semester_id' => (int) $model->semester_id,
+            'remarks' => $remarks,
+            'metadata' => $this->notificationMetadata($model),
+        ];
+    }
+
+    private function semesterLabel(RoomRequest $model): string
+    {
+        $semester = $model->academicSemester;
+
+        return $semester ? "{$semester->semester} semester AY {$semester->academic_year}" : 'the selected semester';
     }
 
     /** @return array{room_request_id: int, room_id: int, windows: list<array{day: string, start_time: string, end_time: string}>} */
@@ -719,6 +843,8 @@ class RoomRequestController extends Controller
             'academic_semester' => $model->academicSemester ? $this->presentSemester($model->academicSemester) : null,
             'requesting_department' => $this->presentDepartment($model->requestingDepartment),
             'owner_department' => $this->presentDepartment($model->ownerDepartment),
+            // The room was reassigned after this request was sent; only the requester can act (cancel and resubmit).
+            'owner_changed' => $model->room !== null && (int) $model->room->department_id !== (int) $model->owner_department_id,
             'requester' => $model->requester ? ['id' => (int) $model->requester->id, 'name' => (string) $model->requester->name] : null,
             'reviewer' => $model->reviewer ? ['id' => (int) $model->reviewer->id, 'name' => (string) $model->reviewer->name] : null,
             'reviewed_at' => $model->reviewed_at?->toIso8601String(),
@@ -740,6 +866,7 @@ class RoomRequestController extends Controller
             'building' => $room->building,
             'room_type' => (string) $room->room_type,
             'department_id' => $room->department_id === null ? null : (int) $room->department_id,
+            'is_archived' => $room->trashed(),
         ];
     }
 

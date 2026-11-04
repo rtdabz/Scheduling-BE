@@ -474,6 +474,12 @@ final class SchedulingPolicy
             'description' => 'The course curriculum semester must match the section semester.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
+        'curriculum_course_membership' => [
+            'severity' => 'hard',
+            'category' => 'curriculum',
+            'description' => 'The course must be part of the curriculum the section follows.',
+            'enforced_by' => ['rule_engine'],
+        ],
         'subject_section_year_alignment' => [
             'severity' => 'hard',
             'category' => 'curriculum',

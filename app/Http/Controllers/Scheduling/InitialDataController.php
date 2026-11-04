@@ -213,11 +213,17 @@ class InitialDataController extends Controller
                 ->get();
 
             $pivotMap = [];
+            $placements = [];
             $classMinutes = [];
             foreach ($pivotData as $p) {
                 if (! isset($pivotMap[$p->course_id])) {
                     $pivotMap[$p->course_id] = $p;
                 }
+                $placements[$p->course_id][] = [
+                    'curriculum_id' => (int) $p->curriculum_id,
+                    'year_level' => (string) $p->year_level,
+                    'semester' => $p->semester == 1 ? '1st' : ($p->semester == 2 ? '2nd' : 'summer'),
+                ];
                 if ($p->lecture_minutes !== null || $p->laboratory_minutes !== null) {
                     $classMinutes[$p->course_id][(int) $p->curriculum_id] = [
                         'lecture' => $p->lecture_minutes === null ? null : (int) $p->lecture_minutes,
@@ -227,7 +233,9 @@ class InitialDataController extends Controller
             }
 
             $curricularIds = $activeSemesterCourseIds->flip();
-            $courses = $courses->map(function ($c) use ($pivotMap, $classMinutes, $curricularIds, $departmentId, $configuredFieldCodes) {
+            $courses = $courses->map(function ($c) use ($pivotMap, $placements, $classMinutes, $curricularIds, $departmentId, $configuredFieldCodes) {
+                // Every active curriculum's placement, so each section reads the one it follows.
+                $c->setAttribute('curriculum_placements', $placements[$c->id] ?? []);
                 // Class minutes each curriculum recorded on import; scheduling sizes the course from them.
                 $c->setAttribute('class_minutes_by_curriculum', (object) ($classMinutes[$c->id] ?? []));
                 $c->setAttribute('delegated_only', $departmentId !== null && ! (

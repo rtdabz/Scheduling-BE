@@ -13,6 +13,22 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ActivityLogController extends Controller
 {
+    private const ARCHIVE_EVENTS = ['record_restored', 'record_archived'];
+
+    /** Archive type => [activity target type, activity category]. */
+    private const ARCHIVE_TARGETS = [
+        'users' => ['user', 'account_access'],
+        'departments' => ['department', 'institutional_setup'],
+        'programs' => ['program', 'institutional_setup'],
+        'rooms' => ['room', 'institutional_setup'],
+        'faculties' => ['instructor', 'institutional_setup'],
+        'designations' => ['designation', 'institutional_setup'],
+        'courses' => ['course', 'academic_setup'],
+        'semesters' => ['semester', 'academic_setup'],
+        'schedules' => ['schedule', 'scheduling'],
+        'schedule-splits' => ['schedule_split', 'scheduling'],
+    ];
+
     public function index(Request $request): JsonResponse|StreamedResponse
     {
         $validated = $request->validate([
@@ -43,7 +59,8 @@ class ActivityLogController extends Controller
 
         $scheduling = SchedulingAuditLog::query()
             ->with('user:id,name,username,role')
-            ->when(in_array($category, ['account_access', 'authentication'], true), fn ($q) => $q->whereRaw('1 = 0'))
+            // Only archive events about accounts can be Account & Access entries in this source.
+            ->when(in_array($category, ['account_access', 'authentication'], true), fn ($q) => $q->whereIn('action', self::ARCHIVE_EVENTS))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))
             ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('user_id', $id))
@@ -140,16 +157,30 @@ class ActivityLogController extends Controller
         return [
             'id' => 'scheduling:'.$log->id,
             'source' => 'scheduling',
-            'category' => $this->schedulingCategory($log->action),
+            'category' => $this->archiveCategory($log->action, $metadata) ?? $this->schedulingCategory($log->action),
             'event' => $log->action,
             'status' => $this->status($log->action),
             'occurred_at' => $log->created_at,
             'actor' => $this->user($log->user),
             'department_id' => $log->department_id,
             'semester_id' => $log->semester_id,
-            'target' => ['type' => $log->schedule_recommendation_id ? 'schedule_recommendation' : 'schedule_workflow', 'id' => $log->schedule_recommendation_id ?? $log->section_id],
+            'target' => $this->archiveTarget($log->action, $metadata)
+                ?? ['type' => $log->schedule_recommendation_id ? 'schedule_recommendation' : 'schedule_workflow', 'id' => $log->schedule_recommendation_id ?? $log->section_id],
             'metadata' => $metadata,
         ];
+    }
+
+    /** @return array{type: string, id: ?int}|null */
+    private function archiveTarget(string $action, array $metadata): ?array
+    {
+        $target = in_array($action, self::ARCHIVE_EVENTS, true) ? (self::ARCHIVE_TARGETS[$metadata['type'] ?? ''] ?? null) : null;
+
+        return $target === null ? null : ['type' => $target[0], 'id' => isset($metadata['id']) ? (int) $metadata['id'] : null];
+    }
+
+    private function archiveCategory(string $action, array $metadata): ?string
+    {
+        return in_array($action, self::ARCHIVE_EVENTS, true) ? (self::ARCHIVE_TARGETS[$metadata['type'] ?? ''][1] ?? null) : null;
     }
 
     private function authenticationEntry(AuthenticationAuditLog $log): array

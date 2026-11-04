@@ -9,10 +9,12 @@ use App\Models\Faculty;
 use App\Models\Program;
 use App\Models\User;
 use App\Notifications\AccountInvitationNotification;
+use App\Services\AdministrativeRoleSlots;
 use App\Services\AuthenticationAuditService;
 use App\Services\FacultyDesignationService;
 use App\Services\UserFacultyProfileService;
 use App\Support\ApiCache;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -25,6 +27,7 @@ class UserController extends Controller
     public function __construct(
         private readonly AuthenticationAuditService $audit,
         private readonly UserFacultyProfileService $facultyProfiles,
+        private readonly AdministrativeRoleSlots $roleSlots,
     ) {}
 
     public function store(StoreUserRequest $request): JsonResponse
@@ -41,7 +44,8 @@ class UserController extends Controller
         };
         app(FacultyDesignationService::class)->validate($designationIds, maxUnits: $maxUnits === null ? null : (int) $maxUnits);
 
-        $user = DB::transaction(function () use ($validated, $request, $facultyMode, $designationIds) {
+        $user = $this->withRoleSlotBackstop($validated, fn () => DB::transaction(function () use ($validated, $request, $facultyMode, $designationIds) {
+            $this->ensureRoleSlotAvailable($validated, (bool) ($validated['is_active'] ?? true), locked: true);
             $user = User::create([
                 'name' => $this->displayName($validated),
                 'first_name' => trim($validated['first_name']),
@@ -72,7 +76,7 @@ class UserController extends Controller
             ]);
 
             return $user;
-        });
+        }));
         $this->sendInvitation($request, $user);
         $initialDataGroups = $user->role === 'dean' && $user->is_active
             ? ['initial.data']
@@ -94,7 +98,8 @@ class UserController extends Controller
         $newEmail = strtolower(trim($validated['email']));
         $emailChanged = $newEmail !== strtolower((string) $user->email);
 
-        DB::transaction(function () use ($validated, $request, $user, $emailChanged) {
+        $this->withRoleSlotBackstop($validated, fn () => DB::transaction(function () use ($validated, $request, $user, $emailChanged) {
+            $this->ensureRoleSlotAvailable($validated, (bool) $validated['is_active'], $user->id, locked: true);
             if ($emailChanged) {
                 /** @var \Illuminate\Auth\Passwords\PasswordBroker $broker */
                 $broker = Password::broker('invites');
@@ -127,7 +132,7 @@ class UserController extends Controller
                 'google_login_allowed' => $user->allow_google_login,
                 'faculty_profile_synced' => $syncedProfile !== null,
             ]);
-        });
+        }));
         ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
         $message = 'User updated successfully.';
@@ -235,29 +240,28 @@ class UserController extends Controller
         ]);
     }
 
-    private function ensureRoleSlotAvailable(array $validated, bool $isActive, ?int $ignoreUserId = null): void
+    /**
+     * The unlocked call gives early feedback; the locked call inside the write transaction is
+     * authoritative because it holds the department/program scope lock shared with restores.
+     */
+    private function ensureRoleSlotAvailable(array $validated, bool $isActive, ?int $ignoreUserId = null, bool $locked = false): void
     {
         if (! $isActive) {
             return;
         }
 
         $role = $validated['role'];
-        $holder = User::activeRoleHolder(
-            $role,
-            (int) $validated['department_id'],
-            isset($validated['program_id']) ? (int) $validated['program_id'] : null,
-            $ignoreUserId,
-        );
+        $departmentId = (int) $validated['department_id'];
+        $programId = isset($validated['program_id']) ? (int) $validated['program_id'] : null;
+        $holder = $locked
+            ? $this->roleSlots->lockedHolder($role, $departmentId, $programId, $ignoreUserId)
+            : User::activeRoleHolder($role, $departmentId, $programId, $ignoreUserId);
 
         if ($holder === null) {
             return;
         }
 
-        $label = match ($role) {
-            'dean' => 'Dean',
-            'program_head' => 'Program Head',
-            default => 'Secretary',
-        };
+        $label = AdministrativeRoleSlots::roleLabel($role);
         $scope = $role === 'program_head'
             ? ($holder->program?->code ?? $holder->program?->name ?? 'This program')
             : ($holder->department?->department_code ?? $holder->department?->department_name ?? 'This department');
@@ -265,6 +269,28 @@ class UserController extends Controller
         throw ValidationException::withMessages([
             'role' => "{$scope} already has an active {$label} ({$holder->name}). Deactivate them first.",
         ]);
+    }
+
+    /**
+     * @template T
+     *
+     * @param  callable(): T  $write
+     * @return T
+     */
+    private function withRoleSlotBackstop(array $validated, callable $write): mixed
+    {
+        try {
+            return $write();
+        } catch (QueryException $exception) {
+            if (! AdministrativeRoleSlots::isSlotViolation($exception)) {
+                throw $exception;
+            }
+            $label = AdministrativeRoleSlots::roleLabel((string) $validated['role']);
+
+            throw ValidationException::withMessages([
+                'role' => "Another active {$label} was saved for this scope at the same time. Refresh and review the current holder.",
+            ]);
+        }
     }
 
     private function availableUsername(string $requested): string

@@ -63,4 +63,17 @@ class RoomRequest extends Model
     {
         return $this->hasMany(RoomRequestWindow::class)->orderBy('day')->orderBy('start_time');
     }
+
+    /**
+     * Pending requests and approved grants in a live term that can still be scheduled:
+     * the active semester or an enabled future/inactive one. Closed requests and
+     * requests in disabled or archived semesters are history and never block.
+     */
+    public function scopeUnresolvedOperational($query)
+    {
+        return $query
+            ->whereIn('status', [self::STATUS_PENDING, self::STATUS_APPROVED])
+            ->whereHas('academicSemester', fn ($semester) => $semester
+                ->where(fn ($flags) => $flags->where('is_active', true)->orWhere('is_enabled', true)));
+    }
 }

@@ -183,17 +183,15 @@ class CrudIntegrityGuardsTest extends TestCase
             'role' => 'secretary', 'department_id' => $fixture['department']->id, 'is_active' => false,
         ]);
         $archived->delete();
-        $current = User::factory()->create([
-            'role' => 'secretary', 'department_id' => $fixture['department']->id, 'is_active' => true,
-        ]);
+        // The fixture secretary is the department's one active holder (the database allows only one).
 
         $this->actingAs($fixture['vpaa'], 'sanctum')
             ->postJson("/api/archives/users/{$archived->id}/restore")
-            ->assertStatus(422);
+            ->assertStatus(422)
+            ->assertJsonPath('blockers.0.code', 'role_occupied');
         $this->assertSoftDeleted('users', ['id' => $archived->id]);
 
         // Once the slot is free the archived account can come back.
-        $current->delete();
         $fixture['secretary']->update(['is_active' => false]);
         $this->actingAs($fixture['vpaa'], 'sanctum')
             ->postJson("/api/archives/users/{$archived->id}/restore")

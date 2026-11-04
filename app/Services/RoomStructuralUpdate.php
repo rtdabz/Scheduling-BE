@@ -34,10 +34,9 @@ final class RoomStructuralUpdate
                 $structural = $current->isDirty(['room_type', 'allow_lecture_usage', 'department_id', 'status']);
                 if (($current->isDirty('department_id') || ($current->isDirty('room_type') && Rooms::isSharedType($current->room_type))) && (
                     $current->home_program_id !== null
-                    || RoomRequest::where('room_id', $room->id)->whereIn('status', [RoomRequest::STATUS_PENDING, RoomRequest::STATUS_APPROVED])
-                        ->whereHas('academicSemester', fn ($query) => $query->where('is_active', true))->exists()
+                    || RoomRequest::where('room_id', $room->id)->unresolvedOperational()->exists()
                 )) {
-                    throw ValidationException::withMessages(['department_id' => 'Resolve this room’s program assignment and active room requests before changing its department.']);
+                    throw ValidationException::withMessages(['department_id' => 'Resolve this room’s program assignment and its pending or approved room requests (including future semesters) before changing its department.']);
                 }
                 $current->save();
                 if ($structural) {

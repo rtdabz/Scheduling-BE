@@ -38,6 +38,28 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
 
     public function handle(YearLevelScheduleGenerationService $generator): void
     {
+        // The worker's --timeout relies on pcntl, which Windows PHP lacks, so a runaway
+        // job would hold the only worker forever. There, bound the job with PHP's own
+        // limit (wall-clock time on Windows) and restore the worker's limit afterwards
+        // so its idle loop is never cut off. A job that hits it kills the worker
+        // process; the supervised worker restarts and the poll fails the run.
+        $enforceOwnLimit = ! extension_loaded('pcntl');
+        $workerLimit = (int) ini_get('max_execution_time');
+        if ($enforceOwnLimit) {
+            set_time_limit($this->timeout);
+        }
+
+        try {
+            $this->generate($generator);
+        } finally {
+            if ($enforceOwnLimit) {
+                set_time_limit($workerLimit);
+            }
+        }
+    }
+
+    private function generate(YearLevelScheduleGenerationService $generator): void
+    {
         $claimed = ScheduleGenerationRun::query()
             ->where('run_id', $this->runId)
             ->where('status', 'queued')

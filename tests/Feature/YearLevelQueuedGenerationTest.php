@@ -176,6 +176,40 @@ class YearLevelQueuedGenerationTest extends TestCase
         $this->assertSame('No valid timetable was found.', $run->error_message);
     }
 
+    public function test_generation_runs_under_the_job_time_limit_when_the_worker_cannot_enforce_it(): void
+    {
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
+        $runId = (string) Str::uuid();
+        ScheduleGenerationRun::create([
+            'run_id' => $runId,
+            'requested_by' => $user->id,
+            'semester_id' => $semester->id,
+            'department_id' => $department->id,
+            'year_level' => 1,
+            'status' => 'queued',
+        ]);
+
+        $workerLimit = ini_get('max_execution_time');
+        $limitDuringGeneration = null;
+        $generator = Mockery::mock(YearLevelScheduleGenerationService::class);
+        $generator->shouldReceive('preview')->once()->andReturnUsing(function () use (&$limitDuringGeneration) {
+            $limitDuringGeneration = ini_get('max_execution_time');
+
+            throw new YearLevelGenerationException('No valid timetable was found.', YearLevelGenerationException::STAGE_SEARCH);
+        });
+
+        $job = new GenerateYearLevelSchedulePreview(
+            $runId,
+            [(int) $section->id],
+            [(int) $section->id => ['course_ids' => [(int) $course->id]]],
+        );
+        $job->handle($generator);
+
+        // Without pcntl the worker's --timeout never fires, so the job bounds itself.
+        $this->assertSame(extension_loaded('pcntl') ? $workerLimit : (string) $job->timeout, $limitDuringGeneration);
+        $this->assertSame($workerLimit, ini_get('max_execution_time'));
+    }
+
     public function test_worker_failure_marks_an_active_run_failed(): void
     {
         [$semester, $department, $section, $course, $user] = $this->generationFixture();
@@ -364,8 +398,9 @@ class YearLevelQueuedGenerationTest extends TestCase
             'status' => 'running',
             'started_at' => now(),
         ]);
+        // A department has one active secretary, so the other same-department user is its dean.
         $other = $this->grantCapabilities(User::factory()->create([
-            'role' => 'secretary',
+            'role' => 'dean',
             'department_id' => $department->id,
             'is_active' => true,
         ]));

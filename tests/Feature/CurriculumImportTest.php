@@ -89,26 +89,26 @@ class CurriculumImportTest extends TestCase
         return $this->actingAs($this->secretary)->postJson('/api/curriculum-imports/validate', $payload)->assertOk();
     }
 
-    private function acknowledgeAll(array $payload): array
+    /** A corrected draft needs no reasons: it only has to be free of errors. */
+    private function withoutErrors(array $payload): array
     {
         $issues = collect($this->validateDraft($payload)->json('issues'));
         $this->assertSame(0, $issues->where('severity', 'error')->count(), $issues->where('severity', 'error')->pluck('message')->implode("\n"));
-        $payload['acknowledgements'] = $issues->where('severity', 'review')
-            ->mapWithKeys(fn (array $issue): array => [$issue['key'] => 'Checked against the signed source document.'])
-            ->all();
 
         return $payload;
     }
 
+    /** The one final confirmation, bound to the reviewed outcome's fingerprint. */
     private function commitPayload(array $payload, string $key = 'import-key-0001'): array
     {
         $validation = $this->validateDraft($payload);
-        $this->assertTrue($validation->json('valid'), collect($validation->json('issues'))->where('acknowledged', false)->where('severity', '!=', 'warning')->pluck('message')->implode("\n"));
+        $this->assertTrue($validation->json('valid'), collect($validation->json('issues'))->where('severity', 'error')->pluck('message')->implode("\n"));
 
         return $payload + [
             'request_key' => $key,
             'fingerprint' => $validation->json('fingerprint'),
             'expected_settings_revision' => $validation->json('settings_revision'),
+            'confirmed' => true,
         ];
     }
 
@@ -125,7 +125,7 @@ class CurriculumImportTest extends TestCase
             ->assertJsonPath('totals.calculated', ['lec' => 147, 'lab' => 29, 'tu' => 176])
             ->assertJsonPath('totals.reported_sum.tu', 173);
 
-        $this->assertSame('review', $issues['group_total_mismatch:3-2']['severity']);
+        $this->assertSame('notice', $issues['group_total_mismatch:3-2']['severity']);
         $this->assertStringContainsString('TU printed 27 vs calculated 30', $issues['group_total_mismatch:3-2']['message']);
         $this->assertSame(1, collect($response->json('issues'))->where('code', 'group_total_mismatch')->count());
 
@@ -133,10 +133,15 @@ class CurriculumImportTest extends TestCase
         $this->assertSame('error', $issues['scheduling_basis_required:'.$practicum]['severity']);
         $this->assertStringContainsString('486 total hours', $issues['scheduling_basis_required:'.$practicum]['message']);
 
+        // Extraction flags are no longer tasks: each appears once, in its field's comparison.
+        $changes = collect($response->json('changes'));
         foreach (['I1 125', 'PATH FITt 2', 'PATH FiIT3'] as $code) {
             $rowId = collect($this->fixture()['rows'])->firstWhere('code', $code)['row_id'];
-            $this->assertSame('review', $issues['extraction_flag:'.$rowId]['severity']);
+            $entries = $changes->where('row_id', $rowId)->where('field', 'code');
+            $this->assertCount(1, $entries);
+            $this->assertContains('suspicious_code', $entries->first()['flags']);
         }
+        $this->assertSame([], collect($response->json('issues'))->whereIn('code', ['extraction_flag', 'source_correction'])->values()->all());
         $this->assertSame([], collect($response->json('issues'))->filter(fn (array $issue): bool => str_starts_with($issue['code'], 'prerequisite'))->values()->all());
         $this->assertSame(['I1 125 matches no classification rule. Choose Major or Minor.'], collect($response->json('issues'))->where('code', 'unclassified')->pluck('message')->values()->all());
         $this->assertSame(0, Curriculum::count());
@@ -146,12 +151,12 @@ class CurriculumImportTest extends TestCase
     public function test_reviewed_reference_pdf_imports_atomically_into_a_deactivated_curriculum(): void
     {
         $this->tccRules();
-        $payload = $this->commitPayload($this->acknowledgeAll($this->reviewedFixture()));
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
 
         $response = $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)
             ->assertCreated()
             ->assertJsonPath('curriculum.status', 'deactivated')
-            ->assertJsonPath('curriculum.code', 'BSIT-2020')
+            ->assertJsonPath('curriculum.code', 'CMO-25-2015')
             ->assertJsonPath('curriculum.cmo_number', '25')
             ->assertJsonPath('curriculum.cmo_series', 2015)
             ->assertJsonPath('curriculum.effective_school_year', '2020-2021')
@@ -183,7 +188,17 @@ class CurriculumImportTest extends TestCase
         $record = CurriculumImport::sole();
         $this->assertSame($curriculum->id, $record->curriculum_id);
         $this->assertSame('3ba201472f92e08b13cb09dea39b483abb298269337c103b7b1a978c0fc66496', $record->source_sha256);
-        $this->assertArrayHasKey('group_total_mismatch:3-2', $record->record['acknowledged']);
+        // The audit records the outcome and the confirmation; no reasons were asked for or invented.
+        $this->assertArrayNotHasKey('acknowledged', $record->record);
+        $this->assertSame($payload['fingerprint'], $record->record['confirmation']['fingerprint']);
+        $this->assertSame($this->secretary->id, $record->record['confirmation']['user_id']);
+        $this->assertNotEmpty($record->record['confirmation']['confirmed_at']);
+        $this->assertContains('group_total_mismatch:3-2', array_column($record->record['issues'], 'key'));
+        $this->assertSame(['code', 'I1 125', 'IT 125', 'correction'], (function () use ($record): array {
+            $entry = collect($record->record['changes'])->first(fn (array $change): bool => $change['field'] === 'code' && $change['original'] === 'I1 125');
+
+            return [$entry['field'], $entry['original'], $entry['imported'], $entry['kind']];
+        })());
         $corrected = collect($record->record['draft_rows'])->firstWhere('source.code', 'I1 125');
         $this->assertSame('IT 125', $corrected['code']);
         $this->assertTrue($curriculum->courses()->where('course_code', 'IT 125')->exists());
@@ -196,7 +211,7 @@ class CurriculumImportTest extends TestCase
     public function test_retries_replay_the_recorded_outcome_and_a_reused_key_with_another_body_conflicts(): void
     {
         $this->tccRules();
-        $payload = $this->commitPayload($this->acknowledgeAll($this->reviewedFixture()));
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
 
         $first = $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)->assertCreated();
         $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload, ['Idempotency-Key' => 'different-transport-key'])
@@ -218,7 +233,11 @@ class CurriculumImportTest extends TestCase
         $this->tccRules();
         Curriculum::create(['name' => 'Older BSIT', 'code' => 'BSIT-2020', 'effective_school_year' => '2020-2021', 'department_id' => $this->department->id]);
 
-        $payload = $this->acknowledgeAll($this->reviewedFixture());
+        // Without a CMO reference the program and start year name the code.
+        $payload = $this->reviewedFixture();
+        $payload['metadata']['cmo_number'] = null;
+        $payload['metadata']['cmo_series'] = null;
+        $payload = $this->withoutErrors($payload);
         $this->validateDraft($payload)->assertJsonPath('metadata.code', 'BSIT-2020-2');
         $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $this->commitPayload($payload))
             ->assertCreated()
@@ -237,11 +256,114 @@ class CurriculumImportTest extends TestCase
         $this->validateDraft($payload)->assertJsonPath('metadata.code', 'CCS-2020');
     }
 
+    public function test_the_cmo_reference_names_the_code_with_suffixes_across_departments_and_archived_records(): void
+    {
+        $this->tccRules();
+        $payload = $this->withoutErrors($this->reviewedFixture());
+        $this->validateDraft($payload)
+            ->assertJsonPath('metadata.code', 'CMO-25-2015')
+            ->assertJsonPath('metadata.cmo_number', '25')
+            ->assertJsonPath('metadata.cmo_series', 2015);
+
+        // Codes are global: another department's curriculum and an archived one both keep their codes reserved.
+        $other = Departments::create(['department_name' => 'Engineering', 'department_code' => 'COE']);
+        Curriculum::create(['name' => 'Engineering', 'code' => 'CMO-25-2015', 'effective_school_year' => '2015-2016', 'department_id' => $other->id]);
+        Curriculum::create(['name' => 'Old BSIT', 'code' => 'CMO-25-2015-2', 'effective_school_year' => '2016-2017', 'department_id' => $this->department->id, 'status' => 'archived']);
+        $this->validateDraft($payload)->assertJsonPath('metadata.code', 'CMO-25-2015-3');
+
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $this->commitPayload($payload))
+            ->assertCreated()
+            ->assertJsonPath('curriculum.code', 'CMO-25-2015-3')
+            ->assertJsonPath('curriculum.cmo_number', '25')
+            ->assertJsonPath('curriculum.cmo_series', 2015);
+        $this->assertSame('CMO-25-2015', Curriculum::where('department_id', $other->id)->value('code'));
+        $this->assertSame('archived', Curriculum::where('code', 'CMO-25-2015-2')->value('status'));
+    }
+
+    public function test_cmo_numbers_are_normalized_in_the_code_but_stored_as_entered(): void
+    {
+        $payload = $this->reviewedFixture();
+        $payload['metadata']['cmo_number'] = 'no-25a';
+        $payload['metadata']['cmo_series'] = 2017;
+
+        $this->validateDraft($payload)
+            ->assertJsonPath('metadata.code', 'CMO-NO-25A-2017')
+            ->assertJsonPath('metadata.cmo_number', 'no-25a');
+
+        $payload['metadata']['cmo_number'] = 'CMO 25';
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports/validate', $payload)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('metadata.cmo_number');
+        $payload['metadata']['cmo_number'] = '25';
+        $payload['metadata']['cmo_series'] = 1800;
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports/validate', $payload)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('metadata.cmo_series');
+    }
+
+    public function test_a_partial_cmo_reference_blocks_the_import_until_completed_or_cleared(): void
+    {
+        $this->tccRules();
+        $payload = $this->reviewedFixture();
+
+        $payload['metadata']['cmo_series'] = null;
+        $issue = collect($this->validateDraft($payload)->json('issues'))->firstWhere('code', 'cmo_incomplete');
+        $this->assertSame(['error', 'metadata.cmo_series'], [$issue['severity'], $issue['field']]);
+
+        $payload['metadata']['cmo_series'] = 2015;
+        $payload['metadata']['cmo_number'] = null;
+        $response = $this->validateDraft($payload);
+        $issue = collect($response->json('issues'))->firstWhere('code', 'cmo_incomplete');
+        $this->assertSame(['error', 'metadata.cmo_number'], [$issue['severity'], $issue['field']]);
+        $this->assertFalse($response->json('valid'));
+
+        $payload['metadata']['cmo_series'] = null;
+        $response = $this->validateDraft($this->withoutErrors($payload));
+        $this->assertNull(collect($response->json('issues'))->firstWhere('code', 'cmo_incomplete'));
+        $response->assertJsonPath('metadata.code', 'BSIT-2020');
+    }
+
+    public function test_a_code_taken_concurrently_reruns_the_import_and_a_recurring_collision_is_a_conflict(): void
+    {
+        $this->tccRules();
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
+        $other = Departments::create(['department_name' => 'Engineering', 'department_code' => 'COE']);
+
+        // Another department claims the same CMO code between this import's check and its insert.
+        $attempts = 0;
+        $collideOn = [1];
+        Curriculum::creating(function (Curriculum $curriculum) use (&$attempts, &$collideOn, $other): void {
+            if ($curriculum->name === 'Concurrent') {
+                return;
+            }
+            if (in_array(++$attempts, $collideOn, true)) {
+                Curriculum::create(['name' => 'Concurrent', 'code' => $curriculum->code, 'effective_school_year' => '2015-2016', 'department_id' => $other->id]);
+            }
+        });
+
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)
+            ->assertCreated()
+            ->assertJsonPath('curriculum.code', 'CMO-25-2015');
+        $this->assertSame(2, $attempts);
+        $this->assertSame(1, CurriculumImport::count());
+        $this->assertSame(59, Course::count());
+
+        // A collision on every attempt ends as a conflict after the bounded retries, never as a success.
+        $attempts = 0;
+        $collideOn = [1, 2, 3, 4];
+        $retry = $this->commitPayload($this->withoutErrors($this->reviewedFixture()), 'import-key-0002');
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $retry)->assertStatus(409);
+        $this->assertSame(3, $attempts);
+        $this->assertSame(1, CurriculumImport::count());
+        $this->assertSame(1, Curriculum::where('name', '!=', 'Concurrent')->count());
+    }
+
     public function test_an_unresolved_row_blocks_the_whole_import(): void
     {
         $this->tccRules();
-        $payload = $this->commitPayload($this->acknowledgeAll($this->reviewedFixture()));
-        $payload['acknowledgements'] = array_slice($payload['acknowledgements'], 1, null, true);
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
+        // A direct API call cannot confirm its way past an error.
+        $payload['rows'][0]['total_units'] = $payload['rows'][0]['lecture_units'] + $payload['rows'][0]['lab_units'] + 1;
 
         $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)
             ->assertUnprocessable()
@@ -252,10 +374,103 @@ class CurriculumImportTest extends TestCase
         $this->assertSame(0, DB::table('curriculum_course')->count());
     }
 
+    public function test_one_confirmation_replaces_reasons_and_stale_clients_cannot_bypass_it(): void
+    {
+        $this->tccRules();
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
+
+        $unconfirmed = $payload;
+        unset($unconfirmed['confirmed']);
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $unconfirmed)->assertUnprocessable()->assertJsonValidationErrors('confirmed');
+        // Reasons from an older client are refused, not silently dropped or treated as consent.
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', array_replace($payload, ['acknowledgements' => ['group_total_mismatch:3-2' => 'ok']]))
+            ->assertUnprocessable()->assertJsonValidationErrors('acknowledgements');
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports/validate', $this->reviewedFixture() + ['confirmed' => true])
+            ->assertUnprocessable()->assertJsonValidationErrors('confirmed');
+
+        // An edit after validation makes the confirmed outcome stale.
+        $edited = $payload;
+        $edited['rows'][0]['title'] = 'Introduction to Computing (revised)';
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $edited)->assertStatus(409);
+        $this->assertSame(0, Curriculum::count());
+
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)->assertCreated()
+            ->assertJsonPath('confirmation.fingerprint', $payload['fingerprint'])
+            ->assertJsonMissingPath('acknowledged');
+    }
+
+    public function test_the_review_compares_each_field_once_and_never_implies_a_reused_course_changes(): void
+    {
+        $this->tccRules();
+        $existing = Course::create([
+            'course_code' => 'GEC 1', 'course_name' => 'understanding  the SELF', 'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3,
+            'course_category' => 'minor', 'year_level' => '1', 'semester' => '1st', 'department_id' => $this->department->id,
+        ]);
+        $payload = $this->reviewedFixture();
+        $index = fn (string $code): int => collect($payload['rows'])->search(fn (array $row): bool => $row['code'] === $code);
+        $payload['rows'][$index('IT 101')]['category'] = 'minor';
+
+        $response = $this->validateDraft($payload);
+        $changes = collect($response->json('changes'));
+        // A corrected, flagged code is one comparison carrying its flag, not a correction plus an extraction task.
+        $this->assertSame($changes->count(), $changes->unique(fn (array $change): string => $change['row_id'].'|'.$change['field'].'|'.$change['kind'])->count());
+        $code = $changes->firstWhere('original', 'I1 125');
+        $this->assertSame(['code', 'IT 125', 'correction', ['suspicious_code']], [$code['field'], $code['imported'], $code['kind'], $code['flags']]);
+
+        // The reused course keeps its catalog title; a spacing/case difference is information only.
+        $gec = collect($response->json('rows'))->firstWhere('code', 'GEC 1');
+        $this->assertSame('reuse', $gec['catalog']['action']);
+        $title = $changes->first(fn (array $change): bool => $change['row_id'] === $gec['row_id'] && $change['field'] === 'title');
+        $this->assertSame(['catalog', 'understanding  the SELF', true], [$title['kind'], $title['imported'], $title['formatting']]);
+        $this->assertStringContainsString('reused unchanged', $title['note']);
+
+        $category = $changes->first(fn (array $change): bool => $change['code'] === 'IT 101' && $change['field'] === 'category');
+        $this->assertSame(['Rule suggests Major (prefix "IT")', 'Minor'], [$category['original'], $category['imported']]);
+        $this->assertSame([], collect($response->json('issues'))->whereIn('code', ['category_override', 'catalog_title_mismatch', 'extraction_flag', 'source_correction'])->values()->all());
+
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $this->commitPayload($payload))->assertCreated()->assertJsonPath('reused_count', 1);
+        $this->assertSame('understanding  the SELF', $existing->fresh()->course_name);
+        $this->assertSame('minor', Course::where('course_code', 'IT 101')->value('course_category'));
+    }
+
+    public function test_a_catalog_title_edit_after_validation_makes_the_reviewed_reuse_stale(): void
+    {
+        $this->tccRules();
+        $existing = Course::create([
+            'course_code' => 'GEC 1', 'course_name' => 'Understanding the Self', 'lecture_hours' => 3, 'lab_hours' => 0, 'units' => 3,
+            'course_category' => 'minor', 'year_level' => '1', 'semester' => '1st', 'department_id' => $this->department->id,
+        ]);
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
+        $existing->update(['course_name' => 'Self and Society']);
+
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)->assertStatus(409);
+        $this->assertSame(0, Curriculum::count());
+    }
+
+    public function test_historical_imports_with_reasons_stay_readable_and_replay(): void
+    {
+        $this->tccRules();
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()), 'legacy-import-0001');
+        $curriculum = Curriculum::create(['name' => 'Legacy', 'code' => 'LEGACY-1', 'effective_school_year' => '2020-2021', 'department_id' => $this->department->id]);
+        $legacy = CurriculumImport::create([
+            'curriculum_id' => $curriculum->id, 'department_id' => $this->department->id, 'user_id' => $this->secretary->id,
+            'request_key' => 'legacy-import-0001', 'payload_hash' => \App\Services\Curriculum\CurriculumImportService::payloadHash($payload),
+            'source_format' => 'pdf', 'source_filename' => 'old.pdf', 'source_sha256' => str_repeat('a', 64), 'extractor_version' => 'old',
+            'record' => ['acknowledged' => ['group_total_mismatch:3-2' => ['reason' => 'Matches the registrar copy', 'message' => 'Totals differ']]],
+            'summary' => ['curriculum' => ['id' => $curriculum->id], 'acknowledged' => ['group_total_mismatch:3-2' => ['reason' => 'Matches the registrar copy', 'message' => 'Totals differ']]],
+        ]);
+
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)->assertOk()
+            ->assertJsonPath('replayed', true)
+            ->assertJsonPath('acknowledged.group_total_mismatch:3-2.reason', 'Matches the registrar copy');
+        $this->assertSame('Matches the registrar copy', $legacy->fresh()->record['acknowledged']['group_total_mismatch:3-2']['reason']);
+        $this->assertSame(1, Curriculum::count());
+    }
+
     public function test_catalog_changes_after_validation_reject_the_stale_preview(): void
     {
         $this->tccRules();
-        $payload = $this->commitPayload($this->acknowledgeAll($this->reviewedFixture()));
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
 
         Course::create([
             'course_code' => 'GEC 1', 'course_name' => 'Understanding the Self', 'lecture_hours' => 3, 'lab_hours' => 0,
@@ -270,7 +485,7 @@ class CurriculumImportTest extends TestCase
     public function test_settings_changed_since_validation_reject_the_commit(): void
     {
         $this->tccRules();
-        $payload = $this->commitPayload($this->acknowledgeAll($this->reviewedFixture()));
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
         $this->saveRules([['match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'major']]);
 
         $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)->assertStatus(409);
@@ -374,7 +589,7 @@ class CurriculumImportTest extends TestCase
     public function test_rate_changes_never_rewrite_existing_placements_or_courses(): void
     {
         $this->tccRules();
-        $payload = $this->commitPayload($this->acknowledgeAll($this->reviewedFixture()));
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
         $curriculumId = $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)->assertCreated()->json('curriculum.id');
         $before = DB::table('curriculum_course')->orderBy('id')->get()->map(fn ($row) => (array) $row)->all();
         $courses = Course::query()->orderBy('id')->get(['id', 'lecture_hours', 'lab_hours', 'units', 'course_category'])->toArray();
@@ -398,7 +613,7 @@ class CurriculumImportTest extends TestCase
         $head = User::factory()->create(['role' => 'program_head', 'department_id' => $this->department->id, 'program_id' => $other->id])->fresh();
         $this->tccRules();
 
-        $payload = $this->acknowledgeAll($this->reviewedFixture());
+        $payload = $this->withoutErrors($this->reviewedFixture());
         $validation = $this->actingAs($head)->postJson('/api/curriculum-imports/validate', $payload)->assertOk();
         $validation->assertJsonPath('metadata.program_id', $other->id);
 
@@ -425,7 +640,7 @@ class CurriculumImportTest extends TestCase
         $issues = collect($this->validateDraft($payload)->json('issues'));
         $this->assertSame([], $issues->filter(fn (array $issue): bool => str_starts_with($issue['code'], 'prerequisite') || $issue['field'] === 'prerequisites')->values()->all());
 
-        $response = $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $this->commitPayload($this->acknowledgeAll($payload)))->assertCreated();
+        $response = $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $this->commitPayload($this->withoutErrors($payload)))->assertCreated();
 
         $placements = Curriculum::findOrFail($response->json('curriculum.id'))->courses()->get()->keyBy('course_code');
         $this->assertSame('IT 101 / IT 999 or 3rd Year Standing', $placements['IT 101']->pivot->prerequisites_text);

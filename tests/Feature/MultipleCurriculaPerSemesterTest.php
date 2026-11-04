@@ -642,15 +642,36 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $room = Rooms::findOrFail($first->room_id);
         $room->update(['status' => 'not available']);
         $this->actingAs(User::factory()->create(['role' => 'vpaa']));
-        $this->postJson('/api/archives/schedules/'.$first->id.'/restore')->assertUnprocessable();
+        $this->getJson('/api/archives/schedules/'.$first->id)->assertOk()
+            ->assertJsonPath('data.restore.state', 'validation')
+            ->assertJsonCount(3, 'data.linked');
+        $this->postJson('/api/archives/schedules/'.$first->id.'/restore')->assertUnprocessable()
+            ->assertJsonPath('code', 'schedule_violations')
+            ->assertJsonStructure(['message', 'violations' => [['rule', 'message']]]);
         $this->assertSoftDeleted($first);
         $this->assertSoftDeleted($second);
         $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'record_restored']);
         $room->update(['status' => 'available']);
-        $this->postJson('/api/archives/schedules/'.$first->id.'/restore')->assertOk();
+        $response = $this->postJson('/api/archives/schedules/'.$first->id.'/restore')->assertOk()
+            ->assertJsonPath('already_restored', false)
+            ->assertJsonPath('affected_count', 4)
+            ->assertJsonPath('restored.0.type', 'schedules')
+            ->assertJsonPath('restored.0.id', $first->id);
+        $this->assertEqualsCanonicalizing(
+            ['schedules:'.$first->id, 'schedules:'.$second->id, 'schedule-splits', 'schedule-splits'],
+            collect($response->json('restored'))->map(fn (array $row): string => $row['type'] === 'schedules' ? 'schedules:'.$row['id'] : $row['type'])->all(),
+        );
         $this->assertNotSoftDeleted($first);
         $this->assertNotSoftDeleted($second);
         $this->assertDatabaseCount('schedule_splits', 2);
+        $this->assertSame(4, \App\Models\SchedulingAuditLog::where('action', 'record_restored')->count());
+
+        // A repeat for the linked class (lost response, stale list) changes nothing.
+        $this->postJson('/api/archives/schedules/'.$second->id.'/restore')->assertOk()
+            ->assertJsonPath('already_restored', true)
+            ->assertJsonPath('affected_count', 0);
+        $this->assertSame(4, \App\Models\SchedulingAuditLog::where('action', 'record_restored')->count());
+        $this->getJson('/api/archives')->assertOk()->assertJsonPath('counts.schedules', 0)->assertJsonPath('counts.schedule-splits', 0);
     }
 
     public function test_room_ownership_change_preserves_program_allocations(): void

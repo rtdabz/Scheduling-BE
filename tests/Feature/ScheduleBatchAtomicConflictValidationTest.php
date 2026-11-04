@@ -12,6 +12,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
@@ -209,6 +210,10 @@ class ScheduleBatchAtomicConflictValidationTest extends TestCase
             'status' => 'active',
         ]);
         $section->forceFill(['curriculum_id' => $curriculum->id])->save();
+        // The section's curriculum must place the course it schedules.
+        DB::table('curriculum_course')->insert([
+            'curriculum_id' => $curriculum->id, 'course_id' => $course->id, 'year_level' => 1, 'semester' => 1,
+        ]);
 
         $this->actingAs($user)->postJson('/api/schedules/batch', [
             'operations' => [[

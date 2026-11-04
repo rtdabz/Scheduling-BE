@@ -10,6 +10,7 @@ use App\Models\Program;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
+use App\Support\DatabaseErrors;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
@@ -19,6 +20,8 @@ use Illuminate\Support\Facades\DB;
 final class CurriculumImportService
 {
     public const SNAPSHOT_VERSION = 1;
+
+    private const CODE_ATTEMPTS = 3;
 
     public function __construct(
         private readonly CurriculumImportValidator $validator,
@@ -40,18 +43,27 @@ final class CurriculumImportService
             return $replay;
         }
 
-        try {
-            $summary = DB::transaction(fn (): array => $this->write($payload, $payloadHash, $department, $user));
-        } catch (QueryException $exception) {
-            // A concurrent retry with the same key won the unique index; answer with its recorded outcome.
-            if (($replay = $this->replay($department, (string) $payload['request_key'], $payloadHash)) !== null) {
-                return $replay;
-            }
-            if (in_array((string) $exception->getCode(), ['23000', '23505'], true)) {
-                throw new CurriculumImportConflict('Another import was saved at the same moment. Validate the draft again and import.');
-            }
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                $summary = DB::transaction(fn (): array => $this->write($payload, $payloadHash, $department, $user));
 
-            throw $exception;
+                break;
+            } catch (QueryException $exception) {
+                // A concurrent retry with the same key won the unique index; answer with its recorded outcome.
+                if (($replay = $this->replay($department, (string) $payload['request_key'], $payloadHash)) !== null) {
+                    return $replay;
+                }
+                // The department lock does not cover CMO-based codes, which another department can claim at the
+                // same moment; the whole transaction is rerun so the next free suffix is assigned.
+                if ($attempt < self::CODE_ATTEMPTS && DatabaseErrors::isUniqueViolation($exception) && DatabaseErrors::mentions($exception, 'curriculum_code_unique', 'curriculum.code')) {
+                    continue;
+                }
+                if (in_array((string) $exception->getCode(), ['23000', '23505'], true)) {
+                    throw new CurriculumImportConflict('Another import was saved at the same moment. Validate the draft again and import.');
+                }
+
+                throw $exception;
+            }
         }
 
         Course::syncPlacementFromCurricula(array_column($summary['rows'], 'course_id'));
@@ -110,6 +122,8 @@ final class CurriculumImportService
             $locked,
             $metadata['program_id'] === null ? null : Program::query()->find($metadata['program_id']),
             $metadata['effective_school_year'],
+            $metadata['cmo_number'],
+            $metadata['cmo_series'],
         ));
         $curriculum = Curriculum::create([
             'name' => $metadata['name'],
@@ -181,6 +195,7 @@ final class CurriculumImportService
             ];
         }
         $curriculum->courses()->attach($attach);
+        $curriculum->update(['notes' => CurriculumNotes::forCurriculum($validation['notes'], $courseIds)]);
         SchedulingPolicy::clearFieldCourseCache();
 
         $mapping = array_map(fn (array $row): array => [
@@ -201,14 +216,23 @@ final class CurriculumImportService
                 'program_id' => $curriculum->program_id === null ? null : (int) $curriculum->program_id,
                 'effective_school_year' => $curriculum->effective_school_year,
                 'status' => $curriculum->status,
+                'notes' => $curriculum->notes,
             ],
             'created_count' => $created,
             'reused_count' => $reused,
             'rows' => $mapping,
             'groups' => $validation['groups'],
             'totals' => $validation['totals'],
-            'acknowledged' => $validation['acknowledged'],
+            'changes' => $validation['changes'],
+            'notices' => array_values(array_filter($validation['issues'], fn (array $issue): bool => $issue['severity'] === CurriculumImportValidator::SEVERITY_NOTICE)),
             'warnings' => array_values(array_filter($validation['issues'], fn (array $issue): bool => $issue['severity'] === CurriculumImportValidator::SEVERITY_WARNING)),
+            // The single formal confirmation, recorded by the server rather than typed by the reviewer.
+            'confirmation' => [
+                'user_id' => (int) $user->id,
+                'user_name' => $user->name,
+                'confirmed_at' => now()->toIso8601String(),
+                'fingerprint' => (string) $payload['fingerprint'],
+            ],
         ];
 
         $import = CurriculumImport::create([
@@ -226,10 +250,14 @@ final class CurriculumImportService
                 'source' => $payload['source'] + ['hash_declared_by_client' => true],
                 'metadata' => $metadata,
                 'draft_rows' => $payload['rows'],
+                'notes' => $validation['notes'],
+                'unread' => $payload['source']['unread'] ?? [],
                 'resolved_rows' => $validation['rows'],
                 'groups' => $validation['groups'],
                 'totals' => $validation['totals'],
-                'acknowledged' => $validation['acknowledged'],
+                'changes' => $validation['changes'],
+                'issues' => $validation['issues'],
+                'confirmation' => $summary['confirmation'],
                 'settings' => $validation['settings'] + [
                     'revision' => $validation['settings_revision'],
                     'rules' => $this->settings->rules((int) $locked->id)

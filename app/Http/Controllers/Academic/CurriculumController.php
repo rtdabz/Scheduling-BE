@@ -277,6 +277,8 @@ class CurriculumController extends Controller
                 'effective_school_year' => $curriculum->effective_school_year,
                 'status' => 'deactivated',
                 'description' => $curriculum->description,
+                // Course-scoped notes still name the same courses, which the copy attaches unchanged.
+                'notes' => $curriculum->notes,
             ]);
 
             $courses = $curriculum->courses()->get();
@@ -634,6 +636,7 @@ class CurriculumController extends Controller
                 'effective_school_year' => $curriculum->effective_school_year,
                 'status' => $curriculum->status,
                 'description' => $curriculum->description,
+                'notes' => $curriculum->notes,
                 'courses_count' => $curriculum->courses_count,
             ],
             'semesters' => $grouped,
