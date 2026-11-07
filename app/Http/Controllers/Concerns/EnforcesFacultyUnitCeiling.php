@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Concerns;
 use App\Models\Course;
 use App\Models\Schedule;
 use App\Models\Semester;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Http\JsonResponse;
 
 trait EnforcesFacultyUnitCeiling
@@ -39,16 +40,60 @@ trait EnforcesFacultyUnitCeiling
 
         return response()->json([
             'message' => count($over) === 1
-                ? sprintf(
-                    '%s would carry %d units, past the %d-unit limit (basic load + overload). Choose another instructor.',
-                    $over[0]['faculty_name'] ?? 'This instructor',
-                    (int) ($over[0]['projected_units'] ?? 0),
-                    (int) ($over[0]['unit_ceiling'] ?? 0),
-                )
+                ? $this->unitCeilingRefusalMessage($over[0])
                 : 'These instructors would go past their unit limit (basic load + overload): '
                     .implode(', ', array_map($describe, $over)).'.',
             'unit_ceiling_exceeded' => ['instructors' => $over],
         ], 422);
+    }
+
+    /**
+     * @param  array<string, mixed>  $projection
+     */
+    private function unitCeilingRefusalMessage(array $projection): string
+    {
+        $name = $projection['faculty_name'] ?? 'This instructor';
+        $current = (int) ($projection['current_units'] ?? 0);
+        $projected = (int) ($projection['projected_units'] ?? 0);
+        $ceiling = (int) ($projection['unit_ceiling'] ?? 0);
+
+        return match ($projection['refusal_reason'] ?? null) {
+            SchedulingPolicy::PRO_BONO_REFUSED_ALREADY_USED => sprintf(
+                '%s already carries %d of %d units: the one Pro-Bono assignment past the limit has been used. Choose another instructor.',
+                $name, $current, $ceiling,
+            ),
+            SchedulingPolicy::PRO_BONO_REFUSED_LIMIT_REACHED => sprintf(
+                '%s has already reached the %d-unit limit (basic load + overload), so Pro-Bono is not available. Choose another instructor.',
+                $name, $ceiling,
+            ),
+            SchedulingPolicy::PRO_BONO_REFUSED_MORE_THAN_ONE_CLASS => sprintf(
+                '%s would carry %d of %d units. Pro-Bono allows only one class past the limit. Choose another instructor.',
+                $name, $projected, $ceiling,
+            ),
+            default => sprintf(
+                '%s would carry %d units, past the %d-unit limit (basic load + overload). Choose another instructor.',
+                $name, $projected, $ceiling,
+            ),
+        };
+    }
+
+    /**
+     * The notice to show when an assignment saved as an instructor's Pro-Bono.
+     *
+     * @param  array<string, mixed>  $projection  FacultyLoadService::projectLoad() result taken before saving
+     */
+    protected function proBonoNotice(array $projection): ?string
+    {
+        if (! ($projection['pro_bono'] ?? false)) {
+            return null;
+        }
+
+        return sprintf(
+            'Assigned as Pro-Bono: %s now carries %d of %d units. This is the one assignment allowed past the limit; no more classes can be assigned to this instructor.',
+            $projection['faculty_name'] ?? 'The instructor',
+            (int) ($projection['projected_units'] ?? 0),
+            (int) ($projection['unit_ceiling'] ?? 0),
+        );
     }
 
     /**

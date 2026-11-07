@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Departments;
 use App\Models\Faculty;
 use App\Models\Program;
+use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleSplit;
 use App\Models\SchedulingAuditLog;
@@ -115,7 +116,8 @@ class ArchiveController extends Controller
         abort_if(ArchiveCatalog::modelClass($type) === null, 404, 'Archive type not found.');
         $record = $this->catalog->find($type, $id);
         abort_if($record === null, 404, 'This record no longer exists.');
-        if (! $record->trashed()) {
+        abort_if($type === 'buildings' && $record->getAttribute('building') === null, 404, 'This building no longer exists.');
+        if (! $record->trashed() || ($type === 'buildings' && ! $this->catalog->buildingArchived($record))) {
             return $this->notArchived();
         }
 
@@ -134,14 +136,17 @@ class ArchiveController extends Controller
         abort_if($modelClass === null, 404, 'Archive type not found.');
         $record = $modelClass::withTrashed()->find($id);
         abort_if($record === null, 404, 'This record no longer exists.');
-        if (! $record->trashed()) {
+        abort_if($type === 'buildings' && $record->getAttribute('building') === null, 404, 'This building no longer exists.');
+        if (! $record->trashed() || ($type === 'buildings' && ! $this->catalog->buildingArchived($record))) {
             return $this->alreadyRestored($type, $record);
         }
 
         try {
-            $restored = $record instanceof Schedule || $record instanceof ScheduleSplit
-                ? $this->restoreTimetable($request, $record)
-                : $this->restoreRecord($request, $type, $modelClass, $id);
+            $restored = match (true) {
+                $type === 'buildings' => $this->restoreBuilding($request, $record),
+                $record instanceof Schedule || $record instanceof ScheduleSplit => $this->restoreTimetable($request, $record),
+                default => $this->restoreRecord($request, $type, $modelClass, $id),
+            };
         } catch (ArchiveRestoreBlocked $exception) {
             return response()->json($exception->payload(), 422);
         } catch (ScheduleConflictException $exception) {
@@ -209,6 +214,44 @@ class ArchiveController extends Controller
             $this->audit($request, $type, $record);
 
             return [$this->restoredEntry($type, $record)];
+        });
+    }
+
+    /**
+     * Restores every archived room of a fully archived building together, or none of them.
+     * Rooms are re-read under row locks and every room's preconditions are re-checked first.
+     *
+     * @return list<array<string, mixed>>|null  null when a room of the building is already live
+     */
+    private function restoreBuilding(Request $request, Rooms $seed): ?array
+    {
+        return DB::transaction(function () use ($request, $seed): ?array {
+            $ids = Rooms::inBuilding((string) $seed->building, withTrashed: true)->pluck('id')->all();
+            $rooms = Rooms::withTrashed()->whereKey($ids)->orderBy('id')->lockForUpdate()->get();
+            if ($rooms->isEmpty() || $rooms->contains(fn (Rooms $room): bool => ! $room->trashed())) {
+                return null;
+            }
+
+            $blockers = $this->checks->buildingBlockers($rooms, locked: true);
+            if ($blockers !== []) {
+                throw new ArchiveRestoreBlocked($blockers);
+            }
+
+            $building = [
+                'type' => 'buildings',
+                'id' => (int) $seed->getKey(),
+                'label' => (string) $seed->building,
+                'status' => ['label' => $rooms->count().' room'.($rooms->count() === 1 ? '' : 's'), 'tone' => 'neutral'],
+                'outcome' => $this->catalog->outcome('buildings', $seed),
+            ];
+            $restored = [];
+            foreach ($rooms->sortBy('room_code', SORT_NATURAL | SORT_FLAG_CASE) as $room) {
+                $room->restore();
+                $this->audit($request, 'rooms', $room, ['restored_with' => 'buildings:'.$seed->building]);
+                $restored[] = $this->restoredEntry('rooms', $room);
+            }
+
+            return [$building, ...$restored];
         });
     }
 
@@ -345,6 +388,15 @@ class ArchiveController extends Controller
                 'relation' => 'Parent class (not restored by this action)',
                 'restores' => false,
             ]]];
+        }
+
+        if ($type === 'buildings') {
+            return ['linked' => $this->catalog->archivedBuildingRooms($record)->map(fn (Rooms $room): array => [
+                ...$this->catalog->reference('rooms', $room),
+                'archived' => true,
+                'relation' => 'Room in this building (restored together)',
+                'restores' => true,
+            ])->all()];
         }
 
         if ($type === 'users') {

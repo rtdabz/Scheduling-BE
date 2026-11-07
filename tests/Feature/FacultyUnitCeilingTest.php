@@ -16,8 +16,9 @@ use Tests\TestCase;
 
 /**
  * Assignment runs through Basic Load and the overload allowance without a
- * prompt, and stops at the ceiling (Basic Load + overload). There is no pro bono
- * band and no flag that lets an assignment past the ceiling.
+ * prompt. An instructor still below the ceiling (Basic Load + overload) may take
+ * one Pro-Bono class that carries them past it; once at or past the ceiling,
+ * nothing more is assigned. No request flag lets an assignment past that rule.
  *
  * The fixture instructor has a 21-unit maximum less 6 deload (15 Basic Load)
  * plus 3 overload: an 18-unit ceiling.
@@ -75,7 +76,8 @@ class FacultyUnitCeilingTest extends TestCase
                 'faculty_id' => $fixture['faculty']->id,
             ])
             ->assertStatus(422)
-            ->assertJsonPath('message', 'Load Instructor would carry 21 units, past the 18-unit limit (basic load + overload). Choose another instructor.')
+            ->assertJsonPath('message', 'Load Instructor has already reached the 18-unit limit (basic load + overload), so Pro-Bono is not available. Choose another instructor.')
+            ->assertJsonPath('unit_ceiling_exceeded.instructors.0.refusal_reason', 'limit_reached')
             ->assertJsonCount(1, 'unit_ceiling_exceeded.instructors')
             ->assertJsonPath('unit_ceiling_exceeded.instructors.0.faculty_id', $fixture['faculty']->id)
             ->assertJsonPath('unit_ceiling_exceeded.instructors.0.tier', 'beyond_ceiling')
@@ -89,6 +91,97 @@ class FacultyUnitCeilingTest extends TestCase
             );
 
         $this->assertNull($target->refresh()->faculty_id);
+    }
+
+    public function test_one_class_past_the_ceiling_saves_as_pro_bono_while_capacity_remains(): void
+    {
+        $fixture = $this->fixture();
+        $this->carryLoad($fixture, 16);
+        $target = $this->assignable($fixture, 3);
+
+        $this->actingAs($fixture['user'])
+            ->patchJson("/api/instructor-assignments/{$target->id}", [
+                'faculty_id' => $fixture['faculty']->id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('load.pro_bono', true)
+            ->assertJsonPath('load.pro_bono_units', 1)
+            ->assertJsonPath('load.tier', 'pro_bono')
+            ->assertJsonPath('load.projected_units', 19)
+            ->assertJsonPath('load.unit_ceiling', 18)
+            ->assertJsonPath('message', 'Assigned as Pro-Bono: Load Instructor now carries 19 of 18 units. This is the one assignment allowed past the limit; no more classes can be assigned to this instructor.');
+
+        $this->assertSame($fixture['faculty']->id, $target->refresh()->faculty_id);
+    }
+
+    public function test_a_second_assignment_after_the_pro_bono_is_refused(): void
+    {
+        $fixture = $this->fixture();
+        $this->carryLoad($fixture, 16);
+        $proBono = $this->assignable($fixture, 3);
+        $next = $this->assignable($fixture, 3);
+
+        $this->actingAs($fixture['user'])
+            ->patchJson("/api/instructor-assignments/{$proBono->id}", ['faculty_id' => $fixture['faculty']->id])
+            ->assertOk()
+            ->assertJsonPath('load.pro_bono', true);
+
+        $this->patchJson("/api/instructor-assignments/{$next->id}", ['faculty_id' => $fixture['faculty']->id])
+            ->assertStatus(422)
+            ->assertJsonPath('unit_ceiling_exceeded.instructors.0.refusal_reason', 'pro_bono_used')
+            ->assertJsonPath('unit_ceiling_exceeded.instructors.0.current_units', 19)
+            ->assertJsonPath('message', 'Load Instructor already carries 19 of 18 units: the one Pro-Bono assignment past the limit has been used. Choose another instructor.');
+
+        $this->assertNull($next->refresh()->faculty_id);
+    }
+
+    public function test_a_regular_assignment_reports_no_pro_bono(): void
+    {
+        $fixture = $this->fixture();
+        $this->carryLoad($fixture, 12);
+        $target = $this->assignable($fixture, 3);
+
+        $this->actingAs($fixture['user'])
+            ->patchJson("/api/instructor-assignments/{$target->id}", ['faculty_id' => $fixture['faculty']->id])
+            ->assertOk()
+            ->assertJsonPath('load.pro_bono', false)
+            ->assertJsonPath('load.pro_bono_units', 0)
+            ->assertJsonPath('load.tier', 'basic')
+            ->assertJsonMissingPath('message');
+    }
+
+    public function test_the_timetable_route_allows_the_same_single_pro_bono(): void
+    {
+        $fixture = $this->fixture();
+        $this->carryLoad($fixture, 17);
+        $target = $this->assignable($fixture, 3);
+
+        $this->actingAs($fixture['user'])
+            ->putJson("/api/schedules/{$target->id}", ['faculty_id' => $fixture['faculty']->id])
+            ->assertOk();
+
+        $this->assertSame($fixture['faculty']->id, $target->refresh()->faculty_id);
+    }
+
+    public function test_a_batch_may_carry_only_one_class_past_the_ceiling(): void
+    {
+        $fixture = $this->fixture();
+        $this->carryLoad($fixture, 13);
+        $first = $this->assignable($fixture, 3);
+        $other = $this->assignable($fixture, 3);
+
+        // 13 + 3 = 16 stays under 18, so only the second class crosses: Pro-Bono.
+        $this->actingAs($fixture['user'])
+            ->patchJson('/api/schedules/batch-faculty', [
+                'assignments' => [[
+                    'schedule_ids' => [$first->id, $other->id],
+                    'faculty_id' => $fixture['faculty']->id,
+                ]],
+            ])
+            ->assertOk();
+
+        $this->assertSame($fixture['faculty']->id, $first->refresh()->faculty_id);
+        $this->assertSame($fixture['faculty']->id, $other->refresh()->faculty_id);
     }
 
     public function test_the_old_confirmation_flag_no_longer_lets_it_through(): void
@@ -244,6 +337,7 @@ class FacultyUnitCeilingTest extends TestCase
                 ]],
             ])
             ->assertStatus(422)
+            ->assertJsonPath('unit_ceiling_exceeded.instructors.0.refusal_reason', 'more_than_one_class')
             ->assertJsonPath('unit_ceiling_exceeded.instructors.0.added_units', 6)
             ->assertJsonPath('unit_ceiling_exceeded.instructors.0.projected_units', 21)
             ->assertJsonPath('unit_ceiling_exceeded.instructors.0.assignment_label', '2 classes');

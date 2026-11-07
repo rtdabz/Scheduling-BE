@@ -1,0 +1,830 @@
+- generic [ref=e5]:
+  - navigation "Jump to year level" [ref=e7]:
+    - generic [ref=e8]:
+      - 'button "Jump to First Year: 12 courses" [ref=e9] [cursor=pointer]':
+        - text: First Year
+        - generic [ref=e10]: "12"
+      - 'button "Jump to Second Year: 19 courses" [ref=e11] [cursor=pointer]':
+        - text: Second Year
+        - generic [ref=e12]: "19"
+      - 'button "Jump to Third Year: 22 courses" [ref=e13] [cursor=pointer]':
+        - text: Third Year
+        - generic [ref=e14]: "22"
+      - 'button "Jump to Fourth Year: 6 courses" [ref=e15] [cursor=pointer]':
+        - text: Fourth Year
+        - generic [ref=e16]: "6"
+  - generic [ref=e17]:
+    - region [ref=e18]:
+      - generic [ref=e19]:
+        - heading "First Year" [level=3] [ref=e20]
+        - paragraph [ref=e21]: 12 courses · 34 units
+      - generic [ref=e22]:
+        - region [ref=e23]:
+          - generic [ref=e24]:
+            - heading "First Semester" [level=4] [ref=e26]
+            - generic [ref=e28]:
+              - text: 6 courses ·
+              - generic [ref=e29]: 17 units
+          - table "First Semester" [ref=e30]:
+            - rowgroup [ref=e39]:
+              - row [ref=e40]:
+                - columnheader "Status" [ref=e41]
+                - columnheader "Code" [ref=e43]
+                - columnheader "Course title" [ref=e44]
+                - columnheader "Lec" [ref=e45]
+                - columnheader "Lab" [ref=e46]
+                - columnheader "TU" [ref=e47]
+                - columnheader "Prereq" [ref=e48]
+            - rowgroup [ref=e49]:
+              - row [ref=e50] [cursor=pointer]:
+                - cell [ref=e51]
+                - cell [ref=e52]:
+                  - button "Open IT 101" [ref=e53]: IT 101
+                - cell "Introduction To Computing" [ref=e54]
+                - cell "2" [ref=e55]
+                - cell "1" [ref=e56]
+                - cell "3" [ref=e57]
+                - cell "none" [ref=e58]
+              - row [ref=e60] [cursor=pointer]:
+                - cell [ref=e61]
+                - cell [ref=e62]:
+                  - button "Open IT 102" [ref=e63]: IT 102
+                - cell "Computer Programming 1" [ref=e64]
+                - cell "2" [ref=e65]
+                - cell "1" [ref=e66]
+                - cell "3" [ref=e67]
+                - cell "none" [ref=e68]
+              - row [ref=e70] [cursor=pointer]:
+                - cell [ref=e71]
+                - cell [ref=e72]:
+                  - button "Open IT 103" [ref=e73]: IT 103
+                - cell "Integrated Application Software" [ref=e74]
+                - cell "2" [ref=e75]
+                - cell "1" [ref=e76]
+                - cell "3" [ref=e77]
+                - cell "none" [ref=e78]
+              - row [ref=e80] [cursor=pointer]:
+                - cell [ref=e81]
+                - cell [ref=e84]:
+                  - button "Open GEC 1, has values to fix" [ref=e85]: GEC 1
+                - cell "Understanding the Self" [ref=e86]
+                - 'cell "? (document: 3)" [ref=e87]':
+                  - 'generic "Document: 3" [ref=e88]':
+                    - text: "?"
+                    - generic [ref=e89]: "(document: 3)"
+                - cell "0" [ref=e90]
+                - cell "3" [ref=e91]
+                - cell "none" [ref=e92]
+              - row [ref=e94] [cursor=pointer]:
+                - cell [ref=e95]
+                - cell [ref=e96]:
+                  - button "Open ROTC/CWTS 101" [ref=e97]: ROTC/CWTS 101
+                - cell "Basic Army Science/CWTS" [ref=e98]
+                - cell "3" [ref=e99]
+                - cell "0" [ref=e100]
+                - cell "3" [ref=e101]
+                - cell "none" [ref=e102]
+              - row [ref=e104] [cursor=pointer]:
+                - cell [ref=e105]
+                - cell [ref=e106]:
+                  - button "Open PATH FIT 1" [ref=e107]: PATH FIT 1
+                - cell "Movement Competency Training" [ref=e108]
+                - cell "2" [ref=e109]
+                - cell "0" [ref=e110]
+                - cell "2" [ref=e111]
+                - cell "none" [ref=e112]
+            - rowgroup [ref=e114]:
+              - row [ref=e115]:
+                - rowheader "Total creditsprinted 14 / 3 / 17, differs" [ref=e116]:
+                  - text: Total credits
+                  - generic [ref=e117]: printed 14 / 3 / 17, differs
+                - cell "11" [ref=e118]
+                - cell "3" [ref=e119]
+                - cell "17" [ref=e120]
+                - cell [ref=e121]
+        - region [ref=e122]:
+          - generic [ref=e123]:
+            - heading "Second Semester" [level=4] [ref=e125]
+            - generic [ref=e127]:
+              - text: 6 courses ·
+              - generic [ref=e128]: 17 units
+          - table "Second Semester" [ref=e129]:
+            - rowgroup [ref=e138]:
+              - row [ref=e139]:
+                - columnheader "Status" [ref=e140]
+                - columnheader "Code" [ref=e142]
+                - columnheader "Course title" [ref=e143]
+                - columnheader "Lec" [ref=e144]
+                - columnheader "Lab" [ref=e145]
+                - columnheader "TU" [ref=e146]
+                - columnheader "Prereq" [ref=e147]
+            - rowgroup [ref=e148]:
+              - row [ref=e149] [cursor=pointer]:
+                - cell [ref=e150]
+                - cell [ref=e151]:
+                  - button "Open IT 104" [ref=e152]: IT 104
+                - cell "Information Technology Fundamentals" [ref=e153]
+                - cell "3" [ref=e154]
+                - cell "0" [ref=e155]
+                - cell "3" [ref=e156]
+                - cell "IT 101" [ref=e157]
+              - row [ref=e159] [cursor=pointer]:
+                - cell [ref=e160]
+                - cell [ref=e161]:
+                  - button "Open IT 105" [ref=e162]: IT 105
+                - cell "Computer Programming 2" [ref=e163]
+                - cell "2" [ref=e164]
+                - cell "1" [ref=e165]
+                - cell "3" [ref=e166]
+                - cell "IT 102" [ref=e167]
+              - row [ref=e169] [cursor=pointer]:
+                - cell [ref=e170]
+                - cell [ref=e171]:
+                  - button "Open IT 106" [ref=e172]: IT 106
+                - cell "Digital Logic Design" [ref=e173]
+                - cell "2" [ref=e174]
+                - cell "1" [ref=e175]
+                - cell "3" [ref=e176]
+                - cell "none" [ref=e177]
+              - row [ref=e179] [cursor=pointer]:
+                - cell [ref=e180]
+                - cell [ref=e181]:
+                  - button "Open GEC 2" [ref=e182]: GEC 2
+                - cell "Readings in Philippine History" [ref=e183]
+                - cell "3" [ref=e184]
+                - cell "0" [ref=e185]
+                - cell "3" [ref=e186]
+                - cell "none" [ref=e187]
+              - row [ref=e189] [cursor=pointer]:
+                - cell [ref=e190]
+                - cell [ref=e191]:
+                  - button "Open ROTC/CWTS 102" [ref=e192]: ROTC/CWTS 102
+                - cell "Reserved Officer Training Corps/CWTS" [ref=e193]
+                - cell "3" [ref=e194]
+                - cell "0" [ref=e195]
+                - cell "3" [ref=e196]
+                - cell "R101" [ref=e197]
+              - row [ref=e199] [cursor=pointer]:
+                - cell [ref=e200]
+                - cell [ref=e203]:
+                  - button "Open PATH FITt 2" [ref=e204]: PATH FITt 2
+                - cell "Fitness Training" [ref=e205]
+                - cell "2" [ref=e206]
+                - cell "0" [ref=e207]
+                - cell "2" [ref=e208]
+                - cell "PATH FIT 1" [ref=e209]
+            - rowgroup [ref=e211]:
+              - row [ref=e212]:
+                - rowheader "Total creditsprinted 15 / 2 / 17" [ref=e213]:
+                  - text: Total credits
+                  - generic [ref=e214]: printed 15 / 2 / 17
+                - cell "15" [ref=e215]
+                - cell "2" [ref=e216]
+                - cell "17" [ref=e217]
+                - cell [ref=e218]
+    - region [ref=e219]:
+      - generic [ref=e220]:
+        - heading "Second Year" [level=3] [ref=e221]
+        - paragraph [ref=e222]: 19 courses · 55 units
+      - generic [ref=e223]:
+        - region [ref=e224]:
+          - generic [ref=e225]:
+            - heading "First Semester" [level=4] [ref=e227]
+            - generic [ref=e229]:
+              - text: 7 courses ·
+              - generic [ref=e230]: 20 units
+          - table "First Semester" [ref=e231]:
+            - rowgroup [ref=e240]:
+              - row [ref=e241]:
+                - columnheader "Status" [ref=e242]
+                - columnheader "Code" [ref=e244]
+                - columnheader "Course title" [ref=e245]
+                - columnheader "Lec" [ref=e246]
+                - columnheader "Lab" [ref=e247]
+                - columnheader "TU" [ref=e248]
+                - columnheader "Prereq" [ref=e249]
+            - rowgroup [ref=e250]:
+              - row [ref=e251] [cursor=pointer]:
+                - cell [ref=e252]
+                - cell [ref=e253]:
+                  - button "Open IT 107" [ref=e254]: IT 107
+                - cell "Application Development & Emerging Technologies" [ref=e255]
+                - cell "2" [ref=e256]
+                - cell "1" [ref=e257]
+                - cell "3" [ref=e258]
+                - cell "IT 105" [ref=e259]
+              - row [ref=e261] [cursor=pointer]:
+                - cell [ref=e262]
+                - cell [ref=e263]:
+                  - button "Open IT 108" [ref=e264]: IT 108
+                - cell "Data Structures & Algorithms" [ref=e265]
+                - cell "2" [ref=e266]
+                - cell "1" [ref=e267]
+                - cell "3" [ref=e268]
+                - cell "IT 105" [ref=e269]
+              - row [ref=e271] [cursor=pointer]:
+                - cell [ref=e272]
+                - cell [ref=e273]:
+                  - button "Open IT 109" [ref=e274]: IT 109
+                - cell "Fundamentals of Database Systems" [ref=e275]
+                - cell "2" [ref=e276]
+                - cell "1" [ref=e277]
+                - cell "3" [ref=e278]
+                - cell "IT105" [ref=e279]
+              - row [ref=e281] [cursor=pointer]:
+                - cell [ref=e282]
+                - cell [ref=e283]:
+                  - button "Open IT 110" [ref=e284]: IT 110
+                - cell "Object Oriented Programming (OOP)" [ref=e285]
+                - cell "2" [ref=e286]
+                - cell "1" [ref=e287]
+                - cell "3" [ref=e288]
+                - cell "IT105" [ref=e289]
+              - row [ref=e291] [cursor=pointer]:
+                - cell [ref=e292]
+                - cell [ref=e293]:
+                  - button "Open IT 111" [ref=e294]: IT 111
+                - cell "Social Issues & Professional Issues" [ref=e295]
+                - cell "3" [ref=e296]
+                - cell "0" [ref=e297]
+                - cell "3" [ref=e298]
+                - cell "IT101/IT104" [ref=e299]
+              - row [ref=e301] [cursor=pointer]:
+                - cell [ref=e302]
+                - cell [ref=e303]:
+                  - button "Open GEC 3" [ref=e304]: GEC 3
+                - cell "The Contemporary World" [ref=e305]
+                - cell "3" [ref=e306]
+                - cell "0" [ref=e307]
+                - cell "3" [ref=e308]
+                - cell "none" [ref=e309]
+              - row [ref=e311] [cursor=pointer]:
+                - cell [ref=e312]
+                - cell [ref=e315]:
+                  - button "Open PATH FiIT3" [ref=e316]: PATH FiIT3
+                - cell "Dance Sports/In-Dual/Group/Outdoor" [ref=e317]
+                - cell "2" [ref=e318]
+                - cell "0" [ref=e319]
+                - cell "2" [ref=e320]
+                - cell "PATH FIT 2" [ref=e321]
+            - rowgroup [ref=e323]:
+              - row [ref=e324]:
+                - rowheader "Total creditsprinted 16 / 4 / 20" [ref=e325]:
+                  - text: Total credits
+                  - generic [ref=e326]: printed 16 / 4 / 20
+                - cell "16" [ref=e327]
+                - cell "4" [ref=e328]
+                - cell "20" [ref=e329]
+                - cell [ref=e330]
+        - region [ref=e331]:
+          - generic [ref=e332]:
+            - heading "Second Semester" [level=4] [ref=e334]
+            - generic [ref=e336]:
+              - text: 9 courses ·
+              - generic [ref=e337]: 26 units
+          - table "Second Semester" [ref=e338]:
+            - rowgroup [ref=e347]:
+              - row [ref=e348]:
+                - columnheader "Status" [ref=e349]
+                - columnheader "Code" [ref=e351]
+                - columnheader "Course title" [ref=e352]
+                - columnheader "Lec" [ref=e353]
+                - columnheader "Lab" [ref=e354]
+                - columnheader "TU" [ref=e355]
+                - columnheader "Prereq" [ref=e356]
+            - rowgroup [ref=e357]:
+              - row [ref=e358] [cursor=pointer]:
+                - cell [ref=e359]
+                - cell [ref=e360]:
+                  - button "Open IT 112" [ref=e361]: IT 112
+                - cell "Information Management 1" [ref=e362]
+                - cell "2" [ref=e363]
+                - cell "1" [ref=e364]
+                - cell "3" [ref=e365]
+                - cell "IT 108" [ref=e366]
+              - row [ref=e368] [cursor=pointer]:
+                - cell [ref=e369]
+                - cell [ref=e370]:
+                  - button "Open IT 113" [ref=e371]: IT 113
+                - cell "Event-Driven Programming" [ref=e372]
+                - cell "2" [ref=e373]
+                - cell "1" [ref=e374]
+                - cell "3" [ref=e375]
+                - cell "IT108/109/110" [ref=e376]
+              - row [ref=e378] [cursor=pointer]:
+                - cell [ref=e379]
+                - cell [ref=e380]:
+                  - button "Open IT 114" [ref=e381]: IT 114
+                - cell "Integrative Programming & Technologies 1" [ref=e382]
+                - cell "2" [ref=e383]
+                - cell "1" [ref=e384]
+                - cell "3" [ref=e385]
+                - cell "IT108/109/110" [ref=e386]
+              - row [ref=e388] [cursor=pointer]:
+                - cell [ref=e389]
+                - cell [ref=e390]:
+                  - button "Open IT 115" [ref=e391]: IT 115
+                - cell "Human Computer Interaction 1" [ref=e392]
+                - cell "2" [ref=e393]
+                - cell "1" [ref=e394]
+                - cell "3" [ref=e395]
+                - cell "IT108/109/110" [ref=e396]
+              - row [ref=e398] [cursor=pointer]:
+                - cell [ref=e399]
+                - cell [ref=e400]:
+                  - button "Open IT 116" [ref=e401]: IT 116
+                - cell "Advanced Database System" [ref=e402]
+                - cell "2" [ref=e403]
+                - cell "1" [ref=e404]
+                - cell "3" [ref=e405]
+                - cell "IT108/109/110" [ref=e406]
+              - row [ref=e408] [cursor=pointer]:
+                - cell [ref=e409]
+                - cell [ref=e410]:
+                  - button "Open GEC 4" [ref=e411]: GEC 4
+                - cell "Mathematics in the Modern World" [ref=e412]
+                - cell "3" [ref=e413]
+                - cell "0" [ref=e414]
+                - cell "3" [ref=e415]
+                - cell "none" [ref=e416]
+              - row [ref=e418] [cursor=pointer]:
+                - cell [ref=e419]
+                - cell [ref=e420]:
+                  - button "Open GEE 6" [ref=e421]: GEE 6
+                - cell "Art Appreciation" [ref=e422]
+                - cell "3" [ref=e423]
+                - cell "0" [ref=e424]
+                - cell "3" [ref=e425]
+                - cell "none" [ref=e426]
+              - row [ref=e428] [cursor=pointer]:
+                - cell [ref=e429]
+                - cell [ref=e430]:
+                  - button "Open GEE 8" [ref=e431]: GEE 8
+                - cell "Ethics" [ref=e432]
+                - cell "3" [ref=e433]
+                - cell "0" [ref=e434]
+                - cell "3" [ref=e435]
+                - cell "none" [ref=e436]
+              - row [ref=e438] [cursor=pointer]:
+                - cell [ref=e439]
+                - cell [ref=e440]:
+                  - button "Open PATH FIT 4" [ref=e441]: PATH FIT 4
+                - cell "Team Sports" [ref=e442]
+                - cell "2" [ref=e443]
+                - cell "0" [ref=e444]
+                - cell "2" [ref=e445]
+                - cell "PATH FIT 3" [ref=e446]
+            - rowgroup [ref=e448]:
+              - row [ref=e449]:
+                - rowheader "Total creditsprinted 21 / 5 / 26" [ref=e450]:
+                  - text: Total credits
+                  - generic [ref=e451]: printed 21 / 5 / 26
+                - cell "21" [ref=e452]
+                - cell "5" [ref=e453]
+                - cell "26" [ref=e454]
+                - cell [ref=e455]
+      - region [ref=e456]:
+        - generic [ref=e457]:
+          - heading "Summer" [level=4] [ref=e459]
+          - generic [ref=e461]:
+            - text: 3 courses ·
+            - generic [ref=e462]: 9 units
+        - table "Summer" [ref=e463]:
+          - rowgroup [ref=e472]:
+            - row [ref=e473]:
+              - columnheader "Status" [ref=e474]
+              - columnheader "Code" [ref=e476]
+              - columnheader "Course title" [ref=e477]
+              - columnheader "Lec" [ref=e478]
+              - columnheader "Lab" [ref=e479]
+              - columnheader "TU" [ref=e480]
+              - columnheader "Prereq" [ref=e481]
+          - rowgroup [ref=e482]:
+            - row [ref=e483] [cursor=pointer]:
+              - cell [ref=e484]
+              - cell [ref=e485]:
+                - button "Open IT 117" [ref=e486]: IT 117
+              - cell "QualitativeMethods(Modeling&Simulation)" [ref=e487]
+              - cell "2" [ref=e488]
+              - cell "1" [ref=e489]
+              - cell "3" [ref=e490]
+              - cell "IT108/109/110/112" [ref=e491]
+            - row [ref=e493] [cursor=pointer]:
+              - cell [ref=e494]
+              - cell [ref=e495]:
+                - button "Open IT 118" [ref=e496]: IT 118
+              - cell "Human Computer Interaction 2" [ref=e497]
+              - cell "2" [ref=e498]
+              - cell "1" [ref=e499]
+              - cell "3" [ref=e500]
+              - cell "IT115" [ref=e501]
+            - row [ref=e503] [cursor=pointer]:
+              - cell [ref=e504]
+              - cell [ref=e505]:
+                - button "Open IT Elec 1" [ref=e506]: IT Elec 1
+              - cell "System Analysis and Design (SAD)" [ref=e507]
+              - cell "3" [ref=e508]
+              - cell "0" [ref=e509]
+              - cell "3" [ref=e510]
+              - cell "IT109/110/116" [ref=e511]
+          - rowgroup [ref=e513]:
+            - row [ref=e514]:
+              - rowheader "Total creditsprinted 7 / 2 / 9" [ref=e515]:
+                - text: Total credits
+                - generic [ref=e516]: printed 7 / 2 / 9
+              - cell "7" [ref=e517]
+              - cell "2" [ref=e518]
+              - cell "9" [ref=e519]
+              - cell [ref=e520]
+    - region [ref=e521]:
+      - generic [ref=e522]:
+        - heading "Third Year" [level=3] [ref=e523]
+        - paragraph [ref=e524]: 22 courses · 66 units
+      - generic [ref=e525]:
+        - region [ref=e526]:
+          - generic [ref=e527]:
+            - heading "First Semester" [level=4] [ref=e529]
+            - generic [ref=e531]:
+              - text: 9 courses ·
+              - generic [ref=e532]: 27 units
+          - table "First Semester" [ref=e533]:
+            - rowgroup [ref=e542]:
+              - row [ref=e543]:
+                - columnheader "Status" [ref=e544]
+                - columnheader "Code" [ref=e546]
+                - columnheader "Course title" [ref=e547]
+                - columnheader "Lec" [ref=e548]
+                - columnheader "Lab" [ref=e549]
+                - columnheader "TU" [ref=e550]
+                - columnheader "Prereq" [ref=e551]
+            - rowgroup [ref=e552]:
+              - row [ref=e553] [cursor=pointer]:
+                - cell [ref=e554]
+                - cell [ref=e555]:
+                  - button "Open IT 119" [ref=e556]: IT 119
+                - cell "System Integration & Architecture 1" [ref=e557]
+                - cell "2" [ref=e558]
+                - cell "1" [ref=e559]
+                - cell "3" [ref=e560]
+                - cell "IT113/114/115/116" [ref=e561]
+              - row [ref=e563] [cursor=pointer]:
+                - cell [ref=e564]
+                - cell [ref=e565]:
+                  - button "Open IT 120" [ref=e566]: IT 120
+                - cell "Research1 (Methods of Research in Computing)" [ref=e567]
+                - cell "3" [ref=e568]
+                - cell "0" [ref=e569]
+                - cell "3" [ref=e570]
+                - cell "IT 112" [ref=e571]
+              - row [ref=e573] [cursor=pointer]:
+                - cell [ref=e574]
+                - cell [ref=e575]:
+                  - button "Open IT 121" [ref=e576]: IT 121
+                - cell "Information Management 2" [ref=e577]
+                - cell "2" [ref=e578]
+                - cell "1" [ref=e579]
+                - cell "3" [ref=e580]
+                - cell "IT112" [ref=e581]
+              - row [ref=e583] [cursor=pointer]:
+                - cell [ref=e584]
+                - cell [ref=e585]:
+                  - button "Open IT 122" [ref=e586]: IT 122
+                - cell "Integrative Programming & Technologies 2" [ref=e587]
+                - cell "2" [ref=e588]
+                - cell "1" [ref=e589]
+                - cell "3" [ref=e590]
+                - cell "IT114" [ref=e591]
+              - row [ref=e593] [cursor=pointer]:
+                - cell [ref=e594]
+                - cell [ref=e595]:
+                  - button "Open IT Elec 2" [ref=e596]: IT Elec 2
+                - cell "Computer Graphics" [ref=e597]
+                - cell "2" [ref=e598]
+                - cell "1" [ref=e599]
+                - cell "3" [ref=e600]
+                - cell "IT 109/116" [ref=e601]
+              - row [ref=e603] [cursor=pointer]:
+                - cell [ref=e604]
+                - cell [ref=e605]:
+                  - button "Open GEC 5" [ref=e606]: GEC 5
+                - cell "Purposive Communication" [ref=e607]
+                - cell "3" [ref=e608]
+                - cell "0" [ref=e609]
+                - cell "3" [ref=e610]
+                - cell "none" [ref=e611]
+              - row [ref=e613] [cursor=pointer]:
+                - cell [ref=e614]
+                - cell [ref=e615]:
+                  - button "Open GEC 7" [ref=e616]: GEC 7
+                - cell "Science, Technology and Society" [ref=e617]
+                - cell "3" [ref=e618]
+                - cell "0" [ref=e619]
+                - cell "3" [ref=e620]
+                - cell "none" [ref=e621]
+              - row [ref=e623] [cursor=pointer]:
+                - cell [ref=e624]
+                - cell [ref=e625]:
+                  - button "Open GEC 9" [ref=e626]: GEC 9
+                - cell "Life, Works & Writing of Dr. Jose Rizal" [ref=e627]
+                - cell "3" [ref=e628]
+                - cell "0" [ref=e629]
+                - cell "3" [ref=e630]
+                - cell "none" [ref=e631]
+              - row [ref=e633] [cursor=pointer]:
+                - cell [ref=e634]
+                - cell [ref=e635]:
+                  - button "Open GEE 9" [ref=e636]: GEE 9
+                - cell "Technoprenuership (The Entrepreneurial Mind)" [ref=e637]
+                - cell "3" [ref=e638]
+                - cell "0" [ref=e639]
+                - cell "3" [ref=e640]
+                - cell "none" [ref=e641]
+            - rowgroup [ref=e643]:
+              - row [ref=e644]:
+                - rowheader "Total creditsprinted 23 / 4 / 27" [ref=e645]:
+                  - text: Total credits
+                  - generic [ref=e646]: printed 23 / 4 / 27
+                - cell "23" [ref=e647]
+                - cell "4" [ref=e648]
+                - cell "27" [ref=e649]
+                - cell [ref=e650]
+        - region [ref=e651]:
+          - generic [ref=e652]:
+            - heading "Second Semester" [level=4] [ref=e654]
+            - generic [ref=e656]:
+              - text: 10 courses ·
+              - generic [ref=e657]: 30 units
+          - table "Second Semester" [ref=e658]:
+            - rowgroup [ref=e667]:
+              - row [ref=e668]:
+                - columnheader "Status" [ref=e669]
+                - columnheader "Code" [ref=e671]
+                - columnheader "Course title" [ref=e672]
+                - columnheader "Lec" [ref=e673]
+                - columnheader "Lab" [ref=e674]
+                - columnheader "TU" [ref=e675]
+                - columnheader "Prereq" [ref=e676]
+            - rowgroup [ref=e677]:
+              - row [ref=e678] [cursor=pointer]:
+                - cell [ref=e679]
+                - cell [ref=e680]:
+                  - button "Open IT 123" [ref=e681]: IT 123
+                - cell "Information Assurance & Security 1" [ref=e682]
+                - cell "2" [ref=e683]
+                - cell "1" [ref=e684]
+                - cell "3" [ref=e685]
+                - cell "IT119" [ref=e686]
+              - row [ref=e688] [cursor=pointer]:
+                - cell [ref=e689]
+                - cell [ref=e690]:
+                  - button "Open IT 124" [ref=e691]: IT 124
+                - cell "Networking 1" [ref=e692]
+                - cell "2" [ref=e693]
+                - cell "1" [ref=e694]
+                - cell "3" [ref=e695]
+                - cell "IT114" [ref=e696]
+              - row [ref=e698] [cursor=pointer]:
+                - cell [ref=e699]
+                - cell [ref=e702]:
+                  - button "Open I1 125" [ref=e703]: I1 125
+                - cell "Capstone Project 1" [ref=e704]
+                - cell "3" [ref=e705]
+                - cell "0" [ref=e706]
+                - cell "3" [ref=e707]
+                - cell "1st2nd3rdyr/1stSem" [ref=e708]
+              - row [ref=e710] [cursor=pointer]:
+                - cell [ref=e711]
+                - cell [ref=e712]:
+                  - button "Open IT 126" [ref=e713]: IT 126
+                - cell "System Integration & Architecture 2" [ref=e714]
+                - cell "2" [ref=e715]
+                - cell "1" [ref=e716]
+                - cell "3" [ref=e717]
+                - cell "IT119" [ref=e718]
+              - row [ref=e720] [cursor=pointer]:
+                - cell [ref=e721]
+                - cell [ref=e722]:
+                  - button "Open IT 127" [ref=e723]: IT 127
+                - cell "Platform Technologies" [ref=e724]
+                - cell "3" [ref=e725]
+                - cell "0" [ref=e726]
+                - cell "3" [ref=e727]
+                - cell "IT119" [ref=e728]
+              - row [ref=e730] [cursor=pointer]:
+                - cell [ref=e731]
+                - cell [ref=e732]:
+                  - button "Open IT Elec 3" [ref=e733]: IT Elec 3
+                - cell "Computer - Aided Design (CAD)" [ref=e734]
+                - cell "2" [ref=e735]
+                - cell "1" [ref=e736]
+                - cell "3" [ref=e737]
+                - cell "IT Elective 2" [ref=e738]
+              - row [ref=e740] [cursor=pointer]:
+                - cell [ref=e741]
+                - cell [ref=e742]:
+                  - button "Open GEE 4" [ref=e743]: GEE 4
+                - cell "Living in the IT Era" [ref=e744]
+                - cell "3" [ref=e745]
+                - cell "0" [ref=e746]
+                - cell "3" [ref=e747]
+                - cell "none" [ref=e748]
+              - row [ref=e750] [cursor=pointer]:
+                - cell [ref=e751]
+                - cell [ref=e752]:
+                  - button "Open GEE 7" [ref=e753]: GEE 7
+                - cell "Gender & Society" [ref=e754]
+                - cell "3" [ref=e755]
+                - cell "0" [ref=e756]
+                - cell "3" [ref=e757]
+                - cell "none" [ref=e758]
+              - row [ref=e760] [cursor=pointer]:
+                - cell [ref=e761]
+                - cell [ref=e762]:
+                  - button "Open GEE 10" [ref=e763]: GEE 10
+                - cell "Entrepeneural Management" [ref=e764]
+                - cell "3" [ref=e765]
+                - cell "0" [ref=e766]
+                - cell "3" [ref=e767]
+                - cell "GEE 9" [ref=e768]
+              - row [ref=e770] [cursor=pointer]:
+                - cell [ref=e771]
+                - cell [ref=e772]:
+                  - button "Open GEE11" [ref=e773]: GEE11
+                - cell "Phil. Indigenous Communities&Peace Studies Education" [ref=e774]
+                - cell "3" [ref=e775]
+                - cell "0" [ref=e776]
+                - cell "3" [ref=e777]
+                - cell "none" [ref=e778]
+            - rowgroup [ref=e780]:
+              - row [ref=e781]:
+                - rowheader "Total creditsprinted 23 / 4 / 27, differs" [ref=e782]:
+                  - text: Total credits
+                  - generic [ref=e783]: printed 23 / 4 / 27, differs
+                - cell "26" [ref=e784]
+                - cell "4" [ref=e785]
+                - cell "30" [ref=e786]
+                - cell [ref=e787]
+      - region [ref=e788]:
+        - generic [ref=e789]:
+          - heading "Summer" [level=4] [ref=e791]
+          - generic [ref=e793]:
+            - text: 3 courses ·
+            - generic [ref=e794]: 9 units
+        - table "Summer" [ref=e795]:
+          - rowgroup [ref=e804]:
+            - row [ref=e805]:
+              - columnheader "Status" [ref=e806]
+              - columnheader "Code" [ref=e808]
+              - columnheader "Course title" [ref=e809]
+              - columnheader "Lec" [ref=e810]
+              - columnheader "Lab" [ref=e811]
+              - columnheader "TU" [ref=e812]
+              - columnheader "Prereq" [ref=e813]
+          - rowgroup [ref=e814]:
+            - row [ref=e815] [cursor=pointer]:
+              - cell [ref=e816]
+              - cell [ref=e817]:
+                - button "Open IT Elec 4" [ref=e818]: IT Elec 4
+              - cell "Fundamentals of Data Warehousing&Data Mining" [ref=e819]
+              - cell "3" [ref=e820]
+              - cell "0" [ref=e821]
+              - cell "3" [ref=e822]
+              - cell "IT119" [ref=e823]
+            - row [ref=e825] [cursor=pointer]:
+              - cell [ref=e826]
+              - cell [ref=e827]:
+                - button "Open IT Elec 5" [ref=e828]: IT Elec 5
+              - cell "Multimedia System" [ref=e829]
+              - cell "2" [ref=e830]
+              - cell "1" [ref=e831]
+              - cell "3" [ref=e832]
+              - cell "IT Elective 2 & 3" [ref=e833]
+            - row [ref=e835] [cursor=pointer]:
+              - cell [ref=e836]
+              - cell [ref=e837]:
+                - button "Open IT Elec 6" [ref=e838]: IT Elec 6
+              - cell "Management Information System(MIS)" [ref=e839]
+              - cell "3" [ref=e840]
+              - cell "0" [ref=e841]
+              - cell "3" [ref=e842]
+              - cell "IT Elective 1" [ref=e843]
+          - rowgroup [ref=e845]:
+            - row [ref=e846]:
+              - rowheader "Total creditsprinted 8 / 1 / 9" [ref=e847]:
+                - text: Total credits
+                - generic [ref=e848]: printed 8 / 1 / 9
+              - cell "8" [ref=e849]
+              - cell "1" [ref=e850]
+              - cell "9" [ref=e851]
+              - cell [ref=e852]
+    - region [ref=e853]:
+      - generic [ref=e854]:
+        - heading "Fourth Year" [level=3] [ref=e855]
+        - paragraph [ref=e856]: 6 courses · 21 units
+      - generic [ref=e857]:
+        - region [ref=e858]:
+          - generic [ref=e859]:
+            - heading "First Semester" [level=4] [ref=e861]
+            - generic [ref=e863]:
+              - text: 5 courses ·
+              - generic [ref=e864]: 15 units
+          - table "First Semester" [ref=e865]:
+            - rowgroup [ref=e874]:
+              - row [ref=e875]:
+                - columnheader "Status" [ref=e876]
+                - columnheader "Code" [ref=e878]
+                - columnheader "Course title" [ref=e879]
+                - columnheader "Lec" [ref=e880]
+                - columnheader "Lab" [ref=e881]
+                - columnheader "TU" [ref=e882]
+                - columnheader "Prereq" [ref=e883]
+            - rowgroup [ref=e884]:
+              - row [ref=e885] [cursor=pointer]:
+                - cell [ref=e886]
+                - cell [ref=e887]:
+                  - button "Open IT 128" [ref=e888]: IT 128
+                - cell "System Administration and Maintenance" [ref=e889]
+                - cell "2" [ref=e890]
+                - cell "1" [ref=e891]
+                - cell "3" [ref=e892]
+                - cell "IT123/124/126" [ref=e893]
+              - row [ref=e895] [cursor=pointer]:
+                - cell [ref=e896]
+                - cell [ref=e897]:
+                  - button "Open IT 129" [ref=e898]: IT 129
+                - cell "Information Assurance & Security 2" [ref=e899]
+                - cell "2" [ref=e900]
+                - cell "1" [ref=e901]
+                - cell "3" [ref=e902]
+                - cell "IT123" [ref=e903]
+              - row [ref=e905] [cursor=pointer]:
+                - cell [ref=e906]
+                - cell [ref=e907]:
+                  - button "Open IT 130" [ref=e908]: IT 130
+                - cell "Networking 2" [ref=e909]
+                - cell "2" [ref=e910]
+                - cell "1" [ref=e911]
+                - cell "3" [ref=e912]
+                - cell "IT124" [ref=e913]
+              - row [ref=e915] [cursor=pointer]:
+                - cell [ref=e916]
+                - cell [ref=e917]:
+                  - button "Open IT 131" [ref=e918]: IT 131
+                - cell "Web System and Technologies" [ref=e919]
+                - cell "2" [ref=e920]
+                - cell "1" [ref=e921]
+                - cell "3" [ref=e922]
+                - cell "IT 127" [ref=e923]
+              - row [ref=e925] [cursor=pointer]:
+                - cell [ref=e926]
+                - cell [ref=e927]:
+                  - button "Open IT 132" [ref=e928]: IT 132
+                - cell "Capstone Project 2" [ref=e929]
+                - cell "3" [ref=e930]
+                - cell "0" [ref=e931]
+                - cell "3" [ref=e932]
+                - cell "IT125" [ref=e933]
+            - rowgroup [ref=e935]:
+              - row [ref=e936]:
+                - rowheader "Total creditsprinted 11 / 4 / 15" [ref=e937]:
+                  - text: Total credits
+                  - generic [ref=e938]: printed 11 / 4 / 15
+                - cell "11" [ref=e939]
+                - cell "4" [ref=e940]
+                - cell "15" [ref=e941]
+                - cell [ref=e942]
+        - region [ref=e943]:
+          - generic [ref=e944]:
+            - heading "Second Semester" [level=4] [ref=e946]
+            - generic [ref=e948]:
+              - text: 1 course ·
+              - generic [ref=e949]: 6 units
+          - table "Second Semester" [ref=e950]:
+            - rowgroup [ref=e959]:
+              - row [ref=e960]:
+                - columnheader "Status" [ref=e961]
+                - columnheader "Code" [ref=e963]
+                - columnheader "Course title" [ref=e964]
+                - columnheader "Lec" [ref=e965]
+                - columnheader "Lab" [ref=e966]
+                - columnheader "TU" [ref=e967]
+                - columnheader "Prereq" [ref=e968]
+            - rowgroup [ref=e969]:
+              - row [ref=e970] [cursor=pointer]:
+                - cell [ref=e971]
+                - cell [ref=e972]:
+                  - button "Open Prac 101" [ref=e973]: Prac 101
+                - cell "Practicum (486 hours)" [ref=e974]
+                - cell "6" [ref=e975]
+                - cell "0" [ref=e976]
+                - cell "6" [ref=e977]
+                - cell "100% Completed Core Courses" [ref=e978]
+            - rowgroup [ref=e980]:
+              - row [ref=e981]:
+                - rowheader "Total creditsprinted 6 / 0 / 6" [ref=e982]:
+                  - text: Total credits
+                  - generic [ref=e983]: printed 6 / 0 / 6
+                - cell "6" [ref=e984]
+                - cell "0" [ref=e985]
+                - cell "6" [ref=e986]
+                - cell [ref=e987]

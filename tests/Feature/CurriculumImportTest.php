@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Course;
 use App\Models\Curriculum;
+use App\Models\CurriculumClassificationRule;
 use App\Models\CurriculumImport;
 use App\Models\Departments;
 use App\Models\Program;
@@ -58,26 +59,22 @@ class CurriculumImportTest extends TestCase
     private function tccRules(): void
     {
         $this->saveRules([
-            ['match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'major'],
-            ['match_kind' => 'prefix', 'match_value' => 'PRAC', 'category' => 'major'],
-            ['match_kind' => 'prefix', 'match_value' => 'GEC', 'category' => 'minor'],
-            ['match_kind' => 'prefix', 'match_value' => 'GEE', 'category' => 'minor'],
-            ['match_kind' => 'prefix', 'match_value' => 'PATH', 'category' => 'minor'],
-            ['match_kind' => 'prefix', 'match_value' => 'ROTC', 'category' => 'minor'],
+            ['match_value' => 'IT', 'category' => 'major'],
+            ['match_value' => 'PRAC', 'category' => 'major'],
+            ['match_value' => 'GEC', 'category' => 'minor'],
+            ['match_value' => 'GEE', 'category' => 'minor'],
+            ['match_value' => 'PATH', 'category' => 'minor'],
+            ['match_value' => 'ROTC', 'category' => 'minor'],
         ]);
     }
 
-    /** Look-alike codes corrected as the reviewer would, the practicum recorded on a total-hours basis. */
+    /** Look-alike codes corrected as the reviewer would. */
     private function reviewedFixture(): array
     {
         $payload = $this->fixture();
         foreach ($payload['rows'] as &$row) {
             // Reviewer corrections of look-alike codes; the source values stay in source.code.
             $row['code'] = ['I1 125' => 'IT 125', 'PATH FITt 2' => 'PATH FIT 2', 'PATH FiIT3' => 'PATH FIT 3'][$row['code']] ?? $row['code'];
-            if ($row['code'] === 'Prac 101') {
-                $row['scheduling_basis'] = 'total_hours';
-                $row['total_hours'] = 486;
-            }
         }
         unset($row);
 
@@ -129,9 +126,9 @@ class CurriculumImportTest extends TestCase
         $this->assertStringContainsString('TU printed 27 vs calculated 30', $issues['group_total_mismatch:3-2']['message']);
         $this->assertSame(1, collect($response->json('issues'))->where('code', 'group_total_mismatch')->count());
 
+        // A block of hours in a title ("Practicum (486 Hours)") asks for nothing: every course is scheduled weekly.
         $practicum = collect($this->fixture()['rows'])->firstWhere('code', 'Prac 101')['row_id'];
-        $this->assertSame('error', $issues['scheduling_basis_required:'.$practicum]['severity']);
-        $this->assertStringContainsString('486 total hours', $issues['scheduling_basis_required:'.$practicum]['message']);
+        $this->assertSame([], collect($response->json('issues'))->where('row_id', $practicum)->whereIn('code', ['scheduling_basis_required', 'total_hours_required', 'nonweekly_basis'])->all());
 
         // Extraction flags are no longer tasks: each appears once, in its field's comparison.
         $changes = collect($response->json('changes'));
@@ -171,9 +168,11 @@ class CurriculumImportTest extends TestCase
         $this->assertSame(0, $curriculum->courses()->where('curriculum_course.year_level', 1)->where('curriculum_course.semester', 3)->count());
 
         $practicum = $curriculum->courses()->where('course_code', 'PRAC 101')->firstOrFail();
-        $this->assertNull($practicum->pivot->lecture_minutes);
+        // Weekly from its 6 lecture credits at the recorded rate, like every other course.
         $snapshot = json_decode($practicum->pivot->conversion_snapshot, true);
-        $this->assertSame(['basis' => 'total_hours', 'total_hours' => 486], array_intersect_key($snapshot, ['basis' => 1, 'total_hours' => 1]));
+        $this->assertSame(6 * (int) $snapshot['lecture_minutes_per_unit'], (int) $practicum->pivot->lecture_minutes);
+        $this->assertSame('weekly', $snapshot['basis']);
+        $this->assertArrayNotHasKey('total_hours', $snapshot);
         $this->assertSame(6, (int) $practicum->units);
         $this->assertSame('100% Completed Core Courses', $practicum->pivot->prerequisites_text);
 
@@ -486,7 +485,7 @@ class CurriculumImportTest extends TestCase
     {
         $this->tccRules();
         $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
-        $this->saveRules([['match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'major']]);
+        $this->saveRules([['match_value' => 'IT', 'category' => 'major']]);
 
         $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)->assertStatus(409);
         $this->assertSame(0, Curriculum::count());
@@ -517,26 +516,82 @@ class CurriculumImportTest extends TestCase
         $this->assertSame($teaching->id, (int) $existing->fresh()->teaching_department_id);
     }
 
-    public function test_classification_uses_exact_over_longest_prefix_with_word_boundaries(): void
+    public function test_classification_uses_the_longest_prefix_with_word_boundaries(): void
     {
         $rules = collect([
-            (object) ['id' => 1, 'match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'major', 'enabled' => true],
-            (object) ['id' => 2, 'match_kind' => 'prefix', 'match_value' => 'IT ELEC', 'category' => 'minor', 'enabled' => true],
-            (object) ['id' => 3, 'match_kind' => 'exact', 'match_value' => 'IT ELEC 2', 'category' => 'major', 'enabled' => true],
-            (object) ['id' => 4, 'match_kind' => 'prefix', 'match_value' => 'GEC', 'category' => 'minor', 'enabled' => false],
+            (object) ['id' => 1, 'match_value' => 'IT', 'category' => 'major'],
+            (object) ['id' => 2, 'match_value' => 'IT ELEC', 'category' => 'minor'],
+            (object) ['id' => 3, 'match_value' => 'IT ELEC 2', 'category' => 'major'],
+            (object) ['id' => 4, 'match_value' => 'GEC', 'category' => 'minor'],
         ]);
 
         $this->assertSame(1, CurriculumImportSettings::classify('IT 101', $rules)['id']);
         $this->assertSame(1, CurriculumImportSettings::classify('IT101', $rules)['id']);
         $this->assertSame(2, CurriculumImportSettings::classify('IT ELEC 1', $rules)['id']);
         $this->assertSame(3, CurriculumImportSettings::classify('IT ELEC 2', $rules)['id']);
+        $this->assertSame('prefix', CurriculumImportSettings::classify('IT ELEC 2', $rules)['match_kind']);
+        $this->assertSame(4, CurriculumImportSettings::classify('GEC 1', $rules)['id']);
         $this->assertNull(CurriculumImportSettings::classify('ITEM 101', $rules));
-        $this->assertNull(CurriculumImportSettings::classify('GEC 1', $rules));
+        $this->assertNull(CurriculumImportSettings::classify('PATH FIT 1', $rules));
+    }
+
+    public function test_saved_rules_are_always_enabled_prefixes_and_can_be_added_edited_and_deleted(): void
+    {
+        $base = ['lecture_minutes_per_unit' => 60, 'laboratory_minutes_per_unit' => 180];
+        $put = fn (array $rules) => $this->actingAs($this->secretary)->putJson('/api/curriculum-import-settings', $base + [
+            'expected_revision' => (int) $this->department->fresh()->curriculum_import_settings_revision,
+            'rules' => $rules,
+        ]);
+
+        // Legacy clients may still send a match type or status; both are ignored.
+        $put([
+            ['match_kind' => 'exact', 'match_value' => 'it', 'category' => 'major', 'enabled' => false],
+            ['match_value' => 'GEC', 'category' => 'minor'],
+        ])->assertOk()
+            ->assertJsonPath('rules.0.match_value', 'GEC')
+            ->assertJsonPath('rules.1.match_value', 'IT')
+            ->assertJsonMissingPath('rules.0.match_kind')
+            ->assertJsonMissingPath('rules.0.enabled');
+        $stored = CurriculumClassificationRule::query()->where('department_id', $this->department->id)->orderBy('match_value')->get();
+        $this->assertSame([['GEC', 'prefix', true], ['IT', 'prefix', true]], $stored->map(fn ($rule) => [$rule->match_value, $rule->match_kind, $rule->enabled])->all());
+
+        $put([['match_value' => 'IT', 'category' => 'minor'], ['match_value' => 'ROTC', 'category' => 'minor']])->assertOk();
+        $this->assertSame(['IT' => 'minor', 'ROTC' => 'minor'], CurriculumClassificationRule::query()->where('department_id', $this->department->id)->orderBy('match_value')->pluck('category', 'match_value')->all());
+
+        $put([
+            ['match_value' => 'IT', 'category' => 'major'],
+            ['match_value' => ' it ', 'category' => 'minor'],
+        ])->assertUnprocessable()->assertJsonValidationErrors('rules.1.match_value');
+    }
+
+    public function test_existing_exact_and_disabled_rules_become_enabled_prefixes(): void
+    {
+        $other = Departments::create(['department_name' => 'Engineering', 'department_code' => 'ENG']);
+        $now = now();
+        DB::table('curriculum_classification_rules')->insert([
+            ['department_id' => $this->department->id, 'match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'major', 'enabled' => true, 'created_at' => $now, 'updated_at' => $now],
+            ['department_id' => $this->department->id, 'match_kind' => 'exact', 'match_value' => 'IT', 'category' => 'minor', 'enabled' => true, 'created_at' => $now, 'updated_at' => $now],
+            ['department_id' => $this->department->id, 'match_kind' => 'exact', 'match_value' => 'PATH FIT 1', 'category' => 'minor', 'enabled' => true, 'created_at' => $now, 'updated_at' => $now],
+            ['department_id' => $this->department->id, 'match_kind' => 'prefix', 'match_value' => 'GEC', 'category' => 'minor', 'enabled' => false, 'created_at' => $now, 'updated_at' => $now],
+            ['department_id' => $other->id, 'match_kind' => 'prefix', 'match_value' => 'ENG', 'category' => 'major', 'enabled' => true, 'created_at' => $now, 'updated_at' => $now],
+        ]);
+        $revision = (int) $this->department->fresh()->curriculum_import_settings_revision;
+        $otherRevision = (int) $other->fresh()->curriculum_import_settings_revision;
+
+        (require database_path('migrations/2026_11_06_110000_normalize_curriculum_classification_rules.php'))->up();
+
+        $rules = CurriculumClassificationRule::query()->where('department_id', $this->department->id)->orderBy('match_value')->get();
+        $this->assertSame(
+            [['GEC', 'prefix', 'minor', true], ['IT', 'prefix', 'major', true], ['PATH FIT 1', 'prefix', 'minor', true]],
+            $rules->map(fn ($rule) => [$rule->match_value, $rule->match_kind, $rule->category, $rule->enabled])->all(),
+        );
+        $this->assertSame($revision + 1, (int) $this->department->fresh()->curriculum_import_settings_revision);
+        $this->assertSame($otherRevision, (int) $other->fresh()->curriculum_import_settings_revision);
     }
 
     public function test_unclassified_rows_are_never_defaulted_to_major(): void
     {
-        $this->saveRules([['match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'major']]);
+        $this->saveRules([['match_value' => 'IT', 'category' => 'major']]);
         $issues = collect($this->validateDraft($this->reviewedFixture())->json('issues'));
 
         $this->assertTrue($issues->where('code', 'unclassified')->isNotEmpty());
@@ -549,7 +604,7 @@ class CurriculumImportTest extends TestCase
         $rows = collect($this->validateDraft($this->reviewedFixture())->json('rows'))->keyBy('code');
         $this->assertSame([120, 180, 300, 3], [$rows['IT 101']['lecture_minutes'], $rows['IT 101']['laboratory_minutes'], $rows['IT 101']['weekly_contact_minutes'], $rows['IT 101']['total_credits']]);
 
-        $this->saveRules([['match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'major']], 60, 120);
+        $this->saveRules([['match_value' => 'IT', 'category' => 'major']], 60, 120);
         $response = $this->validateDraft($this->reviewedFixture());
         $rows = collect($response->json('rows'))->keyBy('code');
         $this->assertSame([120, 120, 240], [$rows['IT 101']['lecture_minutes'], $rows['IT 101']['laboratory_minutes'], $rows['IT 101']['weekly_contact_minutes']]);
@@ -566,16 +621,16 @@ class CurriculumImportTest extends TestCase
 
         $base = ['expected_revision' => 1, 'lecture_minutes_per_unit' => 60, 'laboratory_minutes_per_unit' => 180];
         $this->actingAs($this->secretary)->putJson('/api/curriculum-import-settings', $base + ['rules' => [
-            ['match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'major'],
-            ['match_kind' => 'prefix', 'match_value' => ' it ', 'category' => 'minor'],
+            ['match_value' => 'IT', 'category' => 'major'],
+            ['match_value' => ' it ', 'category' => 'minor'],
         ]])->assertUnprocessable();
 
         $this->actingAs($this->secretary)->putJson('/api/curriculum-import-settings', array_replace($base, ['lecture_minutes_per_unit' => 75, 'rules' => []]))
             ->assertUnprocessable()->assertJsonValidationErrors('lecture_minutes_per_unit');
 
         $overlapping = $base + ['rules' => [
-            ['match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'major'],
-            ['match_kind' => 'exact', 'match_value' => 'IT Elec 1', 'category' => 'minor'],
+            ['match_value' => 'IT', 'category' => 'major'],
+            ['match_value' => 'IT Elec 1', 'category' => 'minor'],
         ]];
         $this->actingAs($this->secretary)->putJson('/api/curriculum-import-settings', $overlapping)
             ->assertUnprocessable()->assertJsonValidationErrors('acknowledge_overlaps');
@@ -594,7 +649,7 @@ class CurriculumImportTest extends TestCase
         $before = DB::table('curriculum_course')->orderBy('id')->get()->map(fn ($row) => (array) $row)->all();
         $courses = Course::query()->orderBy('id')->get(['id', 'lecture_hours', 'lab_hours', 'units', 'course_category'])->toArray();
 
-        $this->saveRules([['match_kind' => 'prefix', 'match_value' => 'IT', 'category' => 'minor']], 90, 120);
+        $this->saveRules([['match_value' => 'IT', 'category' => 'minor']], 90, 120);
 
         $this->assertSame($before, DB::table('curriculum_course')->orderBy('id')->get()->map(fn ($row) => (array) $row)->all());
         $this->assertSame($courses, Course::query()->orderBy('id')->get(['id', 'lecture_hours', 'lab_hours', 'units', 'course_category'])->toArray());

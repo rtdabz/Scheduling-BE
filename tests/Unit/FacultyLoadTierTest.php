@@ -73,6 +73,31 @@ class FacultyLoadTierTest extends TestCase
         $this->assertSame('unknown', SchedulingPolicy::loadTierLabel('unknown'));
     }
 
+    public function test_pro_bono_follows_the_specification_examples(): void
+    {
+        // 34/36 + 3 = 37/36: capacity remained, one class crosses.
+        $this->assertSame(['allowed' => true, 'reason' => null], SchedulingPolicy::proBonoDecision(36, 34, 37, 3));
+        // 37/36 + 3: the limit has already been exceeded once.
+        $this->assertSame(SchedulingPolicy::PRO_BONO_REFUSED_ALREADY_USED, SchedulingPolicy::proBonoDecision(36, 37, 40, 3)['reason']);
+        // 36/36 + 3: no remaining capacity.
+        $this->assertSame(SchedulingPolicy::PRO_BONO_REFUSED_LIMIT_REACHED, SchedulingPolicy::proBonoDecision(36, 36, 39, 3)['reason']);
+    }
+
+    public function test_pro_bono_lets_only_one_class_of_a_batch_cross_the_ceiling(): void
+    {
+        // 30 + 3 + 3 = 36 stays at the limit, then 3 more crosses it: two classes too many.
+        $this->assertSame(SchedulingPolicy::PRO_BONO_REFUSED_MORE_THAN_ONE_CLASS, SchedulingPolicy::proBonoDecision(36, 30, 39, 3)['reason']);
+        // 32 + 3 = 35 is still below, so the next 3 is the single crossing class.
+        $this->assertTrue(SchedulingPolicy::proBonoDecision(36, 32, 38, 3)['allowed']);
+    }
+
+    public function test_pro_bono_does_not_apply_within_the_ceiling_or_without_one(): void
+    {
+        $this->assertSame(['allowed' => false, 'reason' => null], SchedulingPolicy::proBonoDecision(36, 33, 36, 3));
+        $this->assertSame(['allowed' => false, 'reason' => null], SchedulingPolicy::proBonoDecision(0, 40, 43, 3));
+        $this->assertSame('Pro-Bono', SchedulingPolicy::loadTierLabel(SchedulingPolicy::LOAD_TIER_PRO_BONO));
+    }
+
     private function tierFor(int $units): string
     {
         return SchedulingPolicy::facultyLoadTier($this->instructor(), $units);

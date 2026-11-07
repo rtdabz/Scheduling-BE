@@ -58,7 +58,14 @@ class Schedule extends Model
 
     protected $casts = [
         'faculty_assignment_done' => 'boolean',
+        'displaced_at' => 'datetime',
     ];
+
+    /** A face-to-face class running online only because its room was closed; it still needs a reviewed room reassignment. */
+    public function isTemporarilyOnline(): bool
+    {
+        return $this->displaced_room_id !== null;
+    }
 
     protected ?string $tempSplitGroupId = null;
 
@@ -118,6 +125,19 @@ class Schedule extends Model
 
     protected static function booted()
     {
+        // Stamped server-side (not fillable) so the "Prepared by" signatory cannot be spoofed by a client.
+        static::creating(function (Schedule $schedule): void {
+            $schedule->created_by ??= auth()->id();
+        });
+
+        // Once a displaced class is face-to-face in a room again, it no longer needs reassignment.
+        static::saving(function (Schedule $schedule): void {
+            if ($schedule->displaced_room_id !== null && $schedule->mode === 'on-site' && $schedule->room_id !== null) {
+                $schedule->displaced_room_id = null;
+                $schedule->displaced_at = null;
+            }
+        });
+
         static::saved(function (Schedule $schedule) {
             if ($schedule->tempSplitGroupId !== null || $schedule->tempMeetingType !== null || $schedule->tempMeetingIndex !== null) {
                 $split = ($schedule->wasRecentlyCreated && ! $schedule->relationLoaded('split'))
@@ -187,6 +207,11 @@ class Schedule extends Model
     public function room()
     {
         return $this->belongsTo(Rooms::class);
+    }
+
+    public function displacedRoom()
+    {
+        return $this->belongsTo(Rooms::class, 'displaced_room_id');
     }
 
     public function department()

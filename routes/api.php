@@ -68,6 +68,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('/vpaa/dashboard-insights', VpaaDashboardController::class);
         Route::get('/user', [UserController::class, 'index']);
         Route::get('/user/linkable-faculty', [UserController::class, 'linkableFaculty']);
+        Route::get('/user/instructor-defaults', [UserController::class, 'instructorDefaults']);
         Route::post('/user', [UserController::class, 'store']);
         Route::put('/user/{user}', [UserController::class, 'update']);
         Route::delete('/user/{user}', [UserController::class, 'destroy']);

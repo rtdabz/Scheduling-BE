@@ -184,8 +184,7 @@ final class CurriculumImportService
                 'laboratory_minutes' => $row['laboratory_minutes'],
                 'conversion_snapshot' => json_encode([
                     'version' => self::SNAPSHOT_VERSION,
-                    'basis' => $row['scheduling_basis'],
-                    'total_hours' => $row['total_hours'],
+                    'basis' => 'weekly',
                     'lecture_minutes_per_unit' => $validation['settings']['lecture_minutes_per_unit'],
                     'laboratory_minutes_per_unit' => $validation['settings']['laboratory_minutes_per_unit'],
                     'settings_revision' => $validation['settings_revision'],

@@ -28,6 +28,7 @@ final class ArchiveProvenance
             'users' => $this->accountArchive($record, $archivedAt),
             'schedules' => $this->scheduleDeletion((int) $record->getKey(), (int) $record->getAttribute('semester_id'), $archivedAt),
             'schedule-splits' => $this->splitArchive($record, $archivedAt),
+            'buildings' => $this->archiveEvent('rooms', (int) $record->getKey(), $archivedAt),
             default => $this->archiveEvent($type, (int) $record->getKey(), $archivedAt),
         };
 

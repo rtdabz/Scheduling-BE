@@ -64,10 +64,42 @@ final class RoomRecoveryService
                 $rows = Schedule::where('room_id', $room->id)->lockForUpdate()->get();
                 $current->update(['status' => 'not available']);
                 $this->recordImpact($room->id, $rows, 'room_closed', $reason, $actor);
-                SchedulingAuditLog::create(['user_id' => $actor, 'action' => 'room_closed', 'metadata' => ['room_id' => $room->id, 'reason' => $reason], 'created_at' => now()]);
+                $moved = $this->moveOnlineUntilReassigned($rows, (int) $room->id, $reason, $actor);
+                SchedulingAuditLog::create(['user_id' => $actor, 'action' => 'room_closed', 'metadata' => ['room_id' => $room->id, 'reason' => $reason,
+                    'temporarily_online_schedule_ids' => $moved], 'created_at' => now()]);
             });
         });
         $this->refreshCaches();
+    }
+
+    /**
+     * Face-to-face classes in a closed room meet online until a replacement room is approved.
+     * The closed room is kept on each row so these classes stay distinct from ones planned online.
+     *
+     * @return list<int>
+     */
+    private function moveOnlineUntilReassigned(Collection $rows, int $roomId, string $reason, ?int $actor): array
+    {
+        $rows = $rows->filter(fn (Schedule $row) => $row->mode === 'on-site')->values();
+        $now = now();
+        foreach ($rows->groupBy(fn ($row) => $row->semester_id.':'.$row->department_id) as $group) {
+            $before = $group->map(fn (Schedule $row) => $row->getAttributes())->all();
+            foreach ($group as $row) {
+                $row->forceFill(['mode' => 'online', 'room_id' => null, 'displaced_room_id' => $roomId, 'displaced_at' => $now])->save();
+            }
+            $first = $group->first();
+            $this->history->record('room_closed_online', $before, Schedule::whereIn('id', $group->pluck('id'))->orderBy('id')->get(), $actor,
+                (int) $first->semester_id, (int) $first->department_id, 'room_recovery',
+                'Room unavailable. Classes meet online until a replacement room is approved.', ['room_id' => $roomId, 'reason' => $reason]);
+        }
+
+        return $rows->pluck('id')->map('intval')->all();
+    }
+
+    /** Classes moved online by a room closure are restored as face-to-face meetings that need a room. */
+    private function asFaceToFace(array $row): array
+    {
+        return ($row['displaced_room_id'] ?? null) !== null ? [...$row, 'mode' => 'on-site', 'room_id' => null] : $row;
     }
 
     /** Called within the availability/grant transaction, before assignments are cleared. */
@@ -84,7 +116,9 @@ final class RoomRecoveryService
                 try {
                     app(SystemNotificationService::class)->notifyRoles(
                         ['secretary'], 'room_recovery', 'Room or laboratory needs attention',
-                        'Room availability changed. Review affected schedules in Facilities > Reassign Room Schedule.',
+                        $case->trigger === 'room_closed'
+                            ? 'A room was marked unavailable. Its face-to-face classes meet online until a replacement room is approved in Facilities > Reassign Room Schedule.'
+                            : 'Room availability changed. Review affected schedules in Facilities > Reassign Room Schedule.',
                         departmentId: $case->department_id, semesterId: $case->semester_id,
                         remarks: $case->reason, metadata: ['recovery_case_id' => $case->id, 'room_id' => $case->room_id, 'semester_id' => $case->semester_id],
                     );
@@ -116,6 +150,9 @@ final class RoomRecoveryService
         $departments = new DepartmentAssignmentRule(new RuleLookupCache);
 
         return $rows->mapWithKeys(function (Schedule $row) use ($departments) {
+            if ($row->isTemporarilyOnline()) {
+                return [$row->id => true];
+            }
             if ($row->mode !== 'on-site') {
                 return [$row->id => false];
             }
@@ -229,7 +266,8 @@ final class RoomRecoveryService
         if ($includeSunday) {
             $snapshot = $this->withSundayClasses($snapshot);
         }
-        $targetIds = $targets->pluck('id')->all();
+        // Linked meetings moved online by the same closure are restored together.
+        $targetIds = $all->filter(fn ($row) => $targets->contains('id', $row->id) || $row->isTemporarilyOnline())->pluck('id')->all();
         $options = [];
         $unresolved = [];
         $budget = 1600;
@@ -296,10 +334,12 @@ final class RoomRecoveryService
                 $planGroups[] = ['key' => (string) $key, 'before' => $option['before'], 'after' => $best[$key]];
             }
         }
-        $meetings = $this->readable($request)->whereIn('schedules.id', $all->pluck('id'))->with(['course', 'section', 'room'])->orderBy('schedules.id')->get()
+        $meetings = $this->readable($request)->whereIn('schedules.id', $all->pluck('id'))->with(['course', 'section', 'room', 'displacedRoom'])->orderBy('schedules.id')->get()
             ->map(fn ($row) => ['id' => $row->id, 'course' => $row->course?->course_code ?? 'Unknown course',
                 'section' => $row->section?->section_name ?? 'Unknown section', 'mode' => $row->mode,
-                'room' => $row->mode === 'online' ? 'Online' : ($row->room?->room_code ?? 'Room TBA'),
+                'temporarily_online' => $row->isTemporarilyOnline(), 'displaced_room' => $row->displacedRoom?->room_code,
+                'room' => $row->isTemporarilyOnline() ? self::temporaryOnlineLabel($row->displacedRoom?->room_code)
+                    : ($row->mode === 'online' ? 'Online' : ($row->room?->room_code ?? 'Room TBA')),
                 'day' => $row->day, 'start_time' => $row->start_time, 'end_time' => $row->end_time])->all();
         $plan = RoomRecoveryPlan::create(['id' => (string) Str::uuid(), 'created_by' => $request->user()->id,
             'semester_id' => $all->first()->semester_id, 'department_id' => $all->first()->department_id,
@@ -350,7 +390,7 @@ final class RoomRecoveryService
 
     private function candidates(Collection $models, SchedulingSnapshot $snapshot, array $targets, array $destinations, bool $allowTime, int &$budget, float $deadline, ?Closure $passes = null): array
     {
-        $original = $models->map->toArray()->all();
+        $original = $models->map(fn ($model) => $this->asFaceToFace($model->toArray()))->values()->all();
         $ignore = $models->pluck('id')->map('intval')->all();
         $passes ??= $this->validator->forContext($snapshot, ignoreIds: $ignore);
         $choices = [];
@@ -660,7 +700,7 @@ final class RoomRecoveryService
                 foreach ($groups as $group) {
                     foreach ($group['after'] as $row) {
                         $model = $byId[$row['id']];
-                        $model->fill(array_intersect_key($row, array_flip(['room_id', 'day', 'start_time', 'end_time', 'preferred_pattern'])));
+                        $model->fill(array_intersect_key($row, array_flip(['room_id', 'mode', 'day', 'start_time', 'end_time', 'preferred_pattern'])));
                         if ($model->isDirty()) {
                             $model->save();
                         }
@@ -786,7 +826,8 @@ final class RoomRecoveryService
                         'start_time' => $value['start_time'], 'end_time' => $value['end_time']];
                     $proposedRoom = $row['mode'] === 'online' ? 'Online' : ($rooms[$row['room_id']] ?? 'Room TBA');
 
-                    return ['schedule_id' => $row['id'], 'mode' => $row['mode'], 'course' => $meeting['course'] ?? 'Unknown course',
+                    return ['schedule_id' => $row['id'], 'mode' => $row['mode'], 'temporarily_online' => (bool) ($meeting['temporarily_online'] ?? false),
+                        'course' => $meeting['course'] ?? 'Unknown course',
                         'section' => $meeting['section'] ?? 'Unknown section',
                         'before' => $placement($original, $meeting['room'] ?? 'Room TBA'),
                         'after' => $placement($row, $proposedRoom),
@@ -803,12 +844,13 @@ final class RoomRecoveryService
                     $proposal = $proposals->get($row->id);
                     $roomId = $proposal['room_id'] ?? $row->room_id;
                     $roomCode = $proposal ? ($rooms[$roomId] ?? null) : $row->room?->room_code;
+                    $mode = $proposal['mode'] ?? $row->mode;
 
                     return [...$row->only(['id', 'semester_id', 'section_id', 'course_id', 'department_id', 'room_id', 'day', 'start_time', 'end_time',
                         'mode', 'status', 'is_hybrid', 'split_group_id', 'meeting_type', 'meeting_index']),
-                        ...($proposal ? array_intersect_key($proposal, array_flip(['room_id', 'day', 'start_time', 'end_time'])) : []),
+                        ...($proposal ? array_intersect_key($proposal, array_flip(['room_id', 'mode', 'day', 'start_time', 'end_time'])) : []),
                         'course' => $row->course, 'section' => $sections->get($row->section_id),
-                        'room' => $roomId === null || $row->mode === 'online' ? null : ['room_code' => $roomCode ?? 'Room TBA']];
+                        'room' => $roomId === null || $mode === 'online' ? null : ['room_code' => $roomCode ?? 'Room TBA']];
                 })->values()->all();
 
             return ['id' => $plan->id, 'status' => $plan->status, 'department_id' => $plan->department_id, 'department' => $plan->department?->department_name,
@@ -825,6 +867,11 @@ final class RoomRecoveryService
                     && ! $plan->department?->sunday_classes_enabled && $groups->flatMap(fn ($group) => $group['after'])->contains('day', 'Sunday'),
                 'changes' => $changes, 'preview_schedules' => $previewSchedules];
         })->all();
+    }
+
+    public static function temporaryOnlineLabel(?string $roomCode): string
+    {
+        return 'Online (temporary'.($roomCode ? ', '.$roomCode.' unavailable' : '').')';
     }
 
     public function refreshCaches(): void

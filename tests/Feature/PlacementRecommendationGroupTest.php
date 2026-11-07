@@ -278,6 +278,74 @@ class PlacementRecommendationGroupTest extends TestCase
         }
     }
 
+    public function test_full_rooms_recommend_the_pair_online_and_the_choice_saves(): void
+    {
+        $f = $this->fixture();
+        $this->blockRoomAllWeek($f);
+        $response = $this->manual($f, $this->pair($f), ['modes' => null])->assertOk();
+        $placements = $response->json('placements');
+        $this->assertNotEmpty($placements);
+        foreach ($placements as $slot) {
+            $this->assertSame(['online', 'online'], array_column($slot['group_rows'], 'mode'));
+            $this->assertSame([null, null], array_column($slot['group_rows'], 'room_id'));
+            $this->assertSame(['Monday', 'Wednesday'], array_column($slot['group_rows'], 'day'));
+            $this->assertSame($slot['group_rows'][0]['start_time'], $slot['group_rows'][1]['start_time']);
+        }
+        $this->assertNotEmpty($response->json('same_time_starts'));
+        $this->assertSame([
+            'recommended' => true,
+            'message' => 'No physical rooms available. Online Class is recommended as an alternative.',
+        ], $response->json('online_fallback'));
+        $single = $this->manual($f, [[...$this->pair($f)[0], 'preferred_pattern' => null]], ['modes' => null])->assertOk();
+        $modes = array_column($single->json('placements'), 'mode');
+        $this->assertContains('online', $modes);
+        $this->assertNotContains('on-site', $modes);
+        $this->assertTrue($single->json('online_fallback.recommended'), 'A field slot is not the classroom an on-site class needs.');
+        $this->assertDatabaseCount('schedules', 7);
+        $this->save($f, $placements[0]['group_rows'])->assertSuccessful();
+        $this->assertDatabaseCount('schedules', 9);
+    }
+
+    public function test_free_rooms_keep_physical_pair_options_without_an_online_fallback(): void
+    {
+        $f = $this->fixture();
+        $response = $this->manual($f, $this->pair($f), ['modes' => null])->assertOk();
+        $this->assertNotEmpty($response->json('placements'));
+        $this->assertSame([], array_filter($response->json('placements'), static fn (array $slot): bool => $slot['mode'] === 'online'));
+        $this->assertNull($response->json('online_fallback'));
+    }
+
+    public function test_online_fallback_skips_times_taken_by_the_same_section(): void
+    {
+        $f = $this->fixture();
+        $this->blockRoomAllWeek($f);
+        Schedule::create([...$this->identified($f, []), 'course_id' => $f['other']->id, 'split_group_id' => null,
+            'room_id' => null, 'day' => 'Wednesday', 'start_time' => '10:00', 'end_time' => '12:00', 'mode' => 'online']);
+        $placements = $this->manual($f, $this->pair($f), ['modes' => null])->assertOk()->json('placements');
+        $this->assertNotEmpty($placements);
+        foreach ($placements as $slot) {
+            $start = substr($slot['start_time'], 0, 5);
+            $end = substr($slot['end_time'], 0, 5);
+            $this->assertFalse($start < '12:00' && $end > '10:00', 'The section is already in class online on Wednesday.');
+        }
+    }
+
+    public function test_courses_needing_a_laboratory_never_fall_back_online(): void
+    {
+        $f = $this->fixture();
+        $f['course']->update(['lecture_hours' => 0, 'lab_hours' => 3, 'room_type_required' => 'laboratory']);
+        $lab = Rooms::create(['room_code' => 'IT LAB', 'building' => 'IT', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => $f['department']->id]);
+        $this->blockRoomAllWeek($f);
+        foreach (SchedulingPolicy::PERSISTABLE_DAYS as $day) {
+            $this->booking($f, $day, '00:00', '23:30')->update(['room_id' => $lab->id]);
+        }
+        $rows = [['day' => 'Monday', 'start_time' => '08:00', 'end_time' => '09:30', 'mode' => 'on-site', 'room_id' => $lab->id,
+            'faculty_id' => null, 'is_hybrid' => false, 'preferred_pattern' => null, 'meeting_type' => null]];
+        $response = $this->manual($f, $rows, ['modes' => null])->assertOk();
+        $this->assertSame([], array_filter($response->json('placements'), static fn (array $slot): bool => $slot['mode'] === 'online'));
+        $this->assertNull($response->json('online_fallback'));
+    }
+
     public static function regularDeliveries(): array
     {
         return [['on-site', 'Split'], ['online', 'Online (All)']];
@@ -541,11 +609,12 @@ class PlacementRecommendationGroupTest extends TestCase
 
     private function manual(array $f, array $rows, array $extra = [])
     {
-        return $this->actingAs($f['user'])->postJson('/api/schedule-recommendations/available-slots', [
+        // A null extra drops the key, as the scheduler UI omits it.
+        return $this->actingAs($f['user'])->postJson('/api/schedule-recommendations/available-slots', array_filter([
             'section_id' => $f['section']->id, 'course_id' => $f['course']->id,
             'duration_slots' => 3, 'meeting_type' => $rows[0]['meeting_type'], 'modes' => ['on-site', 'online'],
             'placement' => ['rows' => $rows, 'selected_meeting' => 0], ...$extra,
-        ]);
+        ], static fn ($value): bool => $value !== null));
     }
 
     private function save(array $f, array $rows)
@@ -566,6 +635,17 @@ class PlacementRecommendationGroupTest extends TestCase
     {
         return [...$row, 'semester_id' => $f['semester']->id, 'department_id' => $f['department']->id,
             'section_id' => $f['section']->id, 'course_id' => $f['course']->id, 'split_group_id' => 'test-group', 'status' => 'draft'];
+    }
+
+    /** Another section holds the only lecture room every day, all day. */
+    private function blockRoomAllWeek(array $f): void
+    {
+        $otherSection = $f['section']->replicate();
+        $otherSection->section_name = 'IT 1B';
+        $otherSection->save();
+        foreach (SchedulingPolicy::PERSISTABLE_DAYS as $day) {
+            $this->booking($f, $day, '00:00', '23:30')->update(['section_id' => $otherSection->id, 'split_group_id' => null]);
+        }
     }
 
     private function booking(array $f, string $day, string $start, string $end): Schedule

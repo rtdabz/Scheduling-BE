@@ -38,7 +38,7 @@ class CurriculumImportNotesTest extends TestCase
             'lecture_minutes_per_unit' => 60,
             'laboratory_minutes_per_unit' => 180,
             'rules' => collect(['IT' => 'major', 'PRAC' => 'major', 'GEC' => 'minor', 'GEE' => 'minor', 'PATH' => 'minor', 'ROTC' => 'minor'])
-                ->map(fn (string $category, string $prefix): array => ['match_kind' => 'prefix', 'match_value' => $prefix, 'category' => $category])
+                ->map(fn (string $category, string $prefix): array => ['match_value' => $prefix, 'category' => $category])
                 ->values()->all(),
             'acknowledge_overlaps' => false,
         ])->assertOk();
@@ -51,10 +51,6 @@ class CurriculumImportNotesTest extends TestCase
         $payload['metadata']['program_id'] = $this->program->id;
         foreach ($payload['rows'] as &$row) {
             $row['code'] = ['I1 125' => 'IT 125', 'PATH FITt 2' => 'PATH FIT 2', 'PATH FiIT3' => 'PATH FIT 3'][$row['code']] ?? $row['code'];
-            if ($row['code'] === 'Prac 101') {
-                $row['scheduling_basis'] = 'total_hours';
-                $row['total_hours'] = 486;
-            }
         }
         unset($row);
         if ($notes !== null) {

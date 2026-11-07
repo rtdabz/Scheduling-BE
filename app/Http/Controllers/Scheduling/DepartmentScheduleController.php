@@ -14,6 +14,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\ScheduleHistoryRecorder;
+use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Department\DepartmentScheduleStatusDeriver;
 use App\Services\Scheduling\Department\ScheduleOverviewService;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
@@ -43,6 +44,7 @@ class DepartmentScheduleController extends Controller
         private readonly ScheduleOverviewService $scheduleOverviews,
         private readonly ScheduleConflictScanner $conflictScanner,
         private readonly ScheduleAuthorizationService $authorization,
+        private readonly CrossDepartmentApprovalGate $crossDepartmentGate,
     ) {}
 
     /**
@@ -556,6 +558,7 @@ class DepartmentScheduleController extends Controller
             'sections' => $result->values(),
             'department_status' => $this->deriveStatus($result->pluck('status')->toArray()),
             'has_dean' => $this->departmentHasDean((int) $department->id),
+            'cross_department_unlocked' => $this->crossDepartmentGate->allowsSectionStatuses($result->pluck('status')->all()),
             'cross_department_pending' => $this->crossDepartmentPendingCount(
                 (int) $department->id,
                 $activeSemesterId,

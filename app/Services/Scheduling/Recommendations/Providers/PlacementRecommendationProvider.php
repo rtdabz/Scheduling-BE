@@ -20,6 +20,8 @@ final class PlacementRecommendationProvider implements RecommendationProvider
 {
     public const MAX_OPTIONS = 5;
 
+    public const ONLINE_FALLBACK_MESSAGE = 'No physical rooms available. Online Class is recommended as an alternative.';
+
     private const MAX_ALTERNATIVE_OPTIONS = 2;
 
     private const SEED_CANDIDATES = 12;
@@ -308,6 +310,8 @@ final class PlacementRecommendationProvider implements RecommendationProvider
         $description = SessionInterpreter::fromRows($rows);
         $validate = $this->validator->forContext($snapshot, $tentative, $ignoreIds, $description);
         $placements = [];
+        $onlineFallback = [];
+        $canGoOnline = ! in_array(true, array_map(static fn (array $row): bool => (bool) ($row['is_hybrid'] ?? false), $rows), true);
         foreach ($discovery['slots'] as $slot) {
             $proposed = $rows;
             if ($description->kind === 'consecutive') {
@@ -322,6 +326,15 @@ final class PlacementRecommendationProvider implements RecommendationProvider
                 if ($description->sameTimeRequired && count($rows) > 1
                     && ($slot['day'] !== $current['day'] || $slot['mode'] !== $current['mode']
                         || (int) $slot['room_id'] !== (int) $current['room_id'])) {
+                    // A same-time pair keeps its delivery, so an online slot cannot join a
+                    // room-based pair. Held aside: the whole pair online is the fallback
+                    // when no physical placement exists. The validator still rejects it for
+                    // courses that may not go online and for section or course conflicts.
+                    if ($canGoOnline && $slot['mode'] === 'online' && $slot['day'] === $current['day']
+                        && ($online = $this->onlinePair($rows, $slot)) !== null && $validate($online)) {
+                        $onlineFallback[] = [...$slot, 'group_rows' => $online];
+                    }
+
                     continue;
                 }
                 $proposed[$index] = [...$current, 'day' => $slot['day'], 'start_time' => $slot['start_time'], 'end_time' => $slot['end_time'], 'mode' => $slot['mode'], 'room_id' => $slot['room_id']];
@@ -353,6 +366,16 @@ final class PlacementRecommendationProvider implements RecommendationProvider
                 $placements[] = [...$slot, 'group_rows' => $proposed];
             }
         }
+        // Physical means the room-based delivery the affected meetings asked for: a
+        // field slot does not stand in for the classroom an on-site class needs.
+        $wantedPhysical = array_values(array_diff(array_unique(array_map(
+            static fn (array $row): string => (string) ($row['mode'] ?? 'on-site'), $rows)), ['online']));
+        $hasPhysical = array_filter($placements, static fn (array $slot): bool => in_array($slot['mode'], $wantedPhysical, true)) !== [];
+        if (! $hasPhysical) {
+            $placements = [...$placements, ...$onlineFallback];
+        }
+        $recommendOnline = ! $hasPhysical && $wantedPhysical !== []
+            && array_filter($placements, static fn (array $slot): bool => $slot['mode'] === 'online') !== [];
         $rooms = [];
         foreach ($placements as $slot) {
             $key = $slot['mode'].':'.($slot['room_id'] ?? 'virtual');
@@ -371,10 +394,34 @@ final class PlacementRecommendationProvider implements RecommendationProvider
         $payload = [...$discovery, 'placements' => $placements, 'placement_rooms' => $rooms,
             'placement_total' => $discovery['truncated'] ? null : count($placements),
             'placement_truncated' => $discovery['truncated'], 'best_matches' => $best,
-            'recommendations' => [], 'same_time_starts' => $pairStarts];
+            'recommendations' => [], 'same_time_starts' => $pairStarts,
+            'online_fallback' => $recommendOnline ? ['recommended' => true, 'message' => self::ONLINE_FALLBACK_MESSAGE] : null];
 
         return RecommendationResult::adapt($context, $payload, $placements, 'affected_course_group', 'verified_group',
             metadata: ['total' => $discovery['total'], 'truncated' => $discovery['truncated'], 'group_search_truncated' => $discovery['truncated']]);
+    }
+
+    /**
+     * Every meeting of a same-time pair moved online at the slot's start, each keeping its length.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @param  array<string, mixed>  $slot
+     * @return list<array<string, mixed>>|null
+     */
+    private function onlinePair(array $rows, array $slot): ?array
+    {
+        foreach ($rows as &$row) {
+            $length = SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']);
+            if ($length % SchedulingPolicy::SLOT_MINUTES !== 0
+                || SchedulingPolicy::totalSlots() < $slot['start_slot'] + intdiv($length, SchedulingPolicy::SLOT_MINUTES)) {
+                return null;
+            }
+            $row = [...$row, 'mode' => 'online', 'room_id' => null, 'start_time' => $slot['start_time'],
+                'end_time' => SchedulingPolicy::slotToTime($slot['start_slot'] + intdiv($length, SchedulingPolicy::SLOT_MINUTES))];
+        }
+        unset($row);
+
+        return $rows;
     }
 
     public function meetingFromRow(array $row): array

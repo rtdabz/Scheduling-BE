@@ -1,0 +1,1522 @@
+- generic [ref=f1e5]:
+  - generic [ref=f1e6]:
+    - navigation "Jump to year level" [ref=f1e7]:
+      - generic [ref=f1e8]:
+        - 'button "Jump to First Year: 12 courses" [ref=f1e9] [cursor=pointer]':
+          - text: First Year
+          - generic [ref=f1e10]: "12"
+        - 'button "Jump to Second Year: 19 courses" [ref=f1e11] [cursor=pointer]':
+          - text: Second Year
+          - generic [ref=f1e12]: "19"
+        - 'button "Jump to Third Year: 22 courses" [ref=f1e13] [cursor=pointer]':
+          - text: Third Year
+          - generic [ref=f1e14]: "22"
+        - 'button "Jump to Fourth Year: 6 courses" [ref=f1e15] [cursor=pointer]':
+          - text: Fourth Year
+          - generic [ref=f1e16]: "6"
+    - generic [ref=f1e17]: Select courses to set their category together.
+  - generic [ref=f1e18]:
+    - region [ref=f1e19]:
+      - generic [ref=f1e20]:
+        - heading "First Year" [level=3] [ref=f1e21]
+        - paragraph [ref=f1e22]: 12 courses · 34 units
+      - generic [ref=f1e23]:
+        - region [ref=f1e24]:
+          - generic [ref=f1e25]:
+            - generic [ref=f1e26]:
+              - checkbox "First Year, First Semester" [ref=f1e27]
+              - heading "First Semester" [level=4] [ref=f1e28]
+            - generic [ref=f1e30]:
+              - text: 6 courses ·
+              - generic [ref=f1e31]: 17 units
+          - table "First Semester" [ref=f1e33]:
+            - rowgroup [ref=f1e40]:
+              - row [ref=f1e41]:
+                - columnheader "Select" [ref=f1e42]
+                - columnheader "Course" [ref=f1e44]
+                - columnheader "Category" [ref=f1e45]
+                - columnheader "Hrs/wk" [ref=f1e46]
+                - columnheader "Scheduled as" [ref=f1e47]
+            - rowgroup [ref=f1e48]:
+              - row [ref=f1e49]:
+                - cell [ref=f1e50]:
+                  - checkbox "Select IT 101" [checked] [ref=f1e51]
+                - cell "Open IT 101 Introduction To Computing Uses existing course" [ref=f1e52]:
+                  - button "Open IT 101" [ref=f1e53] [cursor=pointer]: IT 101
+                  - generic "Introduction To Computing" [ref=f1e54]
+                  - generic [ref=f1e55]: Uses existing course
+                - cell "Major (rule) By rule · IT" [ref=f1e56]:
+                  - combobox "Category for IT 101" [ref=f1e57]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e58]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e60]:
+                  - generic [ref=f1e61]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e62]:
+                    - generic [aria-hidden] [ref=f1e63]: 2+3
+                    - generic [ref=f1e64]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e65]:
+                  - combobox "Scheduling basis for IT 101" [ref=f1e66]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e67]:
+                - cell [ref=f1e68]:
+                  - checkbox "Select IT 102" [ref=f1e69]
+                - cell "Open IT 102 Computer Programming 1" [ref=f1e70]:
+                  - button "Open IT 102" [ref=f1e71] [cursor=pointer]: IT 102
+                  - generic "Computer Programming 1" [ref=f1e72]
+                - cell "Major (rule) By rule · IT" [ref=f1e73]:
+                  - combobox "Category for IT 102" [ref=f1e74]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e75]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e77]:
+                  - generic [ref=f1e78]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e79]:
+                    - generic [aria-hidden] [ref=f1e80]: 2+3
+                    - generic [ref=f1e81]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e82]:
+                  - combobox "Scheduling basis for IT 102" [ref=f1e83]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e84]:
+                - cell [ref=f1e85]:
+                  - checkbox "Select IT 103" [ref=f1e86]
+                - cell "Open IT 103 Integrated Application Software" [ref=f1e87]:
+                  - button "Open IT 103" [ref=f1e88] [cursor=pointer]: IT 103
+                  - generic "Integrated Application Software" [ref=f1e89]
+                - cell "Minor Overrides Major rule" [ref=f1e90]:
+                  - combobox "Category for IT 103" [ref=f1e91]:
+                    - option "Major (rule)"
+                    - option "Major"
+                    - option "Minor" [selected]
+                  - generic [ref=f1e92]: Overrides Major rule
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e97]:
+                  - generic [ref=f1e98]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e99]:
+                    - generic [aria-hidden] [ref=f1e100]: 2+3
+                    - generic [ref=f1e101]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e102]:
+                  - combobox "Scheduling basis for IT 103" [ref=f1e103]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e104]:
+                - cell [ref=f1e105]:
+                  - checkbox "Select GEC 1" [ref=f1e106]
+                - cell "Open GEC 1 Understanding the Self" [ref=f1e107]:
+                  - button "Open GEC 1" [ref=f1e108] [cursor=pointer]: GEC 1
+                  - generic "Understanding the Self" [ref=f1e109]
+                - cell "Minor (rule) By rule · GEC" [ref=f1e110]:
+                  - combobox "Category for GEC 1" [ref=f1e111]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e112]: By rule · GEC
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e114]:
+                  - generic [ref=f1e115]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e116]:
+                    - generic [aria-hidden] [ref=f1e117]: 3+0
+                    - generic [ref=f1e118]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e119]:
+                  - combobox "Scheduling basis for GEC 1" [ref=f1e120]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e121]:
+                - cell [ref=f1e122]:
+                  - checkbox "Select ROTC/CWTS 101" [ref=f1e123]
+                - cell "Open ROTC/CWTS 101 Basic Army Science/CWTS Uses existing course" [ref=f1e124]:
+                  - button "Open ROTC/CWTS 101" [ref=f1e125] [cursor=pointer]: ROTC/CWTS 101
+                  - generic "Basic Army Science/CWTS" [ref=f1e126]
+                  - generic [ref=f1e127]: Uses existing course
+                - cell "Choose… Needs category" [ref=f1e128]:
+                  - combobox "Category for ROTC/CWTS 101" [ref=f1e129]:
+                    - option "Choose…" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e130]: Needs category
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e132]:
+                  - generic [ref=f1e133]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e134]:
+                    - generic [aria-hidden] [ref=f1e135]: 3+0
+                    - generic [ref=f1e136]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e137]:
+                  - combobox "Scheduling basis for ROTC/CWTS 101" [ref=f1e138]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e139]:
+                - cell [ref=f1e140]:
+                  - checkbox "Select PATH FIT 1" [ref=f1e141]
+                - cell "Open PATH FIT 1 Movement Competency Training" [ref=f1e142]:
+                  - button "Open PATH FIT 1" [ref=f1e143] [cursor=pointer]: PATH FIT 1
+                  - generic "Movement Competency Training" [ref=f1e144]
+                - cell "Minor (rule) By rule · PATH" [ref=f1e145]:
+                  - combobox "Category for PATH FIT 1" [ref=f1e146]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e147]: By rule · PATH
+                - cell "2 h 2 h lec, 0 h lab" [ref=f1e149]:
+                  - generic [ref=f1e150]: 2 h
+                  - generic "2 h lecture, 0 h laboratory" [ref=f1e151]:
+                    - generic [aria-hidden] [ref=f1e152]: 2+0
+                    - generic [ref=f1e153]: 2 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e154]:
+                  - combobox "Scheduling basis for PATH FIT 1" [ref=f1e155]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+        - region [ref=f1e156]:
+          - generic [ref=f1e157]:
+            - generic [ref=f1e158]:
+              - checkbox "First Year, Second Semester" [ref=f1e159]
+              - heading "Second Semester" [level=4] [ref=f1e160]
+            - generic [ref=f1e162]:
+              - text: 6 courses ·
+              - generic [ref=f1e163]: 17 units
+          - table "Second Semester" [ref=f1e165]:
+            - rowgroup [ref=f1e172]:
+              - row [ref=f1e173]:
+                - columnheader "Select" [ref=f1e174]
+                - columnheader "Course" [ref=f1e176]
+                - columnheader "Category" [ref=f1e177]
+                - columnheader "Hrs/wk" [ref=f1e178]
+                - columnheader "Scheduled as" [ref=f1e179]
+            - rowgroup [ref=f1e180]:
+              - row [ref=f1e181]:
+                - cell [ref=f1e182]:
+                  - checkbox "Select IT 104" [ref=f1e183]
+                - cell "Open IT 104 Information Technology Fundamentals" [ref=f1e184]:
+                  - button "Open IT 104" [ref=f1e185] [cursor=pointer]: IT 104
+                  - generic "Information Technology Fundamentals" [ref=f1e186]
+                - cell "Major (rule) By rule · IT" [ref=f1e187]:
+                  - combobox "Category for IT 104" [ref=f1e188]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e189]: By rule · IT
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e191]:
+                  - generic [ref=f1e192]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e193]:
+                    - generic [aria-hidden] [ref=f1e194]: 3+0
+                    - generic [ref=f1e195]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e196]:
+                  - combobox "Scheduling basis for IT 104" [ref=f1e197]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e198]:
+                - cell [ref=f1e199]:
+                  - checkbox "Select IT 105" [ref=f1e200]
+                - cell "Open IT 105 Computer Programming 2" [ref=f1e201]:
+                  - button "Open IT 105" [ref=f1e202] [cursor=pointer]: IT 105
+                  - generic "Computer Programming 2" [ref=f1e203]
+                - cell "Major (rule) By rule · IT" [ref=f1e204]:
+                  - combobox "Category for IT 105" [ref=f1e205]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e206]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e208]:
+                  - generic [ref=f1e209]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e210]:
+                    - generic [aria-hidden] [ref=f1e211]: 2+3
+                    - generic [ref=f1e212]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e213]:
+                  - combobox "Scheduling basis for IT 105" [ref=f1e214]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e215]:
+                - cell [ref=f1e216]:
+                  - checkbox "Select IT 106" [ref=f1e217]
+                - cell "Open IT 106 Digital Logic Design Uses existing course" [ref=f1e218]:
+                  - button "Open IT 106" [ref=f1e219] [cursor=pointer]: IT 106
+                  - generic "Digital Logic Design" [ref=f1e220]
+                  - generic [ref=f1e221]: Uses existing course
+                - cell "Major (rule) By rule · IT" [ref=f1e222]:
+                  - combobox "Category for IT 106" [ref=f1e223]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e224]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e226]:
+                  - generic [ref=f1e227]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e228]:
+                    - generic [aria-hidden] [ref=f1e229]: 2+3
+                    - generic [ref=f1e230]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e231]:
+                  - combobox "Scheduling basis for IT 106" [ref=f1e232]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e233]:
+                - cell [ref=f1e234]:
+                  - checkbox "Select GEC 2" [ref=f1e235]
+                - cell "Open GEC 2 Readings in Philippine History" [ref=f1e236]:
+                  - button "Open GEC 2" [ref=f1e237] [cursor=pointer]: GEC 2
+                  - generic "Readings in Philippine History" [ref=f1e238]
+                - cell "Minor (rule) By rule · GEC" [ref=f1e239]:
+                  - combobox "Category for GEC 2" [ref=f1e240]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e241]: By rule · GEC
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e243]:
+                  - generic [ref=f1e244]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e245]:
+                    - generic [aria-hidden] [ref=f1e246]: 3+0
+                    - generic [ref=f1e247]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e248]:
+                  - combobox "Scheduling basis for GEC 2" [ref=f1e249]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e250]:
+                - cell [ref=f1e251]:
+                  - checkbox "Select ROTC/CWTS 102" [ref=f1e252]
+                - cell "Open ROTC/CWTS 102 Reserved Officer Training Corps/CWTS" [ref=f1e253]:
+                  - button "Open ROTC/CWTS 102" [ref=f1e254] [cursor=pointer]: ROTC/CWTS 102
+                  - generic "Reserved Officer Training Corps/CWTS" [ref=f1e255]
+                - cell "Choose… Needs category" [ref=f1e256]:
+                  - combobox "Category for ROTC/CWTS 102" [ref=f1e257]:
+                    - option "Choose…" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e258]: Needs category
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e260]:
+                  - generic [ref=f1e261]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e262]:
+                    - generic [aria-hidden] [ref=f1e263]: 3+0
+                    - generic [ref=f1e264]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e265]:
+                  - combobox "Scheduling basis for ROTC/CWTS 102" [ref=f1e266]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e267]:
+                - cell [ref=f1e268]:
+                  - checkbox "Select PATH FITt 2" [ref=f1e269]
+                - cell "Open PATH FITt 2 Fitness Training" [ref=f1e270]:
+                  - button "Open PATH FITt 2" [ref=f1e271] [cursor=pointer]: PATH FITt 2
+                  - generic "Fitness Training" [ref=f1e272]
+                - cell "Minor (rule) By rule · PATH" [ref=f1e273]:
+                  - combobox "Category for PATH FITt 2" [ref=f1e274]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e275]: By rule · PATH
+                - cell "2 h 2 h lec, 0 h lab" [ref=f1e277]:
+                  - generic [ref=f1e278]: 2 h
+                  - generic "2 h lecture, 0 h laboratory" [ref=f1e279]:
+                    - generic [aria-hidden] [ref=f1e280]: 2+0
+                    - generic [ref=f1e281]: 2 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e282]:
+                  - combobox "Scheduling basis for PATH FITt 2" [ref=f1e283]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+    - region [ref=f1e284]:
+      - generic [ref=f1e285]:
+        - heading "Second Year" [level=3] [ref=f1e286]
+        - paragraph [ref=f1e287]: 19 courses · 55 units
+      - generic [ref=f1e288]:
+        - region [ref=f1e289]:
+          - generic [ref=f1e290]:
+            - generic [ref=f1e291]:
+              - checkbox "Second Year, First Semester" [ref=f1e292]
+              - heading "First Semester" [level=4] [ref=f1e293]
+            - generic [ref=f1e295]:
+              - text: 7 courses ·
+              - generic [ref=f1e296]: 20 units
+          - table "First Semester" [ref=f1e298]:
+            - rowgroup [ref=f1e305]:
+              - row [ref=f1e306]:
+                - columnheader "Select" [ref=f1e307]
+                - columnheader "Course" [ref=f1e309]
+                - columnheader "Category" [ref=f1e310]
+                - columnheader "Hrs/wk" [ref=f1e311]
+                - columnheader "Scheduled as" [ref=f1e312]
+            - rowgroup [ref=f1e313]:
+              - row [ref=f1e314]:
+                - cell [ref=f1e315]:
+                  - checkbox "Select IT 107" [ref=f1e316]
+                - cell "Open IT 107 Application Development & Emerging Technologies Uses existing course" [ref=f1e317]:
+                  - button "Open IT 107" [ref=f1e318] [cursor=pointer]: IT 107
+                  - generic "Application Development & Emerging Technologies" [ref=f1e319]
+                  - generic [ref=f1e320]: Uses existing course
+                - cell "Major (rule) By rule · IT" [ref=f1e321]:
+                  - combobox "Category for IT 107" [ref=f1e322]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e323]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e325]:
+                  - generic [ref=f1e326]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e327]:
+                    - generic [aria-hidden] [ref=f1e328]: 2+3
+                    - generic [ref=f1e329]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e330]:
+                  - combobox "Scheduling basis for IT 107" [ref=f1e331]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e332]:
+                - cell [ref=f1e333]:
+                  - checkbox "Select IT 108" [ref=f1e334]
+                - cell "Open IT 108 Data Structures & Algorithms" [ref=f1e335]:
+                  - button "Open IT 108" [ref=f1e336] [cursor=pointer]: IT 108
+                  - generic "Data Structures & Algorithms" [ref=f1e337]
+                - cell "Major (rule) By rule · IT" [ref=f1e338]:
+                  - combobox "Category for IT 108" [ref=f1e339]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e340]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e342]:
+                  - generic [ref=f1e343]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e344]:
+                    - generic [aria-hidden] [ref=f1e345]: 2+3
+                    - generic [ref=f1e346]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e347]:
+                  - combobox "Scheduling basis for IT 108" [ref=f1e348]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e349]:
+                - cell [ref=f1e350]:
+                  - checkbox "Select IT 109" [ref=f1e351]
+                - cell "Open IT 109 Fundamentals of Database Systems" [ref=f1e352]:
+                  - button "Open IT 109" [ref=f1e353] [cursor=pointer]: IT 109
+                  - generic "Fundamentals of Database Systems" [ref=f1e354]
+                - cell "Major (rule) By rule · IT" [ref=f1e355]:
+                  - combobox "Category for IT 109" [ref=f1e356]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e357]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e359]:
+                  - generic [ref=f1e360]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e361]:
+                    - generic [aria-hidden] [ref=f1e362]: 2+3
+                    - generic [ref=f1e363]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e364]:
+                  - combobox "Scheduling basis for IT 109" [ref=f1e365]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e366]:
+                - cell [ref=f1e367]:
+                  - checkbox "Select IT 110" [ref=f1e368]
+                - cell "Open IT 110 Object Oriented Programming (OOP)" [ref=f1e369]:
+                  - button "Open IT 110" [ref=f1e370] [cursor=pointer]: IT 110
+                  - generic "Object Oriented Programming (OOP)" [ref=f1e371]
+                - cell "Major (rule) By rule · IT" [ref=f1e372]:
+                  - combobox "Category for IT 110" [ref=f1e373]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e374]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e376]:
+                  - generic [ref=f1e377]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e378]:
+                    - generic [aria-hidden] [ref=f1e379]: 2+3
+                    - generic [ref=f1e380]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e381]:
+                  - combobox "Scheduling basis for IT 110" [ref=f1e382]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e383]:
+                - cell [ref=f1e384]:
+                  - checkbox "Select IT 111" [ref=f1e385]
+                - cell "Open IT 111 Social Issues & Professional Issues Uses existing course" [ref=f1e386]:
+                  - button "Open IT 111" [ref=f1e387] [cursor=pointer]: IT 111
+                  - generic "Social Issues & Professional Issues" [ref=f1e388]
+                  - generic [ref=f1e389]: Uses existing course
+                - cell "Major (rule) By rule · IT" [ref=f1e390]:
+                  - combobox "Category for IT 111" [ref=f1e391]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e392]: By rule · IT
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e394]:
+                  - generic [ref=f1e395]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e396]:
+                    - generic [aria-hidden] [ref=f1e397]: 3+0
+                    - generic [ref=f1e398]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e399]:
+                  - combobox "Scheduling basis for IT 111" [ref=f1e400]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e401]:
+                - cell [ref=f1e402]:
+                  - checkbox "Select GEC 3" [ref=f1e403]
+                - cell "Open GEC 3 The Contemporary World" [ref=f1e404]:
+                  - button "Open GEC 3" [ref=f1e405] [cursor=pointer]: GEC 3
+                  - generic "The Contemporary World" [ref=f1e406]
+                - cell "Minor (rule) By rule · GEC" [ref=f1e407]:
+                  - combobox "Category for GEC 3" [ref=f1e408]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e409]: By rule · GEC
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e411]:
+                  - generic [ref=f1e412]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e413]:
+                    - generic [aria-hidden] [ref=f1e414]: 3+0
+                    - generic [ref=f1e415]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e416]:
+                  - combobox "Scheduling basis for GEC 3" [ref=f1e417]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e418]:
+                - cell [ref=f1e419]:
+                  - checkbox "Select PATH FiIT3" [ref=f1e420]
+                - cell "Open PATH FiIT3 Dance Sports/In-Dual/Group/Outdoor" [ref=f1e421]:
+                  - button "Open PATH FiIT3" [ref=f1e422] [cursor=pointer]: PATH FiIT3
+                  - generic "Dance Sports/In-Dual/Group/Outdoor" [ref=f1e423]
+                - cell "Minor (rule) By rule · PATH" [ref=f1e424]:
+                  - combobox "Category for PATH FiIT3" [ref=f1e425]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e426]: By rule · PATH
+                - cell "2 h 2 h lec, 0 h lab" [ref=f1e428]:
+                  - generic [ref=f1e429]: 2 h
+                  - generic "2 h lecture, 0 h laboratory" [ref=f1e430]:
+                    - generic [aria-hidden] [ref=f1e431]: 2+0
+                    - generic [ref=f1e432]: 2 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e433]:
+                  - combobox "Scheduling basis for PATH FiIT3" [ref=f1e434]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+        - region [ref=f1e435]:
+          - generic [ref=f1e436]:
+            - generic [ref=f1e437]:
+              - checkbox "Second Year, Second Semester" [ref=f1e438]
+              - heading "Second Semester" [level=4] [ref=f1e439]
+            - generic [ref=f1e441]:
+              - text: 9 courses ·
+              - generic [ref=f1e442]: 26 units
+          - table "Second Semester" [ref=f1e444]:
+            - rowgroup [ref=f1e451]:
+              - row [ref=f1e452]:
+                - columnheader "Select" [ref=f1e453]
+                - columnheader "Course" [ref=f1e455]
+                - columnheader "Category" [ref=f1e456]
+                - columnheader "Hrs/wk" [ref=f1e457]
+                - columnheader "Scheduled as" [ref=f1e458]
+            - rowgroup [ref=f1e459]:
+              - row [ref=f1e460]:
+                - cell [ref=f1e461]:
+                  - checkbox "Select IT 112" [ref=f1e462]
+                - cell "Open IT 112 Information Management 1" [ref=f1e463]:
+                  - button "Open IT 112" [ref=f1e464] [cursor=pointer]: IT 112
+                  - generic "Information Management 1" [ref=f1e465]
+                - cell "Major (rule) By rule · IT" [ref=f1e466]:
+                  - combobox "Category for IT 112" [ref=f1e467]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e468]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e470]:
+                  - generic [ref=f1e471]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e472]:
+                    - generic [aria-hidden] [ref=f1e473]: 2+3
+                    - generic [ref=f1e474]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e475]:
+                  - combobox "Scheduling basis for IT 112" [ref=f1e476]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e477]:
+                - cell [ref=f1e478]:
+                  - checkbox "Select IT 113" [ref=f1e479]
+                - cell "Open IT 113 Event-Driven Programming Uses existing course" [ref=f1e480]:
+                  - button "Open IT 113" [ref=f1e481] [cursor=pointer]: IT 113
+                  - generic "Event-Driven Programming" [ref=f1e482]
+                  - generic [ref=f1e483]: Uses existing course
+                - cell "Major (rule) By rule · IT" [ref=f1e484]:
+                  - combobox "Category for IT 113" [ref=f1e485]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e486]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e488]:
+                  - generic [ref=f1e489]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e490]:
+                    - generic [aria-hidden] [ref=f1e491]: 2+3
+                    - generic [ref=f1e492]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e493]:
+                  - combobox "Scheduling basis for IT 113" [ref=f1e494]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e495]:
+                - cell [ref=f1e496]:
+                  - checkbox "Select IT 114" [ref=f1e497]
+                - cell "Open IT 114 Integrative Programming & Technologies 1" [ref=f1e498]:
+                  - button "Open IT 114" [ref=f1e499] [cursor=pointer]: IT 114
+                  - generic "Integrative Programming & Technologies 1" [ref=f1e500]
+                - cell "Major (rule) By rule · IT" [ref=f1e501]:
+                  - combobox "Category for IT 114" [ref=f1e502]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e503]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e505]:
+                  - generic [ref=f1e506]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e507]:
+                    - generic [aria-hidden] [ref=f1e508]: 2+3
+                    - generic [ref=f1e509]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e510]:
+                  - combobox "Scheduling basis for IT 114" [ref=f1e511]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e512]:
+                - cell [ref=f1e513]:
+                  - checkbox "Select IT 115" [ref=f1e514]
+                - cell "Open IT 115 Human Computer Interaction 1" [ref=f1e515]:
+                  - button "Open IT 115" [ref=f1e516] [cursor=pointer]: IT 115
+                  - generic "Human Computer Interaction 1" [ref=f1e517]
+                - cell "Major (rule) By rule · IT" [ref=f1e518]:
+                  - combobox "Category for IT 115" [ref=f1e519]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e520]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e522]:
+                  - generic [ref=f1e523]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e524]:
+                    - generic [aria-hidden] [ref=f1e525]: 2+3
+                    - generic [ref=f1e526]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e527]:
+                  - combobox "Scheduling basis for IT 115" [ref=f1e528]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e529]:
+                - cell [ref=f1e530]:
+                  - checkbox "Select IT 116" [ref=f1e531]
+                - cell "Open IT 116 Advanced Database System" [ref=f1e532]:
+                  - button "Open IT 116" [ref=f1e533] [cursor=pointer]: IT 116
+                  - generic "Advanced Database System" [ref=f1e534]
+                - cell "Major (rule) By rule · IT" [ref=f1e535]:
+                  - combobox "Category for IT 116" [ref=f1e536]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e537]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e539]:
+                  - generic [ref=f1e540]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e541]:
+                    - generic [aria-hidden] [ref=f1e542]: 2+3
+                    - generic [ref=f1e543]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e544]:
+                  - combobox "Scheduling basis for IT 116" [ref=f1e545]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e546]:
+                - cell [ref=f1e547]:
+                  - checkbox "Select GEC 4" [ref=f1e548]
+                - cell "Open GEC 4 Mathematics in the Modern World Uses existing course" [ref=f1e549]:
+                  - button "Open GEC 4" [ref=f1e550] [cursor=pointer]: GEC 4
+                  - generic "Mathematics in the Modern World" [ref=f1e551]
+                  - generic [ref=f1e552]: Uses existing course
+                - cell "Minor (rule) By rule · GEC" [ref=f1e553]:
+                  - combobox "Category for GEC 4" [ref=f1e554]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e555]: By rule · GEC
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e557]:
+                  - generic [ref=f1e558]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e559]:
+                    - generic [aria-hidden] [ref=f1e560]: 3+0
+                    - generic [ref=f1e561]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e562]:
+                  - combobox "Scheduling basis for GEC 4" [ref=f1e563]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e564]:
+                - cell [ref=f1e565]:
+                  - checkbox "Select GEE 6" [ref=f1e566]
+                - cell "Open GEE 6 Art Appreciation" [ref=f1e567]:
+                  - button "Open GEE 6" [ref=f1e568] [cursor=pointer]: GEE 6
+                  - generic "Art Appreciation" [ref=f1e569]
+                - cell "Minor (rule) By rule · GEE" [ref=f1e570]:
+                  - combobox "Category for GEE 6" [ref=f1e571]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e572]: By rule · GEE
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e574]:
+                  - generic [ref=f1e575]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e576]:
+                    - generic [aria-hidden] [ref=f1e577]: 3+0
+                    - generic [ref=f1e578]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e579]:
+                  - combobox "Scheduling basis for GEE 6" [ref=f1e580]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e581]:
+                - cell [ref=f1e582]:
+                  - checkbox "Select GEE 8" [ref=f1e583]
+                - cell "Open GEE 8 Ethics" [ref=f1e584]:
+                  - button "Open GEE 8" [ref=f1e585] [cursor=pointer]: GEE 8
+                  - generic "Ethics" [ref=f1e586]
+                - cell "Minor (rule) By rule · GEE" [ref=f1e587]:
+                  - combobox "Category for GEE 8" [ref=f1e588]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e589]: By rule · GEE
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e591]:
+                  - generic [ref=f1e592]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e593]:
+                    - generic [aria-hidden] [ref=f1e594]: 3+0
+                    - generic [ref=f1e595]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e596]:
+                  - combobox "Scheduling basis for GEE 8" [ref=f1e597]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e598]:
+                - cell [ref=f1e599]:
+                  - checkbox "Select PATH FIT 4" [ref=f1e600]
+                - cell "Open PATH FIT 4 Team Sports" [ref=f1e601]:
+                  - button "Open PATH FIT 4" [ref=f1e602] [cursor=pointer]: PATH FIT 4
+                  - generic "Team Sports" [ref=f1e603]
+                - cell "Minor (rule) By rule · PATH" [ref=f1e604]:
+                  - combobox "Category for PATH FIT 4" [ref=f1e605]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e606]: By rule · PATH
+                - cell "2 h 2 h lec, 0 h lab" [ref=f1e608]:
+                  - generic [ref=f1e609]: 2 h
+                  - generic "2 h lecture, 0 h laboratory" [ref=f1e610]:
+                    - generic [aria-hidden] [ref=f1e611]: 2+0
+                    - generic [ref=f1e612]: 2 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e613]:
+                  - combobox "Scheduling basis for PATH FIT 4" [ref=f1e614]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+      - region [ref=f1e615]:
+        - generic [ref=f1e616]:
+          - generic [ref=f1e617]:
+            - checkbox "Second Year, Summer" [ref=f1e618]
+            - heading "Summer" [level=4] [ref=f1e619]
+          - generic [ref=f1e621]:
+            - text: 3 courses ·
+            - generic [ref=f1e622]: 9 units
+        - table "Summer" [ref=f1e624]:
+          - rowgroup [ref=f1e631]:
+            - row [ref=f1e632]:
+              - columnheader "Select" [ref=f1e633]
+              - columnheader "Course" [ref=f1e635]
+              - columnheader "Category" [ref=f1e636]
+              - columnheader "Hrs/wk" [ref=f1e637]
+              - columnheader "Scheduled as" [ref=f1e638]
+          - rowgroup [ref=f1e639]:
+            - row [ref=f1e640]:
+              - cell [ref=f1e641]:
+                - checkbox "Select IT 117" [ref=f1e642]
+              - cell "Open IT 117 QualitativeMethods(Modeling&Simulation) Uses existing course" [ref=f1e643]:
+                - button "Open IT 117" [ref=f1e644] [cursor=pointer]: IT 117
+                - generic "QualitativeMethods(Modeling&Simulation)" [ref=f1e645]
+                - generic [ref=f1e646]: Uses existing course
+              - cell "Major (rule) By rule · IT" [ref=f1e647]:
+                - combobox "Category for IT 117" [ref=f1e648]:
+                  - option "Major (rule)" [selected]
+                  - option "Major"
+                  - option "Minor"
+                - generic [ref=f1e649]: By rule · IT
+              - cell "5 h 2 h lec, 3 h lab" [ref=f1e651]:
+                - generic [ref=f1e652]: 5 h
+                - generic "2 h lecture, 3 h laboratory" [ref=f1e653]:
+                  - generic [aria-hidden] [ref=f1e654]: 2+3
+                  - generic [ref=f1e655]: 2 h lec, 3 h lab
+              - cell "Weekly" [ref=f1e656]:
+                - combobox "Scheduling basis for IT 117" [ref=f1e657]:
+                  - option "Weekly" [selected]
+                  - option "Weekly"
+                  - option "Total hours"
+            - row [ref=f1e658]:
+              - cell [ref=f1e659]:
+                - checkbox "Select IT 118" [ref=f1e660]
+              - cell "Open IT 118 Human Computer Interaction 2" [ref=f1e661]:
+                - button "Open IT 118" [ref=f1e662] [cursor=pointer]: IT 118
+                - generic "Human Computer Interaction 2" [ref=f1e663]
+              - cell "Major (rule) By rule · IT" [ref=f1e664]:
+                - combobox "Category for IT 118" [ref=f1e665]:
+                  - option "Major (rule)" [selected]
+                  - option "Major"
+                  - option "Minor"
+                - generic [ref=f1e666]: By rule · IT
+              - cell "5 h 2 h lec, 3 h lab" [ref=f1e668]:
+                - generic [ref=f1e669]: 5 h
+                - generic "2 h lecture, 3 h laboratory" [ref=f1e670]:
+                  - generic [aria-hidden] [ref=f1e671]: 2+3
+                  - generic [ref=f1e672]: 2 h lec, 3 h lab
+              - cell "Weekly" [ref=f1e673]:
+                - combobox "Scheduling basis for IT 118" [ref=f1e674]:
+                  - option "Weekly" [selected]
+                  - option "Weekly"
+                  - option "Total hours"
+            - row [ref=f1e675]:
+              - cell [ref=f1e676]:
+                - checkbox "Select IT Elec 1" [ref=f1e677]
+              - cell "Open IT Elec 1 System Analysis and Design (SAD)" [ref=f1e678]:
+                - button "Open IT Elec 1" [ref=f1e679] [cursor=pointer]: IT Elec 1
+                - generic "System Analysis and Design (SAD)" [ref=f1e680]
+              - cell "Major (rule) By rule · IT" [ref=f1e681]:
+                - combobox "Category for IT Elec 1" [ref=f1e682]:
+                  - option "Major (rule)" [selected]
+                  - option "Major"
+                  - option "Minor"
+                - generic [ref=f1e683]: By rule · IT
+              - cell "3 h 3 h lec, 0 h lab" [ref=f1e685]:
+                - generic [ref=f1e686]: 3 h
+                - generic "3 h lecture, 0 h laboratory" [ref=f1e687]:
+                  - generic [aria-hidden] [ref=f1e688]: 3+0
+                  - generic [ref=f1e689]: 3 h lec, 0 h lab
+              - cell "Weekly" [ref=f1e690]:
+                - combobox "Scheduling basis for IT Elec 1" [ref=f1e691]:
+                  - option "Weekly" [selected]
+                  - option "Weekly"
+                  - option "Total hours"
+    - region [ref=f1e692]:
+      - generic [ref=f1e693]:
+        - heading "Third Year" [level=3] [ref=f1e694]
+        - paragraph [ref=f1e695]: 22 courses · 66 units
+      - generic [ref=f1e696]:
+        - region [ref=f1e697]:
+          - generic [ref=f1e698]:
+            - generic [ref=f1e699]:
+              - checkbox "Third Year, First Semester" [ref=f1e700]
+              - heading "First Semester" [level=4] [ref=f1e701]
+            - generic [ref=f1e703]:
+              - text: 9 courses ·
+              - generic [ref=f1e704]: 27 units
+          - table "First Semester" [ref=f1e706]:
+            - rowgroup [ref=f1e713]:
+              - row [ref=f1e714]:
+                - columnheader "Select" [ref=f1e715]
+                - columnheader "Course" [ref=f1e717]
+                - columnheader "Category" [ref=f1e718]
+                - columnheader "Hrs/wk" [ref=f1e719]
+                - columnheader "Scheduled as" [ref=f1e720]
+            - rowgroup [ref=f1e721]:
+              - row [ref=f1e722]:
+                - cell [ref=f1e723]:
+                  - checkbox "Select IT 119" [ref=f1e724]
+                - cell "Open IT 119 System Integration & Architecture 1" [ref=f1e725]:
+                  - button "Open IT 119" [ref=f1e726] [cursor=pointer]: IT 119
+                  - generic "System Integration & Architecture 1" [ref=f1e727]
+                - cell "Major (rule) By rule · IT" [ref=f1e728]:
+                  - combobox "Category for IT 119" [ref=f1e729]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e730]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e732]:
+                  - generic [ref=f1e733]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e734]:
+                    - generic [aria-hidden] [ref=f1e735]: 2+3
+                    - generic [ref=f1e736]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e737]:
+                  - combobox "Scheduling basis for IT 119" [ref=f1e738]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e739]:
+                - cell [ref=f1e740]:
+                  - checkbox "Select IT 120" [ref=f1e741]
+                - cell "Open IT 120 Research1 (Methods of Research in Computing) Uses existing course" [ref=f1e742]:
+                  - button "Open IT 120" [ref=f1e743] [cursor=pointer]: IT 120
+                  - generic "Research1 (Methods of Research in Computing)" [ref=f1e744]
+                  - generic [ref=f1e745]: Uses existing course
+                - cell "Major (rule) By rule · IT" [ref=f1e746]:
+                  - combobox "Category for IT 120" [ref=f1e747]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e748]: By rule · IT
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e750]:
+                  - generic [ref=f1e751]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e752]:
+                    - generic [aria-hidden] [ref=f1e753]: 3+0
+                    - generic [ref=f1e754]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e755]:
+                  - combobox "Scheduling basis for IT 120" [ref=f1e756]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e757]:
+                - cell [ref=f1e758]:
+                  - checkbox "Select IT 121" [ref=f1e759]
+                - cell "Open IT 121 Information Management 2" [ref=f1e760]:
+                  - button "Open IT 121" [ref=f1e761] [cursor=pointer]: IT 121
+                  - generic "Information Management 2" [ref=f1e762]
+                - cell "Major (rule) By rule · IT" [ref=f1e763]:
+                  - combobox "Category for IT 121" [ref=f1e764]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e765]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e767]:
+                  - generic [ref=f1e768]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e769]:
+                    - generic [aria-hidden] [ref=f1e770]: 2+3
+                    - generic [ref=f1e771]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e772]:
+                  - combobox "Scheduling basis for IT 121" [ref=f1e773]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e774]:
+                - cell [ref=f1e775]:
+                  - checkbox "Select IT 122" [ref=f1e776]
+                - cell "Open IT 122 Integrative Programming & Technologies 2" [ref=f1e777]:
+                  - button "Open IT 122" [ref=f1e778] [cursor=pointer]: IT 122
+                  - generic "Integrative Programming & Technologies 2" [ref=f1e779]
+                - cell "Major (rule) By rule · IT" [ref=f1e780]:
+                  - combobox "Category for IT 122" [ref=f1e781]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e782]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e784]:
+                  - generic [ref=f1e785]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e786]:
+                    - generic [aria-hidden] [ref=f1e787]: 2+3
+                    - generic [ref=f1e788]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e789]:
+                  - combobox "Scheduling basis for IT 122" [ref=f1e790]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e791]:
+                - cell [ref=f1e792]:
+                  - checkbox "Select IT Elec 2" [ref=f1e793]
+                - cell "Open IT Elec 2 Computer Graphics" [ref=f1e794]:
+                  - button "Open IT Elec 2" [ref=f1e795] [cursor=pointer]: IT Elec 2
+                  - generic "Computer Graphics" [ref=f1e796]
+                - cell "Major (rule) By rule · IT" [ref=f1e797]:
+                  - combobox "Category for IT Elec 2" [ref=f1e798]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e799]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e801]:
+                  - generic [ref=f1e802]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e803]:
+                    - generic [aria-hidden] [ref=f1e804]: 2+3
+                    - generic [ref=f1e805]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e806]:
+                  - combobox "Scheduling basis for IT Elec 2" [ref=f1e807]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e808]:
+                - cell [ref=f1e809]:
+                  - checkbox "Select GEC 5" [ref=f1e810]
+                - cell "Open GEC 5 Purposive Communication Uses existing course" [ref=f1e811]:
+                  - button "Open GEC 5" [ref=f1e812] [cursor=pointer]: GEC 5
+                  - generic "Purposive Communication" [ref=f1e813]
+                  - generic [ref=f1e814]: Uses existing course
+                - cell "Minor (rule) By rule · GEC" [ref=f1e815]:
+                  - combobox "Category for GEC 5" [ref=f1e816]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e817]: By rule · GEC
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e819]:
+                  - generic [ref=f1e820]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e821]:
+                    - generic [aria-hidden] [ref=f1e822]: 3+0
+                    - generic [ref=f1e823]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e824]:
+                  - combobox "Scheduling basis for GEC 5" [ref=f1e825]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e826]:
+                - cell [ref=f1e827]:
+                  - checkbox "Select GEC 7" [ref=f1e828]
+                - cell "Open GEC 7 Science, Technology and Society" [ref=f1e829]:
+                  - button "Open GEC 7" [ref=f1e830] [cursor=pointer]: GEC 7
+                  - generic "Science, Technology and Society" [ref=f1e831]
+                - cell "Minor (rule) By rule · GEC" [ref=f1e832]:
+                  - combobox "Category for GEC 7" [ref=f1e833]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e834]: By rule · GEC
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e836]:
+                  - generic [ref=f1e837]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e838]:
+                    - generic [aria-hidden] [ref=f1e839]: 3+0
+                    - generic [ref=f1e840]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e841]:
+                  - combobox "Scheduling basis for GEC 7" [ref=f1e842]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e843]:
+                - cell [ref=f1e844]:
+                  - checkbox "Select GEC 9" [ref=f1e845]
+                - cell "Open GEC 9 Life, Works & Writing of Dr. Jose Rizal" [ref=f1e846]:
+                  - button "Open GEC 9" [ref=f1e847] [cursor=pointer]: GEC 9
+                  - generic "Life, Works & Writing of Dr. Jose Rizal" [ref=f1e848]
+                - cell "Minor (rule) By rule · GEC" [ref=f1e849]:
+                  - combobox "Category for GEC 9" [ref=f1e850]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e851]: By rule · GEC
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e853]:
+                  - generic [ref=f1e854]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e855]:
+                    - generic [aria-hidden] [ref=f1e856]: 3+0
+                    - generic [ref=f1e857]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e858]:
+                  - combobox "Scheduling basis for GEC 9" [ref=f1e859]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e860]:
+                - cell [ref=f1e861]:
+                  - checkbox "Select GEE 9" [ref=f1e862]
+                - cell "Open GEE 9 Technoprenuership (The Entrepreneurial Mind)" [ref=f1e863]:
+                  - button "Open GEE 9" [ref=f1e864] [cursor=pointer]: GEE 9
+                  - generic "Technoprenuership (The Entrepreneurial Mind)" [ref=f1e865]
+                - cell "Minor (rule) By rule · GEE" [ref=f1e866]:
+                  - combobox "Category for GEE 9" [ref=f1e867]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e868]: By rule · GEE
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e870]:
+                  - generic [ref=f1e871]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e872]:
+                    - generic [aria-hidden] [ref=f1e873]: 3+0
+                    - generic [ref=f1e874]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e875]:
+                  - combobox "Scheduling basis for GEE 9" [ref=f1e876]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+        - region [ref=f1e877]:
+          - generic [ref=f1e878]:
+            - generic [ref=f1e879]:
+              - checkbox "Third Year, Second Semester" [ref=f1e880]
+              - heading "Second Semester" [level=4] [ref=f1e881]
+            - generic [ref=f1e883]:
+              - text: 10 courses ·
+              - generic [ref=f1e884]: 30 units
+          - table "Second Semester" [ref=f1e886]:
+            - rowgroup [ref=f1e893]:
+              - row [ref=f1e894]:
+                - columnheader "Select" [ref=f1e895]
+                - columnheader "Course" [ref=f1e897]
+                - columnheader "Category" [ref=f1e898]
+                - columnheader "Hrs/wk" [ref=f1e899]
+                - columnheader "Scheduled as" [ref=f1e900]
+            - rowgroup [ref=f1e901]:
+              - row [ref=f1e902]:
+                - cell [ref=f1e903]:
+                  - checkbox "Select IT 123" [ref=f1e904]
+                - cell "Open IT 123 Information Assurance & Security 1 Uses existing course" [ref=f1e905]:
+                  - button "Open IT 123" [ref=f1e906] [cursor=pointer]: IT 123
+                  - generic "Information Assurance & Security 1" [ref=f1e907]
+                  - generic [ref=f1e908]: Uses existing course
+                - cell "Major (rule) By rule · IT" [ref=f1e909]:
+                  - combobox "Category for IT 123" [ref=f1e910]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e911]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e913]:
+                  - generic [ref=f1e914]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e915]:
+                    - generic [aria-hidden] [ref=f1e916]: 2+3
+                    - generic [ref=f1e917]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e918]:
+                  - combobox "Scheduling basis for IT 123" [ref=f1e919]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e920]:
+                - cell [ref=f1e921]:
+                  - checkbox "Select IT 124" [ref=f1e922]
+                - cell "Open IT 124 Networking 1" [ref=f1e923]:
+                  - button "Open IT 124" [ref=f1e924] [cursor=pointer]: IT 124
+                  - generic "Networking 1" [ref=f1e925]
+                - cell "Major (rule) By rule · IT" [ref=f1e926]:
+                  - combobox "Category for IT 124" [ref=f1e927]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e928]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e930]:
+                  - generic [ref=f1e931]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e932]:
+                    - generic [aria-hidden] [ref=f1e933]: 2+3
+                    - generic [ref=f1e934]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e935]:
+                  - combobox "Scheduling basis for IT 124" [ref=f1e936]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e937]:
+                - cell [ref=f1e938]:
+                  - checkbox "Select I1 125" [ref=f1e939]
+                - cell "Open I1 125 Capstone Project 1" [ref=f1e940]:
+                  - button "Open I1 125" [ref=f1e941] [cursor=pointer]: I1 125
+                  - generic "Capstone Project 1" [ref=f1e942]
+                - cell "Choose… Needs category" [ref=f1e943]:
+                  - combobox "Category for I1 125" [ref=f1e944]:
+                    - option "Choose…" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e945]: Needs category
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e947]:
+                  - generic [ref=f1e948]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e949]:
+                    - generic [aria-hidden] [ref=f1e950]: 3+0
+                    - generic [ref=f1e951]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e952]:
+                  - combobox "Scheduling basis for I1 125" [ref=f1e953]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e954]:
+                - cell [ref=f1e955]:
+                  - checkbox "Select IT 126" [ref=f1e956]
+                - cell "Open IT 126 System Integration & Architecture 2" [ref=f1e957]:
+                  - button "Open IT 126" [ref=f1e958] [cursor=pointer]: IT 126
+                  - generic "System Integration & Architecture 2" [ref=f1e959]
+                - cell "Major (rule) By rule · IT" [ref=f1e960]:
+                  - combobox "Category for IT 126" [ref=f1e961]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e962]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e964]:
+                  - generic [ref=f1e965]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e966]:
+                    - generic [aria-hidden] [ref=f1e967]: 2+3
+                    - generic [ref=f1e968]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e969]:
+                  - combobox "Scheduling basis for IT 126" [ref=f1e970]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e971]:
+                - cell [ref=f1e972]:
+                  - checkbox "Select IT 127" [ref=f1e973]
+                - cell "Open IT 127 Platform Technologies Uses existing course" [ref=f1e974]:
+                  - button "Open IT 127" [ref=f1e975] [cursor=pointer]: IT 127
+                  - generic "Platform Technologies" [ref=f1e976]
+                  - generic [ref=f1e977]: Uses existing course
+                - cell "Major (rule) By rule · IT" [ref=f1e978]:
+                  - combobox "Category for IT 127" [ref=f1e979]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e980]: By rule · IT
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e982]:
+                  - generic [ref=f1e983]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e984]:
+                    - generic [aria-hidden] [ref=f1e985]: 3+0
+                    - generic [ref=f1e986]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e987]:
+                  - combobox "Scheduling basis for IT 127" [ref=f1e988]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e989]:
+                - cell [ref=f1e990]:
+                  - checkbox "Select IT Elec 3" [ref=f1e991]
+                - cell "Open IT Elec 3 Computer - Aided Design (CAD)" [ref=f1e992]:
+                  - button "Open IT Elec 3" [ref=f1e993] [cursor=pointer]: IT Elec 3
+                  - generic "Computer - Aided Design (CAD)" [ref=f1e994]
+                - cell "Major (rule) By rule · IT" [ref=f1e995]:
+                  - combobox "Category for IT Elec 3" [ref=f1e996]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e997]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e999]:
+                  - generic [ref=f1e1000]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e1001]:
+                    - generic [aria-hidden] [ref=f1e1002]: 2+3
+                    - generic [ref=f1e1003]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e1004]:
+                  - combobox "Scheduling basis for IT Elec 3" [ref=f1e1005]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e1006]:
+                - cell [ref=f1e1007]:
+                  - checkbox "Select GEE 4" [ref=f1e1008]
+                - cell "Open GEE 4 Living in the IT Era" [ref=f1e1009]:
+                  - button "Open GEE 4" [ref=f1e1010] [cursor=pointer]: GEE 4
+                  - generic "Living in the IT Era" [ref=f1e1011]
+                - cell "Minor (rule) By rule · GEE" [ref=f1e1012]:
+                  - combobox "Category for GEE 4" [ref=f1e1013]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1014]: By rule · GEE
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e1016]:
+                  - generic [ref=f1e1017]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e1018]:
+                    - generic [aria-hidden] [ref=f1e1019]: 3+0
+                    - generic [ref=f1e1020]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e1021]:
+                  - combobox "Scheduling basis for GEE 4" [ref=f1e1022]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e1023]:
+                - cell [ref=f1e1024]:
+                  - checkbox "Select GEE 7" [ref=f1e1025]
+                - cell "Open GEE 7 Gender & Society" [ref=f1e1026]:
+                  - button "Open GEE 7" [ref=f1e1027] [cursor=pointer]: GEE 7
+                  - generic "Gender & Society" [ref=f1e1028]
+                - cell "Minor (rule) By rule · GEE" [ref=f1e1029]:
+                  - combobox "Category for GEE 7" [ref=f1e1030]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1031]: By rule · GEE
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e1033]:
+                  - generic [ref=f1e1034]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e1035]:
+                    - generic [aria-hidden] [ref=f1e1036]: 3+0
+                    - generic [ref=f1e1037]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e1038]:
+                  - combobox "Scheduling basis for GEE 7" [ref=f1e1039]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e1040]:
+                - cell [ref=f1e1041]:
+                  - checkbox "Select GEE 10" [ref=f1e1042]
+                - cell "Open GEE 10 Entrepeneural Management Uses existing course" [ref=f1e1043]:
+                  - button "Open GEE 10" [ref=f1e1044] [cursor=pointer]: GEE 10
+                  - generic "Entrepeneural Management" [ref=f1e1045]
+                  - generic [ref=f1e1046]: Uses existing course
+                - cell "Minor (rule) By rule · GEE" [ref=f1e1047]:
+                  - combobox "Category for GEE 10" [ref=f1e1048]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1049]: By rule · GEE
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e1051]:
+                  - generic [ref=f1e1052]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e1053]:
+                    - generic [aria-hidden] [ref=f1e1054]: 3+0
+                    - generic [ref=f1e1055]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e1056]:
+                  - combobox "Scheduling basis for GEE 10" [ref=f1e1057]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e1058]:
+                - cell [ref=f1e1059]:
+                  - checkbox "Select GEE11" [ref=f1e1060]
+                - cell "Open GEE11 Phil. Indigenous Communities&Peace Studies Education" [ref=f1e1061]:
+                  - button "Open GEE11" [ref=f1e1062] [cursor=pointer]: GEE11
+                  - generic "Phil. Indigenous Communities&Peace Studies Education" [ref=f1e1063]
+                - cell "Minor (rule) By rule · GEE" [ref=f1e1064]:
+                  - combobox "Category for GEE11" [ref=f1e1065]:
+                    - option "Minor (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1066]: By rule · GEE
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e1068]:
+                  - generic [ref=f1e1069]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e1070]:
+                    - generic [aria-hidden] [ref=f1e1071]: 3+0
+                    - generic [ref=f1e1072]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e1073]:
+                  - combobox "Scheduling basis for GEE11" [ref=f1e1074]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+      - region [ref=f1e1075]:
+        - generic [ref=f1e1076]:
+          - generic [ref=f1e1077]:
+            - checkbox "Third Year, Summer" [ref=f1e1078]
+            - heading "Summer" [level=4] [ref=f1e1079]
+          - generic [ref=f1e1081]:
+            - text: 3 courses ·
+            - generic [ref=f1e1082]: 9 units
+        - table "Summer" [ref=f1e1084]:
+          - rowgroup [ref=f1e1091]:
+            - row [ref=f1e1092]:
+              - columnheader "Select" [ref=f1e1093]
+              - columnheader "Course" [ref=f1e1095]
+              - columnheader "Category" [ref=f1e1096]
+              - columnheader "Hrs/wk" [ref=f1e1097]
+              - columnheader "Scheduled as" [ref=f1e1098]
+          - rowgroup [ref=f1e1099]:
+            - row [ref=f1e1100]:
+              - cell [ref=f1e1101]:
+                - checkbox "Select IT Elec 4" [ref=f1e1102]
+              - cell "Open IT Elec 4 Fundamentals of Data Warehousing&Data Mining" [ref=f1e1103]:
+                - button "Open IT Elec 4" [ref=f1e1104] [cursor=pointer]: IT Elec 4
+                - generic "Fundamentals of Data Warehousing&Data Mining" [ref=f1e1105]
+              - cell "Major (rule) By rule · IT" [ref=f1e1106]:
+                - combobox "Category for IT Elec 4" [ref=f1e1107]:
+                  - option "Major (rule)" [selected]
+                  - option "Major"
+                  - option "Minor"
+                - generic [ref=f1e1108]: By rule · IT
+              - cell "3 h 3 h lec, 0 h lab" [ref=f1e1110]:
+                - generic [ref=f1e1111]: 3 h
+                - generic "3 h lecture, 0 h laboratory" [ref=f1e1112]:
+                  - generic [aria-hidden] [ref=f1e1113]: 3+0
+                  - generic [ref=f1e1114]: 3 h lec, 0 h lab
+              - cell "Weekly" [ref=f1e1115]:
+                - combobox "Scheduling basis for IT Elec 4" [ref=f1e1116]:
+                  - option "Weekly" [selected]
+                  - option "Weekly"
+                  - option "Total hours"
+            - row [ref=f1e1117]:
+              - cell [ref=f1e1118]:
+                - checkbox "Select IT Elec 5" [ref=f1e1119]
+              - cell "Open IT Elec 5 Multimedia System" [ref=f1e1120]:
+                - button "Open IT Elec 5" [ref=f1e1121] [cursor=pointer]: IT Elec 5
+                - generic "Multimedia System" [ref=f1e1122]
+              - cell "Major (rule) By rule · IT" [ref=f1e1123]:
+                - combobox "Category for IT Elec 5" [ref=f1e1124]:
+                  - option "Major (rule)" [selected]
+                  - option "Major"
+                  - option "Minor"
+                - generic [ref=f1e1125]: By rule · IT
+              - cell "5 h 2 h lec, 3 h lab" [ref=f1e1127]:
+                - generic [ref=f1e1128]: 5 h
+                - generic "2 h lecture, 3 h laboratory" [ref=f1e1129]:
+                  - generic [aria-hidden] [ref=f1e1130]: 2+3
+                  - generic [ref=f1e1131]: 2 h lec, 3 h lab
+              - cell "Weekly" [ref=f1e1132]:
+                - combobox "Scheduling basis for IT Elec 5" [ref=f1e1133]:
+                  - option "Weekly" [selected]
+                  - option "Weekly"
+                  - option "Total hours"
+            - row [ref=f1e1134]:
+              - cell [ref=f1e1135]:
+                - checkbox "Select IT Elec 6" [ref=f1e1136]
+              - cell "Open IT Elec 6 Management Information System(MIS) Uses existing course" [ref=f1e1137]:
+                - button "Open IT Elec 6" [ref=f1e1138] [cursor=pointer]: IT Elec 6
+                - generic "Management Information System(MIS)" [ref=f1e1139]
+                - generic [ref=f1e1140]: Uses existing course
+              - cell "Major (rule) By rule · IT" [ref=f1e1141]:
+                - combobox "Category for IT Elec 6" [ref=f1e1142]:
+                  - option "Major (rule)" [selected]
+                  - option "Major"
+                  - option "Minor"
+                - generic [ref=f1e1143]: By rule · IT
+              - cell "3 h 3 h lec, 0 h lab" [ref=f1e1145]:
+                - generic [ref=f1e1146]: 3 h
+                - generic "3 h lecture, 0 h laboratory" [ref=f1e1147]:
+                  - generic [aria-hidden] [ref=f1e1148]: 3+0
+                  - generic [ref=f1e1149]: 3 h lec, 0 h lab
+              - cell "Weekly" [ref=f1e1150]:
+                - combobox "Scheduling basis for IT Elec 6" [ref=f1e1151]:
+                  - option "Weekly" [selected]
+                  - option "Weekly"
+                  - option "Total hours"
+    - region [ref=f1e1152]:
+      - generic [ref=f1e1153]:
+        - heading "Fourth Year" [level=3] [ref=f1e1154]
+        - paragraph [ref=f1e1155]: 6 courses · 21 units
+      - generic [ref=f1e1156]:
+        - region [ref=f1e1157]:
+          - generic [ref=f1e1158]:
+            - generic [ref=f1e1159]:
+              - checkbox "Fourth Year, First Semester" [ref=f1e1160]
+              - heading "First Semester" [level=4] [ref=f1e1161]
+            - generic [ref=f1e1163]:
+              - text: 5 courses ·
+              - generic [ref=f1e1164]: 15 units
+          - table "First Semester" [ref=f1e1166]:
+            - rowgroup [ref=f1e1173]:
+              - row [ref=f1e1174]:
+                - columnheader "Select" [ref=f1e1175]
+                - columnheader "Course" [ref=f1e1177]
+                - columnheader "Category" [ref=f1e1178]
+                - columnheader "Hrs/wk" [ref=f1e1179]
+                - columnheader "Scheduled as" [ref=f1e1180]
+            - rowgroup [ref=f1e1181]:
+              - row [ref=f1e1182]:
+                - cell [ref=f1e1183]:
+                  - checkbox "Select IT 128" [ref=f1e1184]
+                - cell "Open IT 128 System Administration and Maintenance" [ref=f1e1185]:
+                  - button "Open IT 128" [ref=f1e1186] [cursor=pointer]: IT 128
+                  - generic "System Administration and Maintenance" [ref=f1e1187]
+                - cell "Major (rule) By rule · IT" [ref=f1e1188]:
+                  - combobox "Category for IT 128" [ref=f1e1189]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1190]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e1192]:
+                  - generic [ref=f1e1193]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e1194]:
+                    - generic [aria-hidden] [ref=f1e1195]: 2+3
+                    - generic [ref=f1e1196]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e1197]:
+                  - combobox "Scheduling basis for IT 128" [ref=f1e1198]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e1199]:
+                - cell [ref=f1e1200]:
+                  - checkbox "Select IT 129" [ref=f1e1201]
+                - cell "Open IT 129 Information Assurance & Security 2" [ref=f1e1202]:
+                  - button "Open IT 129" [ref=f1e1203] [cursor=pointer]: IT 129
+                  - generic "Information Assurance & Security 2" [ref=f1e1204]
+                - cell "Major (rule) By rule · IT" [ref=f1e1205]:
+                  - combobox "Category for IT 129" [ref=f1e1206]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1207]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e1209]:
+                  - generic [ref=f1e1210]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e1211]:
+                    - generic [aria-hidden] [ref=f1e1212]: 2+3
+                    - generic [ref=f1e1213]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e1214]:
+                  - combobox "Scheduling basis for IT 129" [ref=f1e1215]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e1216]:
+                - cell [ref=f1e1217]:
+                  - checkbox "Select IT 130" [ref=f1e1218]
+                - cell "Open IT 130 Networking 2" [ref=f1e1219]:
+                  - button "Open IT 130" [ref=f1e1220] [cursor=pointer]: IT 130
+                  - generic "Networking 2" [ref=f1e1221]
+                - cell "Major (rule) By rule · IT" [ref=f1e1222]:
+                  - combobox "Category for IT 130" [ref=f1e1223]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1224]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e1226]:
+                  - generic [ref=f1e1227]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e1228]:
+                    - generic [aria-hidden] [ref=f1e1229]: 2+3
+                    - generic [ref=f1e1230]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e1231]:
+                  - combobox "Scheduling basis for IT 130" [ref=f1e1232]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e1233]:
+                - cell [ref=f1e1234]:
+                  - checkbox "Select IT 131" [ref=f1e1235]
+                - cell "Open IT 131 Web System and Technologies Uses existing course" [ref=f1e1236]:
+                  - button "Open IT 131" [ref=f1e1237] [cursor=pointer]: IT 131
+                  - generic "Web System and Technologies" [ref=f1e1238]
+                  - generic [ref=f1e1239]: Uses existing course
+                - cell "Major (rule) By rule · IT" [ref=f1e1240]:
+                  - combobox "Category for IT 131" [ref=f1e1241]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1242]: By rule · IT
+                - cell "5 h 2 h lec, 3 h lab" [ref=f1e1244]:
+                  - generic [ref=f1e1245]: 5 h
+                  - generic "2 h lecture, 3 h laboratory" [ref=f1e1246]:
+                    - generic [aria-hidden] [ref=f1e1247]: 2+3
+                    - generic [ref=f1e1248]: 2 h lec, 3 h lab
+                - cell "Weekly" [ref=f1e1249]:
+                  - combobox "Scheduling basis for IT 131" [ref=f1e1250]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+              - row [ref=f1e1251]:
+                - cell [ref=f1e1252]:
+                  - checkbox "Select IT 132" [ref=f1e1253]
+                - cell "Open IT 132 Capstone Project 2" [ref=f1e1254]:
+                  - button "Open IT 132" [ref=f1e1255] [cursor=pointer]: IT 132
+                  - generic "Capstone Project 2" [ref=f1e1256]
+                - cell "Major (rule) By rule · IT" [ref=f1e1257]:
+                  - combobox "Category for IT 132" [ref=f1e1258]:
+                    - option "Major (rule)" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1259]: By rule · IT
+                - cell "3 h 3 h lec, 0 h lab" [ref=f1e1261]:
+                  - generic [ref=f1e1262]: 3 h
+                  - generic "3 h lecture, 0 h laboratory" [ref=f1e1263]:
+                    - generic [aria-hidden] [ref=f1e1264]: 3+0
+                    - generic [ref=f1e1265]: 3 h lec, 0 h lab
+                - cell "Weekly" [ref=f1e1266]:
+                  - combobox "Scheduling basis for IT 132" [ref=f1e1267]:
+                    - option "Weekly" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+        - region [ref=f1e1268]:
+          - generic [ref=f1e1269]:
+            - generic [ref=f1e1270]:
+              - checkbox "Fourth Year, Second Semester" [ref=f1e1271]
+              - heading "Second Semester" [level=4] [ref=f1e1272]
+            - generic [ref=f1e1274]:
+              - text: 1 course ·
+              - generic [ref=f1e1275]: 6 units
+          - table "Second Semester" [ref=f1e1277]:
+            - rowgroup [ref=f1e1284]:
+              - row [ref=f1e1285]:
+                - columnheader "Select" [ref=f1e1286]
+                - columnheader "Course" [ref=f1e1288]
+                - columnheader "Category" [ref=f1e1289]
+                - columnheader "Hrs/wk" [ref=f1e1290]
+                - columnheader "Scheduled as" [ref=f1e1291]
+            - rowgroup [ref=f1e1292]:
+              - row [ref=f1e1293]:
+                - cell [ref=f1e1294]:
+                  - checkbox "Select Prac 101" [ref=f1e1295]
+                - cell "Open Prac 101 Practicum (486 hours)" [ref=f1e1296]:
+                  - button "Open Prac 101" [ref=f1e1297] [cursor=pointer]: Prac 101
+                  - generic "Practicum (486 hours)" [ref=f1e1298]
+                - cell "Choose… Needs category" [ref=f1e1299]:
+                  - combobox "Category for Prac 101" [ref=f1e1300]:
+                    - option "Choose…" [selected]
+                    - option "Major"
+                    - option "Minor"
+                  - generic [ref=f1e1301]: Needs category
+                - cell "6 h 6 h lec, 0 h lab" [ref=f1e1303]:
+                  - generic [ref=f1e1304]: 6 h
+                  - generic "6 h lecture, 0 h laboratory" [ref=f1e1305]:
+                    - generic [aria-hidden] [ref=f1e1306]: 6+0
+                    - generic [ref=f1e1307]: 6 h lec, 0 h lab
+                - 'cell "Choose… Source: 486 h" [ref=f1e1308]':
+                  - combobox "Scheduling basis for Prac 101" [ref=f1e1309]:
+                    - option "Choose…" [selected]
+                    - option "Weekly"
+                    - option "Total hours"
+                  - generic [ref=f1e1310]: "Source: 486 h"

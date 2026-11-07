@@ -50,6 +50,22 @@ class RoomRecoveryTest extends TestCase
         $this->actingAs($f['admin'])->postJson('/api/rooms/'.$f['room']->id.'/close', ['reason' => 'Maintenance'])->assertOk();
     }
 
+    /** The closed room's class meets online, still flagged for reassignment, until a transfer is approved. */
+    private function assertTemporarilyOnline(array $f): void
+    {
+        $row = $f['row']->fresh();
+        $this->assertSame('online', $row->mode);
+        $this->assertNull($row->room_id);
+        $this->assertEquals($f['room']->id, $row->displaced_room_id);
+        $this->assertNotNull($row->displaced_at);
+    }
+
+    /** History versions written by reviewers, excluding the automatic move online when a room closes. */
+    private function assertReviewedHistoryCount(int $count): void
+    {
+        $this->assertSame($count, DB::table('schedule_history_versions')->where('action', '!=', 'room_closed_online')->count());
+    }
+
     private function preview(array $f, array $extra = []): array
     {
         return $this->actingAs($f['user'])->postJson('/api/room-recovery/preview', ['schedule_ids' => [$f['row']->id], ...$extra])->assertOk()->json();
@@ -93,7 +109,7 @@ class RoomRecoveryTest extends TestCase
 
         $this->close($f);
         $this->assertDatabaseHas('room_recovery_cases', ['room_id' => $f['room']->id, 'semester_id' => $f['semester']->id]);
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
+        $this->assertTemporarilyOnline($f);
     }
 
     public function test_vacant_room_closure_requires_reason_and_reopening_still_uses_edit(): void
@@ -122,13 +138,13 @@ class RoomRecoveryTest extends TestCase
         $body = ['group_keys' => array_column($plan['groups'], 'key')];
         $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/apply', $body)->assertOk()->assertJsonPath('applied', false);
         $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/apply', $body)->assertOk()->assertJsonPath('status', 'pending_dean');
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
+        $this->assertTemporarilyOnline($f);
         $this->approveByDean($f, $plan);
         $this->actingAs($f['admin'])->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/approve')->assertOk();
         $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/approve')->assertOk();
         $this->assertEquals($f['replacement']->id, $f['row']->fresh()->room_id);
         $this->assertDatabaseHas('schedule_history_versions', ['action' => 'room_recovery_applied']);
-        $this->assertDatabaseCount('schedule_history_versions', 1);
+        $this->assertReviewedHistoryCount(1);
         $this->actingAs($f['user'])->getJson('/api/room-recovery')->assertOk()->assertJsonPath('cases', []);
     }
 
@@ -145,18 +161,18 @@ class RoomRecoveryTest extends TestCase
         $this->postJson($url, $body)->assertOk();
         $this->postJson('/api/room-recovery/plans/'.$other['plan_id'].'/submit', $body)->assertConflict();
         $this->assertSame($before, $f['row']->fresh()->getRawOriginal());
-        $this->assertDatabaseCount('schedule_history_versions', 0);
+        $this->assertReviewedHistoryCount(0);
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'pending_dean', 'applied_at' => null]);
         $this->assertDatabaseHas('system_notifications', ['user_id' => $f['dean']->id, 'type' => 'room_transfer_submitted']);
         $this->assertDatabaseMissing('system_notifications', ['user_id' => $f['admin']->id, 'type' => 'room_transfer_submitted']);
         $this->assertSame(1, DB::table('system_notifications')->where('type', 'room_transfer_submitted')->count());
         $this->getJson('/api/room-recovery?include_schedules=1')->assertOk()
             ->assertJsonPath('schedules.0.pending_transfer_id', $plan['plan_id'])
-            ->assertJsonPath('schedules.0.room', 'R1')->assertJsonPath('transfers.0.status', 'pending_dean');
+            ->assertJsonPath('schedules.0.room', 'Online (temporary, R1 unavailable)')->assertJsonPath('transfers.0.status', 'pending_dean');
         $this->actingAs($f['admin'])->getJson('/api/room-recovery/transfers')->assertOk()->assertJsonPath('transfers', []);
         $this->actingAs($f['dean'])->getJson('/api/room-recovery/transfers')->assertOk()
             ->assertJsonPath('transfers.0.id', $plan['plan_id'])->assertJsonPath('transfers.0.changes.0.course', 'REC101')
-            ->assertJsonPath('transfers.0.changes.0.before.room', 'R1')->assertJsonPath('transfers.0.changes.0.after.room', 'R2');
+            ->assertJsonPath('transfers.0.changes.0.before.room', 'Online (temporary, R1 unavailable)')->assertJsonPath('transfers.0.changes.0.after.room', 'R2');
     }
 
     public function test_review_requires_secretary_then_department_dean_then_vpaa_without_authoring_permissions(): void
@@ -189,7 +205,7 @@ class RoomRecoveryTest extends TestCase
         $this->assertEquals($f['replacement']->id, $f['row']->fresh()->room_id);
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'approved',
             'reviewed_by' => $f['admin']->id, 'dean_reviewed_by' => $f['dean']->id]);
-        $this->assertDatabaseCount('schedule_history_versions', 1);
+        $this->assertReviewedHistoryCount(1);
         // The requester and the forwarding Dean both learn the final decision.
         $this->assertDatabaseHas('system_notifications', ['user_id' => $f['dean']->id, 'type' => 'room_transfer_approved']);
         $this->assertSame(2, DB::table('system_notifications')->where('type', 'room_transfer_approved')->count());
@@ -214,7 +230,7 @@ class RoomRecoveryTest extends TestCase
         $this->actingAs($f['dean']->fresh())->postJson($url.'/approve')->assertForbidden();
         $this->postJson($url.'/reject', ['reason' => 'Unauthorized'])->assertForbidden();
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'pending_dean', 'dean_reviewed_at' => null]);
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
+        $this->assertTemporarilyOnline($f);
     }
 
     public function test_a_non_secretary_cannot_submit_even_an_owned_plan_with_update_permission(): void
@@ -229,7 +245,7 @@ class RoomRecoveryTest extends TestCase
             $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/'.$action, ['group_keys' => array_column($plan['groups'], 'key')])->assertForbidden();
         }
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'preview']);
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
+        $this->assertTemporarilyOnline($f);
     }
 
     #[DataProvider('reviewStages')]
@@ -249,7 +265,7 @@ class RoomRecoveryTest extends TestCase
         $this->actingAs($stage === 'dean' ? $f['dean'] : $f['admin'])->postJson($url.'/approve')->assertStatus(500);
         $this->assertSame($before, $f['row']->fresh()->getRawOriginal());
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'pending_'.$stage, 'applied_at' => null, 'reviewed_at' => null]);
-        $this->assertDatabaseCount('schedule_history_versions', 0);
+        $this->assertReviewedHistoryCount(0);
     }
 
     public function test_upgrade_returns_unreviewed_requests_to_the_dean_without_changing_schedules(): void
@@ -293,7 +309,7 @@ class RoomRecoveryTest extends TestCase
         $this->postJson($url.'/reject', ['reason' => 'Retry'])->assertOk();
         $this->postJson($url.'/approve')->assertConflict();
         $this->assertSame($before, $f['row']->fresh()->getRawOriginal());
-        $this->assertDatabaseCount('schedule_history_versions', 0);
+        $this->assertReviewedHistoryCount(0);
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'rejected_by_'.$stage,
             'rejection_reason' => 'Use the original room after maintenance', 'applied_at' => null, 'reviewed_by' => $reviewer->id]);
         $this->assertDatabaseHas('system_notifications', ['user_id' => $f['user']->id, 'type' => 'room_transfer_rejected', 'remarks' => 'Use the original room after maintenance']);
@@ -333,7 +349,7 @@ class RoomRecoveryTest extends TestCase
         $this->actingAs($f['admin'])->postJson($url.'/approve')->assertConflict();
         $this->assertSame($before, Schedule::orderBy('id')->get()->map->getRawOriginal()->all());
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'pending_vpaa', 'reviewed_at' => null, 'applied_at' => null]);
-        $this->assertDatabaseCount('schedule_history_versions', 0);
+        $this->assertReviewedHistoryCount(0);
         $this->assertDatabaseMissing('system_notifications', ['type' => 'room_transfer_approved']);
         // A stale request can still be rejected, allowing the requester to prepare a fresh proposal.
         $this->postJson($url.'/reject', ['reason' => 'Please refresh the proposal'])->assertOk();
@@ -392,13 +408,17 @@ class RoomRecoveryTest extends TestCase
         $url = '/api/room-recovery/plans/'.$plan['plan_id'];
         $this->postJson($url.'/submit', ['group_keys' => [$selected['key']]])->assertOk();
         $this->postJson($url.'/submit', ['group_keys' => array_column($plan['groups'], 'key')])->assertConflict();
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
-        $this->assertEquals($f['room']->id, $second->fresh()->room_id);
+        $this->assertTemporarilyOnline($f);
+        $this->assertEquals($f['room']->id, $second->fresh()->displaced_room_id);
         $this->approveByDean($f, $plan);
         $this->actingAs($f['admin'])->postJson($url.'/approve')->assertOk();
         $selectedId = $selected['before'][0]['id'];
         foreach ([$f['row'], $second] as $row) {
-            $this->assertEquals($row->id === $selectedId ? $f['replacement']->id : $f['room']->id, $row->fresh()->room_id);
+            $row = $row->fresh();
+            $restored = $row->id === $selectedId;
+            $this->assertEquals($restored ? $f['replacement']->id : null, $row->room_id);
+            $this->assertSame($restored ? 'on-site' : 'online', $row->mode);
+            $this->assertEquals($restored ? null : $f['room']->id, $row->displaced_room_id);
         }
     }
 
@@ -409,7 +429,9 @@ class RoomRecoveryTest extends TestCase
         $this->actingAs($f['user'])->getJson('/api/room-recovery?include_schedules=1&semester_id='.$f['semester']->id)
             ->assertOk()
             ->assertJsonPath('schedules.0.needs_attention', true)
-            ->assertJsonPath('schedules.0.attention_reason', 'Room unavailable')
+            ->assertJsonPath('schedules.0.attention_reason', 'Temporarily online: room unavailable')
+            ->assertJsonPath('schedules.0.temporarily_online', true)
+            ->assertJsonPath('schedules.0.original_room', 'R1')
             ->assertJsonPath('schedules.0.room_status', 'not available')
             ->assertJsonPath('schedules.0.required_room_type', 'lecture');
     }
@@ -420,11 +442,11 @@ class RoomRecoveryTest extends TestCase
         $section = $f['section']->replicate()->fill(['section_name' => 'REC-2']);
         $section->save();
         $other = Schedule::create([...$f['row']->toArray(), 'section_id' => $section->id, 'room_id' => $f['replacement']->id, 'day' => 'Tuesday']);
-        $before = Schedule::orderBy('id')->get()->map->getRawOriginal()->all();
         $this->actingAs($f['user'])->getJson('/api/rooms')->assertOk()
             ->assertJsonFragment(['id' => $f['room']->id, 'status' => 'available']);
 
         $this->close($f);
+        $before = Schedule::orderBy('id')->get()->map->getRawOriginal()->all();
 
         $this->actingAs($f['user'])->getJson('/api/rooms')->assertOk()
             ->assertJsonFragment(['id' => $f['room']->id, 'status' => 'not available']);
@@ -441,14 +463,16 @@ class RoomRecoveryTest extends TestCase
         $this->actingAs($f['admin'])->putJson('/api/rooms/'.$f['room']->id, ['status' => 'available'])->assertOk();
         $this->actingAs($f['user'])->getJson('/api/rooms')->assertOk()
             ->assertJsonFragment(['id' => $f['room']->id, 'status' => 'available']);
+        // Reopening the room does not restore the class by itself; it stays online until a reassignment is approved.
         $this->getJson('/api/room-recovery?include_schedules=1')->assertOk()
-            ->assertJsonPath('pending_count', 0)->assertJsonPath('cases', [])
-            ->assertJsonPath('schedules.0.needs_attention', false);
+            ->assertJsonPath('pending_count', 1)->assertJsonCount(1, 'cases')
+            ->assertJsonPath('schedules.0.needs_attention', true)
+            ->assertJsonPath('schedules.0.temporarily_online', true);
         $this->postJson('/api/room-recovery/preview', [
             'schedule_ids' => [$other->id], 'destination_room_ids' => [$f['room']->id],
         ])->assertOk()->assertJsonPath('groups.0.after.0.room_id', $f['room']->id);
         $this->assertSame($before, Schedule::orderBy('id')->get()->map->getRawOriginal()->all());
-        $this->assertDatabaseCount('schedule_history_versions', 0);
+        $this->assertReviewedHistoryCount(0);
         $this->assertDatabaseCount('room_recovery_cases', 1);
     }
 
@@ -474,9 +498,9 @@ class RoomRecoveryTest extends TestCase
         $missing = Schedule::create([...$f['row']->toArray(), 'room_id' => null, 'day' => 'Tuesday']);
         $this->getJson('/api/room-recovery')->assertOk()->assertJsonPath('pending_count', 2)->assertJsonPath('schedules', []);
         $f['room']->refresh()->update(['status' => 'available']);
-        $this->getJson('/api/room-recovery')->assertOk()->assertJsonPath('pending_count', 1)->assertJsonPath('cases', []);
+        $this->getJson('/api/room-recovery')->assertOk()->assertJsonPath('pending_count', 2)->assertJsonCount(1, 'cases');
         $missing->update(['room_id' => $f['replacement']->id]);
-        $this->getJson('/api/room-recovery')->assertOk()->assertJsonPath('pending_count', 0);
+        $this->getJson('/api/room-recovery')->assertOk()->assertJsonPath('pending_count', 1);
     }
 
     public function test_pending_count_rechecks_borrowing_approval_and_rejection_without_stale_caches(): void
@@ -597,8 +621,8 @@ class RoomRecoveryTest extends TestCase
         $plan = $this->preview($f);
         $f['replacement']->update(['status' => 'not available']);
         $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/apply', ['group_keys' => array_column($plan['groups'], 'key')])->assertStatus(409);
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
-        $this->assertDatabaseCount('schedule_history_versions', 0);
+        $this->assertTemporarilyOnline($f);
+        $this->assertReviewedHistoryCount(0);
     }
 
     public function test_secretary_cannot_close_room_and_foreign_department_cannot_see_case(): void
@@ -642,6 +666,7 @@ class RoomRecoveryTest extends TestCase
         $before = $f['row']->fresh()->getAttributes();
         $untouched = $unrelated->fresh()->getAttributes();
         $this->close($f);
+        $closed = $f['row']->fresh()->getAttributes();
 
         $plan = $this->preview($f);
         $this->assertCount(1, $plan['groups']);
@@ -650,7 +675,7 @@ class RoomRecoveryTest extends TestCase
             $this->assertEquals($before[$field], $after[$field], $field);
         }
         $this->assertEquals($f['replacement']->id, $after['room_id']);
-        $this->assertEquals($before, $f['row']->fresh()->getAttributes(), 'Preview must not save.');
+        $this->assertEquals($closed, $f['row']->fresh()->getAttributes(), 'Preview must not save.');
         $this->approveTransfer($f, $plan)->assertOk();
         $this->actingAs($f['admin'])->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/approve')->assertOk();
         $saved = $f['row']->fresh()->getAttributes();
@@ -659,7 +684,7 @@ class RoomRecoveryTest extends TestCase
         $this->assertEquals($before, $saved);
         $this->assertEquals($untouched, $unrelated->fresh()->getAttributes());
         $this->assertDatabaseCount('schedules', 2);
-        $this->assertDatabaseCount('schedule_history_versions', 1);
+        $this->assertReviewedHistoryCount(1);
     }
 
     public function test_faculty_assignment_time_changes_require_explicit_opt_in_and_keep_the_instructor(): void
@@ -700,8 +725,8 @@ class RoomRecoveryTest extends TestCase
         $stored->update(['payload' => $payload]);
         $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/apply', ['group_keys' => array_column($plan['groups'], 'key')])->assertUnprocessable();
         $this->assertEquals('Monday', $f['row']->fresh()->day);
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
-        $this->assertDatabaseCount('schedule_history_versions', 0);
+        $this->assertTemporarilyOnline($f);
+        $this->assertReviewedHistoryCount(0);
     }
 
     public function test_linked_online_partner_is_labeled_and_unchanged_by_a_same_time_replacement(): void
@@ -739,6 +764,7 @@ class RoomRecoveryTest extends TestCase
             'day' => 'Friday', 'room_id' => $f['replacement']->id, 'meeting_index' => 1]);
         $before = Schedule::orderBy('id')->get()->map->getRawOriginal()->all();
         $this->close($f);
+        $closed = Schedule::orderBy('id')->get()->map->getRawOriginal()->all();
         $plan = $this->preview($f);
         $url = '/api/room-recovery/plans/'.$plan['plan_id'];
         $this->postJson($url.'/submit', ['group_keys' => array_column($plan['groups'], 'key')])->assertOk();
@@ -767,7 +793,7 @@ class RoomRecoveryTest extends TestCase
         }
         $this->assertCount(2, RoomRecoveryPlan::findOrFail($plan['plan_id'])->payload['groups'][0]['after']);
         $this->approveByDean($f, $plan);
-        $this->assertSame($before, Schedule::orderBy('id')->get()->map->getRawOriginal()->all());
+        $this->assertSame($closed, Schedule::orderBy('id')->get()->map->getRawOriginal()->all());
         $this->actingAs($f['admin'])->getJson('/api/room-recovery/transfers')->assertOk()
             ->assertJsonCount(2, 'transfers.0.changes')->assertJsonPath('transfers.0.status', 'pending_vpaa');
         $this->postJson($url.'/approve')->assertOk()->assertJsonPath('applied', true);
@@ -820,10 +846,10 @@ class RoomRecoveryTest extends TestCase
         $blocker = Schedule::create([...$f['row']->toArray(), 'section_id' => $section->id, 'room_id' => $f['replacement']->id]);
         $untouched = $blocker->fresh()->getAttributes();
         $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/apply', ['group_keys' => array_column($plan['groups'], 'key')])->assertStatus(409);
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
+        $this->assertTemporarilyOnline($f);
         $this->assertEquals($untouched, $blocker->fresh()->getAttributes());
         $this->assertDatabaseCount('schedules', 2);
-        $this->assertDatabaseCount('schedule_history_versions', 0);
+        $this->assertReviewedHistoryCount(0);
     }
 
     public function test_laboratory_replacement_preserves_the_hybrid_lecture_partner(): void
@@ -863,10 +889,11 @@ class RoomRecoveryTest extends TestCase
     public function test_new_room_exploration_does_not_write_schedules(): void
     {
         $f = $this->fixture();
+        $before = $f['row']->fresh()->getAttributes();
         $plan = $this->preview($f, ['destination_room_ids' => [$f['replacement']->id]]);
         $this->assertCount(1, $plan['groups']);
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
-        $this->assertDatabaseCount('schedule_history_versions', 0);
+        $this->assertEquals($before, $f['row']->fresh()->getAttributes());
+        $this->assertReviewedHistoryCount(0);
     }
 
     public function test_joint_preview_does_not_double_book_one_destination(): void
@@ -908,7 +935,7 @@ class RoomRecoveryTest extends TestCase
         $plan = $this->preview($f);
         $this->mock(ScheduleHistoryRecorder::class)->shouldReceive('record')->once()->andThrow(new \RuntimeException('Simulated write failure'));
         $this->approveTransfer($f, $plan)->assertStatus(500);
-        $this->assertEquals($f['room']->id, $f['row']->fresh()->room_id);
+        $this->assertTemporarilyOnline($f);
         $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'applied_at' => null]);
     }
 

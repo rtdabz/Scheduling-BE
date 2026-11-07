@@ -1,0 +1,1867 @@
+- generic [ref=e5]:
+  - navigation "Jump to year level" [ref=e7]:
+    - generic [ref=e8]:
+      - 'button "Jump to First Year: 12 courses" [ref=e9] [cursor=pointer]':
+        - text: First Year
+        - generic [ref=e10]: "12"
+      - 'button "Jump to Second Year: 19 courses" [ref=e11] [cursor=pointer]':
+        - text: Second Year
+        - generic [ref=e12]: "19"
+      - 'button "Jump to Third Year: 22 courses" [ref=e13] [cursor=pointer]':
+        - text: Third Year
+        - generic [ref=e14]: "22"
+      - 'button "Jump to Fourth Year: 6 courses" [ref=e15] [cursor=pointer]':
+        - text: Fourth Year
+        - generic [ref=e16]: "6"
+  - generic [ref=e17]:
+    - region [ref=e18]:
+      - generic [ref=e19]:
+        - heading "First Year" [level=3] [ref=e20]
+        - paragraph [ref=e21]: 12 courses · 34 units
+      - generic [ref=e22]:
+        - region [ref=e23]:
+          - generic [ref=e24]:
+            - heading "First Semester" [level=4] [ref=e26]
+            - generic [ref=e28]:
+              - text: 6 courses ·
+              - generic [ref=e29]: 17 units
+          - region "First Year, First Semester, scrollable" [ref=e31]:
+            - table "First Year, First Semester" [ref=e32]:
+              - rowgroup [ref=e33]:
+                - row [ref=e34]:
+                  - columnheader "Course code" [ref=e35]
+                  - columnheader "Course title" [ref=e36]
+                  - columnheader "Year and term" [ref=e37]
+                  - columnheader "Units" [ref=e38]
+                  - columnheader "Prerequisites" [ref=e39]
+              - rowgroup [ref=e40]:
+                - row [ref=e41]:
+                  - cell [ref=e42]:
+                    - textbox "Code for r1" [ref=e44]: IT 101
+                  - cell [ref=e45]:
+                    - textbox "Title for r1" [ref=e46]: Introduction To Computing
+                  - cell [ref=e47]:
+                    - generic [ref=e48]:
+                      - combobox "Year for r1" [ref=e49]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r1" [ref=e50]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e51]:
+                    - generic [ref=e53]:
+                      - spinbutton "Lecture units for r1" [ref=e54]: "2"
+                      - generic [aria-hidden] [ref=e55]: +
+                      - spinbutton "Laboratory units for r1" [ref=e56]: "1"
+                      - generic [aria-hidden] [ref=e57]: =
+                      - spinbutton "Total units for r1" [ref=e58]: "3"
+                  - cell [ref=e59]:
+                    - 'button "Prerequisites for IT 101: none" [ref=e60] [cursor=pointer]':
+                      - generic [ref=e61]: none
+                - row [ref=e62]:
+                  - cell [ref=e63]:
+                    - textbox "Code for r2" [ref=e65]: IT 102
+                  - cell [ref=e66]:
+                    - textbox "Title for r2" [ref=e67]: Computer Programming 1
+                  - cell [ref=e68]:
+                    - generic [ref=e69]:
+                      - combobox "Year for r2" [ref=e70]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r2" [ref=e71]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e72]:
+                    - generic [ref=e74]:
+                      - spinbutton "Lecture units for r2" [ref=e75]: "2"
+                      - generic [aria-hidden] [ref=e76]: +
+                      - spinbutton "Laboratory units for r2" [ref=e77]: "1"
+                      - generic [aria-hidden] [ref=e78]: =
+                      - spinbutton "Total units for r2" [ref=e79]: "3"
+                  - cell [ref=e80]:
+                    - 'button "Prerequisites for IT 102: none" [ref=e81] [cursor=pointer]':
+                      - generic [ref=e82]: none
+                - row [ref=e83]:
+                  - cell [ref=e84]:
+                    - textbox "Code for r3" [ref=e86]: IT 103
+                  - cell [ref=e87]:
+                    - textbox "Title for r3" [ref=e88]: Integrated Application Software
+                  - cell [ref=e89]:
+                    - generic [ref=e90]:
+                      - combobox "Year for r3" [ref=e91]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r3" [ref=e92]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e93]:
+                    - generic [ref=e95]:
+                      - spinbutton "Lecture units for r3" [ref=e96]: "2"
+                      - generic [aria-hidden] [ref=e97]: +
+                      - spinbutton "Laboratory units for r3" [ref=e98]: "1"
+                      - generic [aria-hidden] [ref=e99]: =
+                      - spinbutton "Total units for r3" [ref=e100]: "3"
+                  - cell [ref=e101]:
+                    - 'button "Prerequisites for IT 103: none" [ref=e102] [cursor=pointer]':
+                      - generic [ref=e103]: none
+                - row [ref=e104]:
+                  - cell "Has values to fix. GEC 1" [ref=e105]:
+                    - generic [ref=e106]:
+                      - generic [ref=e107]: Has values to fix.
+                      - textbox "Code for r4" [ref=e108]: GEC 1
+                  - cell [ref=e109]:
+                    - textbox "Title for r4" [ref=e110]: Understanding the Self
+                  - cell [ref=e111]:
+                    - generic [ref=e112]:
+                      - combobox "Year for r4" [ref=e113]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r4" [ref=e114]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e115]:
+                    - generic [ref=e116]:
+                      - generic [ref=e117]:
+                        - spinbutton "Lecture units for r4" [ref=e118]
+                        - generic [aria-hidden] [ref=e119]: +
+                        - spinbutton "Laboratory units for r4" [ref=e120]: "0"
+                        - generic [aria-hidden] [ref=e121]: =
+                        - spinbutton "Total units for r4" [ref=e122]: "3"
+                      - paragraph [ref=e123]: Blank unit
+                  - cell [ref=e124]:
+                    - 'button "Prerequisites for GEC 1: none" [ref=e125] [cursor=pointer]':
+                      - generic [ref=e126]: none
+                - row [ref=e127]:
+                  - cell [ref=e128]:
+                    - textbox "Code for r5" [ref=e130]: ROTC/CWTS 101
+                  - cell [ref=e131]:
+                    - textbox "Title for r5" [ref=e132]: Basic Army Science/CWTS
+                  - cell [ref=e133]:
+                    - generic [ref=e134]:
+                      - combobox "Year for r5" [ref=e135]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r5" [ref=e136]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e137]:
+                    - generic [ref=e139]:
+                      - spinbutton "Lecture units for r5" [ref=e140]: "3"
+                      - generic [aria-hidden] [ref=e141]: +
+                      - spinbutton "Laboratory units for r5" [ref=e142]: "0"
+                      - generic [aria-hidden] [ref=e143]: =
+                      - spinbutton "Total units for r5" [ref=e144]: "3"
+                  - cell [ref=e145]:
+                    - 'button "Prerequisites for ROTC/CWTS 101: none" [ref=e146] [cursor=pointer]':
+                      - generic [ref=e147]: none
+                - row [ref=e148]:
+                  - cell [ref=e149]:
+                    - textbox "Code for r6" [ref=e151]: PATH FIT 1
+                  - cell [ref=e152]:
+                    - textbox "Title for r6" [ref=e153]: Movement Competency Training
+                  - cell [ref=e154]:
+                    - generic [ref=e155]:
+                      - combobox "Year for r6" [ref=e156]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r6" [ref=e157]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e158]:
+                    - generic [ref=e160]:
+                      - spinbutton "Lecture units for r6" [ref=e161]: "2"
+                      - generic [aria-hidden] [ref=e162]: +
+                      - spinbutton "Laboratory units for r6" [ref=e163]: "0"
+                      - generic [aria-hidden] [ref=e164]: =
+                      - spinbutton "Total units for r6" [ref=e165]: "2"
+                  - cell [ref=e166]:
+                    - 'button "Prerequisites for PATH FIT 1: none" [ref=e167] [cursor=pointer]':
+                      - generic [ref=e168]: none
+        - region [ref=e169]:
+          - generic [ref=e170]:
+            - heading "Second Semester" [level=4] [ref=e172]
+            - generic [ref=e174]:
+              - text: 6 courses ·
+              - generic [ref=e175]: 17 units
+          - region "First Year, Second Semester, scrollable" [ref=e177]:
+            - table "First Year, Second Semester" [ref=e178]:
+              - rowgroup [ref=e179]:
+                - row [ref=e180]:
+                  - columnheader "Course code" [ref=e181]
+                  - columnheader "Course title" [ref=e182]
+                  - columnheader "Year and term" [ref=e183]
+                  - columnheader "Units" [ref=e184]
+                  - columnheader "Prerequisites" [ref=e185]
+              - rowgroup [ref=e186]:
+                - row [ref=e187]:
+                  - cell [ref=e188]:
+                    - textbox "Code for r7" [ref=e190]: IT 104
+                  - cell [ref=e191]:
+                    - textbox "Title for r7" [ref=e192]: Information Technology Fundamentals
+                  - cell [ref=e193]:
+                    - generic [ref=e194]:
+                      - combobox "Year for r7" [ref=e195]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r7" [ref=e196]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e197]:
+                    - generic [ref=e199]:
+                      - spinbutton "Lecture units for r7" [ref=e200]: "3"
+                      - generic [aria-hidden] [ref=e201]: +
+                      - spinbutton "Laboratory units for r7" [ref=e202]: "0"
+                      - generic [aria-hidden] [ref=e203]: =
+                      - spinbutton "Total units for r7" [ref=e204]: "3"
+                  - cell [ref=e205]:
+                    - 'button "Prerequisites for IT 104: IT 101" [ref=e206] [cursor=pointer]':
+                      - generic [ref=e207]: IT 101
+                - row [ref=e208]:
+                  - cell [ref=e209]:
+                    - textbox "Code for r8" [ref=e211]: IT 105
+                  - cell [ref=e212]:
+                    - textbox "Title for r8" [ref=e213]: Computer Programming 2
+                  - cell [ref=e214]:
+                    - generic [ref=e215]:
+                      - combobox "Year for r8" [ref=e216]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r8" [ref=e217]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e218]:
+                    - generic [ref=e220]:
+                      - spinbutton "Lecture units for r8" [ref=e221]: "2"
+                      - generic [aria-hidden] [ref=e222]: +
+                      - spinbutton "Laboratory units for r8" [ref=e223]: "1"
+                      - generic [aria-hidden] [ref=e224]: =
+                      - spinbutton "Total units for r8" [ref=e225]: "3"
+                  - cell [ref=e226]:
+                    - 'button "Prerequisites for IT 105: IT 102" [ref=e227] [cursor=pointer]':
+                      - generic [ref=e228]: IT 102
+                - row [ref=e229]:
+                  - cell [ref=e230]:
+                    - textbox "Code for r9" [ref=e232]: IT 106
+                  - cell [ref=e233]:
+                    - textbox "Title for r9" [ref=e234]: Digital Logic Design
+                  - cell [ref=e235]:
+                    - generic [ref=e236]:
+                      - combobox "Year for r9" [ref=e237]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r9" [ref=e238]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e239]:
+                    - generic [ref=e241]:
+                      - spinbutton "Lecture units for r9" [ref=e242]: "2"
+                      - generic [aria-hidden] [ref=e243]: +
+                      - spinbutton "Laboratory units for r9" [ref=e244]: "1"
+                      - generic [aria-hidden] [ref=e245]: =
+                      - spinbutton "Total units for r9" [ref=e246]: "3"
+                  - cell [ref=e247]:
+                    - 'button "Prerequisites for IT 106: none" [ref=e248] [cursor=pointer]':
+                      - generic [ref=e249]: none
+                - row [ref=e250]:
+                  - cell [ref=e251]:
+                    - textbox "Code for r10" [ref=e253]: GEC 2
+                  - cell [ref=e254]:
+                    - textbox "Title for r10" [ref=e255]: Readings in Philippine History
+                  - cell [ref=e256]:
+                    - generic [ref=e257]:
+                      - combobox "Year for r10" [ref=e258]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r10" [ref=e259]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e260]:
+                    - generic [ref=e262]:
+                      - spinbutton "Lecture units for r10" [ref=e263]: "3"
+                      - generic [aria-hidden] [ref=e264]: +
+                      - spinbutton "Laboratory units for r10" [ref=e265]: "0"
+                      - generic [aria-hidden] [ref=e266]: =
+                      - spinbutton "Total units for r10" [ref=e267]: "3"
+                  - cell [ref=e268]:
+                    - 'button "Prerequisites for GEC 2: none" [ref=e269] [cursor=pointer]':
+                      - generic [ref=e270]: none
+                - row [ref=e271]:
+                  - cell [ref=e272]:
+                    - textbox "Code for r11" [ref=e274]: ROTC/CWTS 102
+                  - cell [ref=e275]:
+                    - textbox "Title for r11" [ref=e276]: Reserved Officer Training Corps/CWTS
+                  - cell [ref=e277]:
+                    - generic [ref=e278]:
+                      - combobox "Year for r11" [ref=e279]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r11" [ref=e280]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e281]:
+                    - generic [ref=e283]:
+                      - spinbutton "Lecture units for r11" [ref=e284]: "3"
+                      - generic [aria-hidden] [ref=e285]: +
+                      - spinbutton "Laboratory units for r11" [ref=e286]: "0"
+                      - generic [aria-hidden] [ref=e287]: =
+                      - spinbutton "Total units for r11" [ref=e288]: "3"
+                  - cell [ref=e289]:
+                    - 'button "Prerequisites for ROTC/CWTS 102: R101" [ref=e290] [cursor=pointer]':
+                      - generic [ref=e291]: R101
+                - row [ref=e292]:
+                  - cell "Needs review. PATH FITt 2 Code looks misread Use PATH FIT 2" [ref=e293]:
+                    - generic [ref=e294]:
+                      - generic [ref=e295]: Needs review.
+                      - textbox "Code for r12" [ref=e296]: PATH FITt 2
+                      - paragraph [ref=e297]:
+                        - generic [ref=e298]: Code looks misread
+                        - button "Use PATH FIT 2" [ref=e299] [cursor=pointer]
+                  - cell [ref=e300]:
+                    - textbox "Title for r12" [ref=e301]: Fitness Training
+                  - cell [ref=e302]:
+                    - generic [ref=e303]:
+                      - combobox "Year for r12" [ref=e304]:
+                        - option "Year"
+                        - option "Year 1" [selected]
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r12" [ref=e305]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e306]:
+                    - generic [ref=e308]:
+                      - spinbutton "Lecture units for r12" [ref=e309]: "2"
+                      - generic [aria-hidden] [ref=e310]: +
+                      - spinbutton "Laboratory units for r12" [ref=e311]: "0"
+                      - generic [aria-hidden] [ref=e312]: =
+                      - spinbutton "Total units for r12" [ref=e313]: "2"
+                  - cell [ref=e314]:
+                    - 'button "Prerequisites for PATH FITt 2: PATH FIT 1" [ref=e315] [cursor=pointer]':
+                      - generic [ref=e316]: PATH FIT 1
+    - region [ref=e317]:
+      - generic [ref=e318]:
+        - heading "Second Year" [level=3] [ref=e319]
+        - paragraph [ref=e320]: 19 courses · 55 units
+      - generic [ref=e321]:
+        - region [ref=e322]:
+          - generic [ref=e323]:
+            - heading "First Semester" [level=4] [ref=e325]
+            - generic [ref=e327]:
+              - text: 7 courses ·
+              - generic [ref=e328]: 20 units
+          - region "Second Year, First Semester, scrollable" [ref=e330]:
+            - table "Second Year, First Semester" [ref=e331]:
+              - rowgroup [ref=e332]:
+                - row [ref=e333]:
+                  - columnheader "Course code" [ref=e334]
+                  - columnheader "Course title" [ref=e335]
+                  - columnheader "Year and term" [ref=e336]
+                  - columnheader "Units" [ref=e337]
+                  - columnheader "Prerequisites" [ref=e338]
+              - rowgroup [ref=e339]:
+                - row [ref=e340]:
+                  - cell [ref=e341]:
+                    - textbox "Code for r13" [ref=e343]: IT 107
+                  - cell [ref=e344]:
+                    - textbox "Title for r13" [ref=e345]: Application Development & Emerging Technologies
+                  - cell [ref=e346]:
+                    - generic [ref=e347]:
+                      - combobox "Year for r13" [ref=e348]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r13" [ref=e349]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e350]:
+                    - generic [ref=e352]:
+                      - spinbutton "Lecture units for r13" [ref=e353]: "2"
+                      - generic [aria-hidden] [ref=e354]: +
+                      - spinbutton "Laboratory units for r13" [ref=e355]: "1"
+                      - generic [aria-hidden] [ref=e356]: =
+                      - spinbutton "Total units for r13" [ref=e357]: "3"
+                  - cell [ref=e358]:
+                    - 'button "Prerequisites for IT 107: IT 105" [ref=e359] [cursor=pointer]':
+                      - generic [ref=e360]: IT 105
+                - row [ref=e361]:
+                  - cell [ref=e362]:
+                    - textbox "Code for r14" [ref=e364]: IT 108
+                  - cell [ref=e365]:
+                    - textbox "Title for r14" [ref=e366]: Data Structures & Algorithms
+                  - cell [ref=e367]:
+                    - generic [ref=e368]:
+                      - combobox "Year for r14" [ref=e369]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r14" [ref=e370]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e371]:
+                    - generic [ref=e373]:
+                      - spinbutton "Lecture units for r14" [ref=e374]: "2"
+                      - generic [aria-hidden] [ref=e375]: +
+                      - spinbutton "Laboratory units for r14" [ref=e376]: "1"
+                      - generic [aria-hidden] [ref=e377]: =
+                      - spinbutton "Total units for r14" [ref=e378]: "3"
+                  - cell [ref=e379]:
+                    - 'button "Prerequisites for IT 108: IT 105" [ref=e380] [cursor=pointer]':
+                      - generic [ref=e381]: IT 105
+                - row [ref=e382]:
+                  - cell [ref=e383]:
+                    - textbox "Code for r15" [ref=e385]: IT 109
+                  - cell [ref=e386]:
+                    - textbox "Title for r15" [ref=e387]: Fundamentals of Database Systems
+                  - cell [ref=e388]:
+                    - generic [ref=e389]:
+                      - combobox "Year for r15" [ref=e390]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r15" [ref=e391]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e392]:
+                    - generic [ref=e394]:
+                      - spinbutton "Lecture units for r15" [ref=e395]: "2"
+                      - generic [aria-hidden] [ref=e396]: +
+                      - spinbutton "Laboratory units for r15" [ref=e397]: "1"
+                      - generic [aria-hidden] [ref=e398]: =
+                      - spinbutton "Total units for r15" [ref=e399]: "3"
+                  - cell [ref=e400]:
+                    - 'button "Prerequisites for IT 109: IT105" [ref=e401] [cursor=pointer]':
+                      - generic [ref=e402]: IT105
+                - row [ref=e403]:
+                  - cell [ref=e404]:
+                    - textbox "Code for r16" [ref=e406]: IT 110
+                  - cell [ref=e407]:
+                    - textbox "Title for r16" [ref=e408]: Object Oriented Programming (OOP)
+                  - cell [ref=e409]:
+                    - generic [ref=e410]:
+                      - combobox "Year for r16" [ref=e411]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r16" [ref=e412]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e413]:
+                    - generic [ref=e415]:
+                      - spinbutton "Lecture units for r16" [ref=e416]: "2"
+                      - generic [aria-hidden] [ref=e417]: +
+                      - spinbutton "Laboratory units for r16" [ref=e418]: "1"
+                      - generic [aria-hidden] [ref=e419]: =
+                      - spinbutton "Total units for r16" [ref=e420]: "3"
+                  - cell [ref=e421]:
+                    - 'button "Prerequisites for IT 110: IT105" [ref=e422] [cursor=pointer]':
+                      - generic [ref=e423]: IT105
+                - row [ref=e424]:
+                  - cell [ref=e425]:
+                    - textbox "Code for r17" [ref=e427]: IT 111
+                  - cell [ref=e428]:
+                    - textbox "Title for r17" [ref=e429]: Social Issues & Professional Issues
+                  - cell [ref=e430]:
+                    - generic [ref=e431]:
+                      - combobox "Year for r17" [ref=e432]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r17" [ref=e433]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e434]:
+                    - generic [ref=e436]:
+                      - spinbutton "Lecture units for r17" [ref=e437]: "3"
+                      - generic [aria-hidden] [ref=e438]: +
+                      - spinbutton "Laboratory units for r17" [ref=e439]: "0"
+                      - generic [aria-hidden] [ref=e440]: =
+                      - spinbutton "Total units for r17" [ref=e441]: "3"
+                  - cell [ref=e442]:
+                    - 'button "Prerequisites for IT 111: IT101/IT104" [ref=e443] [cursor=pointer]':
+                      - generic [ref=e444]: IT101/IT104
+                - row [ref=e445]:
+                  - cell [ref=e446]:
+                    - textbox "Code for r18" [ref=e448]: GEC 3
+                  - cell [ref=e449]:
+                    - textbox "Title for r18" [ref=e450]: The Contemporary World
+                  - cell [ref=e451]:
+                    - generic [ref=e452]:
+                      - combobox "Year for r18" [ref=e453]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r18" [ref=e454]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e455]:
+                    - generic [ref=e457]:
+                      - spinbutton "Lecture units for r18" [ref=e458]: "3"
+                      - generic [aria-hidden] [ref=e459]: +
+                      - spinbutton "Laboratory units for r18" [ref=e460]: "0"
+                      - generic [aria-hidden] [ref=e461]: =
+                      - spinbutton "Total units for r18" [ref=e462]: "3"
+                  - cell [ref=e463]:
+                    - 'button "Prerequisites for GEC 3: none" [ref=e464] [cursor=pointer]':
+                      - generic [ref=e465]: none
+                - row [ref=e466]:
+                  - cell "Needs review. PATH FiIT3 Code looks misread Use PATH FIT 3" [ref=e467]:
+                    - generic [ref=e468]:
+                      - generic [ref=e469]: Needs review.
+                      - textbox "Code for r19" [ref=e470]: PATH FiIT3
+                      - paragraph [ref=e471]:
+                        - generic [ref=e472]: Code looks misread
+                        - button "Use PATH FIT 3" [ref=e473] [cursor=pointer]
+                  - cell [ref=e474]:
+                    - textbox "Title for r19" [ref=e475]: Dance Sports/In-Dual/Group/Outdoor
+                  - cell [ref=e476]:
+                    - generic [ref=e477]:
+                      - combobox "Year for r19" [ref=e478]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r19" [ref=e479]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e480]:
+                    - generic [ref=e482]:
+                      - spinbutton "Lecture units for r19" [ref=e483]: "2"
+                      - generic [aria-hidden] [ref=e484]: +
+                      - spinbutton "Laboratory units for r19" [ref=e485]: "0"
+                      - generic [aria-hidden] [ref=e486]: =
+                      - spinbutton "Total units for r19" [ref=e487]: "2"
+                  - cell [ref=e488]:
+                    - 'button "Prerequisites for PATH FiIT3: PATH FIT 2" [ref=e489] [cursor=pointer]':
+                      - generic [ref=e490]: PATH FIT 2
+        - region [ref=e491]:
+          - generic [ref=e492]:
+            - heading "Second Semester" [level=4] [ref=e494]
+            - generic [ref=e496]:
+              - text: 9 courses ·
+              - generic [ref=e497]: 26 units
+          - region "Second Year, Second Semester, scrollable" [ref=e499]:
+            - table "Second Year, Second Semester" [ref=e500]:
+              - rowgroup [ref=e501]:
+                - row [ref=e502]:
+                  - columnheader "Course code" [ref=e503]
+                  - columnheader "Course title" [ref=e504]
+                  - columnheader "Year and term" [ref=e505]
+                  - columnheader "Units" [ref=e506]
+                  - columnheader "Prerequisites" [ref=e507]
+              - rowgroup [ref=e508]:
+                - row [ref=e509]:
+                  - cell [ref=e510]:
+                    - textbox "Code for r20" [ref=e512]: IT 112
+                  - cell [ref=e513]:
+                    - textbox "Title for r20" [ref=e514]: Information Management 1
+                  - cell [ref=e515]:
+                    - generic [ref=e516]:
+                      - combobox "Year for r20" [ref=e517]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r20" [ref=e518]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e519]:
+                    - generic [ref=e521]:
+                      - spinbutton "Lecture units for r20" [ref=e522]: "2"
+                      - generic [aria-hidden] [ref=e523]: +
+                      - spinbutton "Laboratory units for r20" [ref=e524]: "1"
+                      - generic [aria-hidden] [ref=e525]: =
+                      - spinbutton "Total units for r20" [ref=e526]: "3"
+                  - cell [ref=e527]:
+                    - 'button "Prerequisites for IT 112: IT 108" [ref=e528] [cursor=pointer]':
+                      - generic [ref=e529]: IT 108
+                - row [ref=e530]:
+                  - cell [ref=e531]:
+                    - textbox "Code for r21" [ref=e533]: IT 113
+                  - cell [ref=e534]:
+                    - textbox "Title for r21" [ref=e535]: Event-Driven Programming
+                  - cell [ref=e536]:
+                    - generic [ref=e537]:
+                      - combobox "Year for r21" [ref=e538]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r21" [ref=e539]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e540]:
+                    - generic [ref=e542]:
+                      - spinbutton "Lecture units for r21" [ref=e543]: "2"
+                      - generic [aria-hidden] [ref=e544]: +
+                      - spinbutton "Laboratory units for r21" [ref=e545]: "1"
+                      - generic [aria-hidden] [ref=e546]: =
+                      - spinbutton "Total units for r21" [ref=e547]: "3"
+                  - cell [ref=e548]:
+                    - 'button "Prerequisites for IT 113: IT108/109/110" [ref=e549] [cursor=pointer]':
+                      - generic [ref=e550]: IT108/109/110
+                - row [ref=e551]:
+                  - cell [ref=e552]:
+                    - textbox "Code for r22" [ref=e554]: IT 114
+                  - cell [ref=e555]:
+                    - textbox "Title for r22" [ref=e556]: Integrative Programming & Technologies 1
+                  - cell [ref=e557]:
+                    - generic [ref=e558]:
+                      - combobox "Year for r22" [ref=e559]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r22" [ref=e560]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e561]:
+                    - generic [ref=e563]:
+                      - spinbutton "Lecture units for r22" [ref=e564]: "2"
+                      - generic [aria-hidden] [ref=e565]: +
+                      - spinbutton "Laboratory units for r22" [ref=e566]: "1"
+                      - generic [aria-hidden] [ref=e567]: =
+                      - spinbutton "Total units for r22" [ref=e568]: "3"
+                  - cell [ref=e569]:
+                    - 'button "Prerequisites for IT 114: IT108/109/110" [ref=e570] [cursor=pointer]':
+                      - generic [ref=e571]: IT108/109/110
+                - row [ref=e572]:
+                  - cell [ref=e573]:
+                    - textbox "Code for r23" [ref=e575]: IT 115
+                  - cell [ref=e576]:
+                    - textbox "Title for r23" [ref=e577]: Human Computer Interaction 1
+                  - cell [ref=e578]:
+                    - generic [ref=e579]:
+                      - combobox "Year for r23" [ref=e580]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r23" [ref=e581]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e582]:
+                    - generic [ref=e584]:
+                      - spinbutton "Lecture units for r23" [ref=e585]: "2"
+                      - generic [aria-hidden] [ref=e586]: +
+                      - spinbutton "Laboratory units for r23" [ref=e587]: "1"
+                      - generic [aria-hidden] [ref=e588]: =
+                      - spinbutton "Total units for r23" [ref=e589]: "3"
+                  - cell [ref=e590]:
+                    - 'button "Prerequisites for IT 115: IT108/109/110" [ref=e591] [cursor=pointer]':
+                      - generic [ref=e592]: IT108/109/110
+                - row [ref=e593]:
+                  - cell [ref=e594]:
+                    - textbox "Code for r24" [ref=e596]: IT 116
+                  - cell [ref=e597]:
+                    - textbox "Title for r24" [ref=e598]: Advanced Database System
+                  - cell [ref=e599]:
+                    - generic [ref=e600]:
+                      - combobox "Year for r24" [ref=e601]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r24" [ref=e602]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e603]:
+                    - generic [ref=e605]:
+                      - spinbutton "Lecture units for r24" [ref=e606]: "2"
+                      - generic [aria-hidden] [ref=e607]: +
+                      - spinbutton "Laboratory units for r24" [ref=e608]: "1"
+                      - generic [aria-hidden] [ref=e609]: =
+                      - spinbutton "Total units for r24" [ref=e610]: "3"
+                  - cell [ref=e611]:
+                    - 'button "Prerequisites for IT 116: IT108/109/110" [ref=e612] [cursor=pointer]':
+                      - generic [ref=e613]: IT108/109/110
+                - row [ref=e614]:
+                  - cell [ref=e615]:
+                    - textbox "Code for r25" [ref=e617]: GEC 4
+                  - cell [ref=e618]:
+                    - textbox "Title for r25" [ref=e619]: Mathematics in the Modern World
+                  - cell [ref=e620]:
+                    - generic [ref=e621]:
+                      - combobox "Year for r25" [ref=e622]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r25" [ref=e623]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e624]:
+                    - generic [ref=e626]:
+                      - spinbutton "Lecture units for r25" [ref=e627]: "3"
+                      - generic [aria-hidden] [ref=e628]: +
+                      - spinbutton "Laboratory units for r25" [ref=e629]: "0"
+                      - generic [aria-hidden] [ref=e630]: =
+                      - spinbutton "Total units for r25" [ref=e631]: "3"
+                  - cell [ref=e632]:
+                    - 'button "Prerequisites for GEC 4: none" [ref=e633] [cursor=pointer]':
+                      - generic [ref=e634]: none
+                - row [ref=e635]:
+                  - cell [ref=e636]:
+                    - textbox "Code for r26" [ref=e638]: GEE 6
+                  - cell [ref=e639]:
+                    - textbox "Title for r26" [ref=e640]: Art Appreciation
+                  - cell [ref=e641]:
+                    - generic [ref=e642]:
+                      - combobox "Year for r26" [ref=e643]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r26" [ref=e644]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e645]:
+                    - generic [ref=e647]:
+                      - spinbutton "Lecture units for r26" [ref=e648]: "3"
+                      - generic [aria-hidden] [ref=e649]: +
+                      - spinbutton "Laboratory units for r26" [ref=e650]: "0"
+                      - generic [aria-hidden] [ref=e651]: =
+                      - spinbutton "Total units for r26" [ref=e652]: "3"
+                  - cell [ref=e653]:
+                    - 'button "Prerequisites for GEE 6: none" [ref=e654] [cursor=pointer]':
+                      - generic [ref=e655]: none
+                - row [ref=e656]:
+                  - cell [ref=e657]:
+                    - textbox "Code for r27" [ref=e659]: GEE 8
+                  - cell [ref=e660]:
+                    - textbox "Title for r27" [ref=e661]: Ethics
+                  - cell [ref=e662]:
+                    - generic [ref=e663]:
+                      - combobox "Year for r27" [ref=e664]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r27" [ref=e665]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e666]:
+                    - generic [ref=e668]:
+                      - spinbutton "Lecture units for r27" [ref=e669]: "3"
+                      - generic [aria-hidden] [ref=e670]: +
+                      - spinbutton "Laboratory units for r27" [ref=e671]: "0"
+                      - generic [aria-hidden] [ref=e672]: =
+                      - spinbutton "Total units for r27" [ref=e673]: "3"
+                  - cell [ref=e674]:
+                    - 'button "Prerequisites for GEE 8: none" [ref=e675] [cursor=pointer]':
+                      - generic [ref=e676]: none
+                - row [ref=e677]:
+                  - cell [ref=e678]:
+                    - textbox "Code for r28" [ref=e680]: PATH FIT 4
+                  - cell [ref=e681]:
+                    - textbox "Title for r28" [ref=e682]: Team Sports
+                  - cell [ref=e683]:
+                    - generic [ref=e684]:
+                      - combobox "Year for r28" [ref=e685]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2" [selected]
+                        - option "Year 3"
+                        - option "Year 4"
+                      - combobox "Term for r28" [ref=e686]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e687]:
+                    - generic [ref=e689]:
+                      - spinbutton "Lecture units for r28" [ref=e690]: "2"
+                      - generic [aria-hidden] [ref=e691]: +
+                      - spinbutton "Laboratory units for r28" [ref=e692]: "0"
+                      - generic [aria-hidden] [ref=e693]: =
+                      - spinbutton "Total units for r28" [ref=e694]: "2"
+                  - cell [ref=e695]:
+                    - 'button "Prerequisites for PATH FIT 4: PATH FIT 3" [ref=e696] [cursor=pointer]':
+                      - generic [ref=e697]: PATH FIT 3
+      - region [ref=e698]:
+        - generic [ref=e699]:
+          - heading "Summer" [level=4] [ref=e701]
+          - generic [ref=e703]:
+            - text: 3 courses ·
+            - generic [ref=e704]: 9 units
+        - region "Second Year, Summer, scrollable" [ref=e706]:
+          - table "Second Year, Summer" [ref=e707]:
+            - rowgroup [ref=e708]:
+              - row [ref=e709]:
+                - columnheader "Course code" [ref=e710]
+                - columnheader "Course title" [ref=e711]
+                - columnheader "Year and term" [ref=e712]
+                - columnheader "Units" [ref=e713]
+                - columnheader "Prerequisites" [ref=e714]
+            - rowgroup [ref=e715]:
+              - row [ref=e716]:
+                - cell [ref=e717]:
+                  - textbox "Code for r29" [ref=e719]: IT 117
+                - cell [ref=e720]:
+                  - textbox "Title for r29" [ref=e721]: QualitativeMethods(Modeling&Simulation)
+                - cell [ref=e722]:
+                  - generic [ref=e723]:
+                    - combobox "Year for r29" [ref=e724]:
+                      - option "Year"
+                      - option "Year 1"
+                      - option "Year 2" [selected]
+                      - option "Year 3"
+                      - option "Year 4"
+                    - combobox "Term for r29" [ref=e725]:
+                      - option "Term"
+                      - option "First Semester"
+                      - option "Second Semester"
+                      - option "Summer" [selected]
+                - cell [ref=e726]:
+                  - generic [ref=e728]:
+                    - spinbutton "Lecture units for r29" [ref=e729]: "2"
+                    - generic [aria-hidden] [ref=e730]: +
+                    - spinbutton "Laboratory units for r29" [ref=e731]: "1"
+                    - generic [aria-hidden] [ref=e732]: =
+                    - spinbutton "Total units for r29" [ref=e733]: "3"
+                - cell [ref=e734]:
+                  - 'button "Prerequisites for IT 117: IT108/109/110/112" [ref=e735] [cursor=pointer]':
+                    - generic [ref=e736]: IT108/109/110/112
+              - row [ref=e737]:
+                - cell [ref=e738]:
+                  - textbox "Code for r30" [ref=e740]: IT 118
+                - cell [ref=e741]:
+                  - textbox "Title for r30" [ref=e742]: Human Computer Interaction 2
+                - cell [ref=e743]:
+                  - generic [ref=e744]:
+                    - combobox "Year for r30" [ref=e745]:
+                      - option "Year"
+                      - option "Year 1"
+                      - option "Year 2" [selected]
+                      - option "Year 3"
+                      - option "Year 4"
+                    - combobox "Term for r30" [ref=e746]:
+                      - option "Term"
+                      - option "First Semester"
+                      - option "Second Semester"
+                      - option "Summer" [selected]
+                - cell [ref=e747]:
+                  - generic [ref=e749]:
+                    - spinbutton "Lecture units for r30" [ref=e750]: "2"
+                    - generic [aria-hidden] [ref=e751]: +
+                    - spinbutton "Laboratory units for r30" [ref=e752]: "1"
+                    - generic [aria-hidden] [ref=e753]: =
+                    - spinbutton "Total units for r30" [ref=e754]: "3"
+                - cell [ref=e755]:
+                  - 'button "Prerequisites for IT 118: IT115" [ref=e756] [cursor=pointer]':
+                    - generic [ref=e757]: IT115
+              - row [ref=e758]:
+                - cell [ref=e759]:
+                  - textbox "Code for r31" [ref=e761]: IT Elec 1
+                - cell [ref=e762]:
+                  - textbox "Title for r31" [ref=e763]: System Analysis and Design (SAD)
+                - cell [ref=e764]:
+                  - generic [ref=e765]:
+                    - combobox "Year for r31" [ref=e766]:
+                      - option "Year"
+                      - option "Year 1"
+                      - option "Year 2" [selected]
+                      - option "Year 3"
+                      - option "Year 4"
+                    - combobox "Term for r31" [ref=e767]:
+                      - option "Term"
+                      - option "First Semester"
+                      - option "Second Semester"
+                      - option "Summer" [selected]
+                - cell [ref=e768]:
+                  - generic [ref=e770]:
+                    - spinbutton "Lecture units for r31" [ref=e771]: "3"
+                    - generic [aria-hidden] [ref=e772]: +
+                    - spinbutton "Laboratory units for r31" [ref=e773]: "0"
+                    - generic [aria-hidden] [ref=e774]: =
+                    - spinbutton "Total units for r31" [ref=e775]: "3"
+                - cell [ref=e776]:
+                  - 'button "Prerequisites for IT Elec 1: IT109/110/116" [ref=e777] [cursor=pointer]':
+                    - generic [ref=e778]: IT109/110/116
+    - region [ref=e779]:
+      - generic [ref=e780]:
+        - heading "Third Year" [level=3] [ref=e781]
+        - paragraph [ref=e782]: 22 courses · 66 units
+      - generic [ref=e783]:
+        - region [ref=e784]:
+          - generic [ref=e785]:
+            - heading "First Semester" [level=4] [ref=e787]
+            - generic [ref=e789]:
+              - text: 9 courses ·
+              - generic [ref=e790]: 27 units
+          - region "Third Year, First Semester, scrollable" [ref=e792]:
+            - table "Third Year, First Semester" [ref=e793]:
+              - rowgroup [ref=e794]:
+                - row [ref=e795]:
+                  - columnheader "Course code" [ref=e796]
+                  - columnheader "Course title" [ref=e797]
+                  - columnheader "Year and term" [ref=e798]
+                  - columnheader "Units" [ref=e799]
+                  - columnheader "Prerequisites" [ref=e800]
+              - rowgroup [ref=e801]:
+                - row [ref=e802]:
+                  - cell [ref=e803]:
+                    - textbox "Code for r32" [ref=e805]: IT 119
+                  - cell [ref=e806]:
+                    - textbox "Title for r32" [ref=e807]: System Integration & Architecture 1
+                  - cell [ref=e808]:
+                    - generic [ref=e809]:
+                      - combobox "Year for r32" [ref=e810]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r32" [ref=e811]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e812]:
+                    - generic [ref=e814]:
+                      - spinbutton "Lecture units for r32" [ref=e815]: "2"
+                      - generic [aria-hidden] [ref=e816]: +
+                      - spinbutton "Laboratory units for r32" [ref=e817]: "1"
+                      - generic [aria-hidden] [ref=e818]: =
+                      - spinbutton "Total units for r32" [ref=e819]: "3"
+                  - cell [ref=e820]:
+                    - 'button "Prerequisites for IT 119: IT113/114/115/116" [ref=e821] [cursor=pointer]':
+                      - generic [ref=e822]: IT113/114/115/116
+                - row [ref=e823]:
+                  - cell [ref=e824]:
+                    - textbox "Code for r33" [ref=e826]: IT 120
+                  - cell [ref=e827]:
+                    - textbox "Title for r33" [ref=e828]: Research1 (Methods of Research in Computing)
+                  - cell [ref=e829]:
+                    - generic [ref=e830]:
+                      - combobox "Year for r33" [ref=e831]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r33" [ref=e832]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e833]:
+                    - generic [ref=e835]:
+                      - spinbutton "Lecture units for r33" [ref=e836]: "3"
+                      - generic [aria-hidden] [ref=e837]: +
+                      - spinbutton "Laboratory units for r33" [ref=e838]: "0"
+                      - generic [aria-hidden] [ref=e839]: =
+                      - spinbutton "Total units for r33" [ref=e840]: "3"
+                  - cell [ref=e841]:
+                    - 'button "Prerequisites for IT 120: IT 112" [ref=e842] [cursor=pointer]':
+                      - generic [ref=e843]: IT 112
+                - row [ref=e844]:
+                  - cell [ref=e845]:
+                    - textbox "Code for r34" [ref=e847]: IT 121
+                  - cell [ref=e848]:
+                    - textbox "Title for r34" [ref=e849]: Information Management 2
+                  - cell [ref=e850]:
+                    - generic [ref=e851]:
+                      - combobox "Year for r34" [ref=e852]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r34" [ref=e853]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e854]:
+                    - generic [ref=e856]:
+                      - spinbutton "Lecture units for r34" [ref=e857]: "2"
+                      - generic [aria-hidden] [ref=e858]: +
+                      - spinbutton "Laboratory units for r34" [ref=e859]: "1"
+                      - generic [aria-hidden] [ref=e860]: =
+                      - spinbutton "Total units for r34" [ref=e861]: "3"
+                  - cell [ref=e862]:
+                    - 'button "Prerequisites for IT 121: IT112" [ref=e863] [cursor=pointer]':
+                      - generic [ref=e864]: IT112
+                - row [ref=e865]:
+                  - cell [ref=e866]:
+                    - textbox "Code for r35" [ref=e868]: IT 122
+                  - cell [ref=e869]:
+                    - textbox "Title for r35" [ref=e870]: Integrative Programming & Technologies 2
+                  - cell [ref=e871]:
+                    - generic [ref=e872]:
+                      - combobox "Year for r35" [ref=e873]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r35" [ref=e874]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e875]:
+                    - generic [ref=e877]:
+                      - spinbutton "Lecture units for r35" [ref=e878]: "2"
+                      - generic [aria-hidden] [ref=e879]: +
+                      - spinbutton "Laboratory units for r35" [ref=e880]: "1"
+                      - generic [aria-hidden] [ref=e881]: =
+                      - spinbutton "Total units for r35" [ref=e882]: "3"
+                  - cell [ref=e883]:
+                    - 'button "Prerequisites for IT 122: IT114" [ref=e884] [cursor=pointer]':
+                      - generic [ref=e885]: IT114
+                - row [ref=e886]:
+                  - cell [ref=e887]:
+                    - textbox "Code for r36" [ref=e889]: IT Elec 2
+                  - cell [ref=e890]:
+                    - textbox "Title for r36" [ref=e891]: Computer Graphics
+                  - cell [ref=e892]:
+                    - generic [ref=e893]:
+                      - combobox "Year for r36" [ref=e894]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r36" [ref=e895]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e896]:
+                    - generic [ref=e898]:
+                      - spinbutton "Lecture units for r36" [ref=e899]: "2"
+                      - generic [aria-hidden] [ref=e900]: +
+                      - spinbutton "Laboratory units for r36" [ref=e901]: "1"
+                      - generic [aria-hidden] [ref=e902]: =
+                      - spinbutton "Total units for r36" [ref=e903]: "3"
+                  - cell [ref=e904]:
+                    - 'button "Prerequisites for IT Elec 2: IT 109/116" [ref=e905] [cursor=pointer]':
+                      - generic [ref=e906]: IT 109/116
+                - row [ref=e907]:
+                  - cell [ref=e908]:
+                    - textbox "Code for r37" [ref=e910]: GEC 5
+                  - cell [ref=e911]:
+                    - textbox "Title for r37" [ref=e912]: Purposive Communication
+                  - cell [ref=e913]:
+                    - generic [ref=e914]:
+                      - combobox "Year for r37" [ref=e915]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r37" [ref=e916]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e917]:
+                    - generic [ref=e919]:
+                      - spinbutton "Lecture units for r37" [ref=e920]: "3"
+                      - generic [aria-hidden] [ref=e921]: +
+                      - spinbutton "Laboratory units for r37" [ref=e922]: "0"
+                      - generic [aria-hidden] [ref=e923]: =
+                      - spinbutton "Total units for r37" [ref=e924]: "3"
+                  - cell [ref=e925]:
+                    - 'button "Prerequisites for GEC 5: none" [ref=e926] [cursor=pointer]':
+                      - generic [ref=e927]: none
+                - row [ref=e928]:
+                  - cell [ref=e929]:
+                    - textbox "Code for r38" [ref=e931]: GEC 7
+                  - cell [ref=e932]:
+                    - textbox "Title for r38" [ref=e933]: Science, Technology and Society
+                  - cell [ref=e934]:
+                    - generic [ref=e935]:
+                      - combobox "Year for r38" [ref=e936]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r38" [ref=e937]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e938]:
+                    - generic [ref=e940]:
+                      - spinbutton "Lecture units for r38" [ref=e941]: "3"
+                      - generic [aria-hidden] [ref=e942]: +
+                      - spinbutton "Laboratory units for r38" [ref=e943]: "0"
+                      - generic [aria-hidden] [ref=e944]: =
+                      - spinbutton "Total units for r38" [ref=e945]: "3"
+                  - cell [ref=e946]:
+                    - 'button "Prerequisites for GEC 7: none" [ref=e947] [cursor=pointer]':
+                      - generic [ref=e948]: none
+                - row [ref=e949]:
+                  - cell [ref=e950]:
+                    - textbox "Code for r39" [ref=e952]: GEC 9
+                  - cell [ref=e953]:
+                    - textbox "Title for r39" [ref=e954]: Life, Works & Writing of Dr. Jose Rizal
+                  - cell [ref=e955]:
+                    - generic [ref=e956]:
+                      - combobox "Year for r39" [ref=e957]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r39" [ref=e958]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e959]:
+                    - generic [ref=e961]:
+                      - spinbutton "Lecture units for r39" [ref=e962]: "3"
+                      - generic [aria-hidden] [ref=e963]: +
+                      - spinbutton "Laboratory units for r39" [ref=e964]: "0"
+                      - generic [aria-hidden] [ref=e965]: =
+                      - spinbutton "Total units for r39" [ref=e966]: "3"
+                  - cell [ref=e967]:
+                    - 'button "Prerequisites for GEC 9: none" [ref=e968] [cursor=pointer]':
+                      - generic [ref=e969]: none
+                - row [ref=e970]:
+                  - cell [ref=e971]:
+                    - textbox "Code for r40" [ref=e973]: GEE 9
+                  - cell [ref=e974]:
+                    - textbox "Title for r40" [ref=e975]: Technoprenuership (The Entrepreneurial Mind)
+                  - cell [ref=e976]:
+                    - generic [ref=e977]:
+                      - combobox "Year for r40" [ref=e978]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r40" [ref=e979]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e980]:
+                    - generic [ref=e982]:
+                      - spinbutton "Lecture units for r40" [ref=e983]: "3"
+                      - generic [aria-hidden] [ref=e984]: +
+                      - spinbutton "Laboratory units for r40" [ref=e985]: "0"
+                      - generic [aria-hidden] [ref=e986]: =
+                      - spinbutton "Total units for r40" [ref=e987]: "3"
+                  - cell [ref=e988]:
+                    - 'button "Prerequisites for GEE 9: none" [ref=e989] [cursor=pointer]':
+                      - generic [ref=e990]: none
+        - region [ref=e991]:
+          - generic [ref=e992]:
+            - heading "Second Semester" [level=4] [ref=e994]
+            - generic [ref=e996]:
+              - text: 10 courses ·
+              - generic [ref=e997]: 30 units
+          - region "Third Year, Second Semester, scrollable" [ref=e999]:
+            - table "Third Year, Second Semester" [ref=e1000]:
+              - rowgroup [ref=e1001]:
+                - row [ref=e1002]:
+                  - columnheader "Course code" [ref=e1003]
+                  - columnheader "Course title" [ref=e1004]
+                  - columnheader "Year and term" [ref=e1005]
+                  - columnheader "Units" [ref=e1006]
+                  - columnheader "Prerequisites" [ref=e1007]
+              - rowgroup [ref=e1008]:
+                - row [ref=e1009]:
+                  - cell [ref=e1010]:
+                    - textbox "Code for r41" [ref=e1012]: IT 123
+                  - cell [ref=e1013]:
+                    - textbox "Title for r41" [ref=e1014]: Information Assurance & Security 1
+                  - cell [ref=e1015]:
+                    - generic [ref=e1016]:
+                      - combobox "Year for r41" [ref=e1017]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r41" [ref=e1018]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1019]:
+                    - generic [ref=e1021]:
+                      - spinbutton "Lecture units for r41" [ref=e1022]: "2"
+                      - generic [aria-hidden] [ref=e1023]: +
+                      - spinbutton "Laboratory units for r41" [ref=e1024]: "1"
+                      - generic [aria-hidden] [ref=e1025]: =
+                      - spinbutton "Total units for r41" [ref=e1026]: "3"
+                  - cell [ref=e1027]:
+                    - 'button "Prerequisites for IT 123: IT119" [ref=e1028] [cursor=pointer]':
+                      - generic [ref=e1029]: IT119
+                - row [ref=e1030]:
+                  - cell [ref=e1031]:
+                    - textbox "Code for r42" [ref=e1033]: IT 124
+                  - cell [ref=e1034]:
+                    - textbox "Title for r42" [ref=e1035]: Networking 1
+                  - cell [ref=e1036]:
+                    - generic [ref=e1037]:
+                      - combobox "Year for r42" [ref=e1038]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r42" [ref=e1039]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1040]:
+                    - generic [ref=e1042]:
+                      - spinbutton "Lecture units for r42" [ref=e1043]: "2"
+                      - generic [aria-hidden] [ref=e1044]: +
+                      - spinbutton "Laboratory units for r42" [ref=e1045]: "1"
+                      - generic [aria-hidden] [ref=e1046]: =
+                      - spinbutton "Total units for r42" [ref=e1047]: "3"
+                  - cell [ref=e1048]:
+                    - 'button "Prerequisites for IT 124: IT114" [ref=e1049] [cursor=pointer]':
+                      - generic [ref=e1050]: IT114
+                - row [ref=e1051]:
+                  - cell "Needs review. I1 125 Code looks misread Use IT 125" [ref=e1052]:
+                    - generic [ref=e1053]:
+                      - generic [ref=e1054]: Needs review.
+                      - textbox "Code for r43" [ref=e1055]: I1 125
+                      - paragraph [ref=e1056]:
+                        - generic [ref=e1057]: Code looks misread
+                        - button "Use IT 125" [ref=e1058] [cursor=pointer]
+                  - cell [ref=e1059]:
+                    - textbox "Title for r43" [ref=e1060]: Capstone Project 1
+                  - cell [ref=e1061]:
+                    - generic [ref=e1062]:
+                      - combobox "Year for r43" [ref=e1063]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r43" [ref=e1064]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1065]:
+                    - generic [ref=e1067]:
+                      - spinbutton "Lecture units for r43" [ref=e1068]: "3"
+                      - generic [aria-hidden] [ref=e1069]: +
+                      - spinbutton "Laboratory units for r43" [ref=e1070]: "0"
+                      - generic [aria-hidden] [ref=e1071]: =
+                      - spinbutton "Total units for r43" [ref=e1072]: "3"
+                  - cell [ref=e1073]:
+                    - 'button "Prerequisites for I1 125: 1st2nd3rdyr/1stSem" [ref=e1074] [cursor=pointer]':
+                      - generic [ref=e1075]: 1st2nd3rdyr/1stSem
+                - row [ref=e1076]:
+                  - cell [ref=e1077]:
+                    - textbox "Code for r44" [ref=e1079]: IT 126
+                  - cell [ref=e1080]:
+                    - textbox "Title for r44" [ref=e1081]: System Integration & Architecture 2
+                  - cell [ref=e1082]:
+                    - generic [ref=e1083]:
+                      - combobox "Year for r44" [ref=e1084]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r44" [ref=e1085]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1086]:
+                    - generic [ref=e1088]:
+                      - spinbutton "Lecture units for r44" [ref=e1089]: "2"
+                      - generic [aria-hidden] [ref=e1090]: +
+                      - spinbutton "Laboratory units for r44" [ref=e1091]: "1"
+                      - generic [aria-hidden] [ref=e1092]: =
+                      - spinbutton "Total units for r44" [ref=e1093]: "3"
+                  - cell [ref=e1094]:
+                    - 'button "Prerequisites for IT 126: IT119" [ref=e1095] [cursor=pointer]':
+                      - generic [ref=e1096]: IT119
+                - row [ref=e1097]:
+                  - cell [ref=e1098]:
+                    - textbox "Code for r45" [ref=e1100]: IT 127
+                  - cell [ref=e1101]:
+                    - textbox "Title for r45" [ref=e1102]: Platform Technologies
+                  - cell [ref=e1103]:
+                    - generic [ref=e1104]:
+                      - combobox "Year for r45" [ref=e1105]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r45" [ref=e1106]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1107]:
+                    - generic [ref=e1109]:
+                      - spinbutton "Lecture units for r45" [ref=e1110]: "3"
+                      - generic [aria-hidden] [ref=e1111]: +
+                      - spinbutton "Laboratory units for r45" [ref=e1112]: "0"
+                      - generic [aria-hidden] [ref=e1113]: =
+                      - spinbutton "Total units for r45" [ref=e1114]: "3"
+                  - cell [ref=e1115]:
+                    - 'button "Prerequisites for IT 127: IT119" [ref=e1116] [cursor=pointer]':
+                      - generic [ref=e1117]: IT119
+                - row [ref=e1118]:
+                  - cell [ref=e1119]:
+                    - textbox "Code for r46" [ref=e1121]: IT Elec 3
+                  - cell [ref=e1122]:
+                    - textbox "Title for r46" [ref=e1123]: Computer - Aided Design (CAD)
+                  - cell [ref=e1124]:
+                    - generic [ref=e1125]:
+                      - combobox "Year for r46" [ref=e1126]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r46" [ref=e1127]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1128]:
+                    - generic [ref=e1130]:
+                      - spinbutton "Lecture units for r46" [ref=e1131]: "2"
+                      - generic [aria-hidden] [ref=e1132]: +
+                      - spinbutton "Laboratory units for r46" [ref=e1133]: "1"
+                      - generic [aria-hidden] [ref=e1134]: =
+                      - spinbutton "Total units for r46" [ref=e1135]: "3"
+                  - cell [ref=e1136]:
+                    - 'button "Prerequisites for IT Elec 3: IT Elective 2" [ref=e1137] [cursor=pointer]':
+                      - generic [ref=e1138]: IT Elective 2
+                - row [ref=e1139]:
+                  - cell [ref=e1140]:
+                    - textbox "Code for r47" [ref=e1142]: GEE 4
+                  - cell [ref=e1143]:
+                    - textbox "Title for r47" [ref=e1144]: Living in the IT Era
+                  - cell [ref=e1145]:
+                    - generic [ref=e1146]:
+                      - combobox "Year for r47" [ref=e1147]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r47" [ref=e1148]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1149]:
+                    - generic [ref=e1151]:
+                      - spinbutton "Lecture units for r47" [ref=e1152]: "3"
+                      - generic [aria-hidden] [ref=e1153]: +
+                      - spinbutton "Laboratory units for r47" [ref=e1154]: "0"
+                      - generic [aria-hidden] [ref=e1155]: =
+                      - spinbutton "Total units for r47" [ref=e1156]: "3"
+                  - cell [ref=e1157]:
+                    - 'button "Prerequisites for GEE 4: none" [ref=e1158] [cursor=pointer]':
+                      - generic [ref=e1159]: none
+                - row [ref=e1160]:
+                  - cell [ref=e1161]:
+                    - textbox "Code for r48" [ref=e1163]: GEE 7
+                  - cell [ref=e1164]:
+                    - textbox "Title for r48" [ref=e1165]: Gender & Society
+                  - cell [ref=e1166]:
+                    - generic [ref=e1167]:
+                      - combobox "Year for r48" [ref=e1168]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r48" [ref=e1169]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1170]:
+                    - generic [ref=e1172]:
+                      - spinbutton "Lecture units for r48" [ref=e1173]: "3"
+                      - generic [aria-hidden] [ref=e1174]: +
+                      - spinbutton "Laboratory units for r48" [ref=e1175]: "0"
+                      - generic [aria-hidden] [ref=e1176]: =
+                      - spinbutton "Total units for r48" [ref=e1177]: "3"
+                  - cell [ref=e1178]:
+                    - 'button "Prerequisites for GEE 7: none" [ref=e1179] [cursor=pointer]':
+                      - generic [ref=e1180]: none
+                - row [ref=e1181]:
+                  - cell [ref=e1182]:
+                    - textbox "Code for r49" [ref=e1184]: GEE 10
+                  - cell [ref=e1185]:
+                    - textbox "Title for r49" [ref=e1186]: Entrepeneural Management
+                  - cell [ref=e1187]:
+                    - generic [ref=e1188]:
+                      - combobox "Year for r49" [ref=e1189]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r49" [ref=e1190]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1191]:
+                    - generic [ref=e1193]:
+                      - spinbutton "Lecture units for r49" [ref=e1194]: "3"
+                      - generic [aria-hidden] [ref=e1195]: +
+                      - spinbutton "Laboratory units for r49" [ref=e1196]: "0"
+                      - generic [aria-hidden] [ref=e1197]: =
+                      - spinbutton "Total units for r49" [ref=e1198]: "3"
+                  - cell [ref=e1199]:
+                    - 'button "Prerequisites for GEE 10: GEE 9" [ref=e1200] [cursor=pointer]':
+                      - generic [ref=e1201]: GEE 9
+                - row [ref=e1202]:
+                  - cell [ref=e1203]:
+                    - textbox "Code for r50" [ref=e1205]: GEE11
+                  - cell [ref=e1206]:
+                    - textbox "Title for r50" [ref=e1207]: Phil. Indigenous Communities&Peace Studies Education
+                  - cell [ref=e1208]:
+                    - generic [ref=e1209]:
+                      - combobox "Year for r50" [ref=e1210]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3" [selected]
+                        - option "Year 4"
+                      - combobox "Term for r50" [ref=e1211]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1212]:
+                    - generic [ref=e1214]:
+                      - spinbutton "Lecture units for r50" [ref=e1215]: "3"
+                      - generic [aria-hidden] [ref=e1216]: +
+                      - spinbutton "Laboratory units for r50" [ref=e1217]: "0"
+                      - generic [aria-hidden] [ref=e1218]: =
+                      - spinbutton "Total units for r50" [ref=e1219]: "3"
+                  - cell [ref=e1220]:
+                    - 'button "Prerequisites for GEE11: none" [ref=e1221] [cursor=pointer]':
+                      - generic [ref=e1222]: none
+      - region [ref=e1223]:
+        - generic [ref=e1224]:
+          - heading "Summer" [level=4] [ref=e1226]
+          - generic [ref=e1228]:
+            - text: 3 courses ·
+            - generic [ref=e1229]: 9 units
+        - region "Third Year, Summer, scrollable" [ref=e1231]:
+          - table "Third Year, Summer" [ref=e1232]:
+            - rowgroup [ref=e1233]:
+              - row [ref=e1234]:
+                - columnheader "Course code" [ref=e1235]
+                - columnheader "Course title" [ref=e1236]
+                - columnheader "Year and term" [ref=e1237]
+                - columnheader "Units" [ref=e1238]
+                - columnheader "Prerequisites" [ref=e1239]
+            - rowgroup [ref=e1240]:
+              - row [ref=e1241]:
+                - cell [ref=e1242]:
+                  - textbox "Code for r51" [ref=e1244]: IT Elec 4
+                - cell [ref=e1245]:
+                  - textbox "Title for r51" [ref=e1246]: Fundamentals of Data Warehousing&Data Mining
+                - cell [ref=e1247]:
+                  - generic [ref=e1248]:
+                    - combobox "Year for r51" [ref=e1249]:
+                      - option "Year"
+                      - option "Year 1"
+                      - option "Year 2"
+                      - option "Year 3" [selected]
+                      - option "Year 4"
+                    - combobox "Term for r51" [ref=e1250]:
+                      - option "Term"
+                      - option "First Semester"
+                      - option "Second Semester"
+                      - option "Summer" [selected]
+                - cell [ref=e1251]:
+                  - generic [ref=e1253]:
+                    - spinbutton "Lecture units for r51" [ref=e1254]: "3"
+                    - generic [aria-hidden] [ref=e1255]: +
+                    - spinbutton "Laboratory units for r51" [ref=e1256]: "0"
+                    - generic [aria-hidden] [ref=e1257]: =
+                    - spinbutton "Total units for r51" [ref=e1258]: "3"
+                - cell [ref=e1259]:
+                  - 'button "Prerequisites for IT Elec 4: IT119" [ref=e1260] [cursor=pointer]':
+                    - generic [ref=e1261]: IT119
+              - row [ref=e1262]:
+                - cell [ref=e1263]:
+                  - textbox "Code for r52" [ref=e1265]: IT Elec 5
+                - cell [ref=e1266]:
+                  - textbox "Title for r52" [ref=e1267]: Multimedia System
+                - cell [ref=e1268]:
+                  - generic [ref=e1269]:
+                    - combobox "Year for r52" [ref=e1270]:
+                      - option "Year"
+                      - option "Year 1"
+                      - option "Year 2"
+                      - option "Year 3" [selected]
+                      - option "Year 4"
+                    - combobox "Term for r52" [ref=e1271]:
+                      - option "Term"
+                      - option "First Semester"
+                      - option "Second Semester"
+                      - option "Summer" [selected]
+                - cell [ref=e1272]:
+                  - generic [ref=e1274]:
+                    - spinbutton "Lecture units for r52" [ref=e1275]: "2"
+                    - generic [aria-hidden] [ref=e1276]: +
+                    - spinbutton "Laboratory units for r52" [ref=e1277]: "1"
+                    - generic [aria-hidden] [ref=e1278]: =
+                    - spinbutton "Total units for r52" [ref=e1279]: "3"
+                - cell [ref=e1280]:
+                  - 'button "Prerequisites for IT Elec 5: IT Elective 2 & 3" [ref=e1281] [cursor=pointer]':
+                    - generic [ref=e1282]: IT Elective 2 & 3
+              - row [ref=e1283]:
+                - cell [ref=e1284]:
+                  - textbox "Code for r53" [ref=e1286]: IT Elec 6
+                - cell [ref=e1287]:
+                  - textbox "Title for r53" [ref=e1288]: Management Information System(MIS)
+                - cell [ref=e1289]:
+                  - generic [ref=e1290]:
+                    - combobox "Year for r53" [ref=e1291]:
+                      - option "Year"
+                      - option "Year 1"
+                      - option "Year 2"
+                      - option "Year 3" [selected]
+                      - option "Year 4"
+                    - combobox "Term for r53" [ref=e1292]:
+                      - option "Term"
+                      - option "First Semester"
+                      - option "Second Semester"
+                      - option "Summer" [selected]
+                - cell [ref=e1293]:
+                  - generic [ref=e1295]:
+                    - spinbutton "Lecture units for r53" [ref=e1296]: "3"
+                    - generic [aria-hidden] [ref=e1297]: +
+                    - spinbutton "Laboratory units for r53" [ref=e1298]: "0"
+                    - generic [aria-hidden] [ref=e1299]: =
+                    - spinbutton "Total units for r53" [ref=e1300]: "3"
+                - cell [ref=e1301]:
+                  - 'button "Prerequisites for IT Elec 6: IT Elective 1" [ref=e1302] [cursor=pointer]':
+                    - generic [ref=e1303]: IT Elective 1
+    - region [ref=e1304]:
+      - generic [ref=e1305]:
+        - heading "Fourth Year" [level=3] [ref=e1306]
+        - paragraph [ref=e1307]: 6 courses · 21 units
+      - generic [ref=e1308]:
+        - region [ref=e1309]:
+          - generic [ref=e1310]:
+            - heading "First Semester" [level=4] [ref=e1312]
+            - generic [ref=e1314]:
+              - text: 5 courses ·
+              - generic [ref=e1315]: 15 units
+          - region "Fourth Year, First Semester, scrollable" [ref=e1317]:
+            - table "Fourth Year, First Semester" [ref=e1318]:
+              - rowgroup [ref=e1319]:
+                - row [ref=e1320]:
+                  - columnheader "Course code" [ref=e1321]
+                  - columnheader "Course title" [ref=e1322]
+                  - columnheader "Year and term" [ref=e1323]
+                  - columnheader "Units" [ref=e1324]
+                  - columnheader "Prerequisites" [ref=e1325]
+              - rowgroup [ref=e1326]:
+                - row [ref=e1327]:
+                  - cell [ref=e1328]:
+                    - textbox "Code for r54" [ref=e1330]: IT 128
+                  - cell [ref=e1331]:
+                    - textbox "Title for r54" [ref=e1332]: System Administration and Maintenance
+                  - cell [ref=e1333]:
+                    - generic [ref=e1334]:
+                      - combobox "Year for r54" [ref=e1335]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4" [selected]
+                      - combobox "Term for r54" [ref=e1336]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e1337]:
+                    - generic [ref=e1339]:
+                      - spinbutton "Lecture units for r54" [ref=e1340]: "2"
+                      - generic [aria-hidden] [ref=e1341]: +
+                      - spinbutton "Laboratory units for r54" [ref=e1342]: "1"
+                      - generic [aria-hidden] [ref=e1343]: =
+                      - spinbutton "Total units for r54" [ref=e1344]: "3"
+                  - cell [ref=e1345]:
+                    - 'button "Prerequisites for IT 128: IT123/124/126" [ref=e1346] [cursor=pointer]':
+                      - generic [ref=e1347]: IT123/124/126
+                - row [ref=e1348]:
+                  - cell [ref=e1349]:
+                    - textbox "Code for r55" [ref=e1351]: IT 129
+                  - cell [ref=e1352]:
+                    - textbox "Title for r55" [ref=e1353]: Information Assurance & Security 2
+                  - cell [ref=e1354]:
+                    - generic [ref=e1355]:
+                      - combobox "Year for r55" [ref=e1356]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4" [selected]
+                      - combobox "Term for r55" [ref=e1357]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e1358]:
+                    - generic [ref=e1360]:
+                      - spinbutton "Lecture units for r55" [ref=e1361]: "2"
+                      - generic [aria-hidden] [ref=e1362]: +
+                      - spinbutton "Laboratory units for r55" [ref=e1363]: "1"
+                      - generic [aria-hidden] [ref=e1364]: =
+                      - spinbutton "Total units for r55" [ref=e1365]: "3"
+                  - cell [ref=e1366]:
+                    - 'button "Prerequisites for IT 129: IT123" [ref=e1367] [cursor=pointer]':
+                      - generic [ref=e1368]: IT123
+                - row [ref=e1369]:
+                  - cell [ref=e1370]:
+                    - textbox "Code for r56" [ref=e1372]: IT 130
+                  - cell [ref=e1373]:
+                    - textbox "Title for r56" [ref=e1374]: Networking 2
+                  - cell [ref=e1375]:
+                    - generic [ref=e1376]:
+                      - combobox "Year for r56" [ref=e1377]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4" [selected]
+                      - combobox "Term for r56" [ref=e1378]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e1379]:
+                    - generic [ref=e1381]:
+                      - spinbutton "Lecture units for r56" [ref=e1382]: "2"
+                      - generic [aria-hidden] [ref=e1383]: +
+                      - spinbutton "Laboratory units for r56" [ref=e1384]: "1"
+                      - generic [aria-hidden] [ref=e1385]: =
+                      - spinbutton "Total units for r56" [ref=e1386]: "3"
+                  - cell [ref=e1387]:
+                    - 'button "Prerequisites for IT 130: IT124" [ref=e1388] [cursor=pointer]':
+                      - generic [ref=e1389]: IT124
+                - row [ref=e1390]:
+                  - cell [ref=e1391]:
+                    - textbox "Code for r57" [ref=e1393]: IT 131
+                  - cell [ref=e1394]:
+                    - textbox "Title for r57" [ref=e1395]: Web System and Technologies
+                  - cell [ref=e1396]:
+                    - generic [ref=e1397]:
+                      - combobox "Year for r57" [ref=e1398]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4" [selected]
+                      - combobox "Term for r57" [ref=e1399]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e1400]:
+                    - generic [ref=e1402]:
+                      - spinbutton "Lecture units for r57" [ref=e1403]: "2"
+                      - generic [aria-hidden] [ref=e1404]: +
+                      - spinbutton "Laboratory units for r57" [ref=e1405]: "1"
+                      - generic [aria-hidden] [ref=e1406]: =
+                      - spinbutton "Total units for r57" [ref=e1407]: "3"
+                  - cell [ref=e1408]:
+                    - 'button "Prerequisites for IT 131: IT 127" [ref=e1409] [cursor=pointer]':
+                      - generic [ref=e1410]: IT 127
+                - row [ref=e1411]:
+                  - cell [ref=e1412]:
+                    - textbox "Code for r58" [ref=e1414]: IT 132
+                  - cell [ref=e1415]:
+                    - textbox "Title for r58" [ref=e1416]: Capstone Project 2
+                  - cell [ref=e1417]:
+                    - generic [ref=e1418]:
+                      - combobox "Year for r58" [ref=e1419]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4" [selected]
+                      - combobox "Term for r58" [ref=e1420]:
+                        - option "Term"
+                        - option "First Semester" [selected]
+                        - option "Second Semester"
+                        - option "Summer"
+                  - cell [ref=e1421]:
+                    - generic [ref=e1423]:
+                      - spinbutton "Lecture units for r58" [ref=e1424]: "3"
+                      - generic [aria-hidden] [ref=e1425]: +
+                      - spinbutton "Laboratory units for r58" [ref=e1426]: "0"
+                      - generic [aria-hidden] [ref=e1427]: =
+                      - spinbutton "Total units for r58" [ref=e1428]: "3"
+                  - cell [ref=e1429]:
+                    - 'button "Prerequisites for IT 132: IT125" [ref=e1430] [cursor=pointer]':
+                      - generic [ref=e1431]: IT125
+        - region [ref=e1432]:
+          - generic [ref=e1433]:
+            - heading "Second Semester" [level=4] [ref=e1435]
+            - generic [ref=e1437]:
+              - text: 1 course ·
+              - generic [ref=e1438]: 6 units
+          - region "Fourth Year, Second Semester, scrollable" [ref=e1440]:
+            - table "Fourth Year, Second Semester" [ref=e1441]:
+              - rowgroup [ref=e1442]:
+                - row [ref=e1443]:
+                  - columnheader "Course code" [ref=e1444]
+                  - columnheader "Course title" [ref=e1445]
+                  - columnheader "Year and term" [ref=e1446]
+                  - columnheader "Units" [ref=e1447]
+                  - columnheader "Prerequisites" [ref=e1448]
+              - rowgroup [ref=e1449]:
+                - row [ref=e1450]:
+                  - cell [ref=e1451]:
+                    - textbox "Code for r59" [ref=e1453]: Prac 101
+                  - cell [ref=e1454]:
+                    - textbox "Title for r59" [ref=e1455]: Practicum (486 hours)
+                  - cell [ref=e1456]:
+                    - generic [ref=e1457]:
+                      - combobox "Year for r59" [ref=e1458]:
+                        - option "Year"
+                        - option "Year 1"
+                        - option "Year 2"
+                        - option "Year 3"
+                        - option "Year 4" [selected]
+                      - combobox "Term for r59" [ref=e1459]:
+                        - option "Term"
+                        - option "First Semester"
+                        - option "Second Semester" [selected]
+                        - option "Summer"
+                  - cell [ref=e1460]:
+                    - generic [ref=e1462]:
+                      - spinbutton "Lecture units for r59" [ref=e1463]: "6"
+                      - generic [aria-hidden] [ref=e1464]: +
+                      - spinbutton "Laboratory units for r59" [ref=e1465]: "0"
+                      - generic [aria-hidden] [ref=e1466]: =
+                      - spinbutton "Total units for r59" [ref=e1467]: "6"
+                  - cell [ref=e1468]:
+                    - 'button "Prerequisites for Prac 101: 100% Completed Core Courses" [ref=e1469] [cursor=pointer]':
+                      - generic [ref=e1470]: 100% Completed Core Courses

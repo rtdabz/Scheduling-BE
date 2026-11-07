@@ -202,6 +202,48 @@ class UserFacultyProfileLinkingTest extends TestCase
             ->assertJsonPath('0.id', $free->id);
     }
 
+    public function test_creating_a_profile_for_someone_already_on_the_roster_is_refused(): void
+    {
+        $roster = $this->rosterInstructor(['first_name' => 'Maria', 'middle_name' => 'Lopez', 'last_name' => 'Santos']);
+
+        $this->createUser(['faculty_mode' => 'create', 'first_name' => 'maria', 'middle_initial' => 'L', 'last_name' => 'Santos'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('faculty_mode');
+
+        $this->assertDatabaseCount('users', 1);
+        $this->assertDatabaseHas('faculties', ['id' => $roster->id, 'user_id' => null]);
+    }
+
+    public function test_a_namesake_with_a_different_middle_initial_may_still_get_a_profile(): void
+    {
+        $this->rosterInstructor(['first_name' => 'Maria', 'middle_name' => 'Lopez', 'last_name' => 'Santos']);
+
+        $this->createUser(['faculty_mode' => 'create', 'first_name' => 'Maria', 'middle_initial' => 'R', 'last_name' => 'Santos'])
+            ->assertCreated();
+    }
+
+    public function test_a_matching_roster_name_does_not_block_accounts_without_a_profile(): void
+    {
+        $this->rosterInstructor(['first_name' => 'Maria', 'last_name' => 'Santos']);
+
+        $this->createUser(['faculty_mode' => 'none', 'first_name' => 'Maria', 'last_name' => 'Santos'])
+            ->assertCreated();
+    }
+
+    public function test_new_profiles_use_the_configured_default_load(): void
+    {
+        config(['faculty.default_max_units' => 18]);
+
+        $this->actingAs($this->vpaa, 'sanctum')
+            ->getJson('/api/user/instructor-defaults')
+            ->assertOk()
+            ->assertJsonPath('default_max_units', 18);
+
+        $userId = $this->createUser(['faculty_mode' => 'create'])->assertCreated()->json('data.id');
+
+        $this->assertDatabaseHas('faculties', ['user_id' => $userId, 'max_units' => 18]);
+    }
+
     private function createUser(array $overrides = [])
     {
         return $this->actingAs($this->vpaa, 'sanctum')->postJson('/api/user', $overrides + [

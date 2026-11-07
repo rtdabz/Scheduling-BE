@@ -39,7 +39,7 @@ class UserController extends Controller
         $designationIds = app(FacultyDesignationService::class)->idsFrom($request);
         $maxUnits = match ($facultyMode) {
             UserFacultyProfileService::MODE_LINK => Faculty::query()->whereKey((int) ($validated['faculty_id'] ?? 0))->value('max_units'),
-            UserFacultyProfileService::MODE_CREATE => UserFacultyProfileService::DEFAULT_MAX_UNITS,
+            UserFacultyProfileService::MODE_CREATE => UserFacultyProfileService::defaultMaxUnits(),
             default => null,
         };
         app(FacultyDesignationService::class)->validate($designationIds, maxUnits: $maxUnits === null ? null : (int) $maxUnits);
@@ -206,6 +206,11 @@ class UserController extends Controller
         }
 
         return response()->json(['message' => "A setup link has been sent to {$user->email}."]);
+    }
+
+    public function instructorDefaults(): JsonResponse
+    {
+        return response()->json(['default_max_units' => UserFacultyProfileService::defaultMaxUnits()]);
     }
 
     public function linkableFaculty(Request $request): JsonResponse

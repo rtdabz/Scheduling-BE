@@ -17,16 +17,20 @@ class UserFacultyProfileService
 
     public const MODES = [self::MODE_CREATE, self::MODE_LINK, self::MODE_NONE];
 
-    public const DEFAULT_MAX_UNITS = 21;
-
     public function __construct(private readonly FacultyDesignationService $designations) {}
 
     /**
      * @param  list<int>  $designationIds  validated by the caller
      */
+    public static function defaultMaxUnits(): int
+    {
+        return max(0, (int) config('faculty.default_max_units', 21));
+    }
+
     public function createFor(User $user, array $designationIds = []): Faculty
     {
         [$firstName, $middleName, $lastName, $suffix] = $this->nameParts($user);
+        $this->ensureNoDuplicateInstructor((int) $user->department_id, $firstName, $middleName, $lastName, $suffix);
 
         $faculty = Faculty::create([
             'user_id' => $user->id,
@@ -36,7 +40,7 @@ class UserFacultyProfileService
             'last_name' => $lastName,
             'suffix' => $suffix,
             'employment_type' => 'full-time',
-            'max_units' => self::DEFAULT_MAX_UNITS,
+            'max_units' => self::defaultMaxUnits(),
             'overload_units' => 0,
             'deload_units' => 0,
             'department_id' => $user->department_id,
@@ -134,6 +138,37 @@ class UserFacultyProfileService
     public function deleteFor(User $user): void
     {
         $user->facultyProfile?->delete();
+    }
+
+    /**
+     * A new profile for someone already on the department roster would put the same
+     * person in front of the generator twice. Middle names compare by initial, since
+     * accounts store only the initial while roster records may hold the full name.
+     */
+    private function ensureNoDuplicateInstructor(int $departmentId, string $firstName, ?string $middleName, string $lastName, ?string $suffix): void
+    {
+        $normalize = static fn (mixed $value): string => mb_strtolower(trim((string) preg_replace('/\s+/', ' ', (string) ($value ?? ''))));
+        $initial = static fn (mixed $value): string => mb_substr($normalize($value), 0, 1);
+
+        $match = Faculty::withTrashed()
+            ->where('department_id', $departmentId)
+            ->whereRaw('LOWER(TRIM(last_name)) = ?', [$normalize($lastName)])
+            ->whereRaw('LOWER(TRIM(first_name)) = ?', [$normalize($firstName)])
+            ->get(['id', 'user_id', 'middle_name', 'suffix', 'deleted_at'])
+            ->first(fn (Faculty $faculty): bool => $normalize($faculty->suffix) === $normalize($suffix)
+                && ($initial($faculty->middle_name) === '' || $initial($middleName) === '' || $initial($faculty->middle_name) === $initial($middleName)));
+
+        if ($match === null) {
+            return;
+        }
+
+        $message = match (true) {
+            $match->trashed() => 'An archived instructor already has this name in this department. Restore them from Archives, then link the account to them.',
+            $match->user_id !== null => 'An instructor with this name in this department is already linked to another account.',
+            default => 'This person is already on the department\'s instructor roster. Choose "Link existing instructor" instead.',
+        };
+
+        throw ValidationException::withMessages(['faculty_mode' => $message]);
     }
 
     /**

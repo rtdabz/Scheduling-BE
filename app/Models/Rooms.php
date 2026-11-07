@@ -81,11 +81,11 @@ class Rooms extends Model
     }
 
     /** @return \Illuminate\Database\Eloquent\Collection<int, self> */
-    public static function inBuilding(string $building)
+    public static function inBuilding(string $building, bool $withTrashed = false)
     {
         $key = self::buildingKey($building);
 
-        return self::query()
+        return ($withTrashed ? self::withTrashed() : self::query())
             ->whereNotNull('building')
             ->get()
             ->filter(fn (self $room) => self::buildingKey($room->building) === $key)

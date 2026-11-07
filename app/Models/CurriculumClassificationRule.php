@@ -15,7 +15,6 @@ class CurriculumClassificationRule extends Model
         'enabled' => 'boolean',
     ];
 
-    public const KIND_EXACT = 'exact';
-
+    /** Rules always match by prefix and are always enabled; the columns stay for stored history. */
     public const KIND_PREFIX = 'prefix';
 }

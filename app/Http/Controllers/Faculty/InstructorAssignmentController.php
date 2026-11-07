@@ -241,6 +241,7 @@ class InstructorAssignmentController extends Controller
         }
 
         $activeSemesterId = $this->activeSemesterId();
+        $projection = null;
         if ($faculty !== null) {
             $incoming = array_values(array_filter([$this->loadPairForSchedule($schedule)]));
             $projection = $this->withAssignmentLabel(
@@ -262,6 +263,7 @@ class InstructorAssignmentController extends Controller
             $facultyId,
             $previousFacultyId,
             $departmentId,
+            $projection,
         ) {
             $before = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
             Schedule::query()
@@ -285,6 +287,7 @@ class InstructorAssignmentController extends Controller
                     'previous_faculty_id' => $previousFacultyId,
                     'faculty_id' => $facultyId,
                     'reason' => $facultyId === null ? 'manual_removal' : 'manual_assignment',
+                    'pro_bono' => (bool) ($projection['pro_bono'] ?? false),
                     'offering_department_id' => $linkedSchedules->first()->department_id,
                 ],
                 'created_at' => now(),
@@ -308,12 +311,23 @@ class InstructorAssignmentController extends Controller
             ? null
             : $this->facultyLoad->projectLoad($faculty->refresh(), $activeSemesterId, []);
 
-        return response()->json([
+        $proBonoNotice = $projection === null ? null : $this->proBonoNotice($projection);
+        if ($load !== null && $proBonoNotice !== null) {
+            $load = array_merge($load, [
+                'tier' => SchedulingPolicy::LOAD_TIER_PRO_BONO,
+                'tier_label' => SchedulingPolicy::loadTierLabel(SchedulingPolicy::LOAD_TIER_PRO_BONO),
+                'pro_bono' => true,
+                'pro_bono_units' => (int) $projection['pro_bono_units'],
+            ]);
+        }
+
+        return response()->json(array_filter([
             'schedule' => $updatedSchedules->first(),
             'schedules' => $updatedSchedules,
             'warnings' => [],
             'load' => $load,
-        ]);
+            'message' => $proBonoNotice,
+        ], static fn ($value, string $key): bool => $key !== 'message' || $value !== null, ARRAY_FILTER_USE_BOTH));
     }
 
     public function recommendations(Request $request, Schedule $schedule): JsonResponse

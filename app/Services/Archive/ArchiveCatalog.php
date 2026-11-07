@@ -30,6 +30,9 @@ final class ArchiveCatalog
         'departments' => Departments::class,
         'programs' => Program::class,
         'rooms' => Rooms::class,
+        // Virtual: a building whose rooms are all archived, keyed by one of its archived rooms.
+        // Listed after rooms so typeOf() still resolves a room record to 'rooms'.
+        'buildings' => Rooms::class,
         'faculties' => Faculty::class,
         'designations' => Designation::class,
         'courses' => Course::class,
@@ -43,6 +46,7 @@ final class ArchiveCatalog
         'departments' => 'Department',
         'programs' => 'Program',
         'rooms' => 'Room',
+        'buildings' => 'Building',
         'faculties' => 'Instructor',
         'designations' => 'Designation',
         'courses' => 'Course',
@@ -56,6 +60,7 @@ final class ArchiveCatalog
         'departments' => ['id', 'department_name', 'department_code', 'created_at', 'deleted_at'],
         'programs' => ['id', 'department_id', 'major', 'code', 'name', 'created_at', 'deleted_at'],
         'rooms' => ['id', 'room_code', 'building', 'room_type', 'allow_lecture_usage', 'status', 'department_id', 'home_program_id', 'created_at', 'deleted_at'],
+        'buildings' => ['id', 'room_code', 'building', 'room_type', 'allow_lecture_usage', 'status', 'department_id', 'home_program_id', 'created_at', 'deleted_at'],
         'faculties' => ['id', 'user_id', 'first_name', 'middle_name', 'last_name', 'suffix', 'employment_type', 'max_units', 'department_id', 'program_id', 'status', 'created_at', 'deleted_at'],
         'designations' => ['id', 'parent_id', 'name', 'code', 'deload_units', 'status', 'created_at', 'deleted_at'],
         'courses' => ['id', 'course_code', 'course_name', 'units', 'year_level', 'semester', 'department_id', 'teaching_department_id', 'teaching_program_id', 'teaching_source_program_id', 'program_id', 'status', 'created_at', 'deleted_at'],
@@ -165,6 +170,7 @@ final class ArchiveCatalog
             'departments' => (string) $record->getAttribute('department_name'),
             'programs' => trim((string) $record->getAttribute('code').' - '.(string) $record->getAttribute('name')),
             'rooms' => (string) $record->getAttribute('room_code'),
+            'buildings' => (string) $record->getAttribute('building'),
             'faculties' => $this->facultyName($record),
             'designations' => (string) $record->getAttribute('name'),
             'courses' => trim((string) $record->getAttribute('course_code').' - '.(string) $record->getAttribute('course_name')),
@@ -182,6 +188,7 @@ final class ArchiveCatalog
             'users' => ['@'.$record->getAttribute('username'), AdministrativeRoleSlots::roleLabel((string) $record->getAttribute('role'))],
             'programs' => [$record->getAttribute('major') ? 'Major in '.$record->getAttribute('major') : null],
             'rooms' => [$record->getAttribute('building'), ucfirst((string) $record->getAttribute('room_type'))],
+            'buildings' => [$this->roomCount($record).' · '.$this->roomCodes($record)],
             'faculties' => [$record->getAttribute('employment_type') ? ucwords(str_replace('_', ' ', (string) $record->getAttribute('employment_type'))) : null, $record->getAttribute('user_id') ? 'Linked account #'.$record->getAttribute('user_id') : null],
             'designations' => [$record->getAttribute('code'), $record->getAttribute('parent_id') ? 'Sub-designation' : null],
             'courses' => [$record->getAttribute('units') !== null ? $record->getAttribute('units').' units' : null],
@@ -202,6 +209,7 @@ final class ArchiveCatalog
             'departments' => [$record->getKey(), null, null],
             'programs' => [$record->getAttribute('department_id'), $record->getKey(), null],
             'rooms' => [$record->getAttribute('department_id'), $record->getAttribute('home_program_id'), null],
+            'buildings' => [$this->sharedValue($record, 'department_id'), $this->sharedValue($record, 'home_program_id'), null],
             'designations' => [null, null, null],
             'semesters' => [null, null, $record->getKey()],
             'schedules', 'schedule-splits' => [$scope?->getAttribute('department_id'), $scope?->getAttribute('program_id'), $scope?->getAttribute('semester_id')],
@@ -250,6 +258,7 @@ final class ArchiveCatalog
             'courses' => $active($record->getAttribute('status') === 'active', 'Active course', 'Inactive course'),
             'designations' => $active($record->getAttribute('status') === 'active', 'Active designation', 'Inactive designation'),
             'rooms' => $active($record->getAttribute('status') === 'available', 'Available room', 'Not available'),
+            'buildings' => ['label' => $this->roomCount($record), 'tone' => 'neutral'],
             'semesters' => $record->getAttribute('is_active')
                 ? ['label' => 'Active semester', 'tone' => 'active']
                 : ['label' => $record->getAttribute('is_enabled') ? 'Not active' : 'Disabled semester', 'tone' => 'inactive'],
@@ -285,6 +294,10 @@ final class ArchiveCatalog
             'rooms' => [$record->getAttribute('status') === 'available'
                 ? 'The room returns to Rooms and is available for scheduling.'
                 : 'The room returns to Rooms but stays marked not available for scheduling.'],
+            'buildings' => [
+                'The building returns to Facilities with all '.$this->roomCount($record).' listed below.',
+                'Each room keeps its own availability; rooms marked not available stay unavailable for scheduling.',
+            ],
             'designations' => [$record->getAttribute('status') === 'active'
                 ? 'The designation returns to the designation list as active.'
                 : 'The designation returns to the designation list but stays inactive.'],
@@ -315,6 +328,10 @@ final class ArchiveCatalog
                 'Building' => $record->getAttribute('building'),
                 'Room type' => ucfirst((string) $record->getAttribute('room_type')),
                 'Lecture use' => $record->getAttribute('allow_lecture_usage') ? 'Allowed' : 'Not allowed',
+            ],
+            'buildings' => [
+                'Building' => $record->getAttribute('building'),
+                'Rooms' => $this->roomCodes($record),
             ],
             'faculties' => [
                 'Full name' => $this->facultyName($record),
@@ -357,7 +374,9 @@ final class ArchiveCatalog
             'subtitle' => $this->subtitle($type, $record),
             'context' => $this->context($type, $record),
             'status' => $this->status($type, $record),
-            'deleted_at' => $record->getAttribute('deleted_at')?->toIso8601String(),
+            'deleted_at' => ($type === 'buildings'
+                ? $this->archivedBuildingRooms($record)->max('deleted_at')
+                : $record->getAttribute('deleted_at'))?->toIso8601String(),
             'restore' => [
                 'state' => $blockers !== [] ? 'blocked' : (in_array($type, ['schedules', 'schedule-splits'], true) ? 'validation' : 'clear'),
                 'blockers' => $blockers,
@@ -394,6 +413,55 @@ final class ArchiveCatalog
         }
 
         return $this->lookups['schedules'][$id] ?? null;
+    }
+
+    /**
+     * Every room, live or archived, in the building of the given room.
+     *
+     * @return Collection<int, Rooms>
+     */
+    public function buildingRooms(Model $room): Collection
+    {
+        $building = $room->getAttribute('building');
+        if ($building === null) {
+            return collect([$room]);
+        }
+
+        return $this->lookups['building-rooms'][Rooms::buildingKey($building)]
+            ??= Rooms::inBuilding($building, withTrashed: true)->sortBy('room_code', SORT_NATURAL | SORT_FLAG_CASE)->values();
+    }
+
+    /** @return Collection<int, Rooms> */
+    public function archivedBuildingRooms(Model $room): Collection
+    {
+        return $this->buildingRooms($room)->filter(fn (Rooms $row): bool => $row->trashed())->values();
+    }
+
+    /** A building is archived only while none of its rooms are live. */
+    public function buildingArchived(Model $room): bool
+    {
+        return $room->getAttribute('building') !== null
+            && $this->buildingRooms($room)->every(fn (Rooms $row): bool => $row->trashed());
+    }
+
+    private function roomCount(Model $room): string
+    {
+        $count = $this->archivedBuildingRooms($room)->count();
+
+        return $count.' room'.($count === 1 ? '' : 's');
+    }
+
+    private function roomCodes(Model $room): string
+    {
+        return $this->archivedBuildingRooms($room)->pluck('room_code')->implode(', ');
+    }
+
+    /** The department or program every archived room shares, or null when they differ. */
+    private function sharedValue(Model $room, string $column): mixed
+    {
+        $values = $this->archivedBuildingRooms($room)->pluck($column)->unique();
+
+        return $values->count() === 1 ? $values->first() : null;
     }
 
     private function facultyName(Model $record): string

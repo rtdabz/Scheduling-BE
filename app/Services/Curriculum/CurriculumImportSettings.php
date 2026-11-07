@@ -44,28 +44,20 @@ final class CurriculumImportSettings
     {
         return CurriculumClassificationRule::query()
             ->where('department_id', $departmentId)
-            ->orderBy('match_kind')
             ->orderBy('match_value')
             ->get();
     }
 
     /**
+     * Every rule is an enabled prefix; the longest matching prefix wins.
+     *
      * @param  Collection<int, CurriculumClassificationRule>  $rules
      * @return array{id: int|null, match_kind: string, match_value: string, category: string}|null
      */
     public static function classify(string $normalizedCode, Collection $rules): ?array
     {
-        $enabled = $rules->filter(fn ($rule): bool => (bool) $rule->enabled);
-
-        $exact = $enabled->first(fn ($rule): bool => $rule->match_kind === CurriculumClassificationRule::KIND_EXACT
-            && $rule->match_value === $normalizedCode);
-        if ($exact !== null) {
-            return self::ruleSummary($exact);
-        }
-
-        $prefix = $enabled
-            ->filter(fn ($rule): bool => $rule->match_kind === CurriculumClassificationRule::KIND_PREFIX
-                && self::prefixMatches($normalizedCode, (string) $rule->match_value))
+        $prefix = $rules
+            ->filter(fn ($rule): bool => self::prefixMatches($normalizedCode, (string) $rule->match_value))
             ->sortByDesc(fn ($rule): int => strlen((string) $rule->match_value))
             ->first();
 
@@ -77,7 +69,7 @@ final class CurriculumImportSettings
     {
         return [
             'id' => isset($rule->id) ? (int) $rule->id : null,
-            'match_kind' => (string) $rule->match_kind,
+            'match_kind' => CurriculumClassificationRule::KIND_PREFIX,
             'match_value' => (string) $rule->match_value,
             'category' => (string) $rule->category,
         ];
@@ -105,50 +97,41 @@ final class CurriculumImportSettings
             'can_manage' => $canManage,
             'rules' => $rules->map(fn (CurriculumClassificationRule $rule): array => [
                 'id' => (int) $rule->id,
-                'match_kind' => $rule->match_kind,
                 'match_value' => $rule->match_value,
                 'category' => $rule->category,
-                'enabled' => (bool) $rule->enabled,
                 'sample_matches' => $codes
-                    ->filter(fn (string $code): bool => $rule->match_kind === CurriculumClassificationRule::KIND_EXACT
-                        ? $code === $rule->match_value
-                        : self::prefixMatches($code, (string) $rule->match_value))
+                    ->filter(fn (string $code): bool => self::prefixMatches($code, (string) $rule->match_value))
                     ->take(5)
                     ->values()
                     ->all(),
             ])->values()->all(),
             'overlaps' => self::overlaps($rules->map(fn ($rule): array => [
-                'match_kind' => $rule->match_kind,
                 'match_value' => $rule->match_value,
                 'category' => $rule->category,
-                'enabled' => (bool) $rule->enabled,
             ])->all()),
         ];
     }
 
     /**
-     * More specific rules with a different category than a broader one they fall under.
+     * Longer prefixes with a different category than a shorter prefix they fall under.
      *
-     * @param  list<array{match_kind: string, match_value: string, category: string, enabled?: bool}>  $rules
-     * @return list<array{broader: string, specific: string, specific_kind: string, broader_category: string, specific_category: string}>
+     * @param  list<array{match_value: string, category: string}>  $rules
+     * @return list<array{broader: string, specific: string, broader_category: string, specific_category: string}>
      */
     public static function overlaps(array $rules): array
     {
-        $prefixes = array_values(array_filter($rules, fn (array $rule): bool => $rule['match_kind'] === CurriculumClassificationRule::KIND_PREFIX));
         $overlaps = [];
 
         foreach ($rules as $specific) {
-            foreach ($prefixes as $broader) {
-                if ($specific === $broader || $specific['category'] === $broader['category']) {
+            foreach ($rules as $broader) {
+                if ($specific['category'] === $broader['category']
+                    || strlen($specific['match_value']) <= strlen($broader['match_value'])) {
                     continue;
                 }
-                $isNarrower = $specific['match_kind'] === CurriculumClassificationRule::KIND_EXACT
-                    || strlen($specific['match_value']) > strlen($broader['match_value']);
-                if ($isNarrower && self::prefixMatches($specific['match_value'], $broader['match_value'])) {
+                if (self::prefixMatches($specific['match_value'], $broader['match_value'])) {
                     $overlaps[] = [
                         'broader' => $broader['match_value'],
                         'specific' => $specific['match_value'],
-                        'specific_kind' => $specific['match_kind'],
                         'broader_category' => $broader['category'],
                         'specific_category' => $specific['category'],
                     ];
@@ -160,7 +143,8 @@ final class CurriculumImportSettings
     }
 
     /**
-     * Replaces the department's rates and rules atomically. Existing placements, courses, and schedules are never recalculated.
+     * Replaces the department's rates and rules atomically. Every rule is stored as an enabled prefix.
+     * Existing placements, courses, and schedules are never recalculated.
      *
      * @param  array{expected_revision: int, lecture_minutes_per_unit: int, laboratory_minutes_per_unit: int, rules: list<array<string, mixed>>, acknowledge_overlaps?: bool}  $input
      */
@@ -176,25 +160,24 @@ final class CurriculumImportSettings
 
                 continue;
             }
-            $identity = $rule['match_kind'].'|'.$value;
-            if (isset($seen[$identity])) {
-                $errors["rules.$index.match_value"] = sprintf('The %s rule "%s" is listed more than once.', $rule['match_kind'], $value);
+            if (isset($seen[$value])) {
+                $errors["rules.$index.match_value"] = sprintf('The prefix "%s" is listed more than once.', $value);
 
                 continue;
             }
-            $seen[$identity] = true;
+            $seen[$value] = true;
             $rules[] = [
-                'match_kind' => (string) $rule['match_kind'],
+                'match_kind' => CurriculumClassificationRule::KIND_PREFIX,
                 'match_value' => $value,
                 'category' => (string) $rule['category'],
-                'enabled' => (bool) ($rule['enabled'] ?? true),
+                'enabled' => true,
             ];
         }
         if ($errors !== []) {
             throw ValidationException::withMessages($errors);
         }
 
-        $overlaps = self::overlaps(array_values(array_filter($rules, fn (array $rule): bool => $rule['enabled'])));
+        $overlaps = self::overlaps($rules);
         if ($overlaps !== [] && ! ($input['acknowledge_overlaps'] ?? false)) {
             throw ValidationException::withMessages([
                 'acknowledge_overlaps' => 'Some specific rules classify codes differently from a broader prefix. Confirm these exceptions before saving.',

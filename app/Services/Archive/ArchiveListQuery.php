@@ -23,6 +23,7 @@ final class ArchiveListQuery
         'departments' => ['departments', 'r.id', null, null, ['r.department_name', 'r.department_code']],
         'programs' => ['programs', 'r.department_id', 'r.id', null, ['r.code', 'r.name', 'r.major']],
         'rooms' => ['rooms', 'r.department_id', 'r.home_program_id', null, ['r.room_code', 'r.building']],
+        'buildings' => ['rooms', 'r.department_id', 'r.home_program_id', null, ['r.building', 'r.room_code']],
         'faculties' => ['faculties', 'r.department_id', 'r.program_id', null, ['r.first_name', 'r.middle_name', 'r.last_name']],
         'designations' => ['designations', null, null, null, ['r.name', 'r.code']],
         'courses' => ['courses', 'r.department_id', 'r.program_id', null, ['r.course_code', 'r.course_name']],
@@ -92,9 +93,24 @@ final class ArchiveListQuery
     private function projection(string $type, array $filters): Builder
     {
         [$table, $department, $program, $semester, $searchable] = self::SPECS[$type];
-        $query = DB::table("{$table} as r")
-            ->selectRaw("'{$type}' AS archive_type, r.id AS archive_id, r.deleted_at AS archived_at")
-            ->whereNotNull('r.deleted_at');
+        $query = DB::table("{$table} as r")->whereNotNull('r.deleted_at');
+
+        // A building is archived when none of its rooms are live. It is listed once, represented by
+        // its lowest archived room id, and its rooms are listed inside it instead of on their own.
+        $liveSibling = fn (Builder $live) => $live->from('rooms as live')
+            ->whereNull('live.deleted_at')
+            ->whereRaw('LOWER(TRIM(live.building)) = LOWER(TRIM(r.building))');
+        if ($type === 'buildings') {
+            $query->selectRaw("'buildings' AS archive_type, MIN(r.id) AS archive_id, MAX(r.deleted_at) AS archived_at")
+                ->whereNotNull('r.building')
+                ->whereNotExists($liveSibling)
+                ->groupByRaw('LOWER(TRIM(r.building))');
+        } else {
+            $query->selectRaw("'{$type}' AS archive_type, r.id AS archive_id, r.deleted_at AS archived_at");
+        }
+        if ($type === 'rooms') {
+            $query->where(fn (Builder $rooms) => $rooms->whereNull('r.building')->orWhereExists($liveSibling));
+        }
 
         if ($type === 'schedule-splits') {
             $query->leftJoin('schedules as p', 'p.id', '=', 'r.schedule_id');

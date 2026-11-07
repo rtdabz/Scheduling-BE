@@ -92,8 +92,6 @@ final class CurriculumImportValidator
             'rows.*.lab_units' => 'required|integer|min:0|max:'.$maxLab,
             'rows.*.total_units' => 'required|integer|min:0|max:'.($maxLecture + $maxLab),
             'rows.*.category' => 'nullable|string|in:major,minor',
-            'rows.*.scheduling_basis' => 'nullable|string|in:weekly,total_hours',
-            'rows.*.total_hours' => 'nullable|integer|min:1|max:5000',
             // Reference text only, stored as written; it never feeds scheduling or validation.
             'rows.*.prerequisites' => 'nullable|string|max:1000',
             'rows.*.source' => 'nullable|array',
@@ -277,7 +275,6 @@ final class CurriculumImportValidator
         $lec = (int) $row['lecture_units'];
         $lab = (int) $row['lab_units'];
         $tu = (int) $row['total_units'];
-        $source = $row['source'] ?? [];
         $label = $code !== '' ? $code : $id;
 
         if (count($byCode[$code] ?? []) > 1) {
@@ -299,28 +296,11 @@ final class CurriculumImportValidator
 
         $catalogDecision = $this->catalogDecision($id, $label, $code, $title, $lec, $lab, $tu, $category, $catalog->get($code), $issues);
 
-        $sourceTitle = (string) ($source['title'] ?? '');
-        $describedHours = preg_match('/\(\s*(\d{2,5})\s*(?:hours?|hrs?)\s*\)/i', $sourceTitle.' '.$title, $hours) ? (int) $hours[1] : null;
-        $basis = $row['scheduling_basis'] ?? null;
-        if ($basis === null && $describedHours !== null) {
-            $issues->add(self::SEVERITY_ERROR, 'scheduling_basis_required', 'scheduling_basis_required:'.$id, sprintf('%s describes %d total hours. Choose whether it is scheduled weekly from its credits or recorded as a total-hours placement; weekly hours are not inferred.', $label, $describedHours), $id, 'scheduling_basis');
-        }
-        $basis ??= 'weekly';
-        $totalHours = $basis === 'total_hours' ? ($row['total_hours'] ?? $describedHours) : null;
-        if ($basis === 'total_hours' && $totalHours === null) {
-            $issues->add(self::SEVERITY_ERROR, 'total_hours_required', 'total_hours_required:'.$id, sprintf('%s uses a total-hours basis; enter the total hours.', $label), $id, 'total_hours');
-        }
-        // The scheduler's limit stays visible in the review: it is a consequence, not something to explain away.
-        if ($basis === 'total_hours') {
-            $issues->add(self::SEVERITY_NOTICE, 'nonweekly_basis', 'nonweekly_basis:'.$id, sprintf('%s is recorded as %s total hours with no weekly minutes. The scheduler does not yet read this basis and would still treat the course by its %d credits, so do not schedule it until a supported basis exists.', $label, $totalHours ?? '?', $tu), $id, 'scheduling_basis');
-        } elseif ($describedHours !== null) {
-            $issues->add(self::SEVERITY_NOTICE, 'nonweekly_basis', 'nonweekly_basis:'.$id, sprintf('%s describes %d total hours but will be scheduled weekly from its %d credits.', $label, $describedHours, $tu), $id, 'scheduling_basis');
-        }
-
-        $lectureMinutes = $basis === 'weekly' ? $lec * $lectureRate : null;
-        $labMinutes = $basis === 'weekly' ? $lab * $labRate : null;
+        // Every course meets weekly for the time its credits give; a block of hours in the title is not a separate basis.
+        $lectureMinutes = $lec * $lectureRate;
+        $labMinutes = $lab * $labRate;
         foreach (['lecture' => $lectureMinutes, 'laboratory' => $labMinutes] as $component => $minutes) {
-            if ($minutes !== null && $minutes % SchedulingPolicy::SLOT_MINUTES !== 0) {
+            if ($minutes % SchedulingPolicy::SLOT_MINUTES !== 0) {
                 $issues->add(self::SEVERITY_ERROR, 'unrepresentable_minutes', 'unrepresentable_minutes:'.$id.':'.$component, sprintf('%s: %d %s minutes do not fit the %d-minute scheduling grid.', $label, $minutes, $component, SchedulingPolicy::SLOT_MINUTES), $id);
             }
         }
@@ -337,11 +317,9 @@ final class CurriculumImportValidator
             'category' => $category,
             'rule' => $match,
             'catalog' => $catalogDecision,
-            'scheduling_basis' => $basis,
-            'total_hours' => $totalHours,
             'lecture_minutes' => $lectureMinutes,
             'laboratory_minutes' => $labMinutes,
-            'weekly_contact_minutes' => $basis === 'weekly' ? $lectureMinutes + $labMinutes : null,
+            'weekly_contact_minutes' => $lectureMinutes + $labMinutes,
         ];
     }
 

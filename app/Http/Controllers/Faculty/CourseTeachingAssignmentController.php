@@ -10,6 +10,7 @@ use App\Models\Program;
 use App\Models\Schedule;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
@@ -21,7 +22,10 @@ use Illuminate\Support\Facades\DB;
 
 class CourseTeachingAssignmentController extends Controller
 {
-    public function __construct(private readonly SystemNotificationService $notifications) {}
+    public function __construct(
+        private readonly SystemNotificationService $notifications,
+        private readonly CrossDepartmentApprovalGate $approvalGate,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -50,6 +54,7 @@ class CourseTeachingAssignmentController extends Controller
 
         return response()->json([
             'current_department_id' => $departmentId,
+            'cross_department_unlocked' => $this->approvalGate->isOpen($departmentId),
             'has_active_curriculum' => $curriculumIds->isNotEmpty(),
             'active_semester' => $activeSemester === null ? null : [
                 'id' => (int) $activeSemester->id,
@@ -197,6 +202,10 @@ class CourseTeachingAssignmentController extends Controller
             'teaching_program_id' => 'sometimes|nullable|integer|exists:programs,id,deleted_at,NULL',
         ]);
 
+        if ($locked = $this->approvalGate->refusal((int) ($request->user()?->department_id ?? 0))) {
+            return $locked;
+        }
+
         $teachingDepartmentId = $validated['teaching_department_id'] === null
             ? null
             : (int) $validated['teaching_department_id'];
@@ -233,6 +242,9 @@ class CourseTeachingAssignmentController extends Controller
             'teaching_department_id' => ['required', 'integer', 'exists:departments,id,deleted_at,NULL'],
             'teaching_program_id' => ['nullable', 'integer', 'exists:programs,id,deleted_at,NULL'],
         ]);
+        if ($locked = $this->approvalGate->refusal((int) ($request->user()?->department_id ?? 0))) {
+            return $locked;
+        }
         $targetId = (int) $validated['teaching_department_id'];
         $targetProgramId = isset($validated['teaching_program_id']) ? (int) $validated['teaching_program_id'] : null;
         $targetProgram = $targetProgramId === null ? null : Program::findOrFail($targetProgramId);
@@ -288,6 +300,10 @@ class CourseTeachingAssignmentController extends Controller
 
     public function destroy(Request $request, Course $course): JsonResponse
     {
+        if ($locked = $this->approvalGate->refusal((int) ($request->user()?->department_id ?? 0))) {
+            return $locked;
+        }
+
         if ($locked = $this->refuseIfInstructorAssigned($course, null)) {
             return $locked;
         }

@@ -120,8 +120,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "IT 101",
@@ -161,8 +159,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "IT 102",
@@ -202,8 +198,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "IT 103",
@@ -243,8 +237,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEC 1",
@@ -284,8 +276,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "ROTC/CWTS 101",
@@ -325,8 +315,6 @@
       "lab_units": 0,
       "total_units": 2,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "PATH FIT 1",
@@ -366,8 +354,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT 101",
       "source": {
         "code": "IT 104",
@@ -407,8 +393,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT 102",
       "source": {
         "code": "IT 105",
@@ -448,8 +432,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "IT 106",
@@ -489,8 +471,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEC 2",
@@ -530,8 +510,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "R101",
       "source": {
         "code": "ROTC/CWTS 102",
@@ -571,8 +549,6 @@
       "lab_units": 0,
       "total_units": 2,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "PATH FIT 1",
       "source": {
         "code": "PATH FITt 2",
@@ -614,8 +590,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT 105",
       "source": {
         "code": "IT 107",
@@ -655,8 +629,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT 105",
       "source": {
         "code": "IT 108",
@@ -696,8 +668,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT105",
       "source": {
         "code": "IT 109",
@@ -737,8 +707,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT105",
       "source": {
         "code": "IT 110",
@@ -778,8 +746,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT101/IT104",
       "source": {
         "code": "IT 111",
@@ -819,8 +785,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEC 3",
@@ -860,8 +824,6 @@
       "lab_units": 0,
       "total_units": 2,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "PATH FIT 2",
       "source": {
         "code": "PATH FiIT3",
@@ -903,8 +865,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT 108",
       "source": {
         "code": "IT 112",
@@ -944,8 +904,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT108/109/110",
       "source": {
         "code": "IT 113",
@@ -985,8 +943,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT108/109/110",
       "source": {
         "code": "IT 114",
@@ -1026,8 +982,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT108/109/110",
       "source": {
         "code": "IT 115",
@@ -1067,8 +1021,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT108/109/110",
       "source": {
         "code": "IT 116",
@@ -1108,8 +1060,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEC 4",
@@ -1149,8 +1099,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEE 6",
@@ -1190,8 +1138,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEE 8",
@@ -1231,8 +1177,6 @@
       "lab_units": 0,
       "total_units": 2,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "PATH FIT 3",
       "source": {
         "code": "PATH FIT 4",
@@ -1272,8 +1216,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT108/109/110/112",
       "source": {
         "code": "IT 117",
@@ -1313,8 +1255,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT115",
       "source": {
         "code": "IT 118",
@@ -1354,8 +1294,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT109/110/116",
       "source": {
         "code": "IT Elec 1",
@@ -1395,8 +1333,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT113/114/115/116",
       "source": {
         "code": "IT 119",
@@ -1436,8 +1372,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT 112",
       "source": {
         "code": "IT 120",
@@ -1477,8 +1411,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT112",
       "source": {
         "code": "IT 121",
@@ -1518,8 +1450,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT114",
       "source": {
         "code": "IT 122",
@@ -1559,8 +1489,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT 109/116",
       "source": {
         "code": "IT Elec 2",
@@ -1600,8 +1528,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEC 5",
@@ -1641,8 +1567,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEC 7",
@@ -1682,8 +1606,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEC 9",
@@ -1723,8 +1645,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEE 9",
@@ -1764,8 +1684,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT119",
       "source": {
         "code": "IT 123",
@@ -1805,8 +1723,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT114",
       "source": {
         "code": "IT 124",
@@ -1846,8 +1762,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "1st2nd3rdyr/1stSem",
       "source": {
         "code": "I1 125",
@@ -1889,8 +1803,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT119",
       "source": {
         "code": "IT 126",
@@ -1930,8 +1842,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT119",
       "source": {
         "code": "IT 127",
@@ -1971,8 +1881,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT Elective 2",
       "source": {
         "code": "IT Elec 3",
@@ -2012,8 +1920,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEE 4",
@@ -2053,8 +1959,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEE 7",
@@ -2094,8 +1998,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "GEE 9",
       "source": {
         "code": "GEE 10",
@@ -2135,8 +2037,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "none",
       "source": {
         "code": "GEE11",
@@ -2176,8 +2076,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT119",
       "source": {
         "code": "IT Elec 4",
@@ -2217,8 +2115,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT Elective 2 & 3",
       "source": {
         "code": "IT Elec 5",
@@ -2258,8 +2154,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT Elective 1",
       "source": {
         "code": "IT Elec 6",
@@ -2299,8 +2193,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT123/124/126",
       "source": {
         "code": "IT 128",
@@ -2340,8 +2232,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT123",
       "source": {
         "code": "IT 129",
@@ -2381,8 +2271,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT124",
       "source": {
         "code": "IT 130",
@@ -2422,8 +2310,6 @@
       "lab_units": 1,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT 127",
       "source": {
         "code": "IT 131",
@@ -2463,8 +2349,6 @@
       "lab_units": 0,
       "total_units": 3,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "IT125",
       "source": {
         "code": "IT 132",
@@ -2504,8 +2388,6 @@
       "lab_units": 0,
       "total_units": 6,
       "category": null,
-      "scheduling_basis": null,
-      "total_hours": null,
       "prerequisites": "100% Completed Core Courses",
       "source": {
         "code": "Prac 101",

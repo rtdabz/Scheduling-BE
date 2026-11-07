@@ -29,8 +29,10 @@ class RoomRecoveryController extends Controller
         }
         $roomData = $rooms->orderBy('room_code')->get(['id', 'room_code', 'room_type', 'status', 'created_at']);
         $models = $semesterId > 0
-            ? $this->recovery->readable($request)->where('schedules.semester_id', $semesterId)->where('mode', 'on-site')
-                ->with(['course', 'section', 'room'])->orderBy('schedules.id')->get()
+            ? $this->recovery->readable($request)->where('schedules.semester_id', $semesterId)
+                // Classes moved online by a room closure still need a room.
+                ->where(fn ($query) => $query->where('mode', 'on-site')->orWhereNotNull('schedules.displaced_room_id'))
+                ->with(['course', 'section', 'room', 'displacedRoom'])->orderBy('schedules.id')->get()
             : new Collection;
         $problems = $this->recovery->roomProblems($models);
         $transfers = $this->recovery->transfers($request, $semesterId);
@@ -46,6 +48,7 @@ class RoomRecoveryController extends Controller
             ? $models->map(function ($row) use ($problems, $pending) {
                 $needsAttention = $problems[$row->id];
                 $reason = ! $needsAttention ? null : match (true) {
+                    $row->isTemporarilyOnline() => 'Temporarily online: room unavailable',
                     $row->room === null => 'Room required',
                     $row->room->status !== 'available' => 'Room unavailable',
                     default => 'Room access or type needs review',
@@ -53,13 +56,17 @@ class RoomRecoveryController extends Controller
 
                 return [
                     'id' => $row->id, 'course' => $row->course?->course_code, 'section' => $row->section?->section_name,
-                    'room' => $row->room?->room_code ?? 'Room TBA', 'day' => $row->day, 'start_time' => $row->start_time,
+                    'room' => $row->isTemporarilyOnline() ? RoomRecoveryService::temporaryOnlineLabel($row->displacedRoom?->room_code)
+                        : ($row->room?->room_code ?? 'Room TBA'),
+                    'mode' => $row->mode, 'temporarily_online' => $row->isTemporarilyOnline(),
+                    'original_room' => $row->displacedRoom?->room_code, 'displaced_at' => $row->displaced_at?->toISOString(),
+                    'day' => $row->day, 'start_time' => $row->start_time,
                     'end_time' => $row->end_time, 'meeting_type' => $row->meeting_type, 'status' => $row->status,
                     'department_id' => $row->department_id, 'needs_attention' => $needsAttention,
                     'revision_required' => $this->recovery->requiresRevision($row),
                     'pending_transfer_id' => $pending[$row->id]['id'] ?? null,
                     'pending_transfer_status' => $pending[$row->id]['status'] ?? null,
-                    'room_status' => $row->room?->status, 'attention_reason' => $reason,
+                    'room_status' => $row->isTemporarilyOnline() ? $row->displacedRoom?->status : $row->room?->status, 'attention_reason' => $reason,
                     'required_room_type' => $row->course
                         ? SchedulingPolicy::effectiveRoomType($row->course, $row->department_id, $row->meeting_type)
                         : null,
@@ -79,7 +86,7 @@ class RoomRecoveryController extends Controller
         abort_if(trim($input['reason']) === '', 422, 'A closure reason is required.');
         $this->recovery->close($room, trim($input['reason']), $request->user()->id);
 
-        return response()->json(['message' => 'Room marked unavailable. Affected departments can review recovery from their Dashboard.']);
+        return response()->json(['message' => 'Room marked unavailable. Its face-to-face classes now meet online until a replacement room is approved in Reassign Room Schedule.']);
     }
 
     public function preview(Request $request)

@@ -36,6 +36,10 @@ final class ArchiveRestoreChecks
     /** @return list<array<string, mixed>> */
     public function blockers(string $type, Model $record, bool $locked = false): array
     {
+        if ($type === 'buildings') {
+            return $this->buildingBlockers($this->catalog->archivedBuildingRooms($record), $locked);
+        }
+
         $blockers = [...$this->archivedParents($record, $locked)];
 
         $specific = match ($type) {
@@ -61,6 +65,28 @@ final class ArchiveRestoreChecks
         };
 
         return [...$blockers, ...$specific];
+    }
+
+    /**
+     * A building restores all of its archived rooms together, so any room's blocker blocks it.
+     * Room-specific problems name the room; a shared archived parent is listed once.
+     *
+     * @param  iterable<Rooms>  $rooms
+     * @return list<array<string, mixed>>
+     */
+    public function buildingBlockers(iterable $rooms, bool $locked = false): array
+    {
+        $blockers = [];
+        foreach ($rooms as $room) {
+            foreach ($this->blockers('rooms', $room, $locked) as $blocker) {
+                if ($blocker['code'] !== 'archived_parent') {
+                    $blocker['message'] = "Room {$room->room_code}: {$blocker['message']}";
+                }
+                $blockers[$blocker['message']] = $blocker;
+            }
+        }
+
+        return array_values($blockers);
     }
 
     /** @return list<array<string, mixed>> */

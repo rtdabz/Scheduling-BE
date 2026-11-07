@@ -37,6 +37,23 @@ class ConsecutiveDaysManualSchedulingTest extends TestCase
         $this->assertSame(['consecutive:3'], $rows->pluck('preferred_pattern')->unique()->values()->all());
     }
 
+    public function test_saved_rows_record_the_signed_in_user_as_creator(): void
+    {
+        $context = $this->scaffold();
+        $impostor = User::factory()->create();
+        $operations = array_map(
+            static fn (array $op): array => [...$op, 'created_by' => $impostor->id],
+            $this->runOperations($context, ['Thursday', 'Friday', 'Saturday']),
+        );
+
+        $this->actingAs($context['user'])->postJson('/api/schedules/batch', ['operations' => $operations])->assertOk();
+
+        $this->assertSame(
+            [(int) $context['user']->id],
+            Schedule::query()->where('course_id', $context['course']->id)->pluck('created_by')->map('intval')->unique()->values()->all(),
+        );
+    }
+
     public function test_a_run_on_days_apart_is_saved(): void
     {
         $context = $this->scaffold();

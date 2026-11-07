@@ -67,6 +67,92 @@ class ArchiveTest extends TestCase
         $this->assertDatabaseHas('scheduling_audit_logs', ['action' => 'record_restored', 'user_id' => $vpaa->id]);
     }
 
+    public function test_an_archived_building_is_listed_once_with_its_rooms_and_restores_them_together(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $tcc1 = Rooms::create(['room_code' => 'TCC 1', 'building' => 'TCC', 'room_type' => 'lecture']);
+        $tcc2 = Rooms::create(['room_code' => 'TCC 2', 'building' => 'TCC', 'room_type' => 'lecture']);
+        Rooms::create(['room_code' => 'ANX 1', 'building' => 'Annex', 'room_type' => 'lecture']);
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->postJson('/api/buildings/archive', ['building' => 'TCC'])
+            ->assertOk();
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->getJson('/api/archives')
+            ->assertOk()
+            ->assertJsonPath('counts.buildings', 1)
+            ->assertJsonPath('counts.rooms', 0)
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.type', 'buildings')
+            ->assertJsonPath('data.0.label', 'TCC')
+            ->assertJsonPath('data.0.subtitle', '2 rooms · TCC 1, TCC 2');
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->getJson('/api/archives?search=TCC%202')
+            ->assertOk()
+            ->assertJsonPath('data.0.type', 'buildings');
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->getJson("/api/archives/buildings/{$tcc1->id}")
+            ->assertOk()
+            ->assertJsonPath('data.label', 'TCC')
+            ->assertJsonCount(2, 'data.linked')
+            ->assertJsonPath('data.linked.1.label', 'TCC 2')
+            ->assertJsonPath('data.linked.1.restores', true);
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->postJson("/api/archives/buildings/{$tcc1->id}/restore")
+            ->assertOk()
+            ->assertJsonPath('affected_count', 3)
+            ->assertJsonPath('restored.0.type', 'buildings')
+            ->assertJsonPath('restored.0.label', 'TCC');
+
+        $this->assertNotSoftDeleted('rooms', ['id' => $tcc1->id]);
+        $this->assertNotSoftDeleted('rooms', ['id' => $tcc2->id]);
+        $this->actingAs($vpaa, 'sanctum')
+            ->postJson("/api/archives/buildings/{$tcc1->id}/restore")
+            ->assertOk()
+            ->assertJsonPath('already_restored', true);
+    }
+
+    public function test_a_room_archived_alone_stays_a_room_entry_while_its_building_is_live(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $tcc1 = Rooms::create(['room_code' => 'TCC 1', 'building' => 'TCC', 'room_type' => 'lecture']);
+        Rooms::create(['room_code' => 'TCC 2', 'building' => 'TCC', 'room_type' => 'lecture']);
+        $tcc1->delete();
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->getJson('/api/archives')
+            ->assertOk()
+            ->assertJsonPath('counts.buildings', 0)
+            ->assertJsonPath('counts.rooms', 1)
+            ->assertJsonPath('data.0.type', 'rooms');
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->getJson("/api/archives/buildings/{$tcc1->id}")
+            ->assertNotFound()
+            ->assertJsonPath('code', 'not_archived');
+    }
+
+    public function test_a_building_with_a_blocked_room_is_not_partially_restored(): void
+    {
+        $vpaa = User::factory()->create(['role' => 'vpaa']);
+        $tcc1 = Rooms::create(['room_code' => 'TCC 1', 'building' => 'TCC', 'room_type' => 'lecture']);
+        $tcc2 = Rooms::create(['room_code' => 'TCC 2', 'building' => 'TCC', 'room_type' => 'lecture']);
+        $this->actingAs($vpaa, 'sanctum')->postJson('/api/buildings/archive', ['building' => 'TCC'])->assertOk();
+        Rooms::create(['room_code' => 'TCC 2', 'building' => 'Annex', 'room_type' => 'lecture']);
+
+        $this->actingAs($vpaa, 'sanctum')
+            ->postJson("/api/archives/buildings/{$tcc1->id}/restore")
+            ->assertUnprocessable()
+            ->assertJsonPath('blockers.0.message', 'Room TCC 2: An active room already uses this room code. Rename or archive it first.');
+
+        $this->assertSoftDeleted('rooms', ['id' => $tcc1->id]);
+        $this->assertSoftDeleted('rooms', ['id' => $tcc2->id]);
+    }
+
     public function test_an_archived_room_code_can_be_reused_by_a_new_room(): void
     {
         $vpaa = User::factory()->create(['role' => 'vpaa']);

@@ -127,11 +127,20 @@ final class SchedulingPolicy
 
     public const LOAD_TIER_OVERLOAD = 'overload';
 
+    public const LOAD_TIER_PRO_BONO = 'pro_bono';
+
     public const LOAD_TIER_BEYOND_CEILING = 'beyond_ceiling';
+
+    public const PRO_BONO_REFUSED_LIMIT_REACHED = 'limit_reached';
+
+    public const PRO_BONO_REFUSED_ALREADY_USED = 'pro_bono_used';
+
+    public const PRO_BONO_REFUSED_MORE_THAN_ONE_CLASS = 'more_than_one_class';
 
     public const LOAD_TIER_LABELS = [
         self::LOAD_TIER_BASIC => 'Basic Load',
         self::LOAD_TIER_OVERLOAD => 'Overload',
+        self::LOAD_TIER_PRO_BONO => 'Pro-Bono',
         self::LOAD_TIER_BEYOND_CEILING => 'Over limit',
     ];
 
@@ -846,6 +855,38 @@ final class SchedulingPolicy
         return self::LOAD_TIER_BEYOND_CEILING;
     }
 
+    /**
+     * Whether an assignment that carries an instructor past the unit ceiling may
+     * stand as their one Pro-Bono class, and if not, why.
+     *
+     * Pro-Bono needs remaining capacity: the instructor must sit below the ceiling
+     * before the assignment, and only a single class may cross it. With several
+     * classes arriving at once, the load without the largest of them must still
+     * be below the ceiling. 34/36 + 3 passes; 36/36 + 3 and 37/36 + 3 do not.
+     *
+     * @return array{allowed: bool, reason: string|null}
+     */
+    public static function proBonoDecision(int $ceiling, int $currentUnits, int $projectedUnits, int $largestAddedUnits): array
+    {
+        if ($ceiling <= 0 || $projectedUnits <= $ceiling) {
+            return ['allowed' => false, 'reason' => null];
+        }
+
+        if ($currentUnits > $ceiling) {
+            return ['allowed' => false, 'reason' => self::PRO_BONO_REFUSED_ALREADY_USED];
+        }
+
+        if ($currentUnits === $ceiling) {
+            return ['allowed' => false, 'reason' => self::PRO_BONO_REFUSED_LIMIT_REACHED];
+        }
+
+        if ($projectedUnits - $largestAddedUnits >= $ceiling) {
+            return ['allowed' => false, 'reason' => self::PRO_BONO_REFUSED_MORE_THAN_ONE_CLASS];
+        }
+
+        return ['allowed' => true, 'reason' => null];
+    }
+
     public static function loadTierLabel(string $tier): string
     {
         return self::LOAD_TIER_LABELS[$tier] ?? $tier;
@@ -1115,8 +1156,6 @@ final class SchedulingPolicy
 
         return (int) $matches[1];
     }
-
-
 
     public static function maxConsecutiveDays(bool $sundayClassesEnabled): int
     {

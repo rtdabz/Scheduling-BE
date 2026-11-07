@@ -9,6 +9,7 @@ use App\Services\FacultyDesignationService;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\TeachingHistoryArchive;
+use App\Services\UserFacultyProfileService;
 use App\Support\ApiCache;
 use App\Support\ProfilePicture;
 use Illuminate\Http\JsonResponse;
@@ -23,8 +24,6 @@ class FacultyController extends Controller
     private const LOAD_FIELDS = ['max_units', 'deload_units', 'overload_units'];
 
     private const SECRETARY_ONLY_LOAD_FIELDS = ['deload_units'];
-
-    private const DEFAULT_MAX_UNITS = 21;
 
     private const DESIGNATION_FIELDS = ['designation_ids', 'designation_id'];
 
@@ -90,7 +89,7 @@ class FacultyController extends Controller
         $designationIds = $this->designations->idsFrom($request);
         $this->designations->validate(
             $designationIds,
-            maxUnits: (int) ($validator->validated()['max_units'] ?? self::DEFAULT_MAX_UNITS),
+            maxUnits: (int) ($validator->validated()['max_units'] ?? UserFacultyProfileService::defaultMaxUnits()),
         );
 
         $payload = $validator->validated();
@@ -99,7 +98,7 @@ class FacultyController extends Controller
             unset($payload['overload_units']);
         }
         $payload += [
-            'max_units' => self::DEFAULT_MAX_UNITS,
+            'max_units' => UserFacultyProfileService::defaultMaxUnits(),
             'overload_units' => 0,
             'deload_units' => 0,
         ];

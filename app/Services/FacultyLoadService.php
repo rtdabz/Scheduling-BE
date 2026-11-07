@@ -129,15 +129,29 @@ class FacultyLoadService
         }
 
         $projectedUnits = $currentUnits;
+        $largestAdded = 0;
         foreach ($incoming as $pair) {
-            $projectedUnits["{$pair['section_id']}:{$pair['course_id']}"] = (int) $pair['units'];
+            $key = "{$pair['section_id']}:{$pair['course_id']}";
+            if (! array_key_exists($key, $currentUnits)) {
+                $largestAdded = max($largestAdded, (int) $pair['units']);
+            }
+            $projectedUnits[$key] = (int) $pair['units'];
         }
 
         $current = array_sum($currentUnits);
         $projected = array_sum($projectedUnits);
         $added = $projected - $current;
         $basic = SchedulingPolicy::facultyBasicLoad($faculty);
+        $ceiling = SchedulingPolicy::facultyUnitCeiling($faculty);
         $tier = SchedulingPolicy::facultyLoadTier($faculty, $projected);
+        $pastCeiling = $ceiling > 0 && $added > 0 && $tier === SchedulingPolicy::LOAD_TIER_BEYOND_CEILING;
+        $proBono = $pastCeiling
+            ? SchedulingPolicy::proBonoDecision($ceiling, $current, $projected, $largestAdded)
+            : ['allowed' => false, 'reason' => null];
+
+        if ($proBono['allowed']) {
+            $tier = SchedulingPolicy::LOAD_TIER_PRO_BONO;
+        }
 
         return [
             'faculty_id' => (int) $faculty->id,
@@ -147,12 +161,13 @@ class FacultyLoadService
             'projected_units' => $projected,
             'basic_load' => $basic,
             'overload_units' => (int) ($faculty->overload_units ?? 0),
-            'unit_ceiling' => SchedulingPolicy::facultyUnitCeiling($faculty),
+            'unit_ceiling' => $ceiling,
             'tier' => $tier,
             'tier_label' => SchedulingPolicy::loadTierLabel($tier),
-            'exceeds_ceiling' => SchedulingPolicy::facultyUnitCeiling($faculty) > 0
-                && $added > 0
-                && $tier === SchedulingPolicy::LOAD_TIER_BEYOND_CEILING,
+            'pro_bono' => $proBono['allowed'],
+            'pro_bono_units' => $proBono['allowed'] ? $projected - $ceiling : 0,
+            'exceeds_ceiling' => $pastCeiling && ! $proBono['allowed'],
+            'refusal_reason' => $pastCeiling ? $proBono['reason'] : null,
         ];
     }
 

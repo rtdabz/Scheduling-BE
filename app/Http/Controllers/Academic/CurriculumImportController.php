@@ -39,10 +39,8 @@ class CurriculumImportController extends Controller
             'lecture_minutes_per_unit' => $rate,
             'laboratory_minutes_per_unit' => $rate,
             'rules' => 'present|array|max:'.CurriculumImportSettings::MAX_RULES,
-            'rules.*.match_kind' => 'required|string|in:exact,prefix',
             'rules.*.match_value' => 'required|string|max:'.CurriculumImportSettings::MAX_MATCH_LENGTH,
             'rules.*.category' => 'required|string|in:major,minor',
-            'rules.*.enabled' => 'sometimes|boolean',
             'acknowledge_overlaps' => 'sometimes|boolean',
         ]);
 
