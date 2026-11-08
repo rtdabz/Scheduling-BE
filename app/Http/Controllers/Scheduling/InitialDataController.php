@@ -148,6 +148,10 @@ class InitialDataController extends Controller
         $grantWindows = $departmentId !== null && $activeSemesterId !== null && $wants('rooms')
             ? app(RoomAccessPolicy::class)->grantWindowsFor((int) $departmentId, (int) $activeSemesterId)
             : [];
+        // The owner's own times that are lent out: reserved, so its editor flags them before saving.
+        $lentWindows = $departmentId !== null && $activeSemesterId !== null && $wants('rooms')
+            ? app(RoomAccessPolicy::class)->lentWindowsFor((int) $departmentId, (int) $activeSemesterId)
+            : [];
         $rooms = ! $wants('rooms') ? collect() : Rooms::query()
             ->with('department')
             ->when($departmentId !== null, fn (Builder $query) => $query->where(
@@ -158,7 +162,18 @@ class InitialDataController extends Controller
             ))
             ->tap(fn (Builder $query) => $this->authorization->scopeRoomsToProgram($query, $request))
             ->get()
-            ->each(function (Rooms $room) use ($grantWindows): void {
+            ->each(function (Rooms $room) use ($grantWindows, $lentWindows): void {
+                if (isset($lentWindows[(int) $room->id])) {
+                    $room->setAttribute('lent_windows', array_map(
+                        static fn (array $window): array => [
+                            'day' => $window['day'],
+                            'start_time' => substr($window['start_time'], 0, 5),
+                            'end_time' => substr($window['end_time'], 0, 5),
+                            'borrower' => $window['borrower'],
+                        ],
+                        $lentWindows[(int) $room->id],
+                    ));
+                }
                 if (isset($grantWindows[(int) $room->id])) {
                     $room->setAttribute('grant_windows', array_map(
                         static fn (array $window): array => [

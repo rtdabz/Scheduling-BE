@@ -14,6 +14,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Engine\RuleEngine;
+use App\Support\ApiCache;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -666,6 +667,73 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         $this->assertTrue($sourceSchedules->every(
             fn (array $schedule): bool => (int) $schedule['faculty_id'] === $fixture['casInstructor']->id,
         ));
+    }
+
+    /**
+     * A recalled college leaves Cross-Department until the VPAA approves it again: the
+     * teaching college stops seeing its classes (and the instructors it kept), then sees
+     * them again, instructors intact, once the revision is re-approved.
+     */
+    #[DataProvider('recallScopes')]
+    public function test_a_recalled_college_is_hidden_from_cross_department_until_vpaa_reapproval(bool $recallAll): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        $ids = $blocks->pluck('id')->all();
+        $otherSection = $fixture['section']->replicate();
+        $otherSection->section_name = 'BSIT 1B';
+        $otherSection->save();
+        $otherIds = $this->meetingBlocks(array_replace($fixture, ['section' => $otherSection]))->pluck('id')->all();
+
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty', [
+                'assignments' => [['schedule_ids' => $ids, 'faculty_id' => $fixture['casInstructor']->id]],
+            ])
+            ->assertOk();
+        $submission = ScheduleSubmission::create([
+            'department_id' => $fixture['it']->id,
+            'semester_id' => $fixture['semester']->id,
+            'revision_number' => 1,
+            'status' => 'approved',
+            'submitted_at' => now(),
+            'vpaa_reviewed_at' => now(),
+        ]);
+        $submission->sections()->attach([$fixture['section']->id, $otherSection->id], ['state' => 'included']);
+
+        $visibleDepartments = fn (): array => collect(
+            $this->actingAs($fixture['casSecretary'])->getJson('/api/instructor-assignments')->assertOk()->json('schedules'),
+        )->pluck('department_id')->unique()->values()->all();
+        $pending = fn (): int => (int) $this->actingAs($fixture['casSecretary'])
+            ->getJson("/api/departments/{$fixture['cas']->id}/schedule-status")->assertOk()->json('cross_department_pending');
+
+        $this->assertSame([$fixture['it']->id], $visibleDepartments());
+        $this->assertSame(1, $pending(), 'BSIT 1B still needs its instructor.');
+
+        $recalled = $recallAll ? [$fixture['section']->id, $otherSection->id] : [$fixture['section']->id];
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson("/api/departments/{$fixture['it']->id}/withdraw-submission", ['section_ids' => $recalled])
+            ->assertOk();
+
+        // Hidden as a whole, even the sections a partial recall left approved.
+        $this->assertSame([], $visibleDepartments());
+        $this->assertSame(0, $pending());
+        // The lock itself is unchanged, and the kept instructor is untouched.
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson("/api/instructor-assignments/{$ids[0]}", ['faculty_id' => null])
+            ->assertUnprocessable();
+        $this->assertSame($fixture['casInstructor']->id, (int) Schedule::findOrFail($ids[0])->faculty_id);
+
+        // Final VPAA approval of the revision brings IT back with the kept instructor.
+        Schedule::query()->whereIn('id', [...$ids, ...$otherIds])->update(['status' => 'faculty_assignment']);
+        ApiCache::forgetGroups(['initial.data.schedules']); // as approveByVpaa does
+        $this->assertSame([$fixture['it']->id], $visibleDepartments());
+        $this->assertSame(1, $pending());
+        $this->assertSame($fixture['casInstructor']->id, (int) Schedule::findOrFail($ids[0])->faculty_id);
+    }
+
+    public static function recallScopes(): array
+    {
+        return ['one section recalled' => [false], 'every section recalled' => [true]];
     }
 
     public function test_owner_recall_keeps_the_teaching_college_instructor_visible(): void

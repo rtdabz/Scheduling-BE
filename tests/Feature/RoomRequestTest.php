@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\Rooms\RoomRequestController;
 use App\Jobs\DeliverSystemNotifications;
 use App\Models\Course;
 use App\Models\Curriculum;
@@ -12,6 +13,7 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\ScheduleHistoryItem;
 use App\Models\ScheduleHistoryVersion;
+use App\Models\ScheduleSubmission;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\SystemNotification;
@@ -280,6 +282,8 @@ class RoomRequestTest extends TestCase
 
         $this->assertFalse($this->violatesRoomOwnership($attempt('Monday', '12:00:00', '14:00:00')));
 
+        // The owner's timetable is VPAA-approved, so its free time can be lent.
+        $this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '09:00:00', $section, $course);
         $this->approvedGrant($f);
 
         foreach ([['Monday', '12:00:00', '14:00:00'], ['Monday', '10:00:00', '11:30:00']] as [$day, $start, $end]) {
@@ -394,6 +398,51 @@ class RoomRequestTest extends TestCase
         $this->assertSame([['day' => 'Monday', 'start_time' => '11:00', 'end_time' => '13:00']], $room['grant_windows']);
     }
 
+    /** The owner's scheduler learns which of its own times are lent, so a revision can avoid them before saving. */
+    public function test_initial_data_marks_the_owners_lent_windows_and_refreshes_when_the_grant_ends(): void
+    {
+        $f = $this->fixture();
+        $lentWindows = fn (): mixed => collect($this->actingAs($f['ownerSecretary'])->getJson('/api/initial-data?include=rooms')->assertOk()->json('rooms'))
+            ->firstWhere('id', $f['room']->id)['lent_windows'] ?? null;
+        $this->assertNull($lentWindows());
+
+        $id = $this->approvedGrant($f);
+        $this->assertSame([['day' => 'Monday', 'start_time' => '11:00', 'end_time' => '13:00', 'borrower' => 'CIT']], $lentWindows());
+
+        $this->actingAs($f['secretary'])->postJson("/api/room-requests/{$id}/cancel")->assertOk();
+        $this->assertNull($lentWindows());
+    }
+
+    /** Recall keeps the loan reserved: the owner's revision still cannot take the lent time, but can take free time. */
+    public function test_a_recalled_owner_revises_around_the_approved_loan(): void
+    {
+        $f = $this->fixture();
+        $owned = $this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '08:30:00');
+        $this->approvedGrant($f);
+        $owned->update(['status' => 'revision']);
+
+        $attempt = fn (string $start, string $end): array => [
+            'semester_id' => $f['semester']->id,
+            'section_id' => $owned->section_id,
+            'course_id' => $owned->course_id,
+            'room_id' => $f['room']->id,
+            'department_id' => $f['owner']->id,
+            'day' => 'Monday',
+            'start_time' => $start,
+            'end_time' => $end,
+            'mode' => 'on-site',
+            'ignore_schedule_id' => $owned->id,
+        ];
+
+        $refusal = collect(app(RuleEngine::class)->validate($attempt('12:00:00', '13:30:00')))
+            ->firstWhere('rule', 'room_department_alignment');
+        $this->assertSame('Room RM-1 is lent to CIT on Mon 11:00-13:00. Choose another time or room.', $refusal['message'] ?? null);
+        $this->assertFalse($this->violatesRoomOwnership($attempt('13:00:00', '14:30:00')), 'Adjacent free time must stay usable.');
+
+        $this->assertSame(RoomRequest::STATUS_APPROVED, RoomRequest::query()->value('status'));
+        $this->assertSame(1, RoomRequest::count());
+    }
+
     public function test_occupancy_lists_classes_in_the_room(): void
     {
         $f = $this->fixture();
@@ -403,10 +452,250 @@ class RoomRequestTest extends TestCase
             ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
             ->assertOk()
             ->assertJsonPath('occupied.0.day', 'Tuesday')
-            ->assertJsonPath('occupied.0.department_code', 'CAS')
+            ->assertJsonPath('occupied.0.kind', 'class')
             ->assertJsonCount(1, 'schedules')
             ->assertJsonPath('schedules.0.room_id', $f['room']->id)
             ->assertJsonPath('schedules.0.department_id', $f['owner']->id);
+    }
+
+    /** A requesting department sees only that time is taken, never another department's class details. */
+    public function test_occupancy_masks_other_departments_class_details_from_the_requester(): void
+    {
+        $f = $this->fixture();
+        $this->bookRoom($f, $f['owner'], 'Tuesday', '07:00:00', '09:00:00');
+
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+            ->assertOk()
+            ->assertJsonPath('occupied.0.label', 'Occupied')
+            ->assertJsonPath('occupied.0.department_code', null)
+            ->assertJsonPath('schedules.0.is_masked', true)
+            ->assertJsonPath('schedules.0.course', null)
+            ->assertJsonPath('schedules.0.section', null)
+            ->assertJsonPath('schedules.0.faculty', null)
+            ->assertJsonPath('schedules.0.faculty_id', null)
+            ->assertJsonPath('schedules.0.start_time', '07:00:00');
+
+        $this->actingAs($f['ownerSecretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+            ->assertOk()
+            ->assertJsonPath('occupied.0.label', 'CAS 199 CAS 1Z')
+            ->assertJsonPath('schedules.0.is_masked', false)
+            ->assertJsonPath('schedules.0.course.course_code', 'CAS 199');
+    }
+
+    /** The borrower keeps full detail of its own classes held under its grant. */
+    public function test_occupancy_shows_the_borrower_its_own_classes_under_a_grant(): void
+    {
+        $f = $this->fixture();
+        $this->approvedGrant($f);
+        $this->bookRoom($f, $f['requester'], 'Monday', '11:00:00', '12:30:00', $f['section'], $f['course']);
+
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+            ->assertOk()
+            ->assertJsonPath('schedules.0.is_masked', false)
+            ->assertJsonPath('schedules.0.course.course_code', 'IT 101')
+            ->assertJsonFragment(['kind' => 'grant', 'department_code' => 'CIT']);
+    }
+
+    // RR-07: a room opens for borrowing only once its owner's whole timetable has final VPAA approval.
+
+    /** @return iterable<string, array{string, string}> */
+    public static function unapprovedOwnerStatuses(): iterable
+    {
+        yield 'pending dean' => ['submitted', RoomRequestController::BORROWING_CLOSED_MESSAGE];
+        yield 'pending VPAA' => ['approved_by_dean', RoomRequestController::BORROWING_CLOSED_MESSAGE];
+        yield 'still a draft' => ['draft', RoomRequestController::BORROWING_CLOSED_MESSAGE];
+        yield 'returned or recalled for revision' => ['revision', RoomRequestController::BORROWING_SUSPENDED_MESSAGE];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unapprovedOwnerStatuses')]
+    public function test_a_room_cannot_be_requested_until_its_owner_is_vpaa_approved(string $status, string $message): void
+    {
+        $f = $this->fixture();
+        $this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '08:30:00')->update(['status' => $status]);
+
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))
+            ->assertStatus(422)
+            ->assertJsonPath('errors.room_id.0', $message);
+        $this->assertSame(0, RoomRequest::count());
+
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+            ->assertOk()
+            ->assertJsonPath('borrowing.open', false)
+            ->assertJsonPath('borrowing.message', $message);
+    }
+
+    /** A resubmitted revision awaiting VPAA again is still "updating", not a first-time approval. */
+    public function test_a_resubmitted_revision_keeps_the_updating_message(): void
+    {
+        $f = $this->fixture();
+        [$first] = $this->approvedOwnerTimetable($f);
+        $first->update(['status' => 'approved_by_dean']);
+
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+            ->assertJsonPath('borrowing.reason', 'owner_updating')
+            ->assertJsonPath('borrowing.message', RoomRequestController::BORROWING_SUSPENDED_MESSAGE);
+    }
+
+    /** Every section counts: one approved section does not open the room while another is pending. */
+    public function test_one_approved_section_does_not_open_the_room(): void
+    {
+        $f = $this->fixture();
+        $approved = $this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '08:30:00'); // finalized
+        $pending = Sections::create([
+            'section_name' => 'CAS 1Y', 'year_level' => '1', 'semester' => '1st',
+            'department_id' => $f['owner']->id, 'semester_id' => $f['semester']->id, 'status' => 'active',
+        ]);
+        $this->bookRoom($f, $f['owner'], 'Saturday', '09:00:00', '10:30:00', $pending, Course::findOrFail($approved->course_id))
+            ->update(['status' => 'submitted']);
+
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))
+            ->assertStatus(422)->assertJsonValidationErrors('room_id');
+    }
+
+    public function test_the_room_opens_once_the_owner_is_vpaa_approved(): void
+    {
+        $f = $this->fixture();
+        $schedule = $this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '08:30:00');
+        $schedule->update(['status' => 'approved_by_dean']);
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertStatus(422);
+
+        $schedule->update(['status' => 'faculty_assignment']); // what VPAA approval sets
+
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+            ->assertJsonPath('borrowing.open', true)
+            ->assertJsonPath('borrowing.message', null);
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated();
+    }
+
+    /** A request sent while open cannot be approved after the owner recalls its timetable; it can still be rejected. */
+    public function test_approval_rechecks_the_owners_vpaa_approval(): void
+    {
+        $f = $this->fixture();
+        $schedule = $this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '08:30:00');
+        $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
+
+        $schedule->update(['status' => 'revision']);
+
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/approve")
+            ->assertStatus(422)->assertJsonPath('errors.room_id.0', RoomRequestController::BORROWING_SUSPENDED_MESSAGE);
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/reject", ['remarks' => 'Re-planning'])
+            ->assertOk();
+    }
+
+    /** A grant approved earlier stays in force when the owner later recalls its timetable. */
+    public function test_an_existing_grant_survives_the_owner_reopening_its_timetable(): void
+    {
+        $f = $this->fixture();
+        $schedule = $this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '08:30:00');
+        $id = $this->approvedGrant($f);
+
+        $schedule->update(['status' => 'revision']);
+
+        $this->assertSame(RoomRequest::STATUS_APPROVED, RoomRequest::findOrFail($id)->status);
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+            ->assertJsonPath('borrowing.open', false)
+            ->assertJsonFragment(['kind' => 'grant', 'department_code' => 'CIT']);
+    }
+
+    // RR-08: a recall, partial or full, suspends new borrowing until the owner is VPAA-approved again.
+
+    /** @return iterable<string, array{bool}> */
+    public static function recallScopes(): iterable
+    {
+        yield 'one section recalled' => [false];
+        yield 'every section recalled' => [true];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('recallScopes')]
+    public function test_a_recall_suspends_new_borrowing_but_keeps_approved_loans(bool $recallAll): void
+    {
+        $f = $this->fixture();
+        [$first, $second] = $this->approvedOwnerTimetable($f);
+        $grantId = $this->approvedGrant($f);
+
+        $recaller = $f['ownerSecretary'];
+        $recaller->givePermissionTo('schedule.withdraw');
+        $sections = $recallAll ? [$first->section_id, $second->section_id] : [$first->section_id];
+        $this->actingAs($recaller->fresh())
+            ->postJson("/api/departments/{$f['owner']->id}/withdraw-submission", ['section_ids' => $sections])
+            ->assertOk();
+        $this->assertSame('revision', $first->refresh()->status);
+
+        // The recalled class's slot is not offered as vacant: no new request is accepted, in any window.
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', [
+            'windows' => [['day' => 'Saturday', 'start_time' => '07:00', 'end_time' => '08:30']],
+        ] + $this->payload($f))
+            ->assertStatus(422)
+            ->assertJsonPath('errors.room_id.0', RoomRequestController::BORROWING_SUSPENDED_MESSAGE);
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+            ->assertJsonPath('borrowing.open', false)
+            ->assertJsonPath('borrowing.reason', 'owner_updating')
+            ->assertJsonPath('borrowing.message', RoomRequestController::BORROWING_SUSPENDED_MESSAGE)
+            ->assertJsonFragment(['kind' => 'grant', 'department_code' => 'CIT']);
+
+        // The loan approved before the recall stays in force, once.
+        $this->assertSame(RoomRequest::STATUS_APPROVED, RoomRequest::findOrFail($grantId)->status);
+        $this->assertSame(1, RoomRequest::count());
+
+        // Final VPAA approval of the revision reopens the remaining free time.
+        Schedule::query()->where('department_id', $f['owner']->id)->update(['status' => 'faculty_assignment']);
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+            ->assertJsonPath('borrowing.open', true)
+            ->assertJsonPath('borrowing.reason', null);
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', [
+            'windows' => [['day' => 'Tuesday', 'start_time' => '13:00', 'end_time' => '14:30']],
+        ] + $this->payload($f))->assertCreated();
+    }
+
+    /** A request sent before a recall cannot be approved during it. */
+    public function test_a_pending_request_cannot_be_approved_during_a_recall(): void
+    {
+        $f = $this->fixture();
+        [$first] = $this->approvedOwnerTimetable($f);
+        $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
+
+        $recaller = $f['ownerSecretary'];
+        $recaller->givePermissionTo('schedule.withdraw');
+        $this->actingAs($recaller->fresh())
+            ->postJson("/api/departments/{$f['owner']->id}/withdraw-submission", ['section_ids' => [$first->section_id]])
+            ->assertOk();
+
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/approve")
+            ->assertStatus(422)
+            ->assertJsonPath('errors.room_id.0', RoomRequestController::BORROWING_SUSPENDED_MESSAGE);
+    }
+
+    /** Two VPAA-approved owner sections, each with a class in the room. */
+    private function approvedOwnerTimetable(array $f): array
+    {
+        Program::create(['department_id' => $f['owner']->id, 'code' => 'BSPSY', 'name' => 'Psychology']); // recall needs a program
+        $first =$this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '08:30:00');
+        $second = Sections::create([
+            'section_name' => 'CAS 1Y', 'year_level' => '1', 'semester' => '1st',
+            'department_id' => $f['owner']->id, 'semester_id' => $f['semester']->id, 'status' => 'active',
+        ]);
+        $other = $this->bookRoom($f, $f['owner'], 'Saturday', '09:00:00', '10:30:00', $second, Course::findOrFail($first->course_id));
+        Schedule::query()->whereKey([$first->id, $other->id])->update(['status' => 'faculty_assignment']);
+        $submission = ScheduleSubmission::create([
+            'department_id' => $f['owner']->id,
+            'semester_id' => $f['semester']->id,
+            'revision_number' => 1,
+            'status' => 'approved',
+            'submitted_at' => now(),
+            'vpaa_reviewed_at' => now(),
+        ]);
+        $submission->sections()->attach([$first->section_id, $second->id], ['state' => 'included']);
+
+        return [$first->refresh(), $other->refresh()];
     }
 
     // RR-01: approval must come from the room's current owner.

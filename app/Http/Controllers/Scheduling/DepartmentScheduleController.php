@@ -654,7 +654,7 @@ class DepartmentScheduleController extends Controller
             return 0;
         }
 
-        return Schedule::query()
+        $rows = Schedule::query()
             ->where('semester_id', $activeSemesterId)
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES)
             ->whereNull('faculty_id')
@@ -665,7 +665,17 @@ class DepartmentScheduleController extends Controller
                 ->where('status', 'active')
                 ->delegatedTo($departmentId, $programId))
             ->distinct()
-            ->get(['section_id', 'course_id'])
+            ->get(['section_id', 'course_id', 'department_id']);
+
+        // Colleges that recalled their timetable are out of Cross-Department until re-approved.
+        $recalled = $this->crossDepartmentGate->awaitingReapproval(
+            $rows->pluck('department_id')->reject(fn ($id): bool => (int) $id === $departmentId),
+            $activeSemesterId,
+        );
+
+        return $rows
+            ->reject(fn (Schedule $row): bool => in_array((int) $row->department_id, $recalled, true))
+            ->unique(fn (Schedule $row): string => $row->section_id.':'.$row->course_id)
             ->count();
     }
 

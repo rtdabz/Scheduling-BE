@@ -13,6 +13,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
+use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -38,6 +39,7 @@ class InstructorAssignmentController extends Controller
         private readonly FacultyLoadService $facultyLoad,
         private readonly ManualHybridFacultyAssignmentResolver $manualHybridAssignments,
         private readonly ScheduleHistoryRecorder $historyRecorder,
+        private readonly CrossDepartmentApprovalGate $approvalGate,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -107,6 +109,18 @@ class InstructorAssignmentController extends Controller
                 ->orderBy('day')
                 ->orderBy('start_time')
                 ->get();
+
+            // A college that recalled its timetable leaves Cross-Department until the VPAA
+            // approves it again; its kept instructors stay recorded, just out of view.
+            $recalled = $this->approvalGate->awaitingReapproval(
+                $schedules->pluck('department_id')->reject(fn ($id): bool => (int) $id === $departmentId),
+                (int) $activeSemester->id,
+            );
+            if ($recalled !== []) {
+                $schedules = $schedules
+                    ->reject(fn (Schedule $schedule): bool => in_array((int) $schedule->department_id, $recalled, true))
+                    ->values();
+            }
 
             $faculties = Faculty::query()
                 ->with(['department', 'program', 'availabilities'])

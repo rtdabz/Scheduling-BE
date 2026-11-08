@@ -2,6 +2,7 @@
 
 namespace App\Services\Scheduling\Department;
 
+use App\Models\ScheduleSubmission;
 use App\Models\Sections;
 use App\Models\Semester;
 use Illuminate\Http\JsonResponse;
@@ -31,9 +32,13 @@ class CrossDepartmentApprovalGate
             || $this->statusDeriver->derive($sectionStatuses) === 'approved';
     }
 
-    public function isOpen(int $departmentId): bool
+    /**
+     * Whether every active section of the department has final VPAA approval in
+     * the given semester (the active one when omitted). Room borrowing reuses this.
+     */
+    public function isOpen(int $departmentId, ?int $semesterId = null): bool
     {
-        $activeSemesterId = Semester::query()->where('is_active', true)->value('id');
+        $activeSemesterId = $semesterId ?? Semester::query()->where('is_active', true)->value('id');
 
         $sectionStatuses = Sections::query()
             ->with(['schedules' => fn ($query) => $query->select('id', 'section_id', 'status')
@@ -48,6 +53,41 @@ class CrossDepartmentApprovalGate
             ->all();
 
         return $this->allowsSectionStatuses($sectionStatuses);
+    }
+
+    /**
+     * The department was VPAA-approved this semester but no longer is: it recalled some or
+     * all sections (or added new ones) and awaits VPAA approval again. Cross-Department hides
+     * it from teaching colleges, and room borrowing treats it as updating its schedules.
+     */
+    public function isAwaitingReapproval(int $departmentId, ?int $semesterId = null): bool
+    {
+        $semesterId ??= Semester::query()->where('is_active', true)->value('id');
+        if ($semesterId === null || $this->isOpen($departmentId, (int) $semesterId)) {
+            return false;
+        }
+
+        return ScheduleSubmission::query()
+            ->where('department_id', $departmentId)
+            ->where('semester_id', $semesterId)
+            ->whereNotNull('vpaa_reviewed_at')
+            ->exists();
+    }
+
+    /**
+     * Of the given departments, those awaiting VPAA re-approval.
+     *
+     * @param  iterable<int|string>  $departmentIds
+     * @return list<int>
+     */
+    public function awaitingReapproval(iterable $departmentIds, int $semesterId): array
+    {
+        return collect($departmentIds)
+            ->map(static fn (int|string $id): int => (int) $id)
+            ->unique()
+            ->filter(fn (int $id): bool => $this->isAwaitingReapproval($id, $semesterId))
+            ->values()
+            ->all();
     }
 
     /**

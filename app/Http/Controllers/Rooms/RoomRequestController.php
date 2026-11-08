@@ -12,6 +12,7 @@ use App\Models\Semester;
 use App\Models\User;
 use App\Services\RoomRecoveryService;
 use App\Services\ScheduleHistoryRecorder;
+use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
@@ -29,9 +30,14 @@ class RoomRequestController extends Controller
 {
     private const LENDABLE_ROOM_TYPES = ['lecture'];
 
+    public const BORROWING_CLOSED_MESSAGE = "This room is not yet available for borrowing. The owning department's schedules are awaiting VPAA approval.";
+
+    public const BORROWING_SUSPENDED_MESSAGE = 'This room is temporarily unavailable for borrowing while the owning department updates its schedules.';
+
     public function __construct(
         private readonly ScheduleHistoryRecorder $history,
         private readonly RevisionChangeRecorder $revisionChanges,
+        private readonly CrossDepartmentApprovalGate $approvalGate,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -78,10 +84,14 @@ class RoomRequestController extends Controller
             ->get(['id', 'semester_id', 'course_id', 'section_id', 'faculty_id', 'room_id', 'department_id', 'day', 'start_time', 'end_time', 'mode', 'status']);
 
         $grants = $this->approvedWindows($roomModel->id, $semester->id);
+        $masked = $this->maskedScheduleIds($request->user(), $roomModel, $schedules);
+        $borrowing = $this->borrowingStatus($roomModel, $semester->id);
 
         return response()->json([
             'room' => $this->presentRoom($roomModel),
             'semester' => $this->presentSemester($semester),
+            // Free time is lendable only once the owner's timetable has final VPAA approval.
+            'borrowing' => $borrowing,
             'opening_time' => substr(SchedulingPolicy::openingTime(), 0, 5),
             'closing_time' => substr(SchedulingPolicy::closingTime(), 0, 5),
             'occupied' => [
@@ -90,8 +100,10 @@ class RoomRequestController extends Controller
                     'day' => (string) $schedule->day,
                     'start_time' => substr((string) $schedule->start_time, 0, 5),
                     'end_time' => substr((string) $schedule->end_time, 0, 5),
-                    'department_code' => $schedule->department?->department_code,
-                    'label' => trim(($schedule->course?->course_code ?? '').' '.($schedule->section?->section_name ?? '')),
+                    'department_code' => isset($masked[$schedule->id]) ? null : $schedule->department?->department_code,
+                    'label' => isset($masked[$schedule->id])
+                        ? 'Occupied'
+                        : trim(($schedule->course?->course_code ?? '').' '.($schedule->section?->section_name ?? '')),
                 ])->all(),
                 ...$grants->map(fn (object $window): array => [
                     'kind' => 'grant',
@@ -102,24 +114,66 @@ class RoomRequestController extends Controller
                     'label' => 'Lent to '.$window->department_code,
                 ])->all(),
             ],
-            'schedules' => $schedules->map(fn (Schedule $schedule): array => [
-                'id' => $schedule->id,
-                'semester_id' => $schedule->semester_id,
-                'section_id' => $schedule->section_id,
-                'course_id' => $schedule->course_id,
-                'faculty_id' => $schedule->faculty_id,
-                'room_id' => $schedule->room_id,
-                'department_id' => $schedule->department_id,
-                'day' => (string) $schedule->day,
-                'start_time' => (string) $schedule->start_time,
-                'end_time' => (string) $schedule->end_time,
-                'mode' => $schedule->mode,
-                'status' => $schedule->status,
-                'section' => $schedule->section?->only(['id', 'section_name']),
-                'course' => $schedule->course?->only(['id', 'course_code', 'course_name', 'course_category', 'units', 'lecture_hours', 'lab_hours']),
-                'faculty' => $schedule->faculty?->only(['id', 'first_name', 'last_name', 'middle_name']),
-            ])->values()->all(),
+            'schedules' => $schedules->map(fn (Schedule $schedule): array => isset($masked[$schedule->id])
+                ? [
+                    // Another department's class: only the occupied time is shared.
+                    'id' => $schedule->id,
+                    'semester_id' => $schedule->semester_id,
+                    'section_id' => null,
+                    'course_id' => null,
+                    'faculty_id' => null,
+                    'room_id' => $schedule->room_id,
+                    'department_id' => $schedule->department_id,
+                    'day' => (string) $schedule->day,
+                    'start_time' => (string) $schedule->start_time,
+                    'end_time' => (string) $schedule->end_time,
+                    'mode' => $schedule->mode,
+                    'status' => $schedule->status,
+                    'is_masked' => true,
+                    'section' => null,
+                    'course' => null,
+                    'faculty' => null,
+                ]
+                : [
+                    'id' => $schedule->id,
+                    'semester_id' => $schedule->semester_id,
+                    'section_id' => $schedule->section_id,
+                    'course_id' => $schedule->course_id,
+                    'faculty_id' => $schedule->faculty_id,
+                    'room_id' => $schedule->room_id,
+                    'department_id' => $schedule->department_id,
+                    'day' => (string) $schedule->day,
+                    'start_time' => (string) $schedule->start_time,
+                    'end_time' => (string) $schedule->end_time,
+                    'mode' => $schedule->mode,
+                    'status' => $schedule->status,
+                    'is_masked' => false,
+                    'section' => $schedule->section?->only(['id', 'section_name']),
+                    'course' => $schedule->course?->only(['id', 'course_code', 'course_name', 'course_category', 'units', 'lecture_hours', 'lab_hours']),
+                    'faculty' => $schedule->faculty?->only(['id', 'first_name', 'last_name', 'middle_name']),
+                ])->values()->all(),
         ]);
+    }
+
+    /**
+     * Schedules whose class details the viewer may not see. The room's owner and the
+     * VPAA see every class in it; anyone else sees only their own department's classes.
+     *
+     * @param  Collection<int, Schedule>  $schedules
+     * @return array<int, true>
+     */
+    private function maskedScheduleIds(User $user, Rooms $room, Collection $schedules): array
+    {
+        $viewerDepartmentId = $user->department_id === null ? null : (int) $user->department_id;
+        if ($user->role === 'vpaa'
+            || ($viewerDepartmentId !== null && $room->department_id !== null && (int) $room->department_id === $viewerDepartmentId)) {
+            return [];
+        }
+
+        return $schedules
+            ->filter(fn (Schedule $schedule): bool => $viewerDepartmentId === null || (int) $schedule->department_id !== $viewerDepartmentId)
+            ->mapWithKeys(fn (Schedule $schedule): array => [(int) $schedule->id => true])
+            ->all();
     }
 
     public function store(Request $request): JsonResponse
@@ -150,6 +204,7 @@ class RoomRequestController extends Controller
                 throw ValidationException::withMessages(['room_id' => 'This room has just been archived and can no longer be requested.']);
             }
             $this->assertLendable($room, $departmentId);
+            $this->assertBorrowingOpen($room, $semester->id);
 
             $duplicate = RoomRequest::query()
                 ->where('room_id', $room->id)
@@ -229,6 +284,7 @@ class RoomRequestController extends Controller
                 ]);
             }
             $this->assertLendable($room, (int) $model->requesting_department_id);
+            $this->assertBorrowingOpen($room, (int) $model->semester_id);
 
             $this->assertVacant(
                 $room,
@@ -377,6 +433,45 @@ class RoomRequestController extends Controller
             throw ValidationException::withMessages([
                 'room_id' => "{$room->room_code} already belongs to your department.",
             ]);
+        }
+    }
+
+    /**
+     * The owner's own timetable comes first: its free time can be lent only after every
+     * one of its sections has final VPAA approval for that semester. Shared rooms have no owner.
+     */
+    /**
+     * A recall, partial or full, leaves the owner short of full approval, so it closes
+     * borrowing as well; recalled classes never count as vacant time. The reason only picks
+     * the wording: "owner_updating" once the owner has been VPAA-approved this semester or
+     * has classes back in revision, "awaiting_approval" before its first approval.
+     *
+     * @return array{open: bool, reason: 'awaiting_approval'|'owner_updating'|null, message: string|null}
+     */
+    private function borrowingStatus(Rooms $room, int $semesterId): array
+    {
+        $ownerId = $room->department_id === null ? null : (int) $room->department_id;
+        if ($ownerId === null || $this->approvalGate->isOpen($ownerId, $semesterId)) {
+            return ['open' => true, 'reason' => null, 'message' => null];
+        }
+
+        $updating = Schedule::query()
+            ->where('department_id', $ownerId)
+            ->where('semester_id', $semesterId)
+            ->where('status', 'revision')
+            ->exists()
+            || $this->approvalGate->isAwaitingReapproval($ownerId, $semesterId);
+
+        return $updating
+            ? ['open' => false, 'reason' => 'owner_updating', 'message' => self::BORROWING_SUSPENDED_MESSAGE]
+            : ['open' => false, 'reason' => 'awaiting_approval', 'message' => self::BORROWING_CLOSED_MESSAGE];
+    }
+
+    private function assertBorrowingOpen(Rooms $room, int $semesterId): void
+    {
+        $status = $this->borrowingStatus($room, $semesterId);
+        if (! $status['open']) {
+            throw ValidationException::withMessages(['room_id' => $status['message']]);
         }
     }
 
