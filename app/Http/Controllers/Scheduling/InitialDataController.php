@@ -14,6 +14,7 @@ use App\Models\Semester;
 use App\Models\User;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
+use App\Services\Scheduling\ScheduleSignatories;
 use App\Services\Scheduling\Submission\SubmissionStatusResolver;
 use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
@@ -46,6 +47,7 @@ class InitialDataController extends Controller
         private readonly FacultyLoadService $facultyLoad,
         private readonly ScheduleAuthorizationService $authorization,
         private readonly SubmissionStatusResolver $submissionStatuses,
+        private readonly ScheduleSignatories $signatories,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -365,6 +367,11 @@ class InitialDataController extends Controller
             'revision_status',
             $revisionStatuses[$submission->id] ?? SubmissionStatusResolver::INITIAL,
         ));
+        // The officials printed in each submission's signature block, as recorded by the workflow.
+        $scheduleSubmissions->each(fn (ScheduleSubmission $submission) => $submission->setAttribute(
+            'signatories',
+            $this->signatories->resolve($submission),
+        ));
         $latestSubmissionBySection = collect();
         foreach ($scheduleSubmissions as $submission) {
             foreach ($submission->sections as $submissionSection) {
@@ -392,6 +399,11 @@ class InitialDataController extends Controller
             $schedule->setAttribute('rejection_reason', $submission->rejection_reason);
             $schedule->setAttribute('approval_override', $submission->approval_override);
             $schedule->setAttribute('approval_override_reason', $submission->approval_override_reason);
+            // Once submitted, a schedule prints the officials recorded on its submission. A draft or a
+            // recalled schedule back in revision has no signed version yet, so it prints the current officials.
+            if (! in_array($schedule->status, Schedule::PLOTTING_EDITABLE_STATUSES, true)) {
+                $schedule->setAttribute('signatories_submission_id', $submission->id);
+            }
         });
 
         $schedules->each(function ($schedule) use ($viewerDepartmentId): void {
@@ -435,6 +447,9 @@ class InitialDataController extends Controller
             'schedules' => $schedules,
             'schedules_truncated' => $schedulesTruncated,
             'schedule_submissions' => $scheduleSubmissions,
+            'schedule_signatories' => $scheduleSubmissions->mapWithKeys(
+                static fn (ScheduleSubmission $submission): array => [$submission->id => $submission->signatories],
+            ),
             'departments' => $departments,
             'active_curricula_count' => $activeCurriculumList->count(),
             'scheduling_ready' => $departmentId === null || Departments::query()->whereKey($departmentId)->whereHas('programs')->exists(),

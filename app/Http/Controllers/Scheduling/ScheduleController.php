@@ -20,7 +20,7 @@ use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Recommendations\RecommendationContext;
 use App\Services\Scheduling\Recommendations\RecommendationEngine;
 use App\Services\Scheduling\Recommendations\RecommendationSource;
-use App\Services\Scheduling\Schedule\BatchConflict;
+use App\Services\Scheduling\Schedule\BatchConflictMessages;
 use App\Services\Scheduling\Schedule\BatchConflictValidator;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Schedule\SameTimePartnerMover;
@@ -1132,49 +1132,7 @@ class ScheduleController extends Controller
      */
     private function checkIntraBatchConflicts(array $operations): array
     {
-        return array_map(
-            static fn (BatchConflict $conflict): array => [
-                'rule' => $conflict->rule,
-                'operation_index' => $conflict->index,
-                'course_code' => $conflict->courseCode ?? 'Course',
-                'day' => $conflict->day,
-                'message' => match ($conflict->rule) {
-                    BatchConflict::RULE_SECTION => sprintf(
-                        'Intra-batch Section Conflict: %s and %s overlap for section on %s from %s to %s.',
-                        $conflict->otherCourseCode,
-                        $conflict->courseCode,
-                        $conflict->day,
-                        $conflict->overlapStart,
-                        $conflict->overlapEnd,
-                    ),
-                    BatchConflict::RULE_SUBJECT_SECTION_TIME => sprintf(
-                        'Intra-batch Subject/Section Conflict: %s is assigned to multiple sections at overlapping time %s-%s on %s.',
-                        $conflict->otherCourseCode,
-                        $conflict->overlapStart,
-                        $conflict->overlapEnd,
-                        $conflict->day,
-                    ),
-                    BatchConflict::RULE_ROOM => sprintf(
-                        'Intra-batch Room Conflict: Room is assigned to both %s and %s at overlapping time %s-%s on %s.',
-                        $conflict->otherCourseCode,
-                        $conflict->courseCode,
-                        $conflict->overlapStart,
-                        $conflict->overlapEnd,
-                        $conflict->day,
-                    ),
-                    BatchConflict::RULE_FACULTY => sprintf(
-                        'Intra-batch Faculty Conflict: Instructor is assigned to teach both %s and %s at overlapping time %s-%s on %s.',
-                        $conflict->otherCourseCode,
-                        $conflict->courseCode,
-                        $conflict->overlapStart,
-                        $conflict->overlapEnd,
-                        $conflict->day,
-                    ),
-                    default => 'Intra-batch schedule conflict.',
-                },
-            ],
-            $this->batchConflicts->validate($operations),
-        );
+        return app(BatchConflictMessages::class)->describe($this->batchConflicts->validate($operations), $operations);
     }
 
     /**

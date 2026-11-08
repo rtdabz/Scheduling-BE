@@ -6,13 +6,18 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Faculty;
+use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\ScheduleSubmission;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Engine\RuleEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -51,15 +56,170 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         );
     }
 
+    #[DataProvider('preApprovalStatuses')]
+    public function test_existing_assignments_remain_visible_before_approval_without_allowing_edits(string $status): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        Schedule::whereIn('id', $blocks->pluck('id'))->update([
+            'status' => $status,
+            'faculty_id' => $fixture['casInstructor']->id,
+            'faculty_assignment_done' => false,
+        ]);
+
+        // A different section is still awaiting its first instructor and must
+        // not enter the receiving college's assignment queue before approval.
+        $unassignedSection = $fixture['section']->replicate();
+        $unassignedSection->section_name = 'BSIT 1B';
+        $unassignedSection->save();
+        $unassigned = $this->meetingBlocks(array_replace($fixture, ['section' => $unassignedSection]));
+        Schedule::whereIn('id', $unassigned->pluck('id'))->update(['status' => $status]);
+
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson("/api/instructor-assignments/{$blocks->first()->id}", ['faculty_id' => null])
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'Instructor assignment is available only after VPAA approval.');
+
+        $response = $this->actingAs($fixture['casSecretary'])
+            ->getJson('/api/instructor-assignments')
+            ->assertOk()
+            ->assertJsonCount(3, 'schedules')
+            ->assertJsonCount(1, 'courses')
+            ->assertJsonPath('courses.0.id', $fixture['gec']->id);
+
+        $this->assertEqualsCanonicalizing(
+            $blocks->pluck('id')->all(),
+            collect($response->json('schedules'))->pluck('id')->all(),
+        );
+        foreach ($response->json('schedules') as $schedule) {
+            $this->assertSame($status, $schedule['status']);
+            $this->assertSame($fixture['casInstructor']->id, $schedule['faculty_id']);
+            $this->assertSame($fixture['casInstructor']->first_name, $schedule['faculty']['first_name']);
+            $this->assertSame($fixture['cas']->id, $schedule['faculty']['department_id']);
+            $this->assertSame($fixture['section']->id, $schedule['section']['id']);
+            $this->assertSame($fixture['it']->id, $schedule['department_id']);
+            $this->assertSame($fixture['cas']->id, $schedule['course']['teaching_department_id']);
+            $this->assertFalse($schedule['faculty_assignment_done']);
+        }
+    }
+
+    public static function preApprovalStatuses(): array
+    {
+        return array_map(static fn (string $status): array => [$status], [
+            'draft', 'completed', 'submitted', 'approved_by_dean',
+            'conditionally_approved', 'rejected_by_dean', 'rejected', 'revision',
+        ]);
+    }
+
+    public function test_retained_instructors_do_not_bypass_semester_course_or_department_scope(): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        Schedule::whereIn('id', $blocks->pluck('id'))->update([
+            'status' => 'submitted',
+            'faculty_id' => $fixture['casInstructor']->id,
+        ]);
+        $otherSemester = Semester::create([
+            'academic_year' => '2025-2026',
+            'semester' => '1st',
+            'is_active' => false,
+            'is_enabled' => false,
+        ]);
+        $inactiveCourse = $fixture['gec']->replicate()->fill(['course_code' => 'GEC 102', 'status' => 'inactive']);
+        $inactiveCourse->save();
+        $unrelatedCourse = $fixture['gec']->replicate()->fill([
+            'course_code' => 'GEC 103',
+            'teaching_department_id' => $fixture['it']->id,
+        ]);
+        $unrelatedCourse->save();
+
+        foreach ([
+            ['semester_id' => $otherSemester->id],
+            ['course_id' => $inactiveCourse->id],
+            ['course_id' => $unrelatedCourse->id],
+        ] as $overrides) {
+            $blocks->first()->refresh()->replicate()->fill($overrides)->save();
+        }
+
+        $response = $this->actingAs($fixture['casSecretary'])
+            ->getJson('/api/instructor-assignments')
+            ->assertOk()
+            ->assertJsonCount(3, 'schedules');
+
+        $this->assertEqualsCanonicalizing(
+            $blocks->pluck('id')->all(),
+            collect($response->json('schedules'))->pluck('id')->all(),
+        );
+    }
+
+    public function test_an_it_instructor_teaching_blis_within_the_same_college_is_returned_once_per_meeting(): void
+    {
+        $fixture = $this->fixture();
+        $blis = Program::create([
+            'department_id' => $fixture['it']->id,
+            'code' => 'BLIS',
+            'name' => 'Library and Information Science',
+        ]);
+        $unrelated = Program::create([
+            'department_id' => $fixture['it']->id,
+            'code' => 'BSCS',
+            'name' => 'Computer Science',
+        ]);
+        $fixture['gec']->update([
+            'program_id' => $blis->id,
+            'teaching_department_id' => $fixture['it']->id,
+            'teaching_program_id' => $fixture['itProgram']->id,
+            'teaching_source_program_id' => $blis->id,
+        ]);
+        $fixture['section']->update(['section_name' => 'BLIS 1A', 'program_id' => $blis->id]);
+        $fixture['itInstructor']->update(['program_id' => $fixture['itProgram']->id]);
+        $blocks = $this->meetingBlocks($fixture);
+        Schedule::whereIn('id', $blocks->pluck('id'))->update(['faculty_id' => $fixture['itInstructor']->id]);
+        $head = fn (int $programId) => $this->grantCapabilities(User::factory()->create([
+            'role' => 'program_head',
+            'department_id' => $fixture['it']->id,
+            'program_id' => $programId,
+        ]));
+
+        $response = $this->actingAs($head($fixture['itProgram']->id))
+            ->getJson('/api/instructor-assignments')
+            ->assertOk()
+            ->assertJsonCount(3, 'schedules')
+            ->assertJsonCount(1, 'incoming_courses')
+            ->assertJsonPath('incoming_courses.0.id', $fixture['gec']->id)
+            ->assertJsonPath('incoming_courses.0.teaching_program_id', $fixture['itProgram']->id)
+            ->assertJsonPath('incoming_courses.0.teaching_source_program.code', 'BLIS')
+            ->assertJsonCount(1, 'faculties')
+            ->assertJsonPath('faculties.0.id', $fixture['itInstructor']->id);
+
+        $this->assertEqualsCanonicalizing(
+            $blocks->pluck('id')->all(),
+            collect($response->json('schedules'))->pluck('id')->all(),
+        );
+        foreach ($response->json('schedules') as $schedule) {
+            $this->assertSame($fixture['itInstructor']->id, $schedule['faculty']['id']);
+            $this->assertSame($fixture['itProgram']->id, $schedule['course']['teaching_program_id']);
+            $this->assertSame($blis->id, $schedule['course']['program_id']);
+            $this->assertSame('BLIS 1A', $schedule['section']['section_name']);
+            $this->assertSame($blis->id, $schedule['section']['program_id']);
+        }
+
+        foreach ([$blis->id, $unrelated->id] as $programId) {
+            $this->actingAs($head($programId))->getJson('/api/instructor-assignments')
+                ->assertOk()
+                ->assertJsonCount(0, 'incoming_courses');
+        }
+    }
+
     public function test_program_head_assignment_payload_only_contains_their_program_faculty(): void
     {
         $fixture = $this->fixture();
-        $bped = \App\Models\Program::create([
+        $bped = Program::create([
             'department_id' => $fixture['cas']->id,
             'code' => 'BPED',
             'name' => 'Physical Education',
         ]);
-        $otherProgram = \App\Models\Program::create([
+        $otherProgram = Program::create([
             'department_id' => $fixture['cas']->id,
             'code' => 'BEED',
             'name' => 'Elementary Education',
@@ -286,10 +446,51 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         );
     }
 
+    public function test_the_teaching_college_can_remove_an_instructor_without_schedule_ownership(): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        $ids = $blocks->pluck('id')->all();
+        Schedule::whereIn('id', $ids)->update(['faculty_id' => $fixture['casInstructor']->id]);
+        $local = $this->carriedLoad($fixture, 3);
+        $placementFields = ['semester_id', 'section_id', 'course_id', 'department_id', 'room_id', 'day', 'start_time', 'end_time', 'status'];
+        $placements = Schedule::whereIn('id', $ids)->get()
+            ->mapWithKeys(fn (Schedule $schedule): array => [$schedule->id => $schedule->only($placementFields)]);
+
+        // A teaching assignment permits instructor changes, not editing the
+        // source college's timetable through the general schedule endpoint.
+        $this->actingAs($fixture['casSecretary'])
+            ->putJson("/api/schedules/{$blocks->first()->id}", ['faculty_id' => null])
+            ->assertForbidden()
+            ->assertJsonPath('message', 'You can only manage schedules for your department.');
+
+        // Nor may the source college remove the teaching college's instructor.
+        $this->actingAs($fixture['itSecretary'])
+            ->patchJson('/api/schedules/batch-faculty', [
+                'assignments' => [['schedule_ids' => $ids, 'faculty_id' => null]],
+            ])
+            ->assertForbidden();
+        $this->assertSame(3, Schedule::whereIn('id', $ids)->whereNotNull('faculty_id')->count());
+
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty', [
+                'assignments' => [['schedule_ids' => $ids, 'faculty_id' => null]],
+            ])
+            ->assertOk()
+            ->assertJsonPath('schedules_updated', 3)
+            ->assertJsonCount(3, 'schedules');
+
+        foreach (Schedule::whereIn('id', $ids)->get() as $schedule) {
+            $this->assertNull($schedule->faculty_id);
+            $this->assertSame($placements[$schedule->id], $schedule->only($placementFields));
+        }
+        $this->assertSame($fixture['casInstructor']->id, $local->fresh()->faculty_id);
+    }
+
     public function test_completion_notice_reaches_only_the_program_that_handed_the_course_over(): void
     {
         $fixture = $this->fixture();
-        $otherProgram = \App\Models\Program::create(['department_id' => $fixture['it']->id, 'code' => 'BSCS', 'name' => 'Computer Science']);
+        $otherProgram = Program::create(['department_id' => $fixture['it']->id, 'code' => 'BSCS', 'name' => 'Computer Science']);
         $fixture['gec']->update(['teaching_source_program_id' => $fixture['itProgram']->id]);
         $head = fn (int $programId) => User::factory()->create([
             'role' => 'program_head',
@@ -305,7 +506,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->patchJson('/api/schedules/batch-faculty-done', ['ids' => $blocks->pluck('id')->all(), 'done' => true])
             ->assertOk();
 
-        $received = fn (User $user): bool => \Illuminate\Support\Facades\DB::table('system_notifications')
+        $received = fn (User $user): bool => DB::table('system_notifications')
             ->where('user_id', $user->id)
             ->where('type', 'cross_department_instructor_assignments_completed')
             ->exists();
@@ -392,7 +593,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         ]);
         // Fully configured on purpose: the refusal under test is the domain
         // rule about who may claim the course, not a missing capability.
-        \App\Models\Program::create([
+        Program::create([
             'department_id' => $engineering->id,
             'code' => 'BSCE',
             'name' => 'Civil Engineering',
@@ -482,7 +683,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->patchJson('/api/schedules/batch-faculty-done', ['ids' => $ids, 'done' => true])
             ->assertOk();
 
-        $submission = \App\Models\ScheduleSubmission::create([
+        $submission = ScheduleSubmission::create([
             'department_id' => $fixture['it']->id,
             'semester_id' => $fixture['semester']->id,
             'revision_number' => 1,
@@ -520,14 +721,14 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->assertJsonPath('cross_department_instructors_released', 1);
 
         $this->assertSame(0, Schedule::query()->whereIn('id', $ids)->count());
-        $notice = \Illuminate\Support\Facades\DB::table('system_notifications')
+        $notice = DB::table('system_notifications')
             ->where('user_id', $fixture['casSecretary']->id)
             ->where('type', 'cross_department_instructors_released')
             ->first();
         $this->assertNotNull($notice);
         $this->assertStringContainsString('reset its schedule', $notice->message);
         $this->assertStringContainsString('GEC 101 (BSIT 1A)', $notice->message);
-        $this->assertFalse(\Illuminate\Support\Facades\DB::table('system_notifications')
+        $this->assertFalse(DB::table('system_notifications')
             ->where('user_id', $fixture['itSecretary']->id)
             ->where('type', 'cross_department_instructors_released')
             ->exists());
@@ -654,7 +855,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
      * assignment is legal — VPAA approval has already happened.
      *
      * @param  array<string, mixed>  $fixture
-     * @return \Illuminate\Support\Collection<int, Schedule>
+     * @return Collection<int, Schedule>
      */
     /**
      * The dashboard cannot see this work from its own schedule rows -- the class
@@ -687,7 +888,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
     public function test_schedule_status_counts_a_course_handed_to_a_sibling_program(): void
     {
         $fixture = $this->fixture();
-        $sibling = \App\Models\Program::create([
+        $sibling = Program::create([
             'department_id' => $fixture['it']->id,
             'code' => 'BSCS',
             'name' => 'Computer Science',
@@ -728,6 +929,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->assertOk()
             ->assertJsonPath('cross_department_pending', 0);
     }
+
     private function meetingBlocks(array $fixture)
     {
         return collect(['Monday', 'Wednesday', 'Friday'])->map(fn (string $day): Schedule => Schedule::create([
@@ -807,12 +1009,12 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         // CapabilityMiddleware withholds every schedule capability except
         // schedule.view from a department that owns no program, and a section
         // cannot be scheduled until it belongs to one.
-        $itProgram = \App\Models\Program::create([
+        $itProgram = Program::create([
             'department_id' => $it->id,
             'code' => 'BSIT',
             'name' => 'Information Technology',
         ]);
-        $casProgram = \App\Models\Program::create([
+        $casProgram = Program::create([
             'department_id' => $cas->id,
             'code' => 'BACAS',
             'name' => 'Arts and Sciences',

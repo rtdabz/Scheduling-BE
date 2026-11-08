@@ -2,8 +2,11 @@
 
 namespace App\Services\Scheduling\Engine\Rules;
 
+use App\Models\Faculty;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\Sections;
+use App\Services\Scheduling\Support\ConflictMessage;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 
 final class OverlapConflict
@@ -38,8 +41,14 @@ final class OverlapConflict
             return null;
         }
 
-        return $this->clash($attempt, 'room_id', $roomId, 'room_conflict', fn (Schedule $first, string $day, string $more): string => "Room is already booked on {$day} from {$first->start_time} to {$first->end_time} "
-            ."for {$first->course?->course_code} ({$first->section?->section_name}){$more}.");
+        return $this->clash($attempt, 'room_id', $roomId, 'room_conflict', fn (Schedule $first, int $more): string => ConflictMessage::room(
+            $room?->room_code,
+            (string) $attempt['day'],
+            (string) $attempt['start_time'],
+            (string) $attempt['end_time'],
+            ConflictMessage::bookingFrom($first),
+            $more,
+        ));
     }
 
     /** @param array<string, mixed> $attempt */
@@ -49,23 +58,43 @@ final class OverlapConflict
             return null;
         }
 
-        return $this->clash($attempt, 'faculty_id', $attempt['faculty_id'], 'faculty_conflict', fn (Schedule $first, string $day): string => "Faculty is already teaching on {$day} from {$first->start_time} to {$first->end_time} "
-            ."for {$first->course?->course_code} ({$first->section?->section_name})."
-            .(in_array($first->status, SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES, true)
-                ? ''
-                : ' That class was recalled or returned for revision and still holds this instructor until it is re-approved.'));
+        $facultyId = (int) $attempt['faculty_id'];
+
+        return $this->clash($attempt, 'faculty_id', $facultyId, 'faculty_conflict', function (Schedule $first, int $more) use ($attempt, $facultyId): string {
+            $faculty = $this->lookups->remember('faculty:'.$facultyId, fn () => Faculty::find($facultyId));
+
+            return ConflictMessage::instructor(
+                $faculty === null ? null : trim("{$faculty->first_name} {$faculty->last_name}"),
+                (string) $attempt['day'],
+                (string) $attempt['start_time'],
+                (string) $attempt['end_time'],
+                ConflictMessage::bookingFrom($first),
+                $more,
+                in_array($first->status, SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES, true)
+                    ? ''
+                    : 'That class was recalled or returned for revision and still holds this instructor until it is re-approved.',
+            );
+        });
     }
 
     /** @param array<string, mixed> $attempt */
     private function sectionClash(array $attempt): ?array
     {
-        return $this->clash($attempt, 'section_id', $attempt['section_id'], 'section_conflict', fn (Schedule $first, string $day, string $more): string => "Section already has a class on {$day} from {$first->start_time} to {$first->end_time} "
-            ."({$first->course?->course_code}){$more}.");
+        $sectionId = (int) $attempt['section_id'];
+
+        return $this->clash($attempt, 'section_id', $sectionId, 'section_conflict', fn (Schedule $first, int $more): string => ConflictMessage::section(
+            $this->lookups->remember('section:'.$sectionId, fn () => Sections::find($sectionId))?->section_name,
+            (string) $attempt['day'],
+            (string) $attempt['start_time'],
+            (string) $attempt['end_time'],
+            ConflictMessage::bookingFrom($first),
+            $more,
+        ));
     }
 
     /**
      * @param  array<string, mixed>  $attempt
-     * @param  callable(Schedule, string, string): string  $message  first clash, day, " and N more"
+     * @param  callable(Schedule, int): string  $message  first clash, number of further clashes
      * @return array<string, mixed>|null
      */
     private function clash(array $attempt, string $column, mixed $value, string $rule, callable $message): ?array
@@ -79,7 +108,7 @@ final class OverlapConflict
             ->when($ignoreIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreIds))
             ->where('start_time', '<', (string) $attempt['end_time'])
             ->where('end_time', '>', (string) $attempt['start_time'])
-            ->with(['course', 'section'])
+            ->with(['course', 'section', 'department'])
             ->orderBy('start_time')
             ->get();
 
@@ -88,11 +117,10 @@ final class OverlapConflict
         }
 
         $first = $conflicts->first();
-        $more = $conflicts->count() > 1 ? ' and '.($conflicts->count() - 1).' more' : '';
 
         return [
             'rule' => $rule,
-            'message' => $message($first, $day, $more),
+            'message' => $message($first, $conflicts->count() - 1),
             'conflicting_schedule_id' => $first->id,
             'conflicting_schedule_ids' => $conflicts->pluck('id')->map(static fn ($id): int => (int) $id)->all(),
         ];
@@ -117,7 +145,7 @@ final class OverlapConflict
             ->when($ignoreIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreIds))
             ->where('start_time', '<', (string) $attempt['end_time'])
             ->where('end_time', '>', (string) $attempt['start_time'])
-            ->with(['course', 'section'])
+            ->with(['course', 'section', 'department'])
             ->first();
 
         if (! $conflict) {
@@ -126,7 +154,13 @@ final class OverlapConflict
 
         return [
             'rule' => 'subject_section_time_conflict',
-            'message' => "{$conflict->course?->course_code} is already scheduled for another section ({$conflict->section?->section_name}) on {$day} from {$conflict->start_time} to {$conflict->end_time}.",
+            'message' => ConflictMessage::onlineCourse(
+                $conflict->course?->course_code,
+                $day,
+                (string) $attempt['start_time'],
+                (string) $attempt['end_time'],
+                ConflictMessage::bookingFrom($conflict),
+            ),
             'conflicting_schedule_id' => $conflict->id,
         ];
     }

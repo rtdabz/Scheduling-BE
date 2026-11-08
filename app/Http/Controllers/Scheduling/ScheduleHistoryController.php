@@ -119,6 +119,8 @@ class ScheduleHistoryController extends Controller
                     'department_code' => $version->department->department_code,
                     'logo' => $version->department->logo,
                 ] : null,
+                // The officials recorded when this decision was made; entries without a record fall back to `users`.
+                'signatories' => $version->signatories,
                 'users' => $signatories
                     ->filter(fn (User $user) => $user->role === 'vpaa' || (int) $user->department_id === (int) $version->department_id)
                     ->values()->all(),

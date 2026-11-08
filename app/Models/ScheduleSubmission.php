@@ -26,6 +26,7 @@ class ScheduleSubmission extends Model
         'rejection_reason',
         'approval_override',
         'approval_override_reason',
+        'signatories',
     ];
 
     protected $casts = [
@@ -34,6 +35,7 @@ class ScheduleSubmission extends Model
         'vpaa_reviewed_at' => 'datetime',
         'withdrawn_at' => 'datetime',
         'approval_override' => 'boolean',
+        'signatories' => 'array',
         'section_count' => 'integer',
         'subject_count' => 'integer',
     ];

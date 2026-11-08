@@ -7,10 +7,10 @@ use Illuminate\Database\Eloquent\Model;
 class ScheduleHistoryVersion extends Model
 {
     protected $fillable = [
-        'semester_id', 'academic_year', 'semester', 'department_id', 'actor_user_id', 'action', 'source', 'reason', 'change_summary',
+        'semester_id', 'academic_year', 'semester', 'department_id', 'actor_user_id', 'action', 'source', 'reason', 'change_summary', 'signatories',
     ];
 
-    protected $casts = ['change_summary' => 'array'];
+    protected $casts = ['change_summary' => 'array', 'signatories' => 'array'];
 
     public function getScheduleIdAttribute(): ?int
     {

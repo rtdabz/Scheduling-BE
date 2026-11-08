@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Schedule;
 
+use App\Services\Scheduling\Support\ConflictMessage;
+
 final readonly class ScheduleConflictCase
 {
     /**
@@ -156,16 +158,30 @@ final readonly class ScheduleConflictCase
 
     public function message(): string
     {
-        $left = (string) ($this->schedule['course_code'] ?? 'A class');
-        $right = (string) ($this->otherSchedule['course_code'] ?? 'another class');
-        $window = "{$this->day} ".self::clock($this->overlapStart).' - '.self::clock($this->overlapEnd);
+        return ConflictMessage::doubleBooked(
+            $this->rule,
+            $this->day,
+            $this->overlapStart,
+            $this->overlapEnd,
+            self::booking($this->schedule),
+            self::booking($this->otherSchedule),
+        );
+    }
 
-        return match ($this->rule) {
-            BatchConflict::RULE_SECTION => "{$left} and {$right} are scheduled for the same section on {$window}.",
-            BatchConflict::RULE_ROOM => "{$left} and {$right} share the same room on {$window}.",
-            BatchConflict::RULE_FACULTY => "The same instructor teaches {$left} and {$right} on {$window}.",
-            BatchConflict::RULE_SUBJECT_SECTION_TIME => "{$left} runs online for two sections at once on {$window}.",
-            default => "{$left} conflicts with {$right} on {$window}.",
-        };
+    /**
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    private static function booking(array $row): array
+    {
+        return [
+            'department' => $row['department_code'] ?? null,
+            'course' => $row['course_code'] ?? null,
+            'section' => $row['section_name'] ?? null,
+            'room' => $row['room_code'] ?? null,
+            'instructor' => $row['faculty_name'] ?? null,
+            'start' => (string) ($row['start_time'] ?? ''),
+            'end' => (string) ($row['end_time'] ?? ''),
+        ];
     }
 }

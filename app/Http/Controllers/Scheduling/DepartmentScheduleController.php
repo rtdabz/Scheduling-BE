@@ -20,6 +20,7 @@ use App\Services\Scheduling\Department\ScheduleOverviewService;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Schedule\ScheduleConflictCase;
 use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
+use App\Services\Scheduling\ScheduleSignatories;
 use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Submission\ScheduleDescriptors;
 use App\Services\Scheduling\Submission\SubmissionStatusResolver;
@@ -36,6 +37,8 @@ class DepartmentScheduleController extends Controller
 {
     private const SUBMITTABLE_STATUSES = ['draft', 'revision', 'completed', 'rejected', 'rejected_by_dean'];
 
+    private const WITHDRAWABLE_STATUSES = ['submitted', 'approved_by_dean', 'conditionally_approved', 'approved', 'faculty_assignment', 'reassignment'];
+
     public function __construct(
         private readonly SystemNotificationService $notifications,
         private readonly ScheduleHistoryRecorder $historyRecorder,
@@ -45,15 +48,16 @@ class DepartmentScheduleController extends Controller
         private readonly ScheduleConflictScanner $conflictScanner,
         private readonly ScheduleAuthorizationService $authorization,
         private readonly CrossDepartmentApprovalGate $crossDepartmentGate,
+        private readonly ScheduleSignatories $signatories,
     ) {}
 
     /**
      * @param  list<int>  $sectionIds
      * @return list<ScheduleConflictCase>
      */
-    private function openConflictsIn(int $departmentId, array $sectionIds): array
+    private function openConflictsIn(int $departmentId, array $sectionIds, ?int $semesterId = null): array
     {
-        $semesterId = (int) $this->activeSemesterId();
+        $semesterId = (int) ($semesterId ?? $this->activeSemesterId());
         $sections = array_flip(array_map('intval', $sectionIds));
 
         return array_values(array_filter(
@@ -90,140 +94,217 @@ class DepartmentScheduleController extends Controller
         return Semester::where('is_active', true)->value('id');
     }
 
-    private function departmentSectionIds(int $departmentId): array
+    /** Active sections of the department in $semesterId (every semester when null). */
+    private function sectionIdsFor(int $departmentId, ?int $semesterId): array
     {
-        $query = Sections::where('department_id', $departmentId)
-            ->where('status', 'active');
-
-        $activeSemesterId = $this->activeSemesterId();
-        if ($activeSemesterId) {
-            $query->where('semester_id', $activeSemesterId);
-        }
-
-        return $query->pluck('id')->toArray();
+        return Sections::where('department_id', $departmentId)
+            ->where('status', 'active')
+            ->when($semesterId, fn ($query) => $query->where('semester_id', $semesterId))
+            ->pluck('id')
+            ->toArray();
     }
 
-    private function departmentScheduleQuery(int $departmentId)
+    /** Meetings of the department's active sections in $semesterId (every semester when null). */
+    private function scheduleQueryFor(int $departmentId, ?int $semesterId)
     {
-        $query = Schedule::whereIn('section_id', $this->departmentSectionIds($departmentId));
-
-        $activeSemesterId = $this->activeSemesterId();
-        if ($activeSemesterId) {
-            $query->where('semester_id', $activeSemesterId);
-        }
-
-        return $query;
-    }
-
-    private function submissionForStage(
-        int $departmentId,
-        array $submissionStatuses,
-        array $scheduleStatuses,
-        string $legacyStatus,
-        ?int $submissionId = null,
-    ): ?ScheduleSubmission {
-        $semesterId = $this->activeSemesterId();
-        if ($semesterId === null) {
-            return null;
-        }
-
-        if ($submissionId !== null) {
-            $submission = ScheduleSubmission::query()
-                ->with('sections')
-                ->whereKey($submissionId)
-                ->where('department_id', $departmentId)
-                ->where('semester_id', $semesterId)
-                ->whereIn('status', [...$submissionStatuses, 'partially_withdrawn'])
-                ->first();
-
-            return $submission !== null
-                && ($submission->status !== 'partially_withdrawn' || $this->submissionHasMeetingsAtStage($submission, $scheduleStatuses))
-                ? $submission
-                : null;
-        }
-
-        $submission = ScheduleSubmission::query()
-            ->with('sections')
-            ->where('department_id', $departmentId)
-            ->where('semester_id', $semesterId)
-            ->whereIn('status', $submissionStatuses)
-            ->latest('revision_number')
-            ->first();
-        if ($submission !== null) {
-            return $submission;
-        }
-
-        $sectionIds = $this->departmentScheduleQuery($departmentId)
-            ->whereIn('status', $scheduleStatuses)
-            ->distinct()
-            ->pluck('section_id')
-            ->map('intval')
-            ->values();
-        if ($sectionIds->isEmpty()) {
-            return null;
-        }
-
-        return DB::transaction(function () use ($departmentId, $semesterId, $legacyStatus, $sectionIds): ScheduleSubmission {
-            $revisionNumber = ((int) ScheduleSubmission::query()
-                ->where('department_id', $departmentId)
-                ->where('semester_id', $semesterId)
-                ->lockForUpdate()
-                ->max('revision_number')) + 1;
-            $submission = ScheduleSubmission::create([
-                'department_id' => $departmentId,
-                'semester_id' => $semesterId,
-                'revision_number' => $revisionNumber,
-                'status' => $legacyStatus,
-                'section_count' => $sectionIds->count(),
-                'submitted_at' => now(),
-            ]);
-            $submission->sections()->attach($sectionIds->all(), ['state' => 'included']);
-
-            return $submission->load('sections');
-        });
+        return Schedule::whereIn('section_id', $this->sectionIdsFor($departmentId, $semesterId))
+            ->when($semesterId, fn ($query) => $query->where('semester_id', $semesterId));
     }
 
     /**
+     * Serializes the department's approval workflow: submission, recall, and the Dean and VPAA
+     * decisions. It must be the first statement of each workflow transaction. A MySQL/MariaDB
+     * repeatable-read snapshot starts at the transaction's first plain read, so taking this lock
+     * first means every later read observes whatever the previous holder committed. The department
+     * row exists before any submission does, so it also guards revision-number allocation.
+     */
+    private function lockDepartmentWorkflow(int $departmentId): void
+    {
+        Departments::query()->whereKey($departmentId)->lockForUpdate()->value('id');
+    }
+
+    /**
+     * Included sections of a submission, read from the database (never a cached relation).
+     *
      * @return list<int>
      */
-    private function includedSectionIds(ScheduleSubmission $submission): array
+    private function currentIncludedSectionIds(int $submissionId): array
     {
-        return $submission->sections
-            ->filter(static fn (Sections $section): bool => ($section->pivot->state ?? 'included') === 'included')
-            ->pluck('id')
+        return DB::table('schedule_submission_sections')
+            ->where('schedule_submission_id', $submissionId)
+            ->where('state', 'included')
+            ->orderBy('section_id')
+            ->pluck('section_id')
+            ->map('intval')
+            ->all();
+    }
+
+    /**
+     * Sections whose meetings predate submission records: at the stage, and not included in any
+     * open submission (those are reviewed through their own submission).
+     *
+     * @return list<int>
+     */
+    private function legacyCandidateSectionIds(int $departmentId, int $semesterId, array $scheduleStatuses): array
+    {
+        $ownedSectionIds = DB::table('schedule_submission_sections')
+            ->join('schedule_submissions', 'schedule_submissions.id', '=', 'schedule_submission_sections.schedule_submission_id')
+            ->where('schedule_submissions.department_id', $departmentId)
+            ->where('schedule_submissions.semester_id', $semesterId)
+            ->whereIn('schedule_submissions.status', ['pending_dean', 'pending_vpaa', 'approved', 'partially_withdrawn'])
+            ->where('schedule_submission_sections.state', 'included')
+            ->pluck('schedule_submission_sections.section_id')
+            ->map('intval')
+            ->all();
+
+        return $this->scheduleQueryFor($departmentId, $semesterId)
+            ->whereIn('status', $scheduleStatuses)
+            ->whereNotIn('section_id', $ownedSectionIds)
+            ->distinct()
+            ->orderBy('section_id')
+            ->pluck('section_id')
             ->map('intval')
             ->values()
             ->all();
     }
 
-    private function submissionHasMeetingsAtStage(
-        ScheduleSubmission $submission,
+    /**
+     * Read-only preflight: which submission (by ID) and which sections this review targets. The
+     * result is an expectation re-checked under the workflow lock, never an update target. A
+     * request without a submission ID is pinned here to the revision it resolves to, so a newer
+     * revision created while it waits is never substituted. A null submission_id means legacy
+     * meetings with no submission yet; the submission is created under the lock.
+     *
+     * @return array{submission_id: ?int, section_ids: list<int>}|null
+     */
+    private function reviewTarget(
+        int $departmentId,
+        ?int $semesterId,
+        array $submissionStatuses,
         array $scheduleStatuses,
-        bool $lock = false,
-    ): bool {
-        return $this->departmentScheduleQuery((int) $submission->department_id)
-            ->whereIn('section_id', $this->includedSectionIds($submission))
+        ?int $submissionId,
+    ): ?array {
+        if ($semesterId === null) {
+            return null;
+        }
+
+        $submission = ScheduleSubmission::query()
+            ->where('department_id', $departmentId)
+            ->where('semester_id', $semesterId)
+            ->when(
+                $submissionId !== null,
+                fn ($query) => $query->whereKey($submissionId)->whereIn('status', [...$submissionStatuses, 'partially_withdrawn']),
+                fn ($query) => $query->whereIn('status', $submissionStatuses)->latest('revision_number'),
+            )
+            ->first(['id']);
+
+        if ($submission !== null) {
+            $sectionIds = $this->currentIncludedSectionIds((int) $submission->id);
+        } elseif ($submissionId === null) {
+            $sectionIds = $this->legacyCandidateSectionIds($departmentId, $semesterId, $scheduleStatuses);
+        } else {
+            return null;
+        }
+
+        $atStage = $sectionIds !== [] && $this->scheduleQueryFor($departmentId, $semesterId)
+            ->whereIn('section_id', $sectionIds)
             ->whereIn('status', $scheduleStatuses)
-            ->when($lock, fn ($query) => $query->lockForUpdate())
             ->exists();
+
+        return $atStage ? ['submission_id' => $submission?->id, 'section_ids' => $sectionIds] : null;
     }
 
-    private function lockSubmissionAtStage(ScheduleSubmission $submission, array $scheduleStatuses): bool
-    {
-        $status = ScheduleSubmission::query()
-            ->whereKey($submission->id)
-            ->lockForUpdate()
-            ->value('status');
+    /**
+     * Under the workflow lock: reload the pinned submission, its included sections, and their
+     * meetings, and confirm they still match the preflight target at this stage. Any difference --
+     * a recall, a resubmission, a competing decision -- is a stale review.
+     *
+     * @param  array{submission_id: ?int, section_ids: list<int>}  $target
+     * @return array{submission: ?ScheduleSubmission, section_ids: list<int>, meetings: Collection}|null
+     */
+    private function lockedReviewScope(
+        int $departmentId,
+        int $semesterId,
+        array $target,
+        array $submissionStatuses,
+        array $scheduleStatuses,
+    ): ?array {
+        $submission = null;
+        if ($target['submission_id'] === null) {
+            $claimed = ScheduleSubmission::query()
+                ->where('department_id', $departmentId)
+                ->where('semester_id', $semesterId)
+                ->whereIn('status', $submissionStatuses)
+                ->exists();
+            $sectionIds = $claimed ? [] : $this->legacyCandidateSectionIds($departmentId, $semesterId, $scheduleStatuses);
+        } else {
+            $submission = ScheduleSubmission::query()
+                ->whereKey($target['submission_id'])
+                ->where('department_id', $departmentId)
+                ->where('semester_id', $semesterId)
+                ->lockForUpdate()
+                ->first();
+            $sectionIds = $submission !== null && in_array($submission->status, [...$submissionStatuses, 'partially_withdrawn'], true)
+                ? $this->currentIncludedSectionIds((int) $submission->id)
+                : [];
+        }
+        if ($sectionIds === [] || $sectionIds !== $target['section_ids']) {
+            return null;
+        }
 
-        return $status === $submission->status
-            && ($status !== 'partially_withdrawn'
-                || $this->submissionHasMeetingsAtStage($submission, $scheduleStatuses, lock: true));
+        $meetings = $this->scheduleQueryFor($departmentId, $semesterId)
+            ->whereIn('section_id', $sectionIds)
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get(['id', 'section_id', 'status', 'mode', 'room_id']);
+        $eligible = $meetings->whereIn('status', $scheduleStatuses)->values();
+        // Every section of the package must still be at this stage. A section that moved on (or back)
+        // means the package is no longer the one this review was opened on.
+        $sectionsAtStage = $eligible->pluck('section_id')->unique()->count();
+        if ($eligible->isEmpty() || $sectionsAtStage !== $meetings->pluck('section_id')->unique()->count()) {
+            return null;
+        }
+
+        return ['submission' => $submission, 'section_ids' => $sectionIds, 'meetings' => $eligible];
+    }
+
+    /** Submission record for legacy meetings, created under the workflow lock after the scope is validated. */
+    private function createLegacySubmission(int $departmentId, int $semesterId, string $status, array $sectionIds): ScheduleSubmission
+    {
+        $submission = ScheduleSubmission::create([
+            'department_id' => $departmentId,
+            'semester_id' => $semesterId,
+            'revision_number' => $this->nextRevisionNumber($departmentId, $semesterId),
+            'status' => $status,
+            'section_count' => count($sectionIds),
+            'submitted_at' => now(),
+        ]);
+        $submission->sections()->attach($sectionIds, ['state' => 'included']);
+
+        return $submission;
+    }
+
+    /** Caller holds the department workflow lock, which serializes allocation. */
+    private function nextRevisionNumber(int $departmentId, ?int $semesterId): int
+    {
+        return ((int) ScheduleSubmission::query()
+            ->where('department_id', $departmentId)
+            ->where('semester_id', $semesterId)
+            ->max('revision_number')) + 1;
     }
 
     private function staleReviewResponse(): JsonResponse
     {
         return response()->json([
             'message' => 'This submission was already reviewed or recalled. Refresh the queue and try again.',
+            'error_code' => 'submission_stage_changed',
+        ], 409);
+    }
+
+    private function staleRecallResponse(): JsonResponse
+    {
+        return response()->json([
+            'message' => 'The selected sections changed while this recall was waiting. Refresh and try again.',
             'error_code' => 'submission_stage_changed',
         ], 409);
     }
@@ -647,95 +728,100 @@ class DepartmentScheduleController extends Controller
             'section_ids' => ['nullable', 'array', 'min:1'],
             'section_ids.*' => ['integer', 'distinct'],
         ]);
+        $writableProgramIds = $this->authorization->writableProgramIds($request);
 
-        $sections = Sections::with(['schedules' => function ($query) use ($activeSemesterId) {
-            $query->select('id', 'section_id', 'status')
-                ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId));
-        }])
-            ->where('department_id', $id)
-            ->whereIn('program_id', $this->authorization->writableProgramIds($request))
-            ->where('status', 'active')
-            ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId))
-            ->get();
+        // Readiness is decided under the workflow lock: a submission or recall that commits first changes
+        // which sections are ready, and a duplicate request then finds nothing left to submit.
+        $result = DB::transaction(function () use ($id, $validated, $writableProgramIds, $request, $department, $activeSemesterId, $user): array|JsonResponse {
+            $this->lockDepartmentWorkflow($id);
 
-        $allowedSectionIds = $sections->pluck('id')->map('intval')->values();
-        $requestedSectionIds = collect($validated['section_ids'] ?? [])
-            ->map('intval')
-            ->unique()
-            ->values();
-        $invalidSectionIds = $requestedSectionIds->diff($allowedSectionIds);
-        if ($invalidSectionIds->isNotEmpty()) {
-            return response()->json([
-                'message' => 'One or more selected sections do not belong to this department.',
-            ], 422);
-        }
+            $sections = Sections::with(['schedules' => function ($query) use ($activeSemesterId) {
+                $query->select('id', 'section_id', 'status')
+                    ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId));
+            }])
+                ->where('department_id', $id)
+                ->whereIn('program_id', $writableProgramIds)
+                ->where('status', 'active')
+                ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId))
+                ->get();
 
-        $readyStatuses = self::SUBMITTABLE_STATUSES;
-        $protectedStatuses = [
-            'submitted',
-            'approved_by_dean',
-            'conditionally_approved',
-            'approved',
-            'faculty_assignment',
-            'reassignment',
-            'finalized',
-        ];
-        $readySectionIds = collect();
-        $protectedSectionIds = collect();
-        $blockedYears = [];
-
-        foreach ($sections as $section) {
-            $statuses = $section->schedules->pluck('status')->filter()->unique()->values();
-            if ($statuses->isNotEmpty() && $statuses->every(
-                static fn (string $status): bool => in_array($status, $readyStatuses, true)
-            )) {
-                $readySectionIds->push((int) $section->id);
-
-                continue;
+            $allowedSectionIds = $sections->pluck('id')->map('intval')->values();
+            $requestedSectionIds = collect($validated['section_ids'] ?? [])
+                ->map('intval')
+                ->unique()
+                ->values();
+            $invalidSectionIds = $requestedSectionIds->diff($allowedSectionIds);
+            if ($invalidSectionIds->isNotEmpty()) {
+                return response()->json([
+                    'message' => 'One or more selected sections do not belong to this department.',
+                ], 422);
             }
 
-            if ($statuses->contains(
-                static fn (string $status): bool => in_array($status, $protectedStatuses, true)
-            )) {
-                $protectedSectionIds->push((int) $section->id);
+            $readyStatuses = self::SUBMITTABLE_STATUSES;
+            $protectedStatuses = [
+                'submitted',
+                'approved_by_dean',
+                'conditionally_approved',
+                'approved',
+                'faculty_assignment',
+                'reassignment',
+                'finalized',
+            ];
+            $readySectionIds = collect();
+            $protectedSectionIds = collect();
+            $blockedYears = [];
 
-                continue;
+            foreach ($sections as $section) {
+                $statuses = $section->schedules->pluck('status')->filter()->unique()->values();
+                if ($statuses->isNotEmpty() && $statuses->every(
+                    static fn (string $status): bool => in_array($status, $readyStatuses, true)
+                )) {
+                    $readySectionIds->push((int) $section->id);
+
+                    continue;
+                }
+
+                if ($statuses->contains(
+                    static fn (string $status): bool => in_array($status, $protectedStatuses, true)
+                )) {
+                    $protectedSectionIds->push((int) $section->id);
+
+                    continue;
+                }
+
+                $blockedYears[] = (int) $section->year_level;
             }
 
-            $blockedYears[] = (int) $section->year_level;
-        }
+            $readySectionIds = $readySectionIds->unique()->values();
+            $protectedSectionIds = $protectedSectionIds->unique()->values();
 
-        $readySectionIds = $readySectionIds->unique()->values();
-        $protectedSectionIds = $protectedSectionIds->unique()->values();
+            if ($requestedSectionIds->isNotEmpty() && $requestedSectionIds->sort()->values()->all() !== $readySectionIds->sort()->values()->all()) {
+                return response()->json([
+                    'message' => 'The submission must include all and only the sections currently ready for approval.',
+                    'ready_section_ids' => $readySectionIds->all(),
+                ], 422);
+            }
 
-        if ($requestedSectionIds->isNotEmpty() && $requestedSectionIds->sort()->values()->all() !== $readySectionIds->sort()->values()->all()) {
-            return response()->json([
-                'message' => 'The submission must include all and only the sections currently ready for approval.',
-                'ready_section_ids' => $readySectionIds->all(),
-            ], 422);
-        }
+            if ($readySectionIds->isEmpty()) {
+                return response()->json([
+                    'message' => 'No plotted schedule sections are ready for submission.',
+                ], 422);
+            }
 
-        if ($readySectionIds->isEmpty()) {
-            return response()->json([
-                'message' => 'No plotted schedule sections are ready for submission.',
-            ], 422);
-        }
+            if ($protectedSectionIds->isEmpty() && ! empty($blockedYears)) {
+                $blockedYears = array_values(array_unique($blockedYears));
+                sort($blockedYears);
+                $yearLabels = array_map(static fn (int $year): string => "Year {$year}", $blockedYears);
 
-        if ($protectedSectionIds->isEmpty() && ! empty($blockedYears)) {
-            $blockedYears = array_values(array_unique($blockedYears));
-            sort($blockedYears);
-            $yearLabels = array_map(static fn (int $year): string => "Year {$year}", $blockedYears);
+                return response()->json([
+                    'message' => 'Cannot submit: some year levels still have sections with nothing plotted.',
+                    'blocked_years' => $blockedYears,
+                    'hint' => 'Plot '.implode(', ', $yearLabels).' before submitting the initial schedule.',
+                ], 422);
+            }
 
-            return response()->json([
-                'message' => 'Cannot submit: some year levels still have sections with nothing plotted.',
-                'blocked_years' => $blockedYears,
-                'hint' => 'Plot '.implode(', ', $yearLabels).' before submitting the initial schedule.',
-            ], 422);
-        }
+            $sectionIds = $readySectionIds->all();
 
-        $sectionIds = $readySectionIds->all();
-
-        $result = DB::transaction(function () use ($sectionIds, $request, $department, $activeSemesterId, $user): array {
             $parentSubmission = ScheduleSubmission::query()
                 ->where('department_id', $department->id)
                 ->where('semester_id', $activeSemesterId)
@@ -743,11 +829,7 @@ class DepartmentScheduleController extends Controller
                 ->whereHas('sections', fn ($query) => $query->whereIn('sections.id', $sectionIds))
                 ->latest('revision_number')
                 ->first();
-            $revisionNumber = ((int) ScheduleSubmission::query()
-                ->where('department_id', $department->id)
-                ->where('semester_id', $activeSemesterId)
-                ->lockForUpdate()
-                ->max('revision_number')) + 1;
+            $revisionNumber = $this->nextRevisionNumber($department->id, $activeSemesterId);
             $submission = ScheduleSubmission::create([
                 'department_id' => $department->id,
                 'semester_id' => $activeSemesterId,
@@ -762,10 +844,12 @@ class DepartmentScheduleController extends Controller
                     ->count('course_id'),
                 'submitted_by' => $user->id,
                 'submitted_at' => now(),
+                'signatories' => $this->signatories->initial($department->id, $activeSemesterId, $sectionIds),
             ]);
             $submission->sections()->attach($sectionIds, ['state' => 'included']);
 
             $updated = Schedule::whereIn('section_id', $sectionIds)
+                ->when($activeSemesterId, fn ($query) => $query->where('semester_id', $activeSemesterId))
                 ->whereIn('status', self::SUBMITTABLE_STATUSES)
                 ->update([
                     'status' => 'submitted',
@@ -781,14 +865,16 @@ class DepartmentScheduleController extends Controller
                 $submission->update(['snapshot_version_id' => $snapshotVersionId]);
             }
 
-            return compact('updated', 'submission');
+            return compact('updated', 'submission', 'sectionIds');
         });
-        $updated = $result['updated'];
-        $submission = $result['submission'];
+        if ($result instanceof JsonResponse) {
+            return $result;
+        }
+        ['updated' => $updated, 'submission' => $submission, 'sectionIds' => $sectionIds] = $result;
         $this->forgetWorkflowCaches();
 
         if ($updated > 0) {
-            $semester = Semester::query()->find($this->activeSemesterId());
+            $semester = Semester::query()->find($activeSemesterId);
             $this->notifications->notifyRoles(
                 ['dean', 'secretary', 'program_head'],
                 'schedule_submitted',
@@ -834,89 +920,86 @@ class DepartmentScheduleController extends Controller
         $department = Departments::findOrFail($id);
         $user = $request->user();
         $now = now();
-        $submission = $this->submissionForStage(
+        $semesterId = $this->activeSemesterId();
+        $target = $this->reviewTarget(
             $id,
+            $semesterId,
             ['pending_dean'],
             ['submitted'],
-            'pending_dean',
             isset($validated['schedule_submission_id']) ? (int) $validated['schedule_submission_id'] : null,
         );
-        if ($submission === null) {
+        if ($target === null) {
             return response()->json(['message' => 'No schedule submission is pending Dean approval.'], 422);
         }
-        $targetSectionIds = $this->includedSectionIds($submission);
 
-        if (($openConflicts = $this->openConflictsIn($id, $targetSectionIds)) !== []) {
-            return $this->openConflictsResponse($openConflicts);
-        }
-
-        $hasRoomTba = $this->departmentScheduleQuery($id)
-            ->whereIn('section_id', $targetSectionIds)
-            ->where('status', 'submitted')
-            ->where('mode', 'on-site')
-            ->whereNull('room_id')
-            ->exists();
-        if ($hasRoomTba && ! ($validated['override_room_tba'] ?? false)) {
-            return response()->json([
-                'message' => 'This schedule has Room TBA meetings. Approve it with a Room TBA override and a reason.',
-                'error_code' => 'room_tba_override_required',
-            ], 422);
-        }
-        $override = $hasRoomTba;
-
-        $updated = DB::transaction(function () use ($id, $user, $now, $override, $validated, $submission, $targetSectionIds) {
-            if (! $this->lockSubmissionAtStage($submission, ['submitted'])) {
-                return null;
+        $result = DB::transaction(function () use ($id, $semesterId, $target, $request, $user, $now, $validated): array|JsonResponse {
+            $this->lockDepartmentWorkflow($id);
+            $scope = $this->lockedReviewScope($id, $semesterId, $target, ['pending_dean'], ['submitted']);
+            if ($scope === null) {
+                return $this->staleReviewResponse();
             }
-            $updated = $this->departmentScheduleQuery($id)
-                ->whereIn('section_id', $targetSectionIds)
-                ->where('status', 'submitted')
-                ->update([
-                    'status' => $override ? 'conditionally_approved' : 'approved_by_dean',
-                    'updated_at' => $now,
-                ]);
+            $sectionIds = $scope['section_ids'];
+
+            if (($openConflicts = $this->openConflictsIn($id, $sectionIds, $semesterId)) !== []) {
+                return $this->openConflictsResponse($openConflicts);
+            }
+            $override = $scope['meetings']->contains(
+                static fn (Schedule $meeting): bool => $meeting->mode === 'on-site' && $meeting->room_id === null
+            );
+            if ($override && ! ($validated['override_room_tba'] ?? false)) {
+                return response()->json([
+                    'message' => 'This schedule has Room TBA meetings. Approve it with a Room TBA override and a reason.',
+                    'error_code' => 'room_tba_override_required',
+                ], 422);
+            }
+
+            $submission = $scope['submission'] ?? $this->createLegacySubmission($id, $semesterId, 'pending_dean', $sectionIds);
+            $updated = Schedule::query()->whereKey($scope['meetings']->modelKeys())->update([
+                'status' => $override ? 'conditionally_approved' : 'approved_by_dean',
+                'updated_at' => $now,
+            ]);
             $submission->update([
                 'status' => $submission->status === 'partially_withdrawn' ? 'partially_withdrawn' : 'pending_vpaa',
                 'dean_reviewed_by' => $user->id,
                 'dean_reviewed_at' => $now,
                 'rejection_reason' => null,
+                'signatories' => $this->signatories->stamp($submission, ['reviewed'], $user, false, $now),
                 'approval_override' => $override,
                 'approval_override_reason' => $override ? ($validated['override_reason'] ?? null) : null,
             ]);
-
-            return $updated;
-        });
-        if ($updated === null) {
-            return $this->staleReviewResponse();
-        }
-        $this->forgetWorkflowCaches();
-
-        if ($updated > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_approved_by_dean', $department->id, $this->activeSemesterId(), [
+            $this->recordWorkflowAudit($request, 'schedule_approved_by_dean', $id, $semesterId, [
                 'schedules_updated' => $updated,
-                'selected_section_ids' => $targetSectionIds,
+                'selected_section_ids' => $sectionIds,
                 'approval_override' => $override,
                 'approval_override_reason' => $override ? ($validated['override_reason'] ?? null) : null,
             ], $submission->id);
-            $semester = Semester::query()->find($this->activeSemesterId());
-            $this->notifications->notifyRoles(
-                ['vpaa', 'dean', 'secretary', 'program_head'],
-                'schedule_approved_by_dean',
-                'Dean approved department schedule',
-                $this->notifications->departmentWorkflowMessage(
-                    'approved and forwarded',
-                    $department,
-                    $semester,
-                    $user,
-                    $updated,
-                ),
-                $user,
-                $department->id,
-                $semester?->id,
-                null,
-                ['schedules_updated' => $updated, 'schedule_submission_id' => $submission->id],
-            );
+
+            return ['updated' => $updated, 'submission_id' => (int) $submission->id, 'override' => $override];
+        });
+        if ($result instanceof JsonResponse) {
+            return $result;
         }
+        ['updated' => $updated, 'submission_id' => $submissionId, 'override' => $override] = $result;
+        $this->forgetWorkflowCaches();
+
+        $semester = Semester::query()->find($semesterId);
+        $this->notifications->notifyRoles(
+            ['vpaa', 'dean', 'secretary', 'program_head'],
+            'schedule_approved_by_dean',
+            'Dean approved department schedule',
+            $this->notifications->departmentWorkflowMessage(
+                'approved and forwarded',
+                $department,
+                $semester,
+                $user,
+                $updated,
+            ),
+            $user,
+            $department->id,
+            $semester?->id,
+            null,
+            ['schedules_updated' => $updated, 'schedule_submission_id' => $submissionId],
+        );
 
         return response()->json([
             'message' => $override
@@ -924,7 +1007,7 @@ class DepartmentScheduleController extends Controller
                 : 'Department schedule approved by Dean and forwarded to VPAA.',
             'department_name' => $department->department_name,
             'schedules_updated' => $updated,
-            'schedule_submission_id' => $submission->id,
+            'schedule_submission_id' => $submissionId,
         ]);
     }
 
@@ -942,76 +1025,169 @@ class DepartmentScheduleController extends Controller
         $department = Departments::findOrFail($id);
         $user = $request->user();
         $now = now();
-        $submission = $this->submissionForStage(
+        $semesterId = $this->activeSemesterId();
+        $target = $this->reviewTarget(
             $id,
+            $semesterId,
             ['pending_dean'],
             ['submitted'],
-            'pending_dean',
             isset($validated['schedule_submission_id']) ? (int) $validated['schedule_submission_id'] : null,
         );
-        if ($submission === null) {
+        if ($target === null) {
             return response()->json(['message' => 'No schedule submission is pending Dean approval.'], 422);
         }
-        $targetSectionIds = $this->includedSectionIds($submission);
 
-        $updated = DB::transaction(function () use ($id, $user, $now, $validated, $submission, $targetSectionIds) {
-            if (! $this->lockSubmissionAtStage($submission, ['submitted'])) {
-                return null;
+        $result = DB::transaction(function () use ($id, $semesterId, $target, $request, $user, $now, $validated): array|JsonResponse {
+            $this->lockDepartmentWorkflow($id);
+            $scope = $this->lockedReviewScope($id, $semesterId, $target, ['pending_dean'], ['submitted']);
+            if ($scope === null) {
+                return $this->staleReviewResponse();
             }
-            $updated = $this->departmentScheduleQuery($id)
-                ->whereIn('section_id', $targetSectionIds)
-                ->where('status', 'submitted')
-                ->update([
-                    'status' => 'rejected_by_dean',
-                    'updated_at' => $now,
-                ]);
+
+            $submission = $scope['submission'] ?? $this->createLegacySubmission($id, $semesterId, 'pending_dean', $scope['section_ids']);
+            $updated = Schedule::query()->whereKey($scope['meetings']->modelKeys())->update([
+                'status' => 'rejected_by_dean',
+                'updated_at' => $now,
+            ]);
             $submission->update([
                 'status' => 'rejected_by_dean',
                 'dean_reviewed_by' => $user->id,
                 'dean_reviewed_at' => $now,
                 'rejection_reason' => $validated['rejection_reason'],
+                'signatories' => $this->signatories->stamp($submission, ['reviewed'], $user, true, $now),
             ]);
-
-            return $updated;
-        });
-        if ($updated === null) {
-            return $this->staleReviewResponse();
-        }
-        $this->forgetWorkflowCaches();
-
-        if ($updated > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_returned_by_dean', $department->id, $this->activeSemesterId(), [
+            $this->recordWorkflowAudit($request, 'schedule_returned_by_dean', $id, $semesterId, [
                 'schedules_updated' => $updated,
                 'rejection_reason' => $validated['rejection_reason'],
-                'selected_section_ids' => $targetSectionIds,
+                'selected_section_ids' => $scope['section_ids'],
             ], $submission->id);
-            $semester = Semester::query()->find($this->activeSemesterId());
-            $this->notifications->notifyRoles(
-                ['dean', 'secretary', 'program_head'],
-                'schedule_returned_by_dean',
-                'Dean returned department schedule',
-                $this->notifications->departmentWorkflowMessage(
-                    'returned',
-                    $department,
-                    $semester,
-                    $user,
-                    $updated,
-                    $validated['rejection_reason'],
-                ),
-                $user,
-                $department->id,
-                $semester?->id,
-                $validated['rejection_reason'],
-                ['schedules_updated' => $updated, 'schedule_submission_id' => $submission->id],
-            );
+
+            return ['updated' => $updated, 'submission_id' => (int) $submission->id];
+        });
+        if ($result instanceof JsonResponse) {
+            return $result;
         }
+        ['updated' => $updated, 'submission_id' => $submissionId] = $result;
+        $this->forgetWorkflowCaches();
+
+        $semester = Semester::query()->find($semesterId);
+        $this->notifications->notifyRoles(
+            ['dean', 'secretary', 'program_head'],
+            'schedule_returned_by_dean',
+            'Dean returned department schedule',
+            $this->notifications->departmentWorkflowMessage(
+                'returned',
+                $department,
+                $semester,
+                $user,
+                $updated,
+                $validated['rejection_reason'],
+            ),
+            $user,
+            $department->id,
+            $semester?->id,
+            $validated['rejection_reason'],
+            ['schedules_updated' => $updated, 'schedule_submission_id' => $submissionId],
+        );
 
         return response()->json([
             'message' => 'Department schedule returned by Dean for revision.',
             'department_name' => $department->department_name,
             'schedules_updated' => $updated,
-            'schedule_submission_id' => $submission->id,
+            'schedule_submission_id' => $submissionId,
         ]);
+    }
+
+    /**
+     * Read-only: whether every selected section can be recalled now, and which submission owns each
+     * one. Run before the transaction as the request's expectation, and again under the workflow lock,
+     * where a different owner means the selection moved to another revision while the recall waited.
+     *
+     * The owners map is section ID => owning submission ID; null marks legacy meetings whose
+     * submission is created under the lock.
+     *
+     * @param  list<int>  $sectionIds
+     * @return array{stage: string, owners: array<int, ?int>, legacy_status: string, legacy_section_ids: list<int>}|JsonResponse
+     */
+    private function recallPlan(int $departmentId, ?int $semesterId, array $sectionIds): array|JsonResponse
+    {
+        $query = $this->scheduleQueryFor($departmentId, $semesterId)->whereIn('section_id', $sectionIds);
+
+        if ((clone $query)->where('status', 'finalized')->exists()) {
+            return response()->json([
+                'message' => 'Finalized schedules cannot be recalled. Use Reassignment to reopen them first.',
+            ], 422);
+        }
+
+        $withdrawable = (clone $query)->whereIn('status', self::WITHDRAWABLE_STATUSES)->get(['section_id', 'status']);
+        if ($withdrawable->isEmpty()) {
+            return response()->json([
+                'message' => 'No submitted or VPAA-approved schedule is available to recall.',
+            ], 422);
+        }
+        $withdrawableSectionIds = $withdrawable->pluck('section_id')->map('intval')->unique()->all();
+        if (array_diff($sectionIds, $withdrawableSectionIds) !== []) {
+            return response()->json([
+                'message' => 'One or more selected sections cannot be recalled right now.',
+            ], 422);
+        }
+
+        $statuses = $withdrawable->pluck('status')->unique();
+        $stage = $statuses->contains(fn (string $status): bool => in_array($status, ['approved', 'faculty_assignment', 'reassignment'], true))
+            ? 'vpaa_approved'
+            : ($statuses->contains(
+                fn (string $status): bool => in_array($status, ['approved_by_dean', 'conditionally_approved'], true)
+            ) ? 'vpaa_review' : 'dean_review');
+        $legacyStatus = $stage === 'vpaa_approved'
+            ? 'approved'
+            : ($stage === 'vpaa_review' ? 'pending_vpaa' : 'pending_dean');
+
+        $openStatuses = ['pending_dean', 'pending_vpaa', 'approved', 'partially_withdrawn'];
+        $owners = [];
+        DB::table('schedule_submission_sections')
+            ->join('schedule_submissions', 'schedule_submissions.id', '=', 'schedule_submission_sections.schedule_submission_id')
+            ->where('schedule_submissions.department_id', $departmentId)
+            ->where('schedule_submissions.semester_id', $semesterId)
+            ->whereIn('schedule_submissions.status', $openStatuses)
+            ->where('schedule_submission_sections.state', 'included')
+            ->whereIn('schedule_submission_sections.section_id', $sectionIds)
+            ->orderByDesc('schedule_submissions.revision_number')
+            ->get(['schedule_submission_sections.section_id', 'schedule_submissions.id'])
+            ->each(function (object $row) use (&$owners): void {
+                $owners[(int) $row->section_id] ??= (int) $row->id;
+            });
+
+        // Meetings that predate submission records get one created for them, as long as the department
+        // has no open submission at all; otherwise a selected section with no owner cannot be recalled.
+        $legacySectionIds = [];
+        $missing = array_values(array_diff($sectionIds, array_keys($owners)));
+        if ($missing !== [] && ! ScheduleSubmission::query()
+            ->where('department_id', $departmentId)
+            ->where('semester_id', $semesterId)
+            ->whereIn('status', $openStatuses)
+            ->exists()) {
+            $legacySectionIds = $this->scheduleQueryFor($departmentId, $semesterId)
+                ->whereIn('status', self::WITHDRAWABLE_STATUSES)
+                ->distinct()
+                ->orderBy('section_id')
+                ->pluck('section_id')
+                ->map('intval')
+                ->all();
+            foreach (array_intersect($missing, $legacySectionIds) as $sectionId) {
+                $owners[$sectionId] = null;
+            }
+        }
+        if (array_diff($sectionIds, array_keys($owners)) !== []) {
+            return response()->json(['message' => 'No approval submission contains the selected sections.'], 422);
+        }
+        ksort($owners);
+
+        return [
+            'stage' => $stage,
+            'owners' => $owners,
+            'legacy_status' => $legacyStatus,
+            'legacy_section_ids' => $legacySectionIds,
+        ];
     }
 
     public function withdrawSubmission(int $id, Request $request): JsonResponse
@@ -1029,7 +1205,8 @@ class DepartmentScheduleController extends Controller
             'section_ids.*' => ['integer'],
         ]);
         $sectionIds = array_values(array_unique(array_map('intval', $validated['section_ids'])));
-        $allowedSectionIds = $this->departmentSectionIds($id);
+        $semesterId = $this->activeSemesterId();
+        $allowedSectionIds = $this->sectionIdsFor($id, $semesterId);
         if (! $this->authorization->sectionIdsWritable($request, array_values(array_intersect($sectionIds, $allowedSectionIds)))) {
             return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_FORBIDDEN_MESSAGE], 403);
         }
@@ -1040,136 +1217,54 @@ class DepartmentScheduleController extends Controller
             ], 422);
         }
 
-        $query = $this->departmentScheduleQuery($id);
-        $withdrawableStatuses = [
-            'submitted',
-            'approved_by_dean',
-            'conditionally_approved',
-            'approved',
-            'faculty_assignment',
-            'reassignment',
-        ];
-
-        if ((clone $query)
-            ->whereIn('section_id', $sectionIds)
-            ->where('status', 'finalized')
-            ->exists()) {
-            return response()->json([
-                'message' => 'Finalized schedules cannot be recalled. Use Reassignment to reopen them first.',
-            ], 422);
+        $expected = $this->recallPlan($id, $semesterId, $sectionIds);
+        if ($expected instanceof JsonResponse) {
+            return $expected;
         }
 
-        $currentStatuses = (clone $query)
-            ->whereIn('section_id', $sectionIds)
-            ->whereIn('status', $withdrawableStatuses)
-            ->pluck('status')
-            ->unique()
-            ->values();
-
-        if ($currentStatuses->isEmpty()) {
-            return response()->json([
-                'message' => 'No submitted or VPAA-approved schedule is available to recall.',
-            ], 422);
-        }
-
-        $withdrawableSelectedSectionIds = (clone $query)
-            ->whereIn('section_id', $sectionIds)
-            ->whereIn('status', $withdrawableStatuses)
-            ->distinct()
-            ->pluck('section_id')
-            ->map(static fn ($sectionId): int => (int) $sectionId)
-            ->all();
-
-        if (array_diff($sectionIds, $withdrawableSelectedSectionIds) !== []) {
-            return response()->json([
-                'message' => 'One or more selected sections cannot be recalled right now.',
-            ], 422);
-        }
-
-        $withdrawalStage = $currentStatuses->contains(fn (string $status): bool => in_array($status, ['approved', 'faculty_assignment', 'reassignment'], true))
-            ? 'vpaa_approved'
-            : ($currentStatuses->contains(
-                fn (string $status): bool => in_array($status, ['approved_by_dean', 'conditionally_approved'], true)
-            ) ? 'vpaa_review' : 'dean_review');
-        $legacySubmissionStatus = $withdrawalStage === 'vpaa_approved'
-            ? 'approved'
-            : ($withdrawalStage === 'vpaa_review' ? 'pending_vpaa' : 'pending_dean');
-        $submissions = ScheduleSubmission::query()
-            ->with('sections')
-            ->where('department_id', $id)
-            ->where('semester_id', $this->activeSemesterId())
-            ->whereIn('status', ['pending_dean', 'pending_vpaa', 'approved', 'partially_withdrawn'])
-            ->whereHas('sections', fn ($sectionQuery) => $sectionQuery
-                ->whereIn('sections.id', $sectionIds)
-                ->where('schedule_submission_sections.state', 'included'))
-            ->orderByDesc('revision_number')
-            ->get();
-        $submissionBySectionId = collect();
-        foreach ($submissions as $candidate) {
-            foreach ($candidate->sections as $candidateSection) {
-                $candidateSectionId = (int) $candidateSection->id;
-                if (in_array($candidateSectionId, $sectionIds, true)
-                    && $candidateSection->pivot->state === 'included'
-                    && ! $submissionBySectionId->has($candidateSectionId)) {
-                    $submissionBySectionId->put($candidateSectionId, $candidate);
-                }
+        $result = DB::transaction(function () use ($id, $semesterId, $sectionIds, $expected, $request, $user): array|JsonResponse {
+            $this->lockDepartmentWorkflow($id);
+            $plan = $this->recallPlan($id, $semesterId, $sectionIds);
+            if ($plan instanceof JsonResponse) {
+                return $plan;
             }
-        }
-
-        $missingSubmissionSectionIds = array_values(array_diff($sectionIds, $submissionBySectionId->keys()->all()));
-        if ($missingSubmissionSectionIds !== []) {
-            $legacySubmission = $this->submissionForStage(
-                $id,
-                ['pending_dean', 'pending_vpaa', 'approved', 'partially_withdrawn'],
-                $withdrawableStatuses,
-                $legacySubmissionStatus,
-            );
-            if ($legacySubmission !== null) {
-                foreach ($legacySubmission->sections as $legacySection) {
-                    $legacySectionId = (int) $legacySection->id;
-                    if (in_array($legacySectionId, $missingSubmissionSectionIds, true)
-                        && $legacySection->pivot->state === 'included') {
-                        $submissionBySectionId->put($legacySectionId, $legacySubmission);
-                    }
-                }
+            if ($plan['owners'] !== $expected['owners'] || $plan['legacy_section_ids'] !== $expected['legacy_section_ids']) {
+                return $this->staleRecallResponse();
             }
-        }
 
-        if (array_diff($sectionIds, $submissionBySectionId->keys()->all()) !== []) {
-            return response()->json(['message' => 'No approval submission contains the selected sections.'], 422);
-        }
+            $owners = $plan['owners'];
+            if (in_array(null, $owners, true)) {
+                $legacy = $this->createLegacySubmission($id, $semesterId, $plan['legacy_status'], $plan['legacy_section_ids']);
+                $owners = array_map(static fn (?int $owner): int => $owner ?? (int) $legacy->id, $owners);
+            }
+            $submissionSections = [];
+            foreach ($owners as $sectionId => $submissionId) {
+                $submissionSections[$submissionId][] = $sectionId;
+            }
+            ksort($submissionSections);
+            $affectedSubmissions = ScheduleSubmission::query()
+                ->whereKey(array_keys($submissionSections))
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
 
-        $submissionSections = $submissionBySectionId
-            ->groupBy(static fn (ScheduleSubmission $submission): int => (int) $submission->id, true)
-            ->map(static fn ($group) => $group->keys()->map('intval')->values()->all());
-        $affectedSubmissions = $submissionBySectionId
-            ->values()
-            ->unique('id')
-            ->sortByDesc('revision_number')
-            ->values();
-        $primarySubmission = $affectedSubmissions->first();
-
-        $semesterId = $this->activeSemesterId();
-        $updated = DB::transaction(function () use ($id, $sectionIds, $withdrawableStatuses, $affectedSubmissions, $submissionSections, $user, $semesterId) {
-            $this->departmentScheduleQuery($id)
-                ->whereIn('section_id', $sectionIds)
-                ->whereIn('status', $withdrawableStatuses)
+            $selected = fn () => $this->scheduleQueryFor($id, $semesterId)->whereIn('section_id', $sectionIds);
+            $selected()
+                ->whereIn('status', self::WITHDRAWABLE_STATUSES)
                 ->where('faculty_assignment_done', true)
                 ->whereDoesntHave('course', fn ($courseQuery) => $courseQuery
                     ->whereNotNull('teaching_department_id')
                     ->whereColumn('courses.teaching_department_id', '!=', 'schedules.department_id'))
                 ->update(['faculty_assignment_done' => false, 'updated_at' => now()]);
 
-            $completed = $this->departmentScheduleQuery($id)
-                ->whereIn('section_id', $sectionIds)
-                ->whereIn('status', $withdrawableStatuses)
+            $completed = $selected()
+                ->whereIn('status', self::WITHDRAWABLE_STATUSES)
                 ->update([
                     'status' => 'completed',
                     'updated_at' => now(),
                 ]);
 
-            $revision = $this->departmentScheduleQuery($id)
-                ->whereIn('section_id', $sectionIds)
+            $revision = $selected()
                 ->where('status', 'completed')
                 ->update([
                     'status' => 'revision',
@@ -1177,55 +1272,76 @@ class DepartmentScheduleController extends Controller
                 ]);
 
             foreach ($affectedSubmissions as $submission) {
-                $submissionSectionIds = $submissionSections->get((int) $submission->id, []);
-                $submission->sections()->updateExistingPivot($submissionSectionIds, [
+                $submission->sections()->updateExistingPivot($submissionSections[(int) $submission->id], [
                     'state' => 'withdrawn',
                     'updated_at' => now(),
                 ]);
-                $remainingIncluded = DB::table('schedule_submission_sections')
-                    ->where('schedule_submission_id', $submission->id)
-                    ->where('state', 'included')
-                    ->exists();
+                $remainingIncluded = $this->currentIncludedSectionIds((int) $submission->id) !== [];
                 $submission->update([
                     'status' => $remainingIncluded ? 'partially_withdrawn' : 'withdrawn',
                     'withdrawn_by' => $user->id,
                     'withdrawn_at' => now(),
+                    // A full recall closes this revision with the officials of the day; a resubmission starts a new one.
+                    ...($remainingIncluded ? [] : ['signatories' => $this->signatories->stamp($submission, [], $user, true)]),
                 ]);
             }
+
+            $submissionIds = $affectedSubmissions->pluck('id')->map('intval')->values()->all();
+            $primarySubmissionId = $affectedSubmissions->sortByDesc('revision_number')->first()?->id;
+            if ($revision > 0) {
+                $this->recordWorkflowAudit($request, 'schedule_withdrawn', $id, $semesterId, [
+                    'schedules_updated' => $revision,
+                    'sections_unlocked' => count($sectionIds),
+                    'withdrawal_stage' => $plan['stage'],
+                    'instructors_released' => 0,
+                    'selected_section_ids' => $sectionIds,
+                    'schedule_submission_ids' => $submissionIds,
+                    'submission_section_ids' => $submissionSections,
+                ], $primarySubmissionId);
+            }
+
+            // What the reviewers are told: which sections left the affected submissions, and how many remain.
+            $membership = DB::table('schedule_submission_sections')
+                ->whereIn('schedule_submission_id', $submissionIds)
+                ->selectRaw("count(*) as original, sum(case when state = 'included' then 1 else 0 end) as remaining")
+                ->first();
 
             return [
                 'completed' => $completed,
                 'revision' => $revision,
                 'instructors_released' => 0,
-                'submission_ids' => $affectedSubmissions->pluck('id')->map('intval')->values()->all(),
+                'submission_ids' => $submissionIds,
+                'primary_submission_id' => $primarySubmissionId,
+                'withdrawal_stage' => $plan['stage'],
+                'recalled_section_names' => Sections::query()->whereKey($sectionIds)->orderBy('section_name')->pluck('section_name')->all(),
+                'original_section_count' => (int) $membership->original,
+                'remaining_section_count' => (int) $membership->remaining,
             ];
         });
+        if ($result instanceof JsonResponse) {
+            return $result;
+        }
+        $updated = $result;
+        $withdrawalStage = $updated['withdrawal_stage'];
+        $primarySubmissionId = $updated['primary_submission_id'];
 
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
-        $semester = Semester::query()->find($this->activeSemesterId());
-        if ($updated['revision'] > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_withdrawn', $department->id, $semester?->id, [
-                'schedules_updated' => $updated['revision'],
-                'sections_unlocked' => count($sectionIds),
-                'withdrawal_stage' => $withdrawalStage,
-                'instructors_released' => $updated['instructors_released'],
-                'selected_section_ids' => $sectionIds,
-                'schedule_submission_ids' => $updated['submission_ids'],
-                'submission_section_ids' => $submissionSections->all(),
-            ], $primarySubmission?->id);
+        $semester = Semester::query()->find($semesterId);
+        // A recall during review takes sections out of a reviewer's queue; say whose, which, and what remains.
+        $reviewer = ['dean_review' => 'Dean', 'vpaa_review' => 'VPAA'][$withdrawalStage] ?? null;
+        $message = $this->notifications->departmentWorkflowMessage('recalled', $department, $semester, $user, $updated['revision'])
+            .' Recalled: '.implode(', ', $updated['recalled_section_names']).'.';
+        if ($reviewer !== null) {
+            $message .= $updated['remaining_section_count'] > 0
+                ? " {$updated['remaining_section_count']} of {$updated['original_section_count']} sections remain for {$reviewer} approval."
+                : ' No sections remain for approval.';
         }
         $this->notifications->notifyRoles(
             ['vpaa', 'dean', 'secretary', 'program_head'],
             'schedule_withdrawn',
-            'Schedule submission recalled',
-            $this->notifications->departmentWorkflowMessage(
-                'recalled',
-                $department,
-                $semester,
-                $user,
-                $updated['revision'],
-            ),
+            $reviewer !== null ? "Sections recalled from {$reviewer} review" : 'Schedule submission recalled',
+            $message,
             $user,
             $department->id,
             $semester?->id,
@@ -1234,9 +1350,12 @@ class DepartmentScheduleController extends Controller
                 'schedules_updated' => $updated['revision'],
                 'sections_unlocked' => count($sectionIds),
                 'selected_section_ids' => $sectionIds,
+                'recalled_section_names' => $updated['recalled_section_names'],
+                'original_section_count' => $updated['original_section_count'],
+                'remaining_section_count' => $updated['remaining_section_count'],
                 'withdrawal_stage' => $withdrawalStage,
                 'instructors_released' => $updated['instructors_released'],
-                'schedule_submission_id' => $primarySubmission?->id,
+                'schedule_submission_id' => $primarySubmissionId,
                 'schedule_submission_ids' => $updated['submission_ids'],
             ],
         );
@@ -1248,7 +1367,7 @@ class DepartmentScheduleController extends Controller
             'sections_unlocked' => count($sectionIds),
             'withdrawal_stage' => $withdrawalStage,
             'instructors_released' => $updated['instructors_released'],
-            'schedule_submission_id' => $primarySubmission?->id,
+            'schedule_submission_id' => $primarySubmissionId,
             'schedule_submission_ids' => $updated['submission_ids'],
         ]);
     }
@@ -1265,77 +1384,77 @@ class DepartmentScheduleController extends Controller
         $department = Departments::findOrFail($id);
         $user = $request->user();
         $now = now();
-        $submission = $this->submissionForStage(
+        $semesterId = $this->activeSemesterId();
+        $target = $this->reviewTarget(
             $id,
+            $semesterId,
             ['pending_vpaa'],
             ['approved_by_dean', 'conditionally_approved'],
-            'pending_vpaa',
             isset($validated['schedule_submission_id']) ? (int) $validated['schedule_submission_id'] : null,
         );
-        if ($submission === null) {
+        if ($target === null) {
             return response()->json(['message' => 'No schedule submission is pending VPAA approval.'], 422);
         }
-        $targetSectionIds = $this->includedSectionIds($submission);
 
-        if (($openConflicts = $this->openConflictsIn($id, $targetSectionIds)) !== []) {
-            return $this->openConflictsResponse($openConflicts);
-        }
-
-        $updated = DB::transaction(function () use ($id, $user, $now, $submission, $targetSectionIds) {
-            if (! $this->lockSubmissionAtStage($submission, ['approved_by_dean', 'conditionally_approved'])) {
-                return null;
+        $result = DB::transaction(function () use ($id, $semesterId, $target, $request, $user, $now): array|JsonResponse {
+            $this->lockDepartmentWorkflow($id);
+            $scope = $this->lockedReviewScope($id, $semesterId, $target, ['pending_vpaa'], ['approved_by_dean', 'conditionally_approved']);
+            if ($scope === null) {
+                return $this->staleReviewResponse();
             }
-            $updated = $this->departmentScheduleQuery($id)
-                ->whereIn('section_id', $targetSectionIds)
-                ->whereIn('status', ['approved_by_dean', 'conditionally_approved'])
-                ->update([
-                    'status' => 'faculty_assignment',
-                    'updated_at' => $now,
-                ]);
+            if (($openConflicts = $this->openConflictsIn($id, $scope['section_ids'], $semesterId)) !== []) {
+                return $this->openConflictsResponse($openConflicts);
+            }
+
+            $submission = $scope['submission'] ?? $this->createLegacySubmission($id, $semesterId, 'pending_vpaa', $scope['section_ids']);
+            $updated = Schedule::query()->whereKey($scope['meetings']->modelKeys())->update([
+                'status' => 'faculty_assignment',
+                'updated_at' => $now,
+            ]);
             $submission->update([
                 'status' => $submission->status === 'partially_withdrawn' ? 'partially_withdrawn' : 'approved',
                 'vpaa_reviewed_by' => $user->id,
                 'vpaa_reviewed_at' => $now,
                 'rejection_reason' => null,
+                'signatories' => $this->signatories->stamp($submission, ['recommended', 'approved'], $user, true, $now),
             ]);
+            $this->recordWorkflowAudit($request, 'schedule_approved_by_vpaa', $id, $semesterId, [
+                'schedules_updated' => $updated,
+                'selected_section_ids' => $scope['section_ids'],
+            ], $submission->id);
 
-            return $updated;
+            return ['updated' => $updated, 'submission_id' => (int) $submission->id];
         });
-        if ($updated === null) {
-            return $this->staleReviewResponse();
+        if ($result instanceof JsonResponse) {
+            return $result;
         }
+        ['updated' => $updated, 'submission_id' => $submissionId] = $result;
         $this->forgetWorkflowCaches(affectsAssignments: true);
 
-        if ($updated > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_approved_by_vpaa', $department->id, $this->activeSemesterId(), [
-                'schedules_updated' => $updated,
-                'selected_section_ids' => $targetSectionIds,
-            ], $submission->id);
-            $semester = Semester::query()->find($this->activeSemesterId());
-            $this->notifications->notifyRoles(
-                ['vpaa', 'dean', 'secretary', 'program_head'],
-                'schedule_approved_by_vpaa',
-                'VPAA approved department schedule',
-                $this->notifications->departmentWorkflowMessage(
-                    'approved',
-                    $department,
-                    $semester,
-                    $user,
-                    $updated,
-                ),
+        $semester = Semester::query()->find($semesterId);
+        $this->notifications->notifyRoles(
+            ['vpaa', 'dean', 'secretary', 'program_head'],
+            'schedule_approved_by_vpaa',
+            'VPAA approved department schedule',
+            $this->notifications->departmentWorkflowMessage(
+                'approved',
+                $department,
+                $semester,
                 $user,
-                $department->id,
-                $semester?->id,
-                null,
-                ['schedules_updated' => $updated, 'schedule_submission_id' => $submission->id],
-            );
-        }
+                $updated,
+            ),
+            $user,
+            $department->id,
+            $semester?->id,
+            null,
+            ['schedules_updated' => $updated, 'schedule_submission_id' => $submissionId],
+        );
 
         return response()->json([
             'message' => 'Department schedule approved by VPAA.',
             'department_name' => $department->department_name,
             'schedules_updated' => $updated,
-            'schedule_submission_id' => $submission->id,
+            'schedule_submission_id' => $submissionId,
         ]);
     }
 
@@ -1353,75 +1472,76 @@ class DepartmentScheduleController extends Controller
         $department = Departments::findOrFail($id);
         $user = $request->user();
         $now = now();
-        $submission = $this->submissionForStage(
+        $semesterId = $this->activeSemesterId();
+        $target = $this->reviewTarget(
             $id,
+            $semesterId,
             ['pending_vpaa'],
             ['approved_by_dean', 'conditionally_approved'],
-            'pending_vpaa',
             isset($validated['schedule_submission_id']) ? (int) $validated['schedule_submission_id'] : null,
         );
-        if ($submission === null) {
+        if ($target === null) {
             return response()->json(['message' => 'No schedule submission is pending VPAA approval.'], 422);
         }
-        $targetSectionIds = $this->includedSectionIds($submission);
 
-        $updated = DB::transaction(function () use ($id, $user, $now, $validated, $submission, $targetSectionIds) {
-            if (! $this->lockSubmissionAtStage($submission, ['approved_by_dean', 'conditionally_approved'])) {
-                return null;
+        $result = DB::transaction(function () use ($id, $semesterId, $target, $request, $user, $now, $validated): array|JsonResponse {
+            $this->lockDepartmentWorkflow($id);
+            $scope = $this->lockedReviewScope($id, $semesterId, $target, ['pending_vpaa'], ['approved_by_dean', 'conditionally_approved']);
+            if ($scope === null) {
+                return $this->staleReviewResponse();
             }
-            $updated = $this->departmentScheduleQuery($id)
-                ->whereIn('section_id', $targetSectionIds)
-                ->whereIn('status', ['approved_by_dean', 'conditionally_approved'])
-                ->update([
-                    'status' => 'rejected',
-                    'updated_at' => $now,
-                ]);
+
+            $submission = $scope['submission'] ?? $this->createLegacySubmission($id, $semesterId, 'pending_vpaa', $scope['section_ids']);
+            $updated = Schedule::query()->whereKey($scope['meetings']->modelKeys())->update([
+                'status' => 'rejected',
+                'updated_at' => $now,
+            ]);
             $submission->update([
                 'status' => 'rejected_by_vpaa',
                 'vpaa_reviewed_by' => $user->id,
                 'vpaa_reviewed_at' => $now,
                 'rejection_reason' => $validated['rejection_reason'],
+                'signatories' => $this->signatories->stamp($submission, ['recommended'], $user, true, $now),
             ]);
-
-            return $updated;
-        });
-        if ($updated === null) {
-            return $this->staleReviewResponse();
-        }
-        $this->forgetWorkflowCaches(affectsAssignments: true);
-
-        if ($updated > 0) {
-            $this->recordWorkflowAudit($request, 'schedule_returned_by_vpaa', $department->id, $this->activeSemesterId(), [
+            $this->recordWorkflowAudit($request, 'schedule_returned_by_vpaa', $id, $semesterId, [
                 'schedules_updated' => $updated,
                 'rejection_reason' => $validated['rejection_reason'],
-                'selected_section_ids' => $targetSectionIds,
+                'selected_section_ids' => $scope['section_ids'],
             ], $submission->id);
-            $semester = Semester::query()->find($this->activeSemesterId());
-            $this->notifications->notifyRoles(
-                ['vpaa', 'dean', 'secretary', 'program_head'],
-                'schedule_returned_by_vpaa',
-                'VPAA returned department schedule',
-                $this->notifications->departmentWorkflowMessage(
-                    'returned',
-                    $department,
-                    $semester,
-                    $user,
-                    $updated,
-                    $validated['rejection_reason'],
-                ),
-                $user,
-                $department->id,
-                $semester?->id,
-                $validated['rejection_reason'],
-                ['schedules_updated' => $updated, 'schedule_submission_id' => $submission->id],
-            );
+
+            return ['updated' => $updated, 'submission_id' => (int) $submission->id];
+        });
+        if ($result instanceof JsonResponse) {
+            return $result;
         }
+        ['updated' => $updated, 'submission_id' => $submissionId] = $result;
+        $this->forgetWorkflowCaches(affectsAssignments: true);
+
+        $semester = Semester::query()->find($semesterId);
+        $this->notifications->notifyRoles(
+            ['vpaa', 'dean', 'secretary', 'program_head'],
+            'schedule_returned_by_vpaa',
+            'VPAA returned department schedule',
+            $this->notifications->departmentWorkflowMessage(
+                'returned',
+                $department,
+                $semester,
+                $user,
+                $updated,
+                $validated['rejection_reason'],
+            ),
+            $user,
+            $department->id,
+            $semester?->id,
+            $validated['rejection_reason'],
+            ['schedules_updated' => $updated, 'schedule_submission_id' => $submissionId],
+        );
 
         return response()->json([
             'message' => 'Department schedule returned by VPAA for revision.',
             'department_name' => $department->department_name,
             'schedules_updated' => $updated,
-            'schedule_submission_id' => $submission->id,
+            'schedule_submission_id' => $submissionId,
         ]);
     }
 
@@ -1475,6 +1595,11 @@ class DepartmentScheduleController extends Controller
                 $metadata,
                 $this->descriptors->for($schedules),
             );
+            // The history entry keeps the officials who held each slot when this action happened.
+            $submission = $submissionId !== null ? ScheduleSubmission::query()->find($submissionId) : null;
+            if ($submission !== null) {
+                $version->update(['signatories' => $this->signatories->frozenCopy($submission)]);
+            }
         }
 
         SchedulingAuditLog::create([

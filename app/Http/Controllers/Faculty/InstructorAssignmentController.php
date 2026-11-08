@@ -57,7 +57,7 @@ class InstructorAssignmentController extends Controller
         ], [
             'department_id' => $departmentId,
             'program_id' => $programId,
-            'version' => 4,
+            'version' => 5,
         ]);
 
         $data = Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($departmentId, $programId) {
@@ -85,7 +85,10 @@ class InstructorAssignmentController extends Controller
             $schedules = Schedule::query()
                 ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
                 ->where('semester_id', $activeSemester->id)
-                ->whereIn('status', self::VISIBLE_STATUSES)
+                // Retained instructors remain visible when the source schedule returns to review.
+                // Assignment writes still require ASSIGNABLE_STATUSES.
+                ->where(fn ($query) => $query->whereIn('status', self::VISIBLE_STATUSES)
+                    ->orWhereNotNull('faculty_id'))
                 ->whereHas('course', fn ($query) => $query->where('status', 'active'))
                 ->where(function ($query) use ($departmentId) {
                     $query->where('department_id', $departmentId)
