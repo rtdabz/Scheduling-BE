@@ -2,14 +2,14 @@
 
 namespace App\Services;
 
-use App\Models\Departments;
 use App\Models\Course;
+use App\Models\Departments;
 use App\Models\RoomRecoveryCase;
 use App\Models\RoomRecoveryPlan;
 use App\Models\Rooms;
 use App\Models\Schedule;
-use App\Models\Sections;
 use App\Models\SchedulingAuditLog;
+use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
@@ -24,6 +24,7 @@ use App\Services\Scheduling\Recommendations\PlacementGroupValidator;
 use App\Services\Scheduling\Schedule\BatchConflictValidator;
 use App\Services\Scheduling\Schedule\SameTimePartnerMover;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
+use App\Services\Scheduling\ScheduleSignatories;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use App\Support\ApiCache;
@@ -40,6 +41,13 @@ final class RoomRecoveryService
 {
     // Reviewed recovery can relocate classes during faculty assignment while retaining their instructors.
     private const TRANSFER_EDITABLE_STATUSES = [...Schedule::PLOTTING_EDITABLE_STATUSES, 'faculty_assignment'];
+
+    public const WORKFLOW_APPLY = 'apply';
+
+    public const WORKFLOW_APPROVAL = 'approval';
+
+    /** Plan status for reassignments applied directly to draft schedules; kept out of approval history. */
+    public const STATUS_APPLIED_DRAFT = 'applied_draft';
 
     public function __construct(
         private readonly SchedulingScopeLock $lock,
@@ -96,7 +104,7 @@ final class RoomRecoveryService
         return $rows->pluck('id')->map('intval')->all();
     }
 
-    /** Classes moved online by a room closure are restored as face-to-face meetings that need a room. */
+    /** Temporarily online classes are restored as face-to-face meetings that need a room. */
     private function asFaceToFace(array $row): array
     {
         return ($row['displaced_room_id'] ?? null) !== null ? [...$row, 'mode' => 'on-site', 'room_id' => null] : $row;
@@ -115,13 +123,34 @@ final class RoomRecoveryService
             DB::afterCommit(function () use ($case) {
                 try {
                     app(SystemNotificationService::class)->notifyRoles(
-                        ['secretary'], 'room_recovery', 'Room or laboratory needs attention',
+                        ['secretary', 'program_head'], 'room_recovery', 'Room or laboratory needs attention',
                         $case->trigger === 'room_closed'
                             ? 'A room was marked unavailable. Its face-to-face classes meet online until a replacement room is approved in Facilities > Reassign Room Schedule.'
                             : 'Room availability changed. Review affected schedules in Facilities > Reassign Room Schedule.',
                         departmentId: $case->department_id, semesterId: $case->semester_id,
-                        remarks: $case->reason, metadata: ['recovery_case_id' => $case->id, 'room_id' => $case->room_id, 'semester_id' => $case->semester_id],
+                        remarks: $case->reason, metadata: ['recovery_case_id' => $case->id, 'room_id' => $case->room_id, 'semester_id' => $case->semester_id,
+                            'selected_section_ids' => collect($case->original_rows)->pluck('section_id')->filter()->unique()->values()->all()],
                     );
+                    $statuses = collect($case->original_rows)->pluck('status');
+                    $stages = [];
+                    if ($statuses->contains('submitted')) {
+                        $stages[] = 'dean';
+                    }
+                    if ($statuses->intersect(['approved_by_dean', 'conditionally_approved'])->isNotEmpty()) {
+                        $stages[] = 'vpaa';
+                    }
+                    if ($statuses->intersect(SchedulingPolicy::VPAA_VISIBLE_STATUSES)->isNotEmpty()) {
+                        $stages = ['approved'];
+                    }
+                    foreach ($stages as $stage) {
+                        app(SystemNotificationService::class)->notifyRoles(
+                            $stage === 'approved' ? ['dean', 'vpaa'] : [$stage],
+                            'schedule_attention_required', 'Room change affects reviewed schedules',
+                            'Room availability changed for schedules '.($stage === 'approved' ? 'already approved by VPAA' : 'awaiting '.strtoupper($stage).' review').'. The department must resolve the affected room assignments.',
+                            departmentId: $case->department_id, semesterId: $case->semester_id, remarks: $case->reason,
+                            metadata: ['recovery_case_id' => $case->id, 'room_id' => $case->room_id, 'approval_stage' => $stage],
+                        );
+                    }
                 } catch (\Throwable $e) {
                     report($e);
                 }
@@ -204,6 +233,24 @@ final class RoomRecoveryService
     public function requiresRevision(Schedule $row): bool
     {
         return ! in_array($row->status, self::TRANSFER_EDITABLE_STATUSES, true);
+    }
+
+    /** Schedules not yet submitted for approval are reassigned immediately; submitted ones need Dean and VPAA approval. */
+    public static function appliesWithoutApproval(Schedule|array $row): bool
+    {
+        return in_array(is_array($row) ? ($row['status'] ?? null) : $row->status, Schedule::PLOTTING_EDITABLE_STATUSES, true);
+    }
+
+    /** A linked group is applied immediately only when every one of its meetings is still a draft. */
+    private static function groupWorkflow(iterable $rows): string
+    {
+        foreach ($rows as $row) {
+            if (! self::appliesWithoutApproval($row)) {
+                return self::WORKFLOW_APPROVAL;
+            }
+        }
+
+        return self::WORKFLOW_APPLY;
     }
 
     public function authorizeRows(Request $request, Collection $rows, array $proposed = [], bool $allowTimeChanges = false, bool $reviewing = false): void
@@ -331,7 +378,8 @@ final class RoomRecoveryService
                 $unresolved[] = ['schedule_ids' => array_column($option['before'], 'id'), 'reason_code' => 'batch_conflict',
                     'reason' => 'These meetings could not be transferred together without a scheduling conflict within the search limit.'];
             } else {
-                $planGroups[] = ['key' => (string) $key, 'before' => $option['before'], 'after' => $best[$key]];
+                $planGroups[] = ['key' => (string) $key, 'before' => $option['before'], 'after' => $best[$key],
+                    'workflow' => self::groupWorkflow($option['before'])];
             }
         }
         $meetings = $this->readable($request)->whereIn('schedules.id', $all->pluck('id'))->with(['course', 'section', 'room', 'displacedRoom'])->orderBy('schedules.id')->get()
@@ -578,6 +626,7 @@ final class RoomRecoveryService
         return match (true) {
             str_starts_with($plan->status, 'rejected_') => 'This transfer was rejected and cannot be approved. Create a new proposal.',
             in_array($plan->status, ['approved', 'applied'], true) => 'This transfer was already approved.',
+            $plan->status === self::STATUS_APPLIED_DRAFT => 'This reassignment was applied directly to draft schedules and does not need approval.',
             $stage === 'vpaa' && $plan->status === 'pending_dean' => 'Dean approval is required before VPAA approval.',
             $stage === 'dean' && $plan->status === 'pending_vpaa' => 'Dean approval was already recorded.',
             default => 'This transfer has not been submitted for approval.',
@@ -586,7 +635,7 @@ final class RoomRecoveryService
 
     public function submit(Request $request, RoomRecoveryPlan $plan, array $selected): array
     {
-        abort_unless($request->user()->isSecretary(), 403, 'Only the Secretary can submit room schedule reassignments.');
+        abort_unless($request->user()->isSecretaryOrDirector(), 403, 'Only the department Secretary or Director can submit room schedule reassignments.');
         abort_unless((int) $plan->created_by === (int) $request->user()->id, 404);
 
         return $this->processTransfer($request, $plan, $selected, false);
@@ -608,6 +657,7 @@ final class RoomRecoveryService
                     $nextStep = 'Reject this request and ask for a new proposal.';
                     $this->assertProposalCurrent($plan, $groups, $this->unchangedSource($plan, $nextStep), $nextStep);
                     $plan->update(['status' => 'pending_vpaa', 'dean_reviewed_by' => $request->user()->id, 'dean_reviewed_at' => now()]);
+                    $this->recordTransferSignatories($plan);
                     SchedulingAuditLog::create(['user_id' => $request->user()->id, 'semester_id' => $plan->semester_id,
                         'department_id' => $plan->department_id, 'action' => 'room_transfer_dean_approved',
                         'metadata' => ['plan_id' => $plan->id], 'created_at' => now()]);
@@ -645,6 +695,9 @@ final class RoomRecoveryService
                     $selected = $plan->selected_groups;
                 } else {
                     sort($selected);
+                    if ($plan->status === self::STATUS_APPLIED_DRAFT && $plan->selected_groups === $selected) {
+                        return ['message' => 'These room schedule reassignments were already applied.', 'status' => self::STATUS_APPLIED_DRAFT, 'applied' => true];
+                    }
                     if ($plan->status !== 'preview') {
                         abort_unless(in_array($plan->status, ['pending_dean', 'pending_vpaa'], true) && $plan->selected_groups === $selected,
                             409, 'This plan has already been submitted or reviewed. Create a new preview to change the selection.');
@@ -663,73 +716,127 @@ final class RoomRecoveryService
                 $ids = $groups->flatMap(fn ($group) => array_column($group['before'], 'id'))->unique()->all();
                 $current = Schedule::whereIn('id', $ids)->lockForUpdate()->get();
                 abort_unless($current->count() === count($ids), 409, 'Schedules changed. '.$nextStep);
-                sort($selected);
                 $source = $this->unchangedSource($plan, $nextStep);
                 $this->authorizeRows($request, $current, $groups->flatMap(fn ($group) => $group['after'])->all(),
                     (bool) ($plan->payload['allow_day_time_changes'] ?? false), $approving);
                 $this->assertProposalCurrent($plan, $groups, $source, $nextStep);
-                if (! $approving) {
-                    $pending = RoomRecoveryPlan::where('semester_id', $plan->semester_id)->whereIn('status', ['pending_dean', 'pending_vpaa'])->get();
-                    $proposed = $groups->flatMap(fn ($group) => $group['after'])->values()->all();
-                    foreach ($pending as $other) {
-                        $otherGroups = collect($other->payload['groups'])->whereIn('key', $other->selected_groups);
-                        $otherIds = $otherGroups->flatMap(fn ($group) => array_column($group['before'], 'id'))->all();
-                        abort_if(array_intersect($ids, $otherIds) !== [], 409, 'A room schedule reassignment for these schedules is already awaiting approval.');
-                        // Pending requests do not book rooms, so two of them must not claim the same room, section or instructor time.
-                        $claimed = $otherGroups->flatMap(fn ($group) => $group['after'])->values()->all();
-                        abort_if(app(BatchConflictValidator::class)->validate([...$proposed, ...$claimed]) !== [], 409,
-                            'Another room schedule reassignment awaiting approval already proposes a conflicting room or time. Refresh recommendations.');
-                    }
-                    $plan->update(['status' => 'pending_dean', 'selected_groups' => $selected, 'submitted_at' => now()]);
+                if ($approving) {
+                    $enableSunday = $this->applyGroups($request, $plan, $groups, $current, $department, 'room_recovery_applied', 'Reviewed room reassignment');
+                    $plan->update(['status' => 'approved', 'reviewed_by' => $request->user()->id, 'reviewed_at' => now(),
+                        'applied_at' => now(), 'applied_groups' => $selected]);
+                    $this->recordTransferSignatories($plan);
+                    $this->notifyTransfer($request, $plan, 'approved');
+
+                    return ['message' => 'Room schedule reassignment approved and schedule changes applied.'
+                        .($enableSunday ? ' Sunday classes were enabled automatically for your department.' : ''), 'status' => 'approved', 'applied' => true];
+                }
+                $this->assertNoPendingOverlap($plan, $ids, $groups->flatMap(fn ($group) => $group['after'])->values()->all());
+                // Each linked group follows its schedules' current submission status; mixed selections never cross workflows.
+                $byId = $current->keyBy('id');
+                $byWorkflow = $groups->groupBy(fn ($group) => self::groupWorkflow(array_map(fn ($row) => $byId[$row['id']], $group['before'])));
+                $direct = $byWorkflow->get(self::WORKFLOW_APPLY, collect())->values();
+                $review = $byWorkflow->get(self::WORKFLOW_APPROVAL, collect())->values();
+                if ($review->isNotEmpty()) {
+                    // Split before applying drafts so the request's source fingerprint covers only its own, still unchanged, schedules.
+                    $requestPlan = $direct->isEmpty() ? $plan : $this->splitReviewPlan($plan, $review, $current);
+                    $reviewIds = $review->flatMap(fn ($group) => array_column($group['before'], 'id'))->unique()->values()->all();
+                    $reviewKeys = $review->pluck('key')->sort()->values()->all();
+                    $requestPlan->update(['status' => 'pending_dean', 'selected_groups' => $reviewKeys, 'submitted_at' => now()]);
+                    $this->recordTransferSignatories($requestPlan);
                     SchedulingAuditLog::create(['user_id' => $request->user()->id, 'semester_id' => $plan->semester_id,
                         'department_id' => $plan->department_id, 'action' => 'room_transfer_submitted',
-                        'metadata' => ['plan_id' => $plan->id, 'schedule_ids' => $ids], 'created_at' => now()]);
-                    $this->notifyTransfer($request, $plan, 'submitted');
-
+                        'metadata' => ['plan_id' => $requestPlan->id, 'schedule_ids' => $reviewIds], 'created_at' => now()]);
+                    $this->notifyTransfer($request, $requestPlan, 'submitted');
+                }
+                if ($direct->isEmpty()) {
                     return ['message' => 'Pending Dean Approval. The Dean has been notified. Existing schedules are unchanged.',
                         'status' => 'pending_dean', 'applied' => false];
                 }
-                $enableSunday = ($plan->payload['include_sunday'] ?? false) && ! $department->sunday_classes_enabled
-                    && $groups->flatMap(fn ($group) => $group['after'])->contains('day', 'Sunday');
-                if ($enableSunday) {
-                    // Keep the confirmed timetable valid in every existing scheduling validator.
-                    $department->forceFill(['sunday_classes_enabled' => true])->save();
+                $directKeys = $direct->pluck('key')->sort()->values()->all();
+                $enableSunday = $this->applyGroups($request, $plan, $direct, $current, $department,
+                    'room_recovery_applied_draft', 'Room reassignment applied to draft schedule');
+                $plan->update(['status' => self::STATUS_APPLIED_DRAFT, 'selected_groups' => $selected, 'submitted_at' => now(),
+                    'applied_at' => now(), 'applied_groups' => $directKeys]);
+                $sunday = $enableSunday ? ' Sunday classes were enabled for your department.' : '';
+                if ($review->isNotEmpty()) {
+                    return ['message' => count($directKeys).' draft '.Str::plural('class', count($directKeys)).' reassigned. '
+                        .$review->count().' submitted '.Str::plural('class', $review->count()).' sent for Dean approval; those schedules stay unchanged until VPAA approval.'.$sunday,
+                        'status' => 'mixed', 'applied' => true, 'applied_count' => count($directKeys), 'pending_count' => $review->count()];
                 }
-                $before = $current->map->toArray()->all();
-                $byId = $current->keyBy('id');
-                foreach ($groups as $group) {
-                    foreach ($group['after'] as $row) {
-                        $model = $byId[$row['id']];
-                        $model->fill(array_intersect_key($row, array_flip(['room_id', 'mode', 'day', 'start_time', 'end_time', 'preferred_pattern'])));
-                        if ($model->isDirty()) {
-                            $model->save();
-                        }
-                    }
-                }
-                // Validate the final persisted state as well; any violation rolls back the entire batch.
-                foreach (Schedule::whereIn('id', $ids)->get() as $row) {
-                    $violations = (new RuleEngine)->validate([...$row->toArray(), 'ignore_schedule_id' => (int) $row->id]);
-                    if ($violations !== []) {
-                        throw ValidationException::withMessages(['plan' => array_column($violations, 'message')]);
-                    }
-                }
-                $after = Schedule::whereIn('id', $ids)->get();
-                $this->history->record('room_recovery_applied', $before, $after, $request->user()->id,
-                    $plan->semester_id, $plan->department_id, 'room_recovery', 'Reviewed room reassignment', ['plan_id' => $plan->id]);
-                SchedulingAuditLog::create(['user_id' => $request->user()->id, 'semester_id' => $plan->semester_id, 'department_id' => $plan->department_id,
-                    'action' => 'room_recovery_applied', 'metadata' => ['plan_id' => $plan->id, 'schedule_ids' => $ids,
-                        'sunday_classes_enabled_automatically' => $enableSunday], 'created_at' => now()]);
-                $plan->update(['status' => 'approved', 'reviewed_by' => $request->user()->id, 'reviewed_at' => now(),
-                    'applied_at' => now(), 'applied_groups' => $selected]);
-                $this->notifyTransfer($request, $plan, 'approved');
 
-                return ['message' => 'Room schedule reassignment approved and schedule changes applied.'
-                    .($enableSunday ? ' Sunday classes were enabled automatically for your department.' : ''), 'status' => 'approved', 'applied' => true];
+                return ['message' => 'Room schedule reassignment applied to the draft schedule.'.$sunday,
+                    'status' => self::STATUS_APPLIED_DRAFT, 'applied' => true];
             });
         });
         $this->refreshCaches();
 
         return $result;
+    }
+
+    /** Pending requests do not book rooms, so new changes must not touch their schedules or claim the same room, section or instructor time. */
+    private function assertNoPendingOverlap(RoomRecoveryPlan $plan, array $ids, array $proposed): void
+    {
+        $pending = RoomRecoveryPlan::where('semester_id', $plan->semester_id)->whereIn('status', ['pending_dean', 'pending_vpaa'])->get();
+        foreach ($pending as $other) {
+            $otherGroups = collect($other->payload['groups'])->whereIn('key', $other->selected_groups);
+            $otherIds = $otherGroups->flatMap(fn ($group) => array_column($group['before'], 'id'))->all();
+            abort_if(array_intersect($ids, $otherIds) !== [], 409, 'A room schedule reassignment for these schedules is already awaiting approval.');
+            $claimed = $otherGroups->flatMap(fn ($group) => $group['after'])->values()->all();
+            abort_if(app(BatchConflictValidator::class)->validate([...$proposed, ...$claimed]) !== [], 409,
+                'Another room schedule reassignment awaiting approval already proposes a conflicting room or time. Refresh recommendations.');
+        }
+    }
+
+    /** Carve the submitted groups of a mixed selection into their own approval request. */
+    private function splitReviewPlan(RoomRecoveryPlan $plan, Collection $review, Collection $current): RoomRecoveryPlan
+    {
+        $ids = $review->flatMap(fn ($group) => array_column($group['before'], 'id'))->map('intval')->unique()->sort()->values()->all();
+        $payload = $plan->payload;
+
+        return RoomRecoveryPlan::create(['id' => (string) Str::uuid(), 'created_by' => $plan->created_by,
+            'semester_id' => $plan->semester_id, 'department_id' => $plan->department_id, 'expires_at' => $plan->expires_at,
+            'payload' => [...$payload, 'source_ids' => $ids, 'source_hash' => $this->sourceHash($current->whereIn('id', $ids)),
+                'groups' => $review->all(), 'meetings' => array_values(array_filter($payload['meetings'] ?? [], fn ($row) => in_array((int) $row['id'], $ids, true))),
+                'split_from' => $plan->id]]);
+    }
+
+    /** Write the groups' proposed placements, revalidate the persisted result and record history; any violation rolls back the batch. */
+    private function applyGroups(Request $request, RoomRecoveryPlan $plan, Collection $groups, Collection $current, Departments $department, string $action, string $note): bool
+    {
+        $ids = $groups->flatMap(fn ($group) => array_column($group['before'], 'id'))->unique()->values()->all();
+        $enableSunday = ($plan->payload['include_sunday'] ?? false) && ! $department->sunday_classes_enabled
+            && $groups->flatMap(fn ($group) => $group['after'])->contains('day', 'Sunday');
+        if ($enableSunday) {
+            // Keep the confirmed timetable valid in every existing scheduling validator.
+            $department->forceFill(['sunday_classes_enabled' => true])->save();
+        }
+        $rows = $current->whereIn('id', $ids);
+        $before = $rows->map->toArray()->values()->all();
+        $byId = $rows->keyBy('id');
+        foreach ($groups as $group) {
+            foreach ($group['after'] as $row) {
+                $model = $byId[$row['id']];
+                $model->fill(array_intersect_key($row, array_flip(['room_id', 'mode', 'day', 'start_time', 'end_time', 'preferred_pattern'])));
+                if ($model->isDirty()) {
+                    $model->save();
+                }
+            }
+        }
+        // Validate the final persisted state as well; any violation rolls back the entire batch.
+        foreach (Schedule::whereIn('id', $ids)->get() as $row) {
+            $violations = (new RuleEngine)->validate([...$row->toArray(), 'ignore_schedule_id' => (int) $row->id]);
+            if ($violations !== []) {
+                throw ValidationException::withMessages(['plan' => array_column($violations, 'message')]);
+            }
+        }
+        $after = Schedule::whereIn('id', $ids)->get();
+        $this->history->record($action, $before, $after, $request->user()->id,
+            $plan->semester_id, $plan->department_id, 'room_recovery', $note, ['plan_id' => $plan->id]);
+        SchedulingAuditLog::create(['user_id' => $request->user()->id, 'semester_id' => $plan->semester_id, 'department_id' => $plan->department_id,
+            'action' => $action, 'metadata' => ['plan_id' => $plan->id, 'schedule_ids' => $ids,
+                'sunday_classes_enabled_automatically' => $enableSunday], 'created_at' => now()]);
+
+        return $enableSunday;
     }
 
     public function reject(Request $request, RoomRecoveryPlan $plan, string $reason): array
@@ -748,6 +855,7 @@ final class RoomRecoveryService
                 $plan->update(['status' => $rejected, 'reviewed_by' => $request->user()->id,
                     'reviewed_at' => now(), 'rejection_reason' => $reason,
                     ...($stage === 'dean' ? ['dean_reviewed_by' => $request->user()->id, 'dean_reviewed_at' => now()] : [])]);
+                $this->recordTransferSignatories($plan);
                 SchedulingAuditLog::create(['user_id' => $request->user()->id, 'semester_id' => $plan->semester_id,
                     'department_id' => $plan->department_id, 'action' => 'room_transfer_rejected',
                     'metadata' => ['plan_id' => $plan->id, 'reason' => $reason, 'stage' => $stage], 'created_at' => now()]);
@@ -762,7 +870,10 @@ final class RoomRecoveryService
     {
         $notifications = app(SystemNotificationService::class);
         $reference = substr($plan->id, 0, 8);
-        $metadata = ['plan_id' => $plan->id, 'semester_id' => $plan->semester_id];
+        $metadata = ['plan_id' => $plan->id, 'semester_id' => $plan->semester_id, 'event_id' => (string) Str::uuid(),
+            'selected_section_ids' => collect($plan->payload['groups'] ?? [])
+                ->flatMap(fn (array $group): array => [...($group['before'] ?? []), ...($group['after'] ?? [])])
+                ->pluck('section_id')->filter()->unique()->values()->all()];
         // Persist the in-app notification with the decision; realtime delivery is flushed after the request.
         if (in_array($action, ['submitted', 'dean_approved'], true)) {
             $approver = $action === 'submitted' ? 'Dean' : 'VPAA';
@@ -771,14 +882,51 @@ final class RoomRecoveryService
                 actor: $request->user(), departmentId: $plan->department_id, semesterId: $plan->semester_id, metadata: $metadata);
         } else {
             $reviewer = $request->user()->isVpaa() ? 'VPAA' : 'Dean';
-            // The Dean who forwarded the request also learns the VPAA's final decision.
-            $recipients = array_filter([$plan->created_by, $reviewer === 'VPAA' ? $plan->dean_reviewed_by : null]);
-            $notifications->createForUsers(User::whereKey($recipients)->get(), 'room_transfer_'.$action,
+            // The office tracks department outcomes; Program Heads can open only their own requests.
+            $roles = User::withDepartmentOffice($reviewer === 'VPAA' ? ['secretary', 'dean'] : ['secretary']);
+            $recipients = User::query()->where('department_id', $plan->department_id)
+                ->where(fn ($query) => $query->whereIn('role', $roles)
+                    ->orWhere(fn ($creator) => $creator->whereKey($plan->created_by)->where('role', 'program_head')))->get();
+            $notifications->createForUsers($recipients, 'room_transfer_'.$action,
                 'Room schedule reassignment '.$action, "Room schedule reassignment {$reference} was {$action} by the {$reviewer}. "
                     .($action === 'approved' ? 'Schedule changes have been applied.' : 'Existing schedules are unchanged.'),
                 actor: $request->user(), departmentId: $plan->department_id, semesterId: $plan->semester_id,
                 remarks: $plan->rejection_reason, metadata: $metadata);
         }
+    }
+
+    private function transferSignatories(RoomRecoveryPlan $plan): array
+    {
+        $sections = collect($plan->payload['groups'] ?? [])->flatMap(fn ($group) => array_column($group['after'], 'section_id'))->unique()->values()->all();
+        $block = app(ScheduleSignatories::class)->initial((int) $plan->department_id, (int) $plan->semester_id, $sections);
+        $creator = $plan->actor_snapshots['created_by'] ?? null;
+        $block['prepared'] = [['program_id' => null, 'user_id' => $plan->created_by, 'name' => $creator['name'] ?? 'Not recorded',
+            'title' => $creator ? AdministrativeRoleSlots::roleLabel($creator['role']) : 'Schedule preparer',
+            'role' => $creator['role'] ?? null]];
+        foreach (['reviewed' => ['dean_reviewed_by', 'dean_reviewed_at', 'Dean'],
+            'recommended' => ['reviewed_by', 'reviewed_at', 'Vice-President for Academic Affairs']] as $slot => [$column, $time, $title]) {
+            if ($plan->{$time} === null || ($slot === 'recommended' && ! in_array($plan->status, ['approved', 'rejected_by_vpaa'], true))) {
+                continue;
+            }
+            $actor = $plan->actor_snapshots[$column] ?? null;
+            $block[$slot] = ['user_id' => $plan->{$column}, 'name' => $actor['name'] ?? 'Not recorded', 'title' => $title,
+                'role' => $actor['role'] ?? null, 'acted_at' => $plan->{$time}->toISOString(), 'action_actor' => $actor];
+        }
+        $block['frozen'] = ! in_array($plan->status, ['pending_dean', 'pending_vpaa'], true);
+        if ($plan->status === 'approved') {
+            $block['approved']['acted_at'] = $plan->reviewed_at?->toISOString();
+            $block['approved']['action_kind'] = 'document_signatory';
+            $block['approved']['action_actor'] = $plan->actor_snapshots['reviewed_by'] ?? null;
+        }
+
+        return $block;
+    }
+
+    private function recordTransferSignatories(RoomRecoveryPlan $plan): void
+    {
+        $snapshots = $plan->actor_snapshots ?? [];
+        $snapshots['signatories'] = $this->transferSignatories($plan);
+        $plan->forceFill(['actor_snapshots' => $snapshots])->save();
     }
 
     public function transfers(Request $request, ?int $semesterId = null): array
@@ -803,7 +951,7 @@ final class RoomRecoveryService
         $signatories = User::query()->where('is_active', true)
             ->where(fn ($query) => $query
                 ->where(fn ($scope) => $scope->whereIn('department_id', $plans->pluck('department_id')->unique())
-                    ->whereIn('role', ['secretary', 'program_head', 'dean']))
+                    ->whereIn('role', [...User::DEPARTMENT_OFFICE_ROLES, 'program_head', 'dean']))
                 ->orWhere('role', 'vpaa'))
             ->latest()->get(['id', 'name', 'role', 'department_id', 'program_id']);
         // Requests print as complete section timetables, like Schedule Approval, including linked online sessions.
@@ -859,7 +1007,8 @@ final class RoomRecoveryService
                 'preview_department' => $plan->department?->only(['id', 'department_name', 'department_code', 'logo']),
                 'preview_users' => $signatories->filter(fn ($official) => $official->role === 'vpaa'
                     || (int) $official->department_id === (int) $plan->department_id)->values()->all(),
-                'submitted_by' => $plan->creator?->name ?? 'Former user', 'submitted_at' => ($plan->submitted_at ?? $plan->applied_at)?->toISOString(),
+                'signatories' => in_array($plan->status, ['pending_dean', 'pending_vpaa'], true) ? $this->transferSignatories($plan) : ($plan->actor_snapshots['signatories'] ?? null),
+                'submitted_by' => $plan->actor_snapshots['created_by']['name'] ?? 'Submitter unavailable', 'submitted_at' => ($plan->submitted_at ?? $plan->applied_at)?->toISOString(),
                 'dean_reviewed_at' => $plan->dean_reviewed_at?->toISOString(),
                 'reviewed_at' => $plan->reviewed_at?->toISOString(), 'rejection_reason' => $plan->rejection_reason,
                 'schedule_ids' => $groups->flatMap(fn ($group) => array_column($group['before'], 'id'))->unique()->values()->all(),

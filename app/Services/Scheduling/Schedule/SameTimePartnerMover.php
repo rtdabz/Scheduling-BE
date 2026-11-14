@@ -13,7 +13,7 @@ use Illuminate\Support\Collection;
 
 final class SameTimePartnerMover
 {
-    public const EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
+    public const EDITABLE_STATUSES = Schedule::PLOTTING_EDITABLE_STATUSES;
 
     private const TIME_FIELDS = ['day', 'start_time', 'end_time'];
 
@@ -50,19 +50,6 @@ final class SameTimePartnerMover
     }
 
     /**
-     * @param  Collection<int, Schedule>  $partners
-     * @return list<int>
-     */
-    public function runPartnerIds(Schedule $schedule, Collection $partners): array
-    {
-        if (SchedulingPolicy::consecutiveDayCount($schedule->preferred_pattern) === null) {
-            return [];
-        }
-
-        return $partners->pluck('id')->map(static fn ($id): int => (int) $id)->values()->all();
-    }
-
-    /**
      * @param  array<string, mixed>  $attemptData
      * @param  Collection<int, Schedule>  $partners
      * @return list<int> the partners moved to the new time
@@ -77,19 +64,15 @@ final class SameTimePartnerMover
             return [];
         }
         $time = ['start_time' => $attemptData['start_time'], 'end_time' => $attemptData['end_time']];
-        $isRun = SchedulingPolicy::consecutiveDayCount($attemptData['preferred_pattern'] ?? null) !== null;
-
         $partnerIds = $partners->pluck('id')->map(static fn ($id): int => (int) $id)->all();
         $ignoreIds = [(int) $attemptData['id'], ...$partnerIds];
         foreach ($partners as $index => $partner) {
             $violations = $this->ruleEngine->validate([...$partnerRows[$index], 'ignore_schedule_id' => $ignoreIds]);
             if ($violations !== []) {
-                throw new ScheduleConflictException($violations, $isRun
-                    ? sprintf('The run\'s %s meeting cannot move to %s at the new time.', (string) $partner->day, (string) $partnerRows[$index]['day'])
-                    : 'The paired meeting cannot move to the new time.');
+                throw new ScheduleConflictException($violations, 'The paired meeting cannot move to the new time.');
             }
 
-            $partner->update($isRun ? [...$time, 'day' => $partnerRows[$index]['day']] : $time);
+            $partner->update($time);
         }
 
         return $partnerIds;
@@ -109,8 +92,12 @@ final class SameTimePartnerMover
         $isRun = SchedulingPolicy::consecutiveDayCount($attemptData['preferred_pattern'] ?? null) !== null;
 
         if ($isRun) {
-            $partnerRows = $this->shiftedRun($attemptData, $partnerRows, $time);
-            $movesPartners = true;
+            // A saved run's meetings relocate independently; its siblings keep their slots.
+            $movesPartners = false;
+            $previousDay = Schedule::query()->whereKey((int) ($attemptData['id'] ?? 0))->value('day');
+            if ($previousDay !== null && $previousDay !== $attemptData['day']) {
+                $this->assertOnTickedDays($attemptData, [(string) $attemptData['day'], ...array_column($partnerRows, 'day')]);
+            }
         } else {
             $movesPartners = collect($this->ruleEngine->validateConfiguredMeetingGroups([$attemptData, ...$partnerRows]))
                 ->contains('rule', 'split_group_same_time');
@@ -119,7 +106,11 @@ final class SameTimePartnerMover
             }
         }
 
-        $groupViolations = $this->ruleEngine->validateConfiguredMeetingGroups([$attemptData, ...$partnerRows]);
+        $groupViolations = array_values(array_filter(
+            $this->ruleEngine->validateConfiguredMeetingGroups([$attemptData, ...$partnerRows]),
+            // Matching times form a consecutive run, but must not force a group relocation.
+            static fn (array $violation): bool => ! $isRun || $violation['rule'] !== 'split_group_same_time',
+        ));
         if ($groupViolations !== []) {
             throw new ScheduleConflictException($groupViolations, 'Schedule update breaks its linked meetings.');
         }
@@ -134,41 +125,6 @@ final class SameTimePartnerMover
         }
 
         return ['rows' => $partnerRows, 'moves_partners' => $movesPartners];
-    }
-
-    /**
-     * @param  array<string, mixed>  $attemptData
-     * @param  list<array<string, mixed>>  $partnerRows
-     * @param  array{start_time: mixed, end_time: mixed}  $time
-     * @return list<array<string, mixed>>
-     * @throws ScheduleConflictException
-     */
-    private function shiftedRun(array $attemptData, array $partnerRows, array $time): array
-    {
-        $previousDay = (string) (Schedule::query()->whereKey((int) ($attemptData['id'] ?? 0))->value('day') ?? $attemptData['day']);
-        $shift = SchedulingPolicy::dayIndex((string) $attemptData['day']) - SchedulingPolicy::dayIndex($previousDay);
-
-        $shifted = array_map(static function (array $row) use ($shift, $time, $attemptData): array {
-            $index = SchedulingPolicy::dayIndex((string) $row['day']) + $shift;
-            if (! isset(SchedulingPolicy::DAYS[$index])) {
-                throw new ScheduleConflictException([[
-                    'rule' => 'consecutive_days',
-                    'message' => sprintf(
-                        'Moving this meeting to %s would push its %s meeting past the end of the week. Move the run to an earlier day.',
-                        (string) $attemptData['day'],
-                        (string) $row['day'],
-                    ),
-                ]], 'Schedule update breaks its linked meetings.');
-            }
-
-            return [...$row, ...$time, 'day' => SchedulingPolicy::DAYS[$index]];
-        }, $partnerRows);
-
-        if ($shift !== 0) {
-            $this->assertOnTickedDays($attemptData, [(string) $attemptData['day'], ...array_column($shifted, 'day')]);
-        }
-
-        return $shifted;
     }
 
     /**
@@ -193,7 +149,7 @@ final class SameTimePartnerMover
         throw new ScheduleConflictException([[
             'rule' => 'consecutive_days',
             'message' => sprintf(
-                'This class is set to meet on %s in Setup Courses, so its run cannot move to %s. Change its time or room instead, or tick other meeting days in Setup Courses.',
+                'This class is set to meet on %s in Setup Courses. Moving this meeting would change those days to %s. Choose a configured day or change the meeting days in Setup Courses.',
                 implode(', ', $ticked),
                 implode(', ', SchedulingPolicy::parseMeetingDays($days) ?? $days),
             ),

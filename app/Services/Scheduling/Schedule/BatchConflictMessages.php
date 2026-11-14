@@ -71,9 +71,6 @@ final class BatchConflictMessages
             BatchConflict::RULE_SECTION => ConflictMessage::section(
                 $names['sections'][(int) ($row['section_id'] ?? 0)] ?? null, $day, $start, $end, $booking,
             ),
-            BatchConflict::RULE_SUBJECT_SECTION_TIME => ConflictMessage::onlineCourse(
-                $conflict->courseCode, $day, $start, $end, $booking,
-            ),
             default => 'Two classes in this save overlap on '.ConflictMessage::slot($day, $start, $end).'. Please choose another time.',
         };
     }

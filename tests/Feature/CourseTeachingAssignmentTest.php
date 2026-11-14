@@ -696,6 +696,28 @@ class CourseTeachingAssignmentTest extends TestCase
         $this->assertSame(['GEC 101'], $incoming->all());
     }
 
+    public function test_the_listing_reports_each_section_and_its_instructor_for_a_delegated_course(): void
+    {
+        $fixture = $this->fixture();
+        $semester = $this->activateSemester('1st');
+        $fixture['gec']->update(['teaching_department_id' => $fixture['cas']->id]);
+        $this->assignInstructor($fixture, $semester, $fixture['gec'], $fixture['cas']);
+
+        $courses = collect($this->actingAs($fixture['itSecretary'])
+            ->getJson('/api/course-teaching-assignments')
+            ->assertOk()
+            ->json('courses'))->keyBy('course_code');
+
+        $this->assertSame([[
+            'section_id' => $courses['GEC 101']['section_assignments'][0]['section_id'],
+            'section_name' => 'BSIT 1A',
+            'instructor_name' => 'Juan Dela Cruz',
+            'status' => 'Assigned',
+        ]], $courses['GEC 101']['section_assignments']);
+        // A course with no class this semester has no sections to report.
+        $this->assertSame([], $courses['IT 101']['section_assignments']);
+    }
+
     public function test_a_course_that_already_has_an_instructor_cannot_be_given_to_another_college(): void
     {
         $fixture = $this->fixture();

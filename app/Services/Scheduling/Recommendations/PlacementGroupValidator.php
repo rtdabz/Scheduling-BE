@@ -21,10 +21,11 @@ final readonly class PlacementGroupValidator
      * @param  list<array<string, mixed>>  $rows  Complete proposed and kept affected meetings.
      * @param  list<array<string, mixed>>  $tentative  Other unsaved meetings, without the affected group.
      * @param  list<int>  $ignoreIds  Exact persisted rows replaced by this placement.
+     * @param  array{lecture?: string, laboratory?: string}  $componentDays  Lecture/Laboratory Required Days of the group
      */
-    public function passes(SchedulingSnapshot $snapshot, array $rows, array $tentative = [], array $ignoreIds = []): bool
+    public function passes(SchedulingSnapshot $snapshot, array $rows, array $tentative = [], array $ignoreIds = [], array $componentDays = []): bool
     {
-        return ($this->forContext($snapshot, $tentative, $ignoreIds))($rows);
+        return ($this->forContext($snapshot, $tentative, $ignoreIds, componentDays: $componentDays))($rows);
     }
 
     /**
@@ -32,9 +33,10 @@ final readonly class PlacementGroupValidator
      * An optional description is reusable when candidates retain the meeting count,
      * component kinds and consecutive marker, as manual placement does.
      *
+     * @param  array{lecture?: string, laboratory?: string}  $componentDays  pins checked by the kernel's integrated_component_required_day
      * @return Closure(array): bool
      */
-    public function forContext(SchedulingSnapshot $snapshot, array $tentative = [], array $ignoreIds = [], ?SessionDescription $session = null): Closure
+    public function forContext(SchedulingSnapshot $snapshot, array $tentative = [], array $ignoreIds = [], ?SessionDescription $session = null, array $componentDays = []): Closure
     {
         $snapshot = self::discoverySnapshot($snapshot, $tentative, $ignoreIds);
         try {
@@ -45,11 +47,14 @@ final readonly class PlacementGroupValidator
             return static fn (array $rows): bool => false;
         }
 
-        return fn (array $rows): bool => $this->passesRows($snapshot, $rows, $others, $ignoreIds, $session);
+        return fn (array $rows): bool => $this->passesRows($snapshot, $rows, $others, $ignoreIds, $session, $componentDays);
     }
 
-    /** @param list<ScheduleRow> $others */
-    private function passesRows(SchedulingSnapshot $snapshot, array $rows, array $others, array $ignoreIds, ?SessionDescription $session): bool
+    /**
+     * @param  list<ScheduleRow>  $others
+     * @param  array{lecture?: string, laboratory?: string}  $componentDays
+     */
+    private function passesRows(SchedulingSnapshot $snapshot, array $rows, array $others, array $ignoreIds, ?SessionDescription $session, array $componentDays): bool
     {
         if ($rows === []) {
             return false;
@@ -89,7 +94,14 @@ final readonly class PlacementGroupValidator
                 $row->courseId, $row->meetingType ?? 'lecture',
                 intdiv(SchedulingPolicy::timeToMinutes($row->endTime) - SchedulingPolicy::timeToMinutes($row->startTime), SchedulingPolicy::SLOT_MINUTES),
                 [], [$row->mode],
+                requiredDay: $componentDays[$row->meetingType ?? ''] ?? null,
             ), $parsed);
+            // A pinned component missing from the rows would otherwise go unchecked.
+            foreach ($componentDays as $component => $day) {
+                if (! in_array($component, array_map(static fn (ScheduleRow $row): ?string => $row->meetingType, $parsed), true)) {
+                    return false;
+                }
+            }
 
             return $this->kernel->evaluateMeetingGroup(new MeetingGroup(
                 $first->splitGroupId ?? 'single', $first->sectionId, $first->courseId, $type, $requirements, $parsed,

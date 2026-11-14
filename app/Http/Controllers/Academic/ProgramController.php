@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Program\StoreProgramRequest;
 use App\Http\Requests\Program\UpdateProgramRequest;
 use App\Models\Program;
+use App\Services\AcademicArchiveDependencies;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ProgramController extends Controller
 {
@@ -73,7 +75,7 @@ class ProgramController extends Controller
 
     public function destroy(Program $program): JsonResponse
     {
-        $blockers = app(\App\Services\AcademicArchiveDependencies::class)->blockers($program);
+        $blockers = app(AcademicArchiveDependencies::class)->blockers($program);
         if ($blockers !== []) {
             return response()->json([
                 'message' => 'This program cannot be archived while these live dependencies remain: '.implode(', ', $blockers).'.',
@@ -81,7 +83,7 @@ class ProgramController extends Controller
             ], 422);
         }
 
-        $program->delete();
+        DB::transaction(fn () => $program->delete());
         ApiCache::forgetGroups(['departments.index', 'courses.index', 'initial.data']);
 
         return response()->json(['message' => 'Program archived successfully.']);

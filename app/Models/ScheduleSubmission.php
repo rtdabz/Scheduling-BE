@@ -2,10 +2,17 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesApprovalActors;
 use Illuminate\Database\Eloquent\Model;
 
 class ScheduleSubmission extends Model
 {
+    use PreservesApprovalActors;
+
+    public const RECORDED_ACTORS = ['submitted_by' => 'submitted_at', 'dean_reviewed_by' => 'dean_reviewed_at', 'vpaa_reviewed_by' => 'vpaa_reviewed_at', 'withdrawn_by' => 'withdrawn_at'];
+
+    public const REPEATABLE_ACTORS = ['withdrawn_by'];
+
     protected $fillable = [
         'department_id',
         'semester_id',
@@ -30,6 +37,7 @@ class ScheduleSubmission extends Model
     ];
 
     protected $casts = [
+        'actor_snapshots' => 'array',
         'submitted_at' => 'datetime',
         'dean_reviewed_at' => 'datetime',
         'vpaa_reviewed_at' => 'datetime',

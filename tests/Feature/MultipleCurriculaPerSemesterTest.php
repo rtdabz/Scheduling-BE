@@ -523,7 +523,8 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $this->patchJson('/api/schedule-splits/'.$id, ['meeting_type' => 'laboratory'])->assertUnprocessable();
         $this->assertDatabaseHas('schedule_splits', ['id' => $id, 'meeting_type' => 'lecture']);
         $this->deleteJson('/api/schedule-splits/'.$id)->assertOk();
-        $this->assertSoftDeleted('schedule_splits', ['id' => $id]);
+        // Split metadata is never archived.
+        $this->assertDatabaseMissing('schedule_splits', ['id' => $id]);
     }
 
     public function test_split_reassignment_checks_both_parents_and_required_metadata_cannot_be_removed(): void
@@ -571,30 +572,28 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $other = Departments::create(['department_name' => 'Other', 'department_code' => 'OTHER']);
         $this->putJson('/api/rooms/'.$room->id, ['department_id' => $other->id])->assertUnprocessable();
         $this->assertEquals($f['department']->id, $room->fresh()->department_id);
-        $this->putJson('/api/rooms/'.$room->id, ['room_type' => 'laboratory', 'allow_lecture_usage' => true])->assertOk();
-        $this->putJson('/api/rooms/'.$room->id, ['allow_lecture_usage' => false])->assertUnprocessable();
-        $this->assertTrue($room->fresh()->allow_lecture_usage);
+        // The class is a Major without laboratory units: even a lecture-capable laboratory cannot hold it.
+        $this->putJson('/api/rooms/'.$room->id, ['room_type' => 'laboratory', 'allow_lecture_usage' => true])->assertUnprocessable();
+        $this->assertSame('lecture', $room->fresh()->room_type);
     }
 
-    public function test_schedule_restoration_uses_current_room_and_curriculum_rules(): void
+    public function test_previously_archived_schedules_and_meeting_groups_cannot_be_restored(): void
     {
         $f = $this->fixture();
-        $class = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
-        $class->update(['end_time' => '11:00:00']);
-        $room = Rooms::findOrFail($class->room_id);
-        $class->delete();
+        $first = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $second = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
+        $first->update(['preferred_pattern' => 'consecutive:2', 'split_group_id' => 'restore-group', 'meeting_type' => 'lecture', 'meeting_index' => 1]);
+        $second->update(['preferred_pattern' => 'consecutive:2', 'day' => 'Tuesday', 'split_group_id' => 'restore-group', 'meeting_type' => 'lecture', 'meeting_index' => 2]);
+        // Rows soft-deleted before schedules lost their archive.
+        $first->delete();
+        $second->delete();
         $this->actingAs(User::factory()->create(['role' => 'vpaa']));
-        $room->update(['status' => 'not available']);
-        $url = '/api/archives/schedules/'.$class->id.'/restore';
-        $this->postJson($url)->assertUnprocessable();
-        $this->assertSoftDeleted($class);
-        $room->update(['status' => 'available']);
-        $f['old']->courses()->detach($f['oldCourse']->id);
-        $this->postJson($url)->assertUnprocessable();
-        $this->assertSoftDeleted($class);
-        $this->place($f['old'], $f['oldCourse'], 2);
-        $this->postJson($url)->assertOk();
-        $this->assertNotSoftDeleted($class);
+
+        $this->getJson('/api/archives/schedules/'.$first->id)->assertNotFound();
+        $this->postJson('/api/archives/schedules/'.$first->id.'/restore')->assertNotFound();
+        $this->assertSoftDeleted($first);
+        $this->assertSoftDeleted($second);
+        $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'record_restored']);
     }
 
     public function test_archiving_programs_and_departments_reports_live_dependencies(): void
@@ -628,50 +627,6 @@ class MultipleCurriculaPerSemesterTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => 'vpaa']));
         $this->postJson('/api/rooms', ['room_code' => 'INVALID', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $f['department']->id])
             ->assertUnprocessable()->assertJsonValidationErrors('department_id');
-    }
-
-    public function test_required_meeting_groups_restore_atomically(): void
-    {
-        $f = $this->fixture();
-        $first = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
-        $second = $this->plot($f, $f['year2'], $f['old'], $f['oldCourse']);
-        $first->update(['preferred_pattern' => 'consecutive:2', 'split_group_id' => 'restore-group', 'meeting_type' => 'lecture', 'meeting_index' => 1]);
-        $second->update(['preferred_pattern' => 'consecutive:2', 'day' => 'Tuesday', 'split_group_id' => 'restore-group', 'meeting_type' => 'lecture', 'meeting_index' => 2]);
-        $first->delete();
-        $second->delete();
-        $room = Rooms::findOrFail($first->room_id);
-        $room->update(['status' => 'not available']);
-        $this->actingAs(User::factory()->create(['role' => 'vpaa']));
-        $this->getJson('/api/archives/schedules/'.$first->id)->assertOk()
-            ->assertJsonPath('data.restore.state', 'validation')
-            ->assertJsonCount(3, 'data.linked');
-        $this->postJson('/api/archives/schedules/'.$first->id.'/restore')->assertUnprocessable()
-            ->assertJsonPath('code', 'schedule_violations')
-            ->assertJsonStructure(['message', 'violations' => [['rule', 'message']]]);
-        $this->assertSoftDeleted($first);
-        $this->assertSoftDeleted($second);
-        $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'record_restored']);
-        $room->update(['status' => 'available']);
-        $response = $this->postJson('/api/archives/schedules/'.$first->id.'/restore')->assertOk()
-            ->assertJsonPath('already_restored', false)
-            ->assertJsonPath('affected_count', 4)
-            ->assertJsonPath('restored.0.type', 'schedules')
-            ->assertJsonPath('restored.0.id', $first->id);
-        $this->assertEqualsCanonicalizing(
-            ['schedules:'.$first->id, 'schedules:'.$second->id, 'schedule-splits', 'schedule-splits'],
-            collect($response->json('restored'))->map(fn (array $row): string => $row['type'] === 'schedules' ? 'schedules:'.$row['id'] : $row['type'])->all(),
-        );
-        $this->assertNotSoftDeleted($first);
-        $this->assertNotSoftDeleted($second);
-        $this->assertDatabaseCount('schedule_splits', 2);
-        $this->assertSame(4, \App\Models\SchedulingAuditLog::where('action', 'record_restored')->count());
-
-        // A repeat for the linked class (lost response, stale list) changes nothing.
-        $this->postJson('/api/archives/schedules/'.$second->id.'/restore')->assertOk()
-            ->assertJsonPath('already_restored', true)
-            ->assertJsonPath('affected_count', 0);
-        $this->assertSame(4, \App\Models\SchedulingAuditLog::where('action', 'record_restored')->count());
-        $this->getJson('/api/archives')->assertOk()->assertJsonPath('counts.schedules', 0)->assertJsonPath('counts.schedule-splits', 0);
     }
 
     public function test_room_ownership_change_preserves_program_allocations(): void

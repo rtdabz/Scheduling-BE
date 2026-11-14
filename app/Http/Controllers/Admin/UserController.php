@@ -13,7 +13,10 @@ use App\Services\AdministrativeRoleSlots;
 use App\Services\AuthenticationAuditService;
 use App\Services\FacultyDesignationService;
 use App\Services\UserFacultyProfileService;
+use App\Support\AccountVersion;
 use App\Support\ApiCache;
+use App\Support\PersonName;
+use Illuminate\Auth\Passwords\PasswordBroker;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -48,6 +51,8 @@ class UserController extends Controller
             $this->ensureRoleSlotAvailable($validated, (bool) ($validated['is_active'] ?? true), locked: true);
             $user = User::create([
                 'name' => $this->displayName($validated),
+                'honorific_prefix' => $validated['honorific_prefix'] ?? null,
+                'credentials' => $validated['credentials'] ?? null,
                 'first_name' => trim($validated['first_name']),
                 'middle_initial' => isset($validated['middle_initial']) ? strtoupper(trim($validated['middle_initial'])) : null,
                 'last_name' => trim($validated['last_name']),
@@ -91,17 +96,20 @@ class UserController extends Controller
 
     public function update(UpdateUserRequest $request, User $user): JsonResponse
     {
-        $validated = $request->validated();
+        // Omitted title/credentials keep their stored value; explicit null clears them.
+        $validated = $request->validated() + $user->only(PersonName::AFFIX_FIELDS);
         $this->ensureRoleDepartmentHierarchy($validated['role'], (int) $validated['department_id']);
         $this->ensureRoleSlotAvailable($validated, (bool) $validated['is_active'], $user->id);
 
         $newEmail = strtolower(trim($validated['email']));
         $emailChanged = $newEmail !== strtolower((string) $user->email);
 
-        $this->withRoleSlotBackstop($validated, fn () => DB::transaction(function () use ($validated, $request, $user, $emailChanged) {
+        $this->withRoleSlotBackstop($validated, fn () => DB::transaction(function () use ($validated, $request, &$user, $emailChanged) {
             $this->ensureRoleSlotAvailable($validated, (bool) $validated['is_active'], $user->id, locked: true);
+            $user = User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
+            AccountVersion::check($user, $validated['expected_version']);
             if ($emailChanged) {
-                /** @var \Illuminate\Auth\Passwords\PasswordBroker $broker */
+                /** @var PasswordBroker $broker */
                 $broker = Password::broker('invites');
                 $broker->deleteToken($user);
                 $user->forceFill(['google_id' => null, 'google_email' => null, 'google_linked_at' => null]);
@@ -109,6 +117,8 @@ class UserController extends Controller
             }
             $user->update([
                 'name' => $this->displayName($validated),
+                'honorific_prefix' => $validated['honorific_prefix'],
+                'credentials' => $validated['credentials'],
                 'first_name' => trim($validated['first_name']),
                 'middle_initial' => isset($validated['middle_initial']) ? strtoupper(trim($validated['middle_initial'])) : null,
                 'last_name' => trim($validated['last_name']),
@@ -133,6 +143,7 @@ class UserController extends Controller
                 'faculty_profile_synced' => $syncedProfile !== null,
             ]);
         }));
+        $user->refresh();
         ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
         $message = 'User updated successfully.';
@@ -145,6 +156,28 @@ class UserController extends Controller
             'message' => $message,
             'data' => $this->withAccessState($user->fresh()->load(['department', 'program', 'facultyProfile'])),
         ]);
+    }
+
+    public function status(Request $request, User $user): JsonResponse
+    {
+        abort_if($user->isVpaa(), 403, 'The VPAA account cannot be changed here.');
+        $validated = $request->validate(['is_active' => ['required', 'boolean']]);
+        $scope = $user->only(['role', 'department_id', 'program_id']);
+        $this->withRoleSlotBackstop($scope, fn () => DB::transaction(function () use ($request, &$user, $validated, $scope): void {
+            $this->roleSlots->lockScope($scope['role'], $scope['department_id'], $scope['program_id']);
+            $user = User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
+            abort_unless($user->only(array_keys($scope)) === $scope, 409, 'The account assignment changed. Reload it before changing its status.');
+            $this->ensureRoleSlotAvailable($scope, (bool) $validated['is_active'], $user->id, locked: true);
+            $user->update(['is_active' => $validated['is_active']]);
+            $this->facultyProfiles->sync($user);
+            if (! $user->is_active) {
+                $user->tokens()->delete();
+            }
+            $this->audit->record($request, 'user_status_changed', $user, ['active' => $user->is_active]);
+        }));
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
+
+        return response()->json(['message' => 'Account status updated.', 'data' => $this->withAccessState($user->fresh()->load(['department', 'program', 'facultyProfile']))]);
     }
 
     public function destroy(Request $request, User $user): JsonResponse
@@ -236,7 +269,7 @@ class UserController extends Controller
 
     private function ensureRoleDepartmentHierarchy(string $role, int $departmentId): void
     {
-        if (in_array($role, ['dean', 'secretary'], true) || Program::query()->where('department_id', $departmentId)->exists()) {
+        if (in_array($role, ['dean', ...User::DEPARTMENT_OFFICE_ROLES], true) || Program::query()->where('department_id', $departmentId)->exists()) {
             return;
         }
 
@@ -266,13 +299,8 @@ class UserController extends Controller
             return;
         }
 
-        $label = AdministrativeRoleSlots::roleLabel($role);
-        $scope = $role === 'program_head'
-            ? ($holder->program?->code ?? $holder->program?->name ?? 'This program')
-            : ($holder->department?->department_code ?? $holder->department?->department_name ?? 'This department');
-
         throw ValidationException::withMessages([
-            'role' => "{$scope} already has an active {$label} ({$holder->name}). Deactivate them first.",
+            'role' => AdministrativeRoleSlots::occupiedMessage($role, $holder),
         ]);
     }
 
@@ -290,7 +318,7 @@ class UserController extends Controller
             if (! AdministrativeRoleSlots::isSlotViolation($exception)) {
                 throw $exception;
             }
-            $label = AdministrativeRoleSlots::roleLabel((string) $validated['role']);
+            $label = AdministrativeRoleSlots::slotLabel((string) $validated['role']);
 
             throw ValidationException::withMessages([
                 'role' => "Another active {$label} was saved for this scope at the same time. Refresh and review the current holder.",
@@ -336,6 +364,7 @@ class UserController extends Controller
     private function withAccessState(User $user): User
     {
         return $user
+            ->setAttribute('account_version', AccountVersion::of($user))
             ->setAttribute('permissions', $user->capabilityNames())
             ->setAttribute('scheduling_ready', $this->schedulingReady($user));
     }

@@ -308,7 +308,7 @@ class DepartmentSchedulingPreflightTest extends TestCase
         $this->assertSame(0, $row['laboratory_course_count']);
     }
 
-    public function test_an_eligible_lecture_major_can_use_a_lab_marked_for_lecture_use(): void
+    public function test_a_major_without_laboratory_units_does_not_use_a_lab_marked_for_lecture_use(): void
     {
         [$semester, $department, $section, $course] = $this->createBase('BA', 'Business Administration');
         $this->attachCourse($department, $course, $section);
@@ -324,12 +324,8 @@ class DepartmentSchedulingPreflightTest extends TestCase
             'role' => 'secretary', 'department_id' => $department->id,
         ]));
 
-        $response = $this->previewYearLevel($user, $section, $course)->assertOk();
-        $this->assertNotEmpty($response->json('schedules'));
-        foreach ($response->json('schedules') as $row) {
-            $this->assertSame($room->id, $row['room_id']);
-            $this->assertSame('on-site', $row['mode']);
-        }
+        $response = $this->previewYearLevel($user, $section, $course);
+        $this->assertNotContains($room->id, array_column($response->json('schedules') ?? [], 'room_id'));
     }
 
     public static function configurationRoomCases(): array

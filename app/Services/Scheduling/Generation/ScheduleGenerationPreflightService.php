@@ -31,6 +31,12 @@ class ScheduleGenerationPreflightService
         // Resource feasibility and fallbacks belong to configuration validation and
         // the solver. Course eligibility is independent of department classification.
         $issues = $this->commonIssues($section, $courses, $courseIds);
+        foreach ($courses as $course) {
+            $mode = $options['delivery_modes_by_course_id'][$course->id] ?? $options['mode'] ?? 'on-site';
+            if ($mode === 'field' && ! SchedulingPolicy::isFieldSchedulingEligible($course)) {
+                $issues[] = $this->courseIssue('room_type_match', SchedulingPolicy::LABORATORY_FIELD_MESSAGE, $section, $course, 'Choose on-site delivery with a laboratory room or Room TBA.');
+            }
+        }
         if ($issues !== []) {
             throw new ScheduleGenerationPreflightException($issues);
         }

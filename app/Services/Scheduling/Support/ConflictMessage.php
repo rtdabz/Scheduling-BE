@@ -54,18 +54,6 @@ final class ConflictMessage
             .'Please choose another time.';
     }
 
-    /** @param array<string, mixed> $booking */
-    public static function onlineCourse(?string $course, string $day, string $start, string $end, array $booking): string
-    {
-        $section = self::text($booking['section'] ?? null) ?? 'another section';
-        $department = self::text($booking['department'] ?? null);
-
-        return 'Online class '.(self::text($course) ?? 'for this course').' is unavailable on '.self::slot($day, $start, $end).'. '
-            ."It is already running online for {$section}".($department === null ? '' : " ({$department})")
-            .' from '.self::held($booking).'. '
-            .'Please choose another time or delivery mode.';
-    }
-
     /**
      * Two existing classes that collide (conflict inbox): both sides are named, then one fix is suggested.
      *
@@ -93,10 +81,6 @@ final class ConflictMessage
             'faculty_conflict' => self::subject('Instructor', $first['instructor'] ?? null, 'An instructor')." is double-booked on {$slot}. "
                 .'They teach '.$held($first).' and '.$held($second).'. '
                 .'Move one class or reassign the instructor.',
-            'subject_section_time_conflict' => 'Online class '.(self::text($first['course'] ?? null) ?? 'for this course')." runs for two sections at once on {$slot}: "
-                .(self::text($first['section'] ?? null) ?? 'one section').' from '.self::window($first).' and '
-                .(self::text($second['section'] ?? null) ?? 'another section').' from '.self::window($second).'. '
-                .'Move one class or change its delivery mode.',
             default => ucfirst($held($first))." conflicts with {$held($second)} on {$slot}.",
         };
     }
@@ -125,12 +109,16 @@ final class ConflictMessage
         return in_array($day, SchedulingPolicy::DAYS, true) ? substr($day, 0, 3) : $day;
     }
 
-    /** "07:00:00" -> "07:00". */
+    /** "13:00:00" -> "1:00 PM". */
     public static function time(string $time): string
     {
-        return preg_match('/^(\d{1,2}):(\d{2})/', trim($time), $m) === 1
-            ? sprintf('%02d:%s', (int) $m[1], $m[2])
-            : trim($time);
+        if (preg_match('/^(\d{1,2}):(\d{2})/', trim($time), $m) !== 1) {
+            return trim($time);
+        }
+
+        $hour = (int) $m[1] % 24;
+
+        return sprintf('%d:%s %s', $hour % 12 ?: 12, $m[2], $hour >= 12 ? 'PM' : 'AM');
     }
 
     public static function slot(string $day, string $start, string $end): string

@@ -54,6 +54,15 @@ final class RoomTypeRule
         $requiredRoomType = SchedulingPolicy::effectiveRoomType($course, $departmentId, $meetingType, $fieldCourseCodes);
         $violation = static fn (string $message): array => ['rule' => 'room_type_match', 'message' => $message];
 
+        if (! SchedulingPolicy::isFieldSchedulingEligible($course)
+            && ($deliveryMode === 'field' || $meetingType === 'field' || $roomType === 'field')) {
+            return $violation(SchedulingPolicy::LABORATORY_FIELD_MESSAGE);
+        }
+
+        if ($meetingType === 'laboratory' && SchedulingPolicy::isMajorWithoutLaboratoryUnits($course)) {
+            return $violation("Course {$courseCode} has no laboratory units, so it cannot have a laboratory meeting.");
+        }
+
         if ($deliveryMode === 'online') {
             return SchedulingPolicy::allowsOnlineRoomFallback($course, $departmentId, $meetingType, $fieldCourseCodes)
                 ? null
@@ -83,18 +92,13 @@ final class RoomTypeRule
                 return null;
             }
 
-            return $violation(SchedulingPolicy::labRoomType($labDepartmentId) === 'lecture'
-                ? "Course {$courseCode} meets in a classroom, but '{$roomCode}' is a '{$roomType}' room."
-                : "Course {$courseCode} requires a laboratory room, but '{$roomCode}' is a '{$roomType}' room.");
+            return $violation("Course {$courseCode} requires a laboratory room for its laboratory session, but '{$roomCode}' is a '{$roomType}' room. Choose a laboratory room or leave the room as TBA.");
         }
 
-        if ($requiredRoomType === 'lecture' && $roomType === 'laboratory'
-            && ! SchedulingPolicy::laboratoryServesLecture($course, $room)) {
-            return $violation("Course {$courseCode} can only use lecture-capable laboratory rooms as a fallback.");
-        }
-
-        if ($requiredRoomType === 'lecture' && in_array($roomType, ['lecture', 'laboratory'], true)) {
-            return null;
+        if ($requiredRoomType === 'lecture' && $roomType === 'laboratory') {
+            return $violation(SchedulingPolicy::isMajorWithoutLaboratoryUnits($course)
+                ? SchedulingPolicy::NO_LABORATORY_UNITS_MESSAGE
+                : "Course {$courseCode} requires a 'lecture' room, but '{$roomCode}' is a 'laboratory' room.");
         }
 
         return $requiredRoomType === $roomType

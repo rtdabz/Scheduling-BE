@@ -67,11 +67,12 @@ class RuleEngine
 
     /**
      * @param  array<string, mixed>  $attempt
+     * @param  list<array<string, mixed>>  $pendingOperations  the same save's other operations, for the run duration check
      * @return list<array<string, mixed>>
      */
-    public function validate(array $attempt): array
+    public function validate(array $attempt, array $pendingOperations = []): array
     {
-        return $this->evaluate($attempt, withOverlaps: true);
+        return $this->evaluate($attempt, withOverlaps: true, pendingOperations: $pendingOperations);
     }
 
     /**
@@ -87,7 +88,7 @@ class RuleEngine
      * @param  array<string, mixed>  $attempt
      * @return list<array<string, mixed>>
      */
-    private function evaluate(array $attempt, bool $withOverlaps): array
+    private function evaluate(array $attempt, bool $withOverlaps, array $pendingOperations = []): array
     {
         $violations = $this->requiredFields($attempt);
         if ($violations !== []) {
@@ -121,7 +122,7 @@ class RuleEngine
                 $hasMissingRecord ? null : $this->roomTypeFor($attempt),
                 $this->meetingDays->preferredPattern($day, $attempt['preferred_pattern'] ?? null),
                 $this->operatingHours->withinOperatingHours($startTime, $endTime),
-                $records === null ? null : $this->classDuration->check($attempt, $records),
+                $records === null ? null : $this->classDuration->check($attempt, $records, $pendingOperations),
             ]),
         ];
 

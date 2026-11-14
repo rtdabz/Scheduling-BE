@@ -18,17 +18,19 @@ final class GenerationCourseSelection
      * @param  array<string, mixed>  $config  course_ids, selected_split_session_course_ids,
      *                                        selected_gec_course_ids, hybrid_split_course_ids,
      *                                        preferred_patterns, is_hybrid
-     * @return array{course_ids: list<int>, selected_split_session_course_ids: list<int>, is_hybrid: bool, balanced_split_course_ids: list<int>, hybrid_split_course_ids: list<int>, preferred_patterns: array<int, mixed>}
+     * @return array{course_ids: list<int>, selected_split_session_course_ids: list<int>, is_hybrid: bool, balanced_split_course_ids: list<int>, hybrid_split_course_ids: list<int>, preferred_patterns: array<int, mixed>, delivery_modes_by_course_id: array<int|string, mixed>}
      */
     public function resolve(Sections $section, array $config): array
     {
         $courseIds = $this->resolveCourseIds($section, $config['course_ids'] ?? null);
-        $splitIds = $this->resolveLectureLabSplitCourseIds($section, $config['selected_split_session_course_ids'] ?? [], $courseIds);
         $hybridSplitIds = $this->resolveHybridSplitCourseIds($section, $config['hybrid_split_course_ids'] ?? [], $courseIds);
         $balancedSplitIds = array_values(array_unique([
             ...$this->resolveMinorSplitCourseIds($section, $config['selected_gec_course_ids'] ?? [], $courseIds),
             ...$hybridSplitIds,
         ]));
+        // Integrated (lecture + laboratory sessions) is only ever an explicit choice. A Regular course
+        // with laboratory units keeps one full-length meeting in a laboratory room.
+        $splitIds = $this->resolveLectureLabSplitCourseIds($section, $config['selected_split_session_course_ids'] ?? [], $courseIds);
 
         return [
             'course_ids' => $courseIds,
@@ -37,8 +39,10 @@ final class GenerationCourseSelection
             'balanced_split_course_ids' => $balancedSplitIds,
             'hybrid_split_course_ids' => $hybridSplitIds,
             'preferred_patterns' => $this->mergeSelectedSplitPatterns($config['preferred_patterns'] ?? [], $balancedSplitIds, $courseIds),
+            'delivery_modes_by_course_id' => (array) ($config['delivery_modes_by_course_id'] ?? []),
         ];
     }
+
     public function resolveCourseIds(Sections $section, ?array $providedCourseIds): array
     {
         $curriculum = $this->curriculumResolver->forSection($section);
@@ -86,6 +90,17 @@ final class GenerationCourseSelection
         };
     }
 
+    /**
+     * Courses of this section that can run as Integrated (lecture + laboratory).
+     *
+     * @param  list<int>  $courseIds
+     * @return list<int>
+     */
+    public function integratedEligibleCourseIds(Sections $section, array $courseIds): array
+    {
+        return $this->resolveLectureLabSplitCourseIds($section, $courseIds, $courseIds);
+    }
+
     private function resolveLectureLabSplitCourseIds(Sections $section, array $requestedCourseIds, array $validCourseIds): array
     {
         $candidateIds = array_values(array_intersect(
@@ -100,10 +115,7 @@ final class GenerationCourseSelection
         return Course::query()
             ->whereIn('id', $candidateIds)
             ->get()
-            ->filter(static fn (Course $course): bool => SchedulingPolicy::isMajorCourse($course)
-                && ! SchedulingPolicy::isFieldCourse($course, (int) $section->department_id)
-                && (int) $course->lecture_hours > 0
-                && (int) $course->lab_hours > 0)
+            ->filter(static fn (Course $course): bool => SchedulingPolicy::hasLectureAndLaboratoryComponents($course, (int) $section->department_id))
             ->pluck('id')
             ->map(static fn ($courseId): int => (int) $courseId)
             ->values()

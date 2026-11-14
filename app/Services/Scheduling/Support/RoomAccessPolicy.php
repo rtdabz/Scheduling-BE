@@ -219,10 +219,10 @@ class RoomAccessPolicy
     {
         return implode(', ', array_map(
             static fn (array $window): string => sprintf(
-                '%s %s-%s',
+                '%s %s - %s',
                 substr($window['day'], 0, 3),
-                substr($window['start_time'], 0, 5),
-                substr($window['end_time'], 0, 5),
+                ConflictMessage::time($window['start_time']),
+                ConflictMessage::time($window['end_time']),
             ),
             $windows,
         ));

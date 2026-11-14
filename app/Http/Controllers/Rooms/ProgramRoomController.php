@@ -8,6 +8,7 @@ use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Semester;
 use App\Services\Scheduling\Support\ProgramRoomShares;
+use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -18,14 +19,23 @@ use Illuminate\Validation\ValidationException;
 
 class ProgramRoomController extends Controller
 {
+    private const MULTIPLE_PROGRAMS_REQUIRED = 'Program Rooms is available when your department has more than one program. Room allocation is unnecessary for a single program.';
+
     public function show(Request $request): JsonResponse
     {
-        return response()->json(['data' => $this->payload($this->resolveDepartment($request), $request)]);
+        $department = $this->resolveDepartment($request);
+        // Program Heads also read this endpoint to filter their Facilities room list.
+        if ($request->user()->isSecretaryOrDirector() || $request->user()->hasCapability('room.assign_program')) {
+            $this->ensureAllocationNeeded($department);
+        }
+
+        return response()->json(['data' => $this->payload($department, $request)]);
     }
 
     public function update(Request $request): JsonResponse
     {
         $department = $this->resolveDepartment($request);
+        $this->ensureAllocationNeeded($department);
 
         $validated = $request->validate([
             'room_sharing_policy' => ['sometimes', 'required', 'string', Rule::in(Departments::ROOM_SHARING_POLICIES)],
@@ -56,17 +66,37 @@ class ProgramRoomController extends Controller
             throw ValidationException::withMessages($errors);
         }
 
-        DB::transaction(function () use ($department, $validated, $assignments, $rooms): void {
+        DB::transaction(function () use ($request, $department, $validated, $assignments, $rooms): void {
+            $changedRooms = [];
+            $affectedPrograms = [];
+            $departmentWide = false;
             if (array_key_exists('room_sharing_policy', $validated)) {
                 $department->room_sharing_policy = $validated['room_sharing_policy'];
+                $departmentWide = $department->isDirty('room_sharing_policy');
                 $department->save();
             }
 
             foreach ($assignments as $assignment) {
                 /** @var Rooms $room */
                 $room = $rooms->get((int) $assignment['room_id']);
+                $previousProgramId = $room->home_program_id;
                 $room->home_program_id = $assignment['program_id'] === null ? null : (int) $assignment['program_id'];
+                if ($room->isDirty('home_program_id')) {
+                    $changedRooms[] = (int) $room->id;
+                    $affectedPrograms = [...$affectedPrograms, $previousProgramId, $room->home_program_id];
+                    $departmentWide = $departmentWide || $previousProgramId === null || $room->home_program_id === null;
+                }
                 $room->save();
+            }
+            if ($departmentWide || $changedRooms !== []) {
+                app(SystemNotificationService::class)->notifyRoles(
+                    ['secretary', 'program_head'], 'program_rooms_updated', 'Program room assignments updated',
+                    $request->user()->name.' updated your department\'s program room assignments or sharing policy.',
+                    actor: $request->user(), departmentId: (int) $department->id,
+                    metadata: ['room_ids' => $changedRooms, 'room_sharing_policy' => $department->room_sharing_policy,
+                        'program_ids' => $departmentWide ? null : array_values(array_unique(array_filter($affectedPrograms)))],
+                    programIds: $departmentWide ? null : array_values(array_unique(array_filter($affectedPrograms))),
+                );
             }
         });
 
@@ -93,7 +123,7 @@ class ProgramRoomController extends Controller
         return [
             'department_id' => (int) $department->id,
             'room_sharing_policy' => (string) ($department->room_sharing_policy ?: Departments::ROOM_SHARING_OPEN),
-            'can_manage' => (bool) $request->user()?->hasCapability('room.assign_program'),
+            'can_manage' => count($programIds) > 1 && (bool) $request->user()?->hasCapability('room.assign_program'),
             'programs' => $programs->map(static fn (Program $program): array => [
                 'id' => (int) $program->id,
                 'code' => (string) $program->code,
@@ -133,6 +163,11 @@ class ProgramRoomController extends Controller
         return Program::query()
             ->where('department_id', $department->id)
             ->orderBy('code');
+    }
+
+    private function ensureAllocationNeeded(Departments $department): void
+    {
+        abort_if($this->programs($department)->count() <= 1, 403, self::MULTIPLE_PROGRAMS_REQUIRED);
     }
 
     private function resolveDepartment(Request $request): Departments

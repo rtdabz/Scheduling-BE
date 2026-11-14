@@ -2,8 +2,10 @@
 
 namespace App\Jobs;
 
+use App\Models\RoomRequest;
 use App\Models\User;
 use App\Services\SystemNotificationService;
+use App\Support\ActorIdentity;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -32,22 +34,38 @@ class DeliverSystemNotifications implements ShouldQueue
     /**
      * @param  list<array{user_ids: list<int>, type: string, title: string, message: string, actor_id: ?int, department_id: ?int, semester_id: ?int, remarks: ?string, metadata: array<string, mixed>}>  $deliveries
      */
-    public function __construct(public readonly array $deliveries) {}
+    public readonly array $deliveries;
+
+    public function __construct(array $deliveries)
+    {
+        $this->deliveries = array_map(static function (array $delivery): array {
+            $delivery['metadata']['_queued_actor'] = ActorIdentity::snapshot(
+                empty($delivery['actor_id']) ? null : User::withTrashed()->find($delivery['actor_id']),
+            );
+
+            return $delivery;
+        }, $deliveries);
+    }
 
     public function handle(SystemNotificationService $notifications): void
     {
         DB::transaction(function () use ($notifications): void {
             foreach ($this->deliveries as $delivery) {
+                if (($delivery['metadata']['requires_action'] ?? false)
+                    && $delivery['type'] === 'room_request_submitted'
+                    && ! RoomRequest::query()->whereKey($delivery['metadata']['room_request_id'] ?? 0)->where('status', RoomRequest::STATUS_PENDING)->exists()) {
+                    continue;
+                }
                 $notifications->createForUsers(
                     User::query()->whereIn('id', $delivery['user_ids'])->get(),
                     $delivery['type'],
                     $delivery['title'],
                     $delivery['message'],
-                    $delivery['actor_id'] === null ? null : User::query()->find($delivery['actor_id']),
+                    $delivery['actor_id'] === null ? null : User::withTrashed()->find($delivery['actor_id']),
                     $delivery['department_id'],
                     $delivery['semester_id'],
                     $delivery['remarks'],
-                    $delivery['metadata'],
+                    $delivery['metadata'] + ['_queued_actor' => null],
                 );
             }
         });

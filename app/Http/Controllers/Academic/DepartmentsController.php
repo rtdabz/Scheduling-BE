@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Department\StoreDepartmentRequest;
 use App\Http\Requests\Department\UpdateDepartmentRequest;
 use App\Models\Departments;
+use App\Services\AcademicArchiveDependencies;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class DepartmentsController extends Controller
 {
@@ -19,7 +21,7 @@ class DepartmentsController extends Controller
             ->with([
                 'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
                 'users' => fn ($query) => $query
-                    ->whereIn('role', ['dean', 'secretary', 'program_head'])
+                    ->whereIn('role', ['dean', 'secretary', 'director', 'program_head'])->where('is_active', true)
                     ->select('id', 'name', 'role', 'department_id', 'program_id')
                     ->with('program:id,code,name,major'),
             ])
@@ -39,7 +41,7 @@ class DepartmentsController extends Controller
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
-                ->whereIn('role', ['dean', 'secretary', 'program_head'])
+                ->whereIn('role', ['dean', 'secretary', 'director', 'program_head'])->where('is_active', true)
                 ->select('id', 'name', 'role', 'department_id', 'program_id')
                 ->with('program:id,code,name,major'),
         ]), 201);
@@ -55,7 +57,7 @@ class DepartmentsController extends Controller
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
-                ->whereIn('role', ['dean', 'secretary', 'program_head'])
+                ->whereIn('role', ['dean', 'secretary', 'director', 'program_head'])->where('is_active', true)
                 ->select('id', 'name', 'role', 'department_id', 'program_id')
                 ->with('program:id,code,name,major'),
         ]));
@@ -71,7 +73,7 @@ class DepartmentsController extends Controller
         return response()->json($department->loadCount(['rooms', 'sections', 'faculties'])->load([
             'programs' => fn ($query) => $query->orderBy('code')->orderBy('major'),
             'users' => fn ($query) => $query
-                ->whereIn('role', ['dean', 'secretary', 'program_head'])
+                ->whereIn('role', ['dean', 'secretary', 'director', 'program_head'])->where('is_active', true)
                 ->select('id', 'name', 'role', 'department_id', 'program_id')
                 ->with('program:id,code,name,major'),
         ]));
@@ -79,7 +81,7 @@ class DepartmentsController extends Controller
 
     public function destroy(Departments $department)
     {
-        $blockers = app(\App\Services\AcademicArchiveDependencies::class)->blockers($department);
+        $blockers = app(AcademicArchiveDependencies::class)->blockers($department);
         if ($blockers !== []) {
             return response()->json([
                 'message' => 'This department cannot be archived while these live dependencies remain: '.implode(', ', $blockers).'.',
@@ -87,10 +89,9 @@ class DepartmentsController extends Controller
             ], 422);
         }
 
-        $department->delete();
+        DB::transaction(fn () => $department->delete());
         ApiCache::forgetGroups(['departments.index', 'initial.data']);
 
         return response()->json(['message' => 'Department archived successfully']);
     }
-
 }

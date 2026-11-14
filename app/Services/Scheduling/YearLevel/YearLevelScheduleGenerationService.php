@@ -10,6 +10,7 @@ use App\Models\Sections;
 use App\Services\Scheduling\Domain\SchedulingGenerationMetrics;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Engine\Solver\YearLevelSchedulingSolver;
+use App\Services\Scheduling\Generation\ComponentRequiredDays;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
 use App\Services\Scheduling\Generation\ScheduleQualityEvaluator;
 use App\Services\Scheduling\Generation\ScheduleRequirementBuilderResolver;
@@ -334,7 +335,7 @@ class YearLevelScheduleGenerationService
             $result = $this->decorateDraftResult($draft, $attempts, $sections, $bottleneck, $recommendations, $message);
             $result['applied_adjustments'] = $this->selectedAdjustments($configsBySectionId);
 
-            return $result;
+            return $this->withComponentRequiredDays($result, $configsBySectionId);
         }
 
         throw new YearLevelGenerationException(
@@ -432,7 +433,30 @@ class YearLevelScheduleGenerationService
         $candidate['recommendations'] = $this->generationRecommendations($configsBySectionId);
         $candidate['generation_metrics'] = $this->reportedMetrics($attempts);
 
-        return $candidate;
+        return $this->withComponentRequiredDays($candidate, $configsBySectionId);
+    }
+
+    /**
+     * Hard check of the returned rows against the run's Lecture/Laboratory
+     * Required Days, and the normalized pins echoed for review and save, so a
+     * restored or queued result carries the context it was generated with.
+     *
+     * @param  array<string, mixed>  $result
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @return array<string, mixed>
+     */
+    private function withComponentRequiredDays(array $result, array $configsBySectionId): array
+    {
+        $pins = ComponentRequiredDays::fromConfigs($configsBySectionId);
+        $violations = ComponentRequiredDays::violations((array) ($result['schedules'] ?? []), $pins);
+        if ($violations !== []) {
+            throw new RuntimeException($violations[0]['message']);
+        }
+        if ($pins !== []) {
+            $result[ComponentRequiredDays::REPORT_KEY] = $pins;
+        }
+
+        return $result;
     }
 
     /**
@@ -526,7 +550,7 @@ class YearLevelScheduleGenerationService
         if ($config['selected_split_session_course_ids'] === []) {
             $config['is_hybrid'] = false;
         }
-        foreach (['requirements_by_course_id', 'preferred_patterns', 'delivery_modes_by_course_id'] as $key) {
+        foreach (['requirements_by_course_id', 'preferred_patterns', 'delivery_modes_by_course_id', ComponentRequiredDays::KEY] as $key) {
             if (isset($config[$key]) && is_array($config[$key])) {
                 unset($config[$key][$courseId], $config[$key][(string) $courseId]);
             }
@@ -584,12 +608,8 @@ class YearLevelScheduleGenerationService
             default => "No free time and room fits it alongside the section's other classes.",
         };
 
+        // Each day of a run repeats the full duration, so the single meeting keeps it unchanged.
         $runRule = ($this->generationSnapshot?->consecutiveDayRulesFor((int) $section->id) ?? [])[$courseId] ?? null;
-        $dayCount = (int) ($runRule['day_count'] ?? 0);
-        if ($dayCount > 0 && count($meetings) === 1 && $meetings[0]['duration_slots'] % $dayCount === 0) {
-            // Each day of a run holds an equal share of the Total Hours.
-            $meetings[0]['duration_slots'] = intdiv($meetings[0]['duration_slots'], $dayCount);
-        }
 
         return [
             'section_id' => (int) $section->id,

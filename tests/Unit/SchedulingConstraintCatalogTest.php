@@ -69,7 +69,6 @@ class SchedulingConstraintCatalogTest extends TestCase
     {
         return [
             'section' => [BatchConflict::RULE_SECTION],
-            'subject section time' => [BatchConflict::RULE_SUBJECT_SECTION_TIME],
             'room' => [BatchConflict::RULE_ROOM],
             'faculty' => [BatchConflict::RULE_FACULTY],
         ];

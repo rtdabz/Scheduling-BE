@@ -5,7 +5,6 @@ namespace App\Services\Scheduling\Schedule;
 final readonly class BatchConflict
 {
     public const RULE_SECTION = 'section_conflict';
-    public const RULE_SUBJECT_SECTION_TIME = 'subject_section_time_conflict';
     public const RULE_ROOM = 'room_conflict';
     public const RULE_FACULTY = 'faculty_conflict';
 

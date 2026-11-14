@@ -45,7 +45,7 @@ class ConsecutiveDaysGenerationTest extends TestCase
         foreach ($rows as $row) {
             $this->assertSame('consecutive:3', $row['preferred_pattern']);
             $this->assertNull($row['meeting_type'] ?? null, 'a run is not an Integrated session');
-            $this->assertSame(60, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']), 'the three days share a 3-hour class');
+            $this->assertSame(180, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']), 'each of the three days repeats the full 3-hour class');
         }
         $this->assertSame([], app(RuleEngine::class)->validateConfiguredMeetingGroups($rows));
     }
@@ -136,7 +136,7 @@ class ConsecutiveDaysGenerationTest extends TestCase
         $this->assertNull($rows[0]['preferred_pattern']);
     }
 
-    public function test_the_days_share_the_total_hours_without_exceeding_them(): void
+    public function test_every_day_repeats_the_full_total_hours(): void
     {
         $context = $this->scaffold();
         $clinical = $this->clinicalCourse($context, units: 8);
@@ -146,20 +146,69 @@ class ConsecutiveDaysGenerationTest extends TestCase
 
         $this->assertSame(['Thursday', 'Friday'], $this->days($rows));
         foreach ($rows as $row) {
-            $this->assertSame(240, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']));
+            $this->assertSame(480, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']));
         }
     }
 
-    public function test_a_day_count_that_cannot_split_the_total_hours_evenly_is_refused(): void
+    /** Formerly refused because 8 hours do not divide by 3 days; every day now holds all 8. */
+    public function test_an_eight_hour_course_on_three_days_meets_eight_hours_each_day(): void
     {
         $context = $this->scaffold();
         $clinical = $this->clinicalCourse($context, units: 8);
         $this->rule($context, $clinical, days: 3, startDay: 'Thursday');
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('NUR 1A / CLIN 101 has 8 hours a week, which 3 consecutive days cannot share in equal half-hour meetings.');
+        $rows = $this->generate($context, [$clinical]);
 
-        $this->generate($context, [$clinical]);
+        $this->assertSame(['Thursday', 'Friday', 'Saturday'], $this->days($rows));
+        foreach ($rows as $row) {
+            $this->assertSame(480, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']));
+        }
+        $this->assertSame([], app(RuleEngine::class)->validateConfiguredMeetingGroups($rows));
+    }
+
+    public function test_prac_101_meets_six_hours_on_each_of_its_three_ticked_days(): void
+    {
+        $context = $this->scaffold();
+        $practicum = $this->clinicalCourse($context, units: 6, code: 'PRAC 101');
+        $this->rule($context, $practicum, days: 3, meetingDays: ['Monday', 'Wednesday', 'Friday']);
+
+        $rows = $this->generate($context, [$practicum]);
+
+        $this->assertSame(['Monday', 'Wednesday', 'Friday'], $this->days($rows));
+        $this->assertCount(1, array_unique(array_column($rows, 'start_time')));
+        $minutes = array_map(static fn (array $row): int => SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']), $rows);
+        $this->assertSame([360, 360, 360], $minutes);
+        $this->assertSame(1080, array_sum($minutes), '6 hours/day x 3 days = 18 hours');
+    }
+
+    public function test_a_run_avoids_a_section_class_during_the_added_hours_of_any_day(): void
+    {
+        $context = $this->scaffold();
+        $practicum = $this->clinicalCourse($context, units: 6, code: 'PRAC 101');
+        $this->rule($context, $practicum, days: 3, meetingDays: ['Monday', 'Tuesday', 'Wednesday']);
+        $other = $this->clinicalCourse($context, units: 1, code: 'NUR 105');
+        // A two-hour class on Tuesday afternoon: a 2-hour share would fit before it, the full 6 hours cannot.
+        Schedule::create([
+            'semester_id' => $context['semester']->id,
+            'section_id' => $context['section']->id,
+            'course_id' => $other->id,
+            'room_id' => null,
+            'department_id' => $context['department']->id,
+            'day' => 'Tuesday',
+            'start_time' => '11:00',
+            'end_time' => '13:00',
+            'mode' => 'online',
+            'status' => 'finalized',
+        ]);
+
+        $rows = $this->generate($context, [$practicum]);
+
+        foreach ($rows as $row) {
+            $start = SchedulingPolicy::timeToMinutes($row['start_time']);
+            $end = SchedulingPolicy::timeToMinutes($row['end_time']);
+            $this->assertSame(360, $end - $start);
+            $this->assertTrue($end <= 11 * 60 || $start >= 13 * 60, 'the run keeps clear of the Tuesday class on every day at its one shared time');
+        }
     }
 
     public function test_a_required_day_on_a_run_is_refused_with_its_fix(): void

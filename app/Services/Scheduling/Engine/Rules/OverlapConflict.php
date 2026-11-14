@@ -23,7 +23,6 @@ final class OverlapConflict
             $this->roomClash($attempt),
             $this->facultyClash($attempt),
             $this->sectionClash($attempt),
-            $this->sameOnlineCourseClash($attempt),
         ]));
     }
 
@@ -123,45 +122,6 @@ final class OverlapConflict
             'message' => $message($first, $conflicts->count() - 1),
             'conflicting_schedule_id' => $first->id,
             'conflicting_schedule_ids' => $conflicts->pluck('id')->map(static fn ($id): int => (int) $id)->all(),
-        ];
-    }
-
-    /** @param array<string, mixed> $attempt */
-    private function sameOnlineCourseClash(array $attempt): ?array
-    {
-        if ((string) ($attempt['mode'] ?? 'on-site') !== 'online') {
-            return null;
-        }
-
-        $day = (string) $attempt['day'];
-        $ignoreIds = RuleSupport::ignoreIds($attempt['ignore_schedule_id'] ?? null);
-
-        $conflict = Schedule::query()
-            ->where('course_id', RuleSupport::courseId($attempt))
-            ->where('section_id', '!=', (int) $attempt['section_id'])
-            ->where('semester_id', (int) $attempt['semester_id'])
-            ->where('mode', 'online')
-            ->where('day', $day)
-            ->when($ignoreIds !== [], fn ($q) => $q->whereNotIn('id', $ignoreIds))
-            ->where('start_time', '<', (string) $attempt['end_time'])
-            ->where('end_time', '>', (string) $attempt['start_time'])
-            ->with(['course', 'section', 'department'])
-            ->first();
-
-        if (! $conflict) {
-            return null;
-        }
-
-        return [
-            'rule' => 'subject_section_time_conflict',
-            'message' => ConflictMessage::onlineCourse(
-                $conflict->course?->course_code,
-                $day,
-                (string) $attempt['start_time'],
-                (string) $attempt['end_time'],
-                ConflictMessage::bookingFrom($conflict),
-            ),
-            'conflicting_schedule_id' => $conflict->id,
         ];
     }
 }

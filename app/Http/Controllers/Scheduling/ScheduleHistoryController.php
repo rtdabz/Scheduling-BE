@@ -2,20 +2,24 @@
 
 namespace App\Http\Controllers\Scheduling;
 
+use App\Exceptions\ScheduleConflictException;
 use App\Http\Controllers\Controller;
 use App\Models\ScheduleHistoryVersion;
 use App\Models\User;
+use App\Services\Scheduling\History\ApprovedScheduleHistory;
+use App\Services\Scheduling\History\ScheduleHistoryExporter;
+use App\Services\Scheduling\History\ScheduleReuseRejected;
+use App\Services\Scheduling\History\ScheduleReuseService;
+use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\Response;
 
 class ScheduleHistoryController extends Controller
 {
-    private const TYPES = [
-        'approved' => ['schedule_approved_by_dean', 'schedule_approved_by_vpaa'],
-        'rejected' => ['schedule_returned_by_dean', 'schedule_returned_by_vpaa'],
-        'recalled' => ['schedule_withdrawn'],
-    ];
+    /** Schedule History lists only officially (VPAA) approved schedules; see ApprovedScheduleHistory. */
+    private const TYPES = ApprovedScheduleHistory::TYPES;
 
     public function index(Request $request): JsonResponse
     {
@@ -44,20 +48,17 @@ class ScheduleHistoryController extends Controller
 
     private function indexVersions(array $validated, int $page, int $perPage, $user, $requestedDepartment): JsonResponse
     {
-        $query = ScheduleHistoryVersion::query()
-            ->with(['actor:id,name,username,role', 'department:id,department_name,department_code,logo', 'semesterRecord:id,academic_year,semester', 'items'])
-            ->where('source', 'department_workflow')
-            ->whereIn('action', self::TYPES[$validated['type'] ?? ''] ?? array_merge(...array_values(self::TYPES)))
-            ->when($user?->role !== 'vpaa', fn ($q) => $q->where('department_id', $user->department_id))
+        $query = ApprovedScheduleHistory::visibleTo(ApprovedScheduleHistory::query(self::TYPES[$validated['type'] ?? ''] ?? null), $user)
+            ->with(['department:id,department_name,department_code,logo', 'semesterRecord:id,academic_year,semester', 'items'])
             ->when($requestedDepartment, fn ($q, $id) => $q->where('department_id', $id))
             ->when($validated['semester_id'] ?? null, fn ($q, $id) => $q->where('semester_id', $id))
             ->when($validated['schedule_id'] ?? null, fn ($q, $id) => $q->whereHas('items', fn ($items) => $items->where('original_schedule_id', $id)))
             ->latest('created_at')->latest('id');
         $paginator = $query->paginate($perPage, ['*'], 'page', $page);
         $departmentIds = collect($paginator->items())->pluck('department_id')->filter()->unique()->values();
-        $signatories = User::query()
+        $signatories = User::query()->where('is_active', true)
             ->where(fn ($q) => $q
-                ->where(fn ($dept) => $dept->whereIn('department_id', $departmentIds)->whereIn('role', ['secretary', 'program_head', 'dean']))
+                ->where(fn ($dept) => $dept->whereIn('department_id', $departmentIds)->whereIn('role', ['secretary', 'director', 'program_head', 'dean']))
                 ->orWhere('role', 'vpaa'))
             ->latest()
             ->get(['id', 'name', 'role', 'department_id', 'program_id']);
@@ -124,11 +125,63 @@ class ScheduleHistoryController extends Controller
                 'users' => $signatories
                     ->filter(fn (User $user) => $user->role === 'vpaa' || (int) $user->department_id === (int) $version->department_id)
                     ->values()->all(),
-                'actor' => $version->actor ? ['id' => $version->actor->id, 'name' => $version->actor->name, 'username' => $version->actor->username, 'role' => $version->actor->role] : null,
+                'actor' => $version->recorded_actor,
                 'created_at' => $version->created_at?->toISOString(),
             ];
         })->values();
 
         return response()->json(['data' => $data, 'meta' => ['current_page' => $page, 'per_page' => $perPage, 'total' => $paginator->total(), 'last_page' => $paginator->lastPage(), 'from' => $paginator->firstItem(), 'to' => $paginator->lastItem()]]);
+    }
+
+    /** POST /schedule-history/{version}/reuse: create a new draft schedule in the active semester. */
+    public function reuse(int $version, Request $request, ScheduleReuseService $reuse): JsonResponse
+    {
+        $entry = ApprovedScheduleHistory::find($version, $request->user());
+        if ($entry === null) {
+            return response()->json(['message' => 'Only VPAA-approved schedules from your department can be reused.'], 404);
+        }
+
+        try {
+            $result = $reuse->reuse($entry, $request);
+        } catch (ScheduleReuseRejected $rejected) {
+            return response()->json(['message' => $rejected->getMessage(), 'issues' => $rejected->issues()], $rejected->status());
+        } catch (ScheduleConflictException $conflict) {
+            return response()->json($conflict->payload(), 409);
+        }
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
+
+        $count = $result['schedules']->count();
+        $sections = $result['section_count'];
+
+        return response()->json([
+            'message' => sprintf(
+                'Created %d draft class%s for %d section%s in the %s semester, A.Y. %s. Review them in the Schedule Builder, then submit for approval.',
+                $count, $count === 1 ? '' : 'es', $sections, $sections === 1 ? '' : 's',
+                $result['semester']->semester, $result['semester']->academic_year,
+            ),
+            'semester_id' => (int) $result['semester']->id,
+            'section_count' => $sections,
+            'schedule_ids' => $result['schedules']->modelKeys(),
+            'schedules' => $result['schedules']->values(),
+        ], 201);
+    }
+
+    /** GET /schedule-history/{version}/export: download a readable JSON snapshot of one approved schedule. */
+    public function export(int $version, Request $request, ScheduleHistoryExporter $exporter): Response
+    {
+        $entry = ApprovedScheduleHistory::find($version, $request->user());
+        if ($entry === null) {
+            return response()->json(['message' => 'Only VPAA-approved schedules you can view can be exported.'], 404);
+        }
+        $json = json_encode(
+            $exporter->export($entry, $request->user()),
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR,
+        );
+
+        return response($json, 200, [
+            'Content-Type' => 'application/json; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="'.$exporter->filename($entry).'"',
+            'Access-Control-Expose-Headers' => 'Content-Disposition',
+        ]);
     }
 }

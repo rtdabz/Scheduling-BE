@@ -16,6 +16,9 @@ class FacultyAvailability extends Model
         'end_time',
     ];
 
+    /** The UI's availability check matches windows by day_index, so it must be serialized. */
+    protected $appends = ['day_index'];
+
     public function getDayIndexAttribute(): int
     {
         return SchedulingPolicy::dayIndex((string) $this->day);

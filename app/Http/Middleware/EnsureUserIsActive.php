@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\User;
 use App\Support\CapabilityRegistry;
 use Closure;
 use Illuminate\Http\Request;
@@ -22,6 +23,12 @@ class EnsureUserIsActive
             $user->tokens()->delete();
 
             return response()->json(['message' => 'This account role is no longer supported. Contact the VPAA office.'], 403);
+        }
+
+        if ($user?->awaitingRoleReview()) {
+            $user->tokens()->delete();
+
+            return response()->json(['message' => User::ROLE_REVIEW_MESSAGE], 403);
         }
 
         return $next($request);

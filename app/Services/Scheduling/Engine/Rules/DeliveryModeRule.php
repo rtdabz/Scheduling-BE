@@ -72,7 +72,8 @@ final class DeliveryModeRule
         $value = static fn (string $key): int => (int) (is_array($course) ? ($course[$key] ?? 0) : ($course->{$key} ?? 0));
         $hasLaboratoryComponent = $value('lab_hours') > 0;
         $isHybridSplit = ! $hasLaboratoryComponent && SchedulingPolicy::hybridSplitEligible($course);
-        if (! $isHybridSplit && (! SchedulingPolicy::isMajorCourse($course) || $value('lecture_hours') <= 0 || ! $hasLaboratoryComponent)) {
+        // Integrated Hybrid follows lecture and laboratory units for every course category, as generation does.
+        if (! $isHybridSplit && ($value('lecture_hours') <= 0 || ! $hasLaboratoryComponent)) {
             return [
                 'rule' => 'hybrid_eligibility',
                 'message' => 'Hybrid scheduling is available only for eligible course configurations.',

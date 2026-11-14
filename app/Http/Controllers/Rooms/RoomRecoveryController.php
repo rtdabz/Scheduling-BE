@@ -30,11 +30,13 @@ class RoomRecoveryController extends Controller
         $roomData = $rooms->orderBy('room_code')->get(['id', 'room_code', 'room_type', 'status', 'created_at']);
         $models = $semesterId > 0
             ? $this->recovery->readable($request)->where('schedules.semester_id', $semesterId)
-                // Classes moved online by a room closure still need a room.
+                // Temporarily online classes still need a room after closure or grant revocation.
                 ->where(fn ($query) => $query->where('mode', 'on-site')->orWhereNotNull('schedules.displaced_room_id'))
                 ->with(['course', 'section', 'room', 'displacedRoom'])->orderBy('schedules.id')->get()
             : new Collection;
         $problems = $this->recovery->roomProblems($models);
+        // On-site classes left as Room TBA need a room even without a closure incident.
+        $roomTbaCount = $models->filter(fn ($row) => $problems[$row->id] && $row->mode === 'on-site' && $row->room_id === null && ! $row->isTemporarilyOnline())->count();
         $transfers = $this->recovery->transfers($request, $semesterId);
         $pending = [];
         foreach ($transfers as $transfer) {
@@ -49,7 +51,7 @@ class RoomRecoveryController extends Controller
                 $needsAttention = $problems[$row->id];
                 $reason = ! $needsAttention ? null : match (true) {
                     $row->isTemporarilyOnline() => 'Temporarily online: room unavailable',
-                    $row->room === null => 'Room required',
+                    $row->room === null => 'Room TBA: room required',
                     $row->room->status !== 'available' => 'Room unavailable',
                     default => 'Room access or type needs review',
                 };
@@ -74,7 +76,7 @@ class RoomRecoveryController extends Controller
             })->all() : [];
 
         return response()->json(['cases' => $this->recovery->cases($request), 'semester_id' => $semesterId, 'transfers' => $transfers,
-            'pending_count' => count(array_filter($problems)),
+            'pending_count' => count(array_filter($problems)), 'room_tba_count' => $roomTbaCount,
             'semesters' => Semester::orderByDesc('id')->get(['id', 'academic_year', 'semester', 'is_active']),
             'rooms' => $roomData, 'new_rooms' => $roomData->filter(fn ($room) => $room->status === 'available' && $room->created_at?->gte(now()->subDays(14)))->values(),
             'schedules' => $rows]);

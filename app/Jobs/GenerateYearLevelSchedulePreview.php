@@ -9,6 +9,7 @@ use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\DepartmentCourseRules;
 use App\Services\Scheduling\Support\GenerationCancellationToken;
 use App\Services\Scheduling\YearLevel\YearLevelScheduleGenerationService;
@@ -76,7 +77,8 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
 
         $run = ScheduleGenerationRun::query()->where('run_id', $this->runId)->firstOrFail();
         $requester = User::query()->find($run->requested_by);
-        if (! $requester?->is_active || ($requester->role !== 'vpaa' && (int) $requester->department_id !== (int) $run->department_id)) {
+        if (! $requester?->is_active || ! $requester->hasCapability('schedule.generate')
+            || ($requester->role !== 'vpaa' && (int) $requester->department_id !== (int) $run->department_id)) {
             $run->update(['status' => 'cancelled', 'error_message' => 'Requester is no longer authorized.', 'finished_at' => now()]);
 
             return;
@@ -99,6 +101,13 @@ class GenerateYearLevelSchedulePreview implements ShouldQueue
                 ->orderBy('section_name')
                 ->get()
                 ->all();
+
+            $writablePrograms = app(ScheduleAuthorizationService::class)->writableProgramIdsFor($requester);
+            if (collect($sections)->contains(fn (Sections $section): bool => ! in_array((int) $section->program_id, $writablePrograms, true))) {
+                $run->update(['status' => 'cancelled', 'error_message' => 'Requester is no longer authorized for every selected program.', 'finished_at' => now()]);
+
+                return;
+            }
 
             if ($sections === []) {
                 throw new \RuntimeException('The sections for this generation run no longer exist.');

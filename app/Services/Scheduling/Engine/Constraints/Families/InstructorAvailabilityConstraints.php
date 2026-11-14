@@ -31,29 +31,21 @@ final class InstructorAvailabilityConstraints
             );
         }
 
-        $dayIndex = InstructorAvailabilityRule::DAY_INDEX[$row->day] ?? null;
-        $recorded = (array) ($faculty['availabilities'] ?? []);
-        if (($faculty['employment_type'] ?? null) === 'part-time' && $dayIndex !== null && $recorded !== []) {
-            $windows = [];
-            foreach ($recorded as $window) {
-                if ((int) ($window['day_index'] ?? -1) === $dayIndex) {
-                    $windows[] = [
-                        SchedulingPolicy::normalizeTime((string) $window['start_time']),
-                        SchedulingPolicy::normalizeTime((string) $window['end_time']),
-                    ];
-                }
-            }
-
-            $start = SchedulingPolicy::normalizeTime($row->startTime);
-            $end = SchedulingPolicy::normalizeTime($row->endTime);
-
-            if (! InstructorAvailabilityRule::coveredContinuously($windows, $start, $end)) {
-                $violations[] = ConstraintSupport::violation(
-                    'part_time_faculty_availability',
-                    'The selected assignment falls outside the instructor\'s availability window for '.$row->day.'.',
-                    context: [...$context, 'day' => $row->day, 'start_time' => $start],
-                );
-            }
+        // Default hours of the employment type plus added windows, the same
+        // check the rule engine runs (InstructorAvailabilityRule::outsideAvailability).
+        if (InstructorAvailabilityRule::outsideAvailability(
+            isset($faculty['employment_type']) ? (string) $faculty['employment_type'] : null,
+            (array) ($faculty['availabilities'] ?? []),
+            $row->day,
+            $row->startTime,
+            $row->endTime,
+        )) {
+            $violation = InstructorAvailabilityRule::violation($row->day);
+            $violations[] = ConstraintSupport::violation(
+                $violation['rule'],
+                $violation['message'],
+                context: [...$context, 'day' => $row->day, 'start_time' => SchedulingPolicy::normalizeTime($row->startTime)],
+            );
         }
 
         return $violations;

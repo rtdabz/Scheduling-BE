@@ -75,6 +75,7 @@ final class ConstraintSupport
                 'mode' => $row->mode,
                 'meeting_type' => (string) $row->meetingType,
                 'split_group_id' => (string) $row->splitGroupId,
+                'preferred_pattern' => (string) $row->preferredPattern,
                 default => '',
             };
         }

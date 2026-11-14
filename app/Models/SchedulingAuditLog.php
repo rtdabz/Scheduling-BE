@@ -2,10 +2,28 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\AppendOnly;
+use App\Support\ActorIdentity;
 use Illuminate\Database\Eloquent\Model;
 
 class SchedulingAuditLog extends Model
 {
+    use AppendOnly;
+
+    protected static function booted(): void
+    {
+        static::creating(function (self $log): void {
+            // Event time comes from the application clock (APP_TIMEZONE), never the DB server's CURRENT_TIMESTAMP default.
+            $log->created_at ??= now();
+            ActorIdentity::capture($log, 'user_id');
+        });
+    }
+
+    public function getRecordedActorAttribute(): ?array
+    {
+        return ActorIdentity::recorded($this->metadata, $this->user_id);
+    }
+
     public $timestamps = false;
 
     protected $table = 'scheduling_audit_logs';

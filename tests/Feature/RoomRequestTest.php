@@ -7,7 +7,9 @@ use App\Jobs\DeliverSystemNotifications;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
+use App\Models\Faculty;
 use App\Models\Program;
+use App\Models\RoomRecoveryCase;
 use App\Models\RoomRequest;
 use App\Models\Rooms;
 use App\Models\Schedule;
@@ -16,8 +18,8 @@ use App\Models\ScheduleHistoryVersion;
 use App\Models\ScheduleSubmission;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
-use App\Models\SystemNotification;
 use App\Models\Semester;
+use App\Models\SystemNotification;
 use App\Models\User;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
@@ -25,11 +27,13 @@ use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Engine\Constraints\SchedulingConstraintKernel;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Generation\GenerateSchedulePlan;
-use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\Scheduling\Support\SchedulingSnapshotRepository;
 use App\Services\SystemNotificationService;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -43,6 +47,9 @@ use Tests\TestCase;
 class RoomRequestTest extends TestCase
 {
     use RefreshDatabase;
+
+    /** The department office role under test; the tests/Feature/DirectorParity subclasses override it. */
+    protected string $officeRole = 'secretary';
 
     /** Every secretary inherits `room.request`; a dean of the same department does not. */
     public function test_an_account_without_the_capability_cannot_request_a_room(): void
@@ -322,32 +329,91 @@ class RoomRequestTest extends TestCase
         }
     }
 
-    /** The owner can take the room back at any time; the borrower's classes in it become Room TBA. */
-    public function test_revoking_a_grant_moves_the_borrowers_classes_to_room_tba(): void
+    /** Revoked classes meet online while retaining the information needed for reviewed reassignment. */
+    public function test_revoking_a_grant_moves_the_borrowers_classes_online(): void
     {
         $f = $this->fixture();
         $id = $this->approvedGrant($f);
         $class = $this->bookRoom($f, $f['requester'], 'Monday', '11:00:00', '13:00:00', $f['section'], $f['course']);
+        $faculty = Faculty::create(['first_name' => 'Assigned', 'last_name' => 'Instructor', 'employment_type' => 'full-time',
+            'max_units' => 18, 'department_id' => $f['requester']->id, 'status' => 'active']);
+        $class->update(['faculty_id' => $faculty->id, 'faculty_assignment_done' => true,
+            'split_group_id' => 'revoked-room-pair', 'meeting_type' => 'lecture', 'meeting_index' => 1]);
+        $unchanged = $class->fresh()->only(['day', 'start_time', 'end_time', 'status', 'faculty_id',
+            'faculty_assignment_done', 'split_group_id', 'meeting_type', 'meeting_index']);
 
-        $this->actingAs($f['ownerSecretary'])
+        $response = $this->actingAs($f['ownerSecretary'])
             ->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'CAS needs it back.'])
             ->assertOk()
             ->assertJsonPath('data.status', 'revoked')
-            ->assertJsonPath('released_schedule_count', 1);
+            ->assertJsonPath('released_schedule_count', 1)
+            ->assertJsonPath('released_schedule_ids', [$class->id]);
 
-        $this->assertNull($class->fresh()->room_id, 'The class kept a room its department can no longer use.');
+        $class = $class->fresh();
+        $this->assertNull($class->room_id, 'The class kept a room its department can no longer use.');
+        $this->assertSame('online', $class->mode);
+        $this->assertEquals($f['room']->id, $class->displaced_room_id);
+        $this->assertNotNull($class->displaced_at);
+        $this->assertSame($unchanged, $class->only(array_keys($unchanged)));
+        $this->assertTrue($class->isTemporarilyOnline());
+        $this->assertStringContainsString('Online', $response->json('message'));
+        $this->assertStringNotContainsString('Room TBA', $response->json('message'));
         $this->assertDatabaseHas('room_recovery_cases', ['room_id' => $f['room']->id, 'trigger' => 'grant_ended']);
-        $original = \App\Models\RoomRecoveryCase::firstOrFail()->original_rows;
+        $original = RoomRecoveryCase::firstOrFail()->original_rows;
         $this->assertEquals($class->id, $original[0]['id']);
-        $this->assertEquals($f['room']->id, $original[0]['room_id'], 'Recovery preserves the original assignment before Room TBA.');
+        $this->assertEquals($f['room']->id, $original[0]['room_id'], 'Recovery preserves the original room assignment.');
+        $this->assertSame('on-site', $original[0]['mode']);
+        $this->actingAs($f['secretary'])->getJson('/api/room-recovery?include_schedules=1')
+            ->assertOk()->assertJsonPath('pending_count', 1)
+            ->assertJsonPath('cases.0.schedule_ids', [$class->id])
+            ->assertJsonPath('schedules.0.id', $class->id)
+            ->assertJsonPath('schedules.0.mode', 'online')
+            ->assertJsonPath('schedules.0.temporarily_online', true)
+            ->assertJsonPath('schedules.0.needs_attention', true)
+            ->assertJsonPath('schedules.0.original_room', 'RM-1');
         $this->assertTrue(SystemNotification::query()
             ->where('user_id', $f['vpaa']->id)
             ->where('type', 'room_request_returned')
             ->exists());
-        $this->assertStringContainsString('Room TBA', (string) SystemNotification::query()
+        $this->assertStringContainsString('Online', (string) SystemNotification::query()
             ->where('user_id', $f['secretary']->id)
             ->where('type', 'room_request_revoked')
             ->value('message'));
+    }
+
+    public function test_revoking_switches_only_the_borrowers_overlapping_classes_in_that_room_and_semester_online(): void
+    {
+        $f = $this->fixture();
+        $id = $this->approvedGrant($f);
+        $book = fn (string $day, string $start, string $end): Schedule => $this->bookRoom(
+            $f, $f['requester'], $day, $start, $end, $f['section'], $f['course'],
+        );
+        $overlapping = [$book('Monday', '10:30:00', '11:30:00'), $book('Monday', '12:30:00', '13:30:00')];
+        $otherSemester = $book('Monday', '11:00:00', '13:00:00');
+        $otherSemester->update(['semester_id' => Semester::create([
+            'academic_year' => '2026-2027', 'semester' => '2nd', 'is_active' => false, 'is_enabled' => true,
+        ])->id]);
+        $otherRoom = $book('Monday', '11:00:00', '13:00:00');
+        $otherRoom->update(['room_id' => $this->room('CIT-101', 'lecture', $f['requester']->id)->id]);
+        $unaffected = collect([
+            $book('Monday', '09:00:00', '11:00:00'), $book('Monday', '13:00:00', '15:00:00'),
+            $book('Tuesday', '11:00:00', '13:00:00'), $otherSemester, $otherRoom,
+            $this->bookRoom($f, $f['owner'], 'Monday', '11:00:00', '13:00:00'),
+        ])->mapWithKeys(fn (Schedule $row): array => [$row->id => $row->fresh()->getAttributes()]);
+
+        $this->actingAs($f['ownerSecretary'])
+            ->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'CAS needs it back.'])
+            ->assertOk()->assertJsonPath('released_schedule_count', 2)
+            ->assertJsonPath('released_schedule_ids', array_column($overlapping, 'id'));
+
+        foreach ($overlapping as $row) {
+            $this->assertSame('online', $row->fresh()->mode);
+            $this->assertNull($row->fresh()->room_id);
+            $this->assertEquals($f['room']->id, $row->fresh()->displaced_room_id);
+        }
+        foreach ($unaffected as $scheduleId => $before) {
+            $this->assertSame($before, Schedule::findOrFail($scheduleId)->getAttributes());
+        }
     }
 
     /** The borrower can give the room back at any time; only classes under this grant are released. */
@@ -365,6 +431,9 @@ class RoomRequestTest extends TestCase
             ->assertJsonPath('released_schedule_count', 1);
 
         $this->assertNull($inside->fresh()->room_id);
+        $this->assertSame('on-site', $inside->fresh()->mode);
+        $this->assertNull($inside->fresh()->displaced_room_id);
+        $this->assertNull($inside->fresh()->displaced_at);
         $this->assertSame((int) $f['room']->id, (int) $owners->fresh()->room_id, "The owner's own class lost its room.");
     }
 
@@ -436,7 +505,7 @@ class RoomRequestTest extends TestCase
 
         $refusal = collect(app(RuleEngine::class)->validate($attempt('12:00:00', '13:30:00')))
             ->firstWhere('rule', 'room_department_alignment');
-        $this->assertSame('Room RM-1 is lent to CIT on Mon 11:00-13:00. Choose another time or room.', $refusal['message'] ?? null);
+        $this->assertSame('Room RM-1 is lent to CIT on Mon 11:00 AM - 1:00 PM. Choose another time or room.', $refusal['message'] ?? null);
         $this->assertFalse($this->violatesRoomOwnership($attempt('13:00:00', '14:30:00')), 'Adjacent free time must stay usable.');
 
         $this->assertSame(RoomRequest::STATUS_APPROVED, RoomRequest::query()->value('status'));
@@ -456,6 +525,31 @@ class RoomRequestTest extends TestCase
             ->assertJsonCount(1, 'schedules')
             ->assertJsonPath('schedules.0.room_id', $f['room']->id)
             ->assertJsonPath('schedules.0.department_id', $f['owner']->id);
+    }
+
+    /** Classes still in draft or under review are not published to the room timetable. */
+    public function test_occupancy_hides_classes_not_yet_vpaa_approved(): void
+    {
+        $f = $this->fixture();
+        $approved = $this->bookRoom($f, $f['owner'], 'Tuesday', '07:00:00', '09:00:00');
+        foreach (['draft', 'completed', 'pending_vpaa', 'revision'] as $i => $status) {
+            $approved->replicate()->forceFill([
+                'day' => 'Wednesday',
+                'start_time' => sprintf('%02d:00:00', 7 + $i * 2),
+                'end_time' => sprintf('%02d:00:00', 8 + $i * 2),
+                'status' => $status,
+            ])->save();
+        }
+
+        foreach (['secretary', 'ownerSecretary'] as $viewer) {
+            $this->actingAs($f[$viewer])
+                ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
+                ->assertOk()
+                ->assertJsonCount(1, 'occupied')
+                ->assertJsonPath('occupied.0.day', 'Tuesday')
+                ->assertJsonCount(1, 'schedules')
+                ->assertJsonPath('schedules.0.day', 'Tuesday');
+        }
     }
 
     /** A requesting department sees only that time is taken, never another department's class details. */
@@ -510,7 +604,7 @@ class RoomRequestTest extends TestCase
         yield 'returned or recalled for revision' => ['revision', RoomRequestController::BORROWING_SUSPENDED_MESSAGE];
     }
 
-    #[\PHPUnit\Framework\Attributes\DataProvider('unapprovedOwnerStatuses')]
+    #[DataProvider('unapprovedOwnerStatuses')]
     public function test_a_room_cannot_be_requested_until_its_owner_is_vpaa_approved(string $status, string $message): void
     {
         $f = $this->fixture();
@@ -604,7 +698,8 @@ class RoomRequestTest extends TestCase
             ->assertJsonFragment(['kind' => 'grant', 'department_code' => 'CIT']);
     }
 
-    // RR-08: a recall, partial or full, suspends new borrowing until the owner is VPAA-approved again.
+    // RR-08: VPAA approval is final, so the owner cannot recall an approved timetable and
+    // borrowing of its free time stays open.
 
     /** @return iterable<string, array{bool}> */
     public static function recallScopes(): iterable
@@ -613,8 +708,8 @@ class RoomRequestTest extends TestCase
         yield 'every section recalled' => [true];
     }
 
-    #[\PHPUnit\Framework\Attributes\DataProvider('recallScopes')]
-    public function test_a_recall_suspends_new_borrowing_but_keeps_approved_loans(bool $recallAll): void
+    #[DataProvider('recallScopes')]
+    public function test_a_refused_recall_of_an_approved_owner_keeps_borrowing_open(bool $recallAll): void
     {
         $f = $this->fixture();
         [$first, $second] = $this->approvedOwnerTimetable($f);
@@ -625,28 +720,10 @@ class RoomRequestTest extends TestCase
         $sections = $recallAll ? [$first->section_id, $second->section_id] : [$first->section_id];
         $this->actingAs($recaller->fresh())
             ->postJson("/api/departments/{$f['owner']->id}/withdraw-submission", ['section_ids' => $sections])
-            ->assertOk();
-        $this->assertSame('revision', $first->refresh()->status);
+            ->assertUnprocessable();
+        $this->assertSame('faculty_assignment', $first->refresh()->status);
 
-        // The recalled class's slot is not offered as vacant: no new request is accepted, in any window.
-        $this->actingAs($f['secretary'])->postJson('/api/room-requests', [
-            'windows' => [['day' => 'Saturday', 'start_time' => '07:00', 'end_time' => '08:30']],
-        ] + $this->payload($f))
-            ->assertStatus(422)
-            ->assertJsonPath('errors.room_id.0', RoomRequestController::BORROWING_SUSPENDED_MESSAGE);
-        $this->actingAs($f['secretary'])
-            ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
-            ->assertJsonPath('borrowing.open', false)
-            ->assertJsonPath('borrowing.reason', 'owner_updating')
-            ->assertJsonPath('borrowing.message', RoomRequestController::BORROWING_SUSPENDED_MESSAGE)
-            ->assertJsonFragment(['kind' => 'grant', 'department_code' => 'CIT']);
-
-        // The loan approved before the recall stays in force, once.
         $this->assertSame(RoomRequest::STATUS_APPROVED, RoomRequest::findOrFail($grantId)->status);
-        $this->assertSame(1, RoomRequest::count());
-
-        // Final VPAA approval of the revision reopens the remaining free time.
-        Schedule::query()->where('department_id', $f['owner']->id)->update(['status' => 'faculty_assignment']);
         $this->actingAs($f['secretary'])
             ->getJson("/api/room-requests/rooms/{$f['room']->id}/occupancy")
             ->assertJsonPath('borrowing.open', true)
@@ -656,8 +733,8 @@ class RoomRequestTest extends TestCase
         ] + $this->payload($f))->assertCreated();
     }
 
-    /** A request sent before a recall cannot be approved during it. */
-    public function test_a_pending_request_cannot_be_approved_during_a_recall(): void
+    /** A pending request can still be approved after the owner's recall attempt is refused. */
+    public function test_a_pending_request_can_still_be_approved_after_a_refused_recall(): void
     {
         $f = $this->fixture();
         [$first] = $this->approvedOwnerTimetable($f);
@@ -667,18 +744,17 @@ class RoomRequestTest extends TestCase
         $recaller->givePermissionTo('schedule.withdraw');
         $this->actingAs($recaller->fresh())
             ->postJson("/api/departments/{$f['owner']->id}/withdraw-submission", ['section_ids' => [$first->section_id]])
-            ->assertOk();
+            ->assertUnprocessable();
 
-        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/approve")
-            ->assertStatus(422)
-            ->assertJsonPath('errors.room_id.0', RoomRequestController::BORROWING_SUSPENDED_MESSAGE);
+        $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/approve")->assertOk();
+        $this->assertSame(RoomRequest::STATUS_APPROVED, RoomRequest::findOrFail($id)->status);
     }
 
     /** Two VPAA-approved owner sections, each with a class in the room. */
     private function approvedOwnerTimetable(array $f): array
     {
         Program::create(['department_id' => $f['owner']->id, 'code' => 'BSPSY', 'name' => 'Psychology']); // recall needs a program
-        $first =$this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '08:30:00');
+        $first = $this->bookRoom($f, $f['owner'], 'Saturday', '07:00:00', '08:30:00');
         $second = Sections::create([
             'section_name' => 'CAS 1Y', 'year_level' => '1', 'semester' => '1st',
             'department_id' => $f['owner']->id, 'semester_id' => $f['semester']->id, 'status' => 'active',
@@ -765,7 +841,7 @@ class RoomRequestTest extends TestCase
 
     // RR-02: grant-ending displacement is part of the timetable record.
 
-    public function test_revoking_records_the_room_tba_change_in_history_and_audit(): void
+    public function test_revoking_records_the_online_change_in_history_and_audit(): void
     {
         $f = $this->fixture();
         $id = $this->approvedGrant($f);
@@ -785,7 +861,11 @@ class RoomRequestTest extends TestCase
         $item = ScheduleHistoryItem::where('history_version_id', $version->id)->sole();
         $this->assertSame((int) $class->id, (int) $item->original_schedule_id);
         $this->assertEquals($f['room']->id, $item->before_snapshot['room_id']);
+        $this->assertSame('on-site', $item->before_snapshot['mode']);
         $this->assertNull($item->after_snapshot['room_id']);
+        $this->assertSame('online', $item->after_snapshot['mode']);
+        $this->assertEquals($f['room']->id, $item->after_snapshot['displaced_room_id']);
+        $this->assertNotNull($item->after_snapshot['displaced_at']);
 
         $audit = SchedulingAuditLog::where('action', 'room_grant_ended')->sole();
         $this->assertSame((int) $version->id, (int) $audit->history_version_id);
@@ -808,7 +888,7 @@ class RoomRequestTest extends TestCase
         $this->assertTrue(SchedulingAuditLog::where('action', 'room_grant_ended')->where('user_id', $f['secretary']->id)->exists());
     }
 
-    /** If the history write fails, the grant, recovery case, and Room TBA change all roll back. */
+    /** If the history write fails, the grant, recovery case, and online change all roll back. */
     public function test_a_history_failure_rolls_back_the_whole_grant_release(): void
     {
         $f = $this->fixture();
@@ -823,6 +903,9 @@ class RoomRequestTest extends TestCase
 
         $this->assertSame('approved', RoomRequest::findOrFail($id)->status);
         $this->assertSame((int) $f['room']->id, (int) $class->fresh()->room_id);
+        $this->assertSame('on-site', $class->fresh()->mode);
+        $this->assertNull($class->fresh()->displaced_room_id);
+        $this->assertNull($class->fresh()->displaced_at);
         $this->assertDatabaseCount('room_recovery_cases', 0);
         $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'room_grant_ended']);
     }
@@ -1070,10 +1153,35 @@ class RoomRequestTest extends TestCase
 
     private function secretaryFor(Departments $department): User
     {
-        $secretary = User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]);
+        $secretary = User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]);
         $secretary->givePermissionTo(['schedule.view', 'room.request']);
 
         return $secretary->fresh();
+    }
+
+    public function test_replacement_official_revocation_preserves_the_original_approval_and_appends_a_decision(): void
+    {
+        $f = $this->fixture();
+        $id = $this->approvedGrant($f);
+        $original = RoomRequest::findOrFail($id);
+        $reviewer = $original->actor_snapshots['reviewed_by'];
+        $reviewedAt = $original->reviewed_at;
+        $f['ownerSecretary']->update(['name' => 'Renamed Retired Official', 'is_active' => false]);
+        $f['ownerSecretary']->delete();
+        $replacement = $this->secretaryFor($f['owner']);
+        $this->actingAs($replacement)->postJson("/api/room-requests/{$id}/revoke", ['remarks' => 'Room needed.'])->assertOk();
+        $original->refresh();
+        $this->assertSame($reviewer, $original->actor_snapshots['reviewed_by']);
+        $this->assertSame($f['ownerSecretary']->id, $original->reviewed_by);
+        $this->assertTrue($reviewedAt->equalTo($original->reviewed_at));
+        $this->assertSame(['room_request_submitted', 'room_request_approved', 'room_request_revoked'], array_column($original->actor_snapshots['decisions'], 'event'));
+        $this->assertSame($replacement->id, $original->actor_snapshots['decisions'][2]['actor']['id']);
+        try {
+            DB::table('room_requests')->where('id', $id)->update(['actor_snapshots' => json_encode(['decisions' => []])]);
+            $this->fail('The database allowed approval decisions to be erased.');
+        } catch (QueryException) {
+            $this->assertCount(3, $original->fresh()->actor_snapshots['decisions']);
+        }
     }
 
     private function fixture(): array

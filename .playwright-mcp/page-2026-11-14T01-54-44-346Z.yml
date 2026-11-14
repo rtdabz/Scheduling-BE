@@ -1,0 +1,64 @@
+- generic [active]:
+  - generic:
+    - generic [ref=e49]:
+      - generic [ref=e50]:
+        - generic:
+          - img "Campus Background"
+        - generic [ref=e52]:
+          - img "Vice President for Academic Affairs" [ref=e53]
+          - generic [ref=e54]:
+            - generic [ref=e55]:
+              - generic [ref=e56]: TCC
+              - generic [ref=e57]: Scheduling
+            - generic "Vice President for Academic Affairs" [ref=e58]
+        - navigation "Primary navigation" [ref=e59]:
+          - generic [ref=e60]:
+            - heading "MAIN MENU" [level=4] [ref=e62]
+            - generic [ref=e63]:
+              - link "Dashboard" [ref=e64] [cursor=pointer]:
+                - /url: /dashboard
+              - link "Users" [ref=e72] [cursor=pointer]:
+                - /url: /users
+              - link "Departments" [ref=e80] [cursor=pointer]:
+                - /url: /departments
+              - link "Facilities" [ref=e87] [cursor=pointer]:
+                - /url: /facilities
+              - link "Designations" [ref=e93] [cursor=pointer]:
+                - /url: /designations
+              - link "Instructors" [ref=e99] [cursor=pointer]:
+                - /url: /instructors
+              - link "Curriculums" [ref=e105] [cursor=pointer]:
+                - /url: /curriculum
+              - button "Academic Scheduling" [ref=e111] [cursor=pointer]
+          - generic [ref=e119]:
+            - heading "SYSTEM & MONITORING" [level=4] [ref=e122]
+            - generic [ref=e123]:
+              - link "Reports" [ref=e124] [cursor=pointer]:
+                - /url: /reports
+              - link "Activity Log" [ref=e130] [cursor=pointer]:
+                - /url: /activity-log
+              - link "Schedule History" [ref=e136] [cursor=pointer]:
+                - /url: /schedule-history
+              - link "Settings" [ref=e143] [cursor=pointer]:
+                - /url: /settings
+      - generic [ref=e150]:
+        - banner [ref=e152]:
+          - button "Toggle navigation menu" [expanded] [ref=e154] [cursor=pointer]
+          - generic [ref=e156]:
+            - button "Notifications" [ref=e158] [cursor=pointer]
+            - button "Open user profile menu" [ref=e163] [cursor=pointer]:
+              - generic "Kharen Jane S. Ungab, DBM" [ref=e164]
+        - main [ref=e171]:
+          - generic [ref=e173]:
+            - navigation "Breadcrumb" [ref=e174]:
+              - link "Home" [ref=e175] [cursor=pointer]:
+                - /url: /dashboard
+              - generic [ref=e180]: Dashboard
+            - heading "VPAA Dashboard" [level=1] [ref=e184]
+          - progressbar "Loading module"
+    - generic "Notifications":
+      - status [ref=e185]:
+        - generic [ref=e189]:
+          - paragraph [ref=e190]: Login Successful
+          - paragraph [ref=e191]: Welcome back VPAA!
+        - button "Dismiss Login Successful" [ref=e192] [cursor=pointer]

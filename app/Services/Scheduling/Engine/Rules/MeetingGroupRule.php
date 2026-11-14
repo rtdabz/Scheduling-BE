@@ -138,7 +138,7 @@ final class MeetingGroupRule
             if ($count !== 2) {
                 $mismatches[] = ['rule' => 'minor_split_component_count', 'message' => 'Split Session scheduling requires exactly two linked meetings.'];
             } elseif (! SchedulingPolicy::balancedSplitEligible($course, $splitSettings)) {
-                $mismatches[] = ['rule' => 'minor_split_eligibility', 'message' => 'Split Session is available only for minor courses or majors with lecture or laboratory units.'];
+                $mismatches[] = ['rule' => 'minor_split_eligibility', 'message' => 'Split Session is available only for courses without laboratory units.'];
             } else {
                 if (SchedulingPolicy::isFixedMeetingPattern($pattern)) {
                     $expectedDays = $sorted(SchedulingPolicy::FIXED_MEETING_PATTERNS[$pattern]);

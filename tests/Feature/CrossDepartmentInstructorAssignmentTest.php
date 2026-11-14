@@ -670,12 +670,11 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
     }
 
     /**
-     * A recalled college leaves Cross-Department until the VPAA approves it again: the
-     * teaching college stops seeing its classes (and the instructors it kept), then sees
-     * them again, instructors intact, once the revision is re-approved.
+     * VPAA approval is final: the owning college cannot recall an approved timetable, so the
+     * teaching college keeps seeing its classes and the instructor it assigned.
      */
     #[DataProvider('recallScopes')]
-    public function test_a_recalled_college_is_hidden_from_cross_department_until_vpaa_reapproval(bool $recallAll): void
+    public function test_an_approved_college_cannot_be_recalled_out_of_cross_department(bool $recallAll): void
     {
         $fixture = $this->fixture();
         $blocks = $this->meetingBlocks($fixture);
@@ -712,22 +711,14 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         $recalled = $recallAll ? [$fixture['section']->id, $otherSection->id] : [$fixture['section']->id];
         $this->actingAs($fixture['itSecretary'])
             ->postJson("/api/departments/{$fixture['it']->id}/withdraw-submission", ['section_ids' => $recalled])
-            ->assertOk();
-
-        // Hidden as a whole, even the sections a partial recall left approved.
-        $this->assertSame([], $visibleDepartments());
-        $this->assertSame(0, $pending());
-        // The lock itself is unchanged, and the kept instructor is untouched.
-        $this->actingAs($fixture['casSecretary'])
-            ->patchJson("/api/instructor-assignments/{$ids[0]}", ['faculty_id' => null])
             ->assertUnprocessable();
-        $this->assertSame($fixture['casInstructor']->id, (int) Schedule::findOrFail($ids[0])->faculty_id);
 
-        // Final VPAA approval of the revision brings IT back with the kept instructor.
-        Schedule::query()->whereIn('id', [...$ids, ...$otherIds])->update(['status' => 'faculty_assignment']);
-        ApiCache::forgetGroups(['initial.data.schedules']); // as approveByVpaa does
         $this->assertSame([$fixture['it']->id], $visibleDepartments());
         $this->assertSame(1, $pending());
+        $this->assertSame('approved', $submission->refresh()->status);
+        $this->assertTrue(Schedule::query()->whereIn('id', [...$ids, ...$otherIds])->get()->every(
+            fn (Schedule $schedule): bool => $schedule->status !== 'revision',
+        ));
         $this->assertSame($fixture['casInstructor']->id, (int) Schedule::findOrFail($ids[0])->faculty_id);
     }
 
@@ -736,7 +727,11 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         return ['one section recalled' => [false], 'every section recalled' => [true]];
     }
 
-    public function test_owner_recall_keeps_the_teaching_college_instructor_visible(): void
+    /**
+     * A class back in revision that still carries the teaching college's instructor (legacy data
+     * from before VPAA approval became final) keeps that instructor until the owner resets it.
+     */
+    public function test_a_revision_class_keeps_the_teaching_college_instructor_until_reset(): void
     {
         $fixture = $this->fixture();
         $blocks = $this->meetingBlocks($fixture);
@@ -760,9 +755,14 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         ]);
         $submission->sections()->attach([$fixture['section']->id], ['state' => 'included']);
 
+        // VPAA-approved classes cannot be recalled; put the class in revision directly.
         $this->actingAs($fixture['itSecretary'])
             ->postJson("/api/departments/{$fixture['it']->id}/withdraw-submission", ['section_ids' => [$fixture['section']->id]])
-            ->assertOk();
+            ->assertUnprocessable();
+        Schedule::query()->whereIn('id', $ids)->update(['status' => 'revision']);
+        $submission->update(['status' => 'withdrawn', 'withdrawn_at' => now()]);
+        $submission->sections()->updateExistingPivot($fixture['section']->id, ['state' => 'withdrawn']);
+        ApiCache::forgetGroups(['initial.data.schedules', 'initial.data']);
 
         $this->assertTrue(Schedule::query()->whereIn('id', $ids)->get()->every(
             fn (Schedule $schedule): bool => $schedule->status === 'revision'

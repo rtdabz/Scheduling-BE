@@ -118,7 +118,8 @@ class ScheduleSplitController extends Controller
                         abort_unless(in_array((int) $split->schedule_id, array_map('intval', $ids), true), 422, 'The split changed. Refresh and try again.');
                     }
                     if ($delete) {
-                        $split->delete();
+                        // Split metadata is never archived.
+                        $split->forceDelete();
                     } elseif ($split !== null) {
                         $split->update($data);
                     } else {

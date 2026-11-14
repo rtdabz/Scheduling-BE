@@ -4,6 +4,7 @@ namespace App\Services\Scheduling\YearLevel;
 
 use App\Models\Course;
 use App\Models\Sections;
+use App\Services\Scheduling\Generation\ComponentRequiredDays;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
@@ -45,6 +46,12 @@ class YearLevelRetryStrategyPlanner
             }
         }
 
+        // A Regular course with laboratory units holds its whole duration in a laboratory room,
+        // so dropping Integrated adds laboratory demand: never offer it for a laboratory shortage.
+        if ($type === YearLevelGenerationDiagnostics::TYPE_LABORATORY_ROOM) {
+            unset($byKey['clear_bottleneck_split'], $byKey['disable_section_hybrid']);
+        }
+
         $preferred = match ($type) {
             YearLevelGenerationDiagnostics::TYPE_FIXED_PATTERN => [
                 'alternate_pattern', 'clear_bottleneck_pattern', 'alternate_ordering', 'clear_section_patterns', 'clear_all_patterns',
@@ -57,7 +64,7 @@ class YearLevelRetryStrategyPlanner
                 'clear_bottleneck_balanced_split', 'clear_section_patterns',
             ],
             YearLevelGenerationDiagnostics::TYPE_LABORATORY_ROOM => [
-                'alternate_ordering', 'clear_bottleneck_split', 'disable_section_hybrid', 'clear_section_forced_modes', 'clear_section_patterns',
+                'alternate_ordering', 'clear_section_forced_modes', 'clear_section_patterns',
             ],
             YearLevelGenerationDiagnostics::TYPE_FORCED_ON_SITE,
             YearLevelGenerationDiagnostics::TYPE_LIMITED_ROOMS => [
@@ -286,7 +293,11 @@ class YearLevelRetryStrategyPlanner
         $adjustments = [];
 
         foreach ($sectionIds as $sectionId) {
-            $splitIds = array_map('intval', $configsBySectionId[$sectionId]['selected_split_session_course_ids'] ?? []);
+            // A course with Lecture/Laboratory Required Days must stay Integrated.
+            $splitIds = array_values(array_filter(
+                array_map('intval', $configsBySectionId[$sectionId]['selected_split_session_course_ids'] ?? []),
+                static fn (int $courseId): bool => ComponentRequiredDays::forCourse($configsBySectionId[$sectionId], $courseId) === [],
+            ));
             if ($splitIds === []) {
                 continue;
             }
@@ -315,7 +326,7 @@ class YearLevelRetryStrategyPlanner
             'key' => 'clear_bottleneck_split',
             'label' => sprintf('Schedule %s as one block instead of a lecture/lab split', $adjustments[0]['course_code']),
             'description' => sprintf(
-                'Turn off lecture/laboratory splitting for %s in %s so it needs one placement instead of a matched lecture and laboratory pair.',
+                'Turn off lecture/laboratory splitting for %s in %s so it needs one placement instead of a matched lecture and laboratory pair. The single block meets for its full length in a laboratory room.',
                 $adjustments[0]['course_code'],
                 $adjustments[0]['section_name'] !== '' ? $adjustments[0]['section_name'] : 'the section',
             ),
@@ -444,6 +455,12 @@ class YearLevelRetryStrategyPlanner
         $isHybrid = (bool) ($configsBySectionId[$focusSectionId]['is_hybrid'] ?? false);
         if ($splitIds === [] && ! $isHybrid) {
             return null;
+        }
+        // Clearing every Integrated course would drop Lecture/Laboratory Required Days.
+        foreach ($splitIds as $courseId) {
+            if (ComponentRequiredDays::forCourse($configsBySectionId[$focusSectionId], $courseId) !== []) {
+                return null;
+            }
         }
 
         return [

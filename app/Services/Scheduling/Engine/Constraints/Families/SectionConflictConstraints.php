@@ -29,17 +29,6 @@ final class SectionConflictConstraints
             if ($row->sectionId === $otherSectionId) {
                 $violations['section_conflict'] ??= ConstraintSupport::violation('section_conflict', 'Section already has an overlapping class.', context: $context);
             }
-
-            if ($row->mode === 'online'
-                && ConstraintSupport::stringValue($other, 'mode') === 'online'
-                && $row->courseId === ConstraintSupport::intValue($other, 'course_id')
-                && $row->sectionId !== $otherSectionId) {
-                $violations['subject_section_time_conflict'] ??= ConstraintSupport::violation(
-                    'subject_section_time_conflict',
-                    'The same online course is already scheduled for another section at this time.',
-                    context: $context,
-                );
-            }
         }
 
         return array_values($violations);

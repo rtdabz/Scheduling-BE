@@ -53,7 +53,6 @@ class EngineParityMatrixTest extends TestCase
         'room_type_match',
         'section_conflict',
         'slot_grid',
-        'subject_section_time_conflict',
     ];
 
     private Semester $semester;
@@ -117,11 +116,11 @@ class EngineParityMatrixTest extends TestCase
         $this->assertParity(['room_conflict'], $this->attempt());
     }
 
-    public function test_a_lecture_flagged_laboratory_may_host_a_lecture_only_major(): void
+    public function test_a_lecture_flagged_laboratory_does_not_host_a_major_without_laboratory_units(): void
     {
         $lab = $this->room('laboratory', ['allow_lecture_usage' => true]);
 
-        $this->assertParity([], $this->attempt(['room_id' => $lab->id]));
+        $this->assertParity(['room_type_match'], $this->attempt(['room_id' => $lab->id]));
     }
 
     public function test_section_rules_agree(): void
@@ -139,21 +138,34 @@ class EngineParityMatrixTest extends TestCase
         $partTimer->availabilities()->create(['day_index' => 0, 'start_time' => '13:00', 'end_time' => '17:00']);
         $this->assertParity(['part_time_faculty_availability'], $this->attempt(['faculty_id' => $partTimer->id]));
 
-        // No windows recorded at all: unrestricted.
+        // No windows added: the part-time default (weekday evenings) applies.
         $unrecorded = $this->faculty(['employment_type' => 'part-time']);
-        $this->assertParity([], $this->attempt(['faculty_id' => $unrecorded->id]));
+        $this->assertParity(['part_time_faculty_availability'], $this->attempt(['faculty_id' => $unrecorded->id]));
+        $this->assertParity([], $this->attempt(['faculty_id' => $unrecorded->id, 'start_time' => '17:30', 'end_time' => '18:30']));
+
+        // Full-time default covers weekdays 7:00 AM-8:30 PM, not Saturday.
+        $fullTimer = $this->faculty();
+        $this->assertParity([], $this->attempt(['faculty_id' => $fullTimer->id, 'start_time' => '17:00', 'end_time' => '18:00']));
+        $this->assertParity(['part_time_faculty_availability'], $this->attempt(['faculty_id' => $fullTimer->id, 'day' => 'Saturday']));
 
         $busy = $this->faculty();
         $this->persist(['faculty_id' => $busy->id, 'section_id' => $this->otherSection()->id, 'room_id' => null, 'mode' => 'online']);
         $this->assertParity(['faculty_conflict'], $this->attempt(['faculty_id' => $busy->id]));
     }
 
-    public function test_the_same_online_course_cannot_run_twice_at_once(): void
+    public function test_the_same_online_course_runs_concurrently_for_other_sections(): void
     {
         $course = $this->course();
-        $this->persist(['course_id' => $course->id, 'section_id' => $this->otherSection()->id, 'room_id' => null, 'mode' => 'online']);
+        $online = ['course_id' => $course->id, 'room_id' => null, 'mode' => 'online'];
+        $this->persist($online + ['section_id' => $this->otherSection()->id]);
 
-        $this->assertParity(['subject_section_time_conflict'], $this->attempt(['course_id' => $course->id, 'room_id' => null, 'mode' => 'online']));
+        $attempt = $this->attempt($online);
+        $this->assertParity([], $attempt);
+        $this->assertNotContains('subject_section_time_conflict', array_column(app(RuleEngine::class)->validate($attempt), 'rule'));
+
+        $busy = $this->faculty();
+        $this->persist($online + ['section_id' => $this->otherSection()->id, 'faculty_id' => $busy->id]);
+        $this->assertParity(['faculty_conflict'], $this->attempt($online + ['faculty_id' => $busy->id]));
     }
 
     public function test_time_rules_agree(): void
@@ -188,7 +200,7 @@ class EngineParityMatrixTest extends TestCase
     public function test_class_duration_agrees_for_meetings_generation_keeps(): void
     {
         // 3 units = 3 hours a week; a second 3-hour meeting doubles it.
-        foreach (['faculty_assignment', 'rejected'] as $status) {
+        foreach (['submitted', 'approved_by_dean', 'faculty_assignment'] as $status) {
             $course = $this->course();
             $this->persist(['course_id' => $course->id, 'day' => 'Friday', 'start_time' => '08:00', 'end_time' => '11:00', 'status' => $status, 'room_id' => null, 'mode' => 'online']);
 
@@ -219,17 +231,19 @@ class EngineParityMatrixTest extends TestCase
 
     /**
      * Not a disagreement: regenerating a course replaces its draft, completed
-     * and revision meetings on commit, so the kernel rightly leaves them out,
+     * revision and returned meetings on commit, so the kernel rightly leaves them out,
      * while a manual save adds to them and RuleEngine rightly counts them.
      */
-    public function test_generation_replaces_the_regenerated_courses_own_revision_meetings(): void
+    public function test_generation_replaces_the_regenerated_courses_own_editable_meetings(): void
     {
-        $course = $this->course();
-        $this->persist(['course_id' => $course->id, 'day' => 'Friday', 'start_time' => '08:00', 'end_time' => '11:00', 'status' => 'revision', 'room_id' => null, 'mode' => 'online']);
-        $attempt = $this->attempt(['course_id' => $course->id, 'start_time' => '08:00', 'end_time' => '11:00']);
+        foreach (Schedule::PLOTTING_EDITABLE_STATUSES as $status) {
+            $course = $this->course();
+            $this->persist(['course_id' => $course->id, 'day' => 'Friday', 'start_time' => '08:00', 'end_time' => '11:00', 'status' => $status, 'room_id' => null, 'mode' => 'online']);
+            $attempt = $this->attempt(['course_id' => $course->id, 'start_time' => '08:00', 'end_time' => '11:00']);
 
-        $this->assertSame(['class_duration'], $this->engineRules($attempt));
-        $this->assertSame([], $this->kernelRules($attempt));
+            $this->assertSame(['class_duration'], $this->engineRules($attempt), $status);
+            $this->assertSame([], $this->kernelRules($attempt), $status);
+        }
     }
 
     /**
@@ -238,7 +252,7 @@ class EngineParityMatrixTest extends TestCase
      */
     public function test_generation_still_sees_the_sections_other_courses(): void
     {
-        foreach (['draft', 'completed', 'revision'] as $status) {
+        foreach (Schedule::PLOTTING_EDITABLE_STATUSES as $status) {
             $this->persist(['course_id' => $this->course()->id, 'status' => $status, 'room_id' => null, 'mode' => 'online']);
 
             $this->assertParity(['section_conflict'], $this->attempt(), $status);

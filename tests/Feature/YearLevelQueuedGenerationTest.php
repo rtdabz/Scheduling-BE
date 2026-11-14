@@ -23,11 +23,38 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class YearLevelQueuedGenerationTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_returned_sections_can_generate_again_without_reopening(): void
+    {
+        Queue::fake();
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
+        $schedule = Schedule::create([
+            'semester_id' => $semester->id, 'section_id' => $section->id, 'course_id' => $course->id,
+            'room_id' => Rooms::query()->value('id'), 'department_id' => $department->id,
+            'day' => 'Monday', 'start_time' => '08:00', 'end_time' => '11:00', 'mode' => 'on-site',
+            'status' => 'rejected_by_dean',
+        ]);
+        foreach (['rejected_by_dean', 'rejected'] as $status) {
+            $schedule->update(['status' => $status]);
+            $payload = [
+                'semester_id' => $semester->id, 'department_id' => $department->id, 'year_level' => 1,
+                'section_ids' => [$section->id],
+                'section_configs' => [['section_id' => $section->id, 'course_ids' => [$course->id]]],
+            ];
+            $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', $payload)
+                ->assertOk()->assertJsonCount(1, 'schedules');
+            $this->assertSame($status, $schedule->refresh()->status, 'Preview must leave the returned working copy unchanged.');
+            $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview/queue', $payload)->assertAccepted();
+            ScheduleGenerationRun::query()->update(['status' => 'cancelled']);
+        }
+        Queue::assertPushed(GenerateYearLevelSchedulePreview::class, 2);
+    }
 
     public function test_year_level_preview_can_be_queued_and_polled(): void
     {
@@ -446,6 +473,42 @@ class YearLevelQueuedGenerationTest extends TestCase
         $run = ScheduleGenerationRun::query()->where('run_id', $runId)->firstOrFail();
         $this->assertSame('cancelled', $run->status);
         $this->assertNotNull($run->finished_at);
+    }
+
+    public static function queuedAuthorizationChanges(): array
+    {
+        return array_map(fn ($change) => [$change], ['program_move', 'role_change', 'permission_revoked', 'new_program_head']);
+    }
+
+    #[DataProvider('queuedAuthorizationChanges')]
+    public function test_a_queued_preview_rechecks_current_capabilities_and_program_ownership(string $change): void
+    {
+        [$semester, $department, $section, $course, $user] = $this->generationFixture();
+        if ($change === 'program_move') {
+            $user->update(['role' => 'program_head', 'program_id' => $section->program_id]);
+        }
+        $run = ScheduleGenerationRun::create(['run_id' => (string) Str::uuid(), 'requested_by' => $user->id,
+            'semester_id' => $semester->id, 'department_id' => $department->id, 'year_level' => 1, 'status' => 'queued']);
+        $identity = $run->actor_snapshots;
+        match ($change) {
+            'program_move' => $user->update(['program_id' => Program::create(['department_id' => $department->id, 'code' => 'NEW', 'name' => 'New Program'])->id]),
+            'role_change' => $user->update(['role' => 'dean']),
+            'permission_revoked' => [$user->syncRoles([]), $user->syncPermissions([])],
+            'new_program_head' => User::factory()->create(['role' => 'program_head', 'department_id' => $department->id, 'program_id' => $section->program_id]),
+        };
+        $generator = Mockery::mock(YearLevelScheduleGenerationService::class);
+        $generator->shouldNotReceive('preview');
+
+        (new GenerateYearLevelSchedulePreview($run->run_id, [(int) $section->id],
+            [(int) $section->id => ['course_ids' => [(int) $course->id]]]))->handle($generator);
+
+        $run->refresh();
+        $this->assertSame('cancelled', $run->status);
+        $this->assertStringContainsString('no longer authorized', $run->error_message);
+        $this->assertNotNull($run->finished_at);
+        $this->assertSame($identity, $run->actor_snapshots);
+        $this->assertSame($user->id, $run->requested_by);
+        $this->assertDatabaseCount('schedules', 0);
     }
 
     /** @return array{Semester, Departments, Sections, Course, User} */

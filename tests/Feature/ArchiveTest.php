@@ -58,7 +58,8 @@ class ArchiveTest extends TestCase
             ->getJson('/api/archives')
             ->assertOk()
             ->assertJsonPath('counts.rooms', 1)
-            ->assertJsonPath('counts.schedules', 0);
+            // Schedules have no archive, so they are not an archive type.
+            ->assertJsonMissingPath('counts.schedules');
 
         $this->actingAs($vpaa, 'sanctum')
             ->postJson("/api/archives/rooms/{$room->id}/restore")

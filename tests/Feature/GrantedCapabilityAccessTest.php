@@ -91,7 +91,8 @@ class GrantedCapabilityAccessTest extends TestCase
 
         $this->putJson("/api/faculties/{$this->instructor()->id}/availabilities", [
             'availabilities' => [
-                ['day_index' => 1, 'start_time' => '08:00', 'end_time' => '12:00'],
+                // Saturday: outside the full-time default, so a valid added window.
+                ['day_index' => 5, 'start_time' => '08:00', 'end_time' => '12:00'],
             ],
         ])->assertOk();
     }

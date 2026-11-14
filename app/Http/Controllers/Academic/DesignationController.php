@@ -41,13 +41,15 @@ class DesignationController extends Controller
             ->with('department:id,department_name,department_code')
             ->orderBy('last_name')
             ->orderBy('first_name')
-            ->get(['faculties.id', 'first_name', 'last_name', 'middle_name', 'suffix', 'employment_type', 'department_id', 'deload_units', 'status'])
+            ->get(['faculties.id', 'first_name', 'last_name', 'middle_name', 'suffix', 'honorific_prefix', 'credentials', 'employment_type', 'department_id', 'deload_units', 'status'])
             ->map(fn ($faculty) => [
                 'id' => $faculty->id,
                 'first_name' => $faculty->first_name,
                 'last_name' => $faculty->last_name,
                 'middle_name' => $faculty->middle_name,
                 'suffix' => $faculty->suffix,
+                'honorific_prefix' => $faculty->honorific_prefix,
+                'credentials' => $faculty->credentials,
                 'employment_type' => $faculty->employment_type,
                 'deload_units' => (int) $faculty->deload_units,
                 'status' => $faculty->status,
@@ -124,7 +126,7 @@ class DesignationController extends Controller
             ], 409);
         }
 
-        $designation->delete();
+        DB::transaction(fn () => $designation->delete());
         $this->flush();
 
         return response()->json(['message' => 'Designation archived successfully.']);

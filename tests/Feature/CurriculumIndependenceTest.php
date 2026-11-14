@@ -68,6 +68,7 @@ class CurriculumIndependenceTest extends TestCase
 
         $dept = Departments::create(['department_name' => 'Dept', 'department_code' => 'D']);
         $user->update(['department_id' => $dept->id]);
+        $this->withProgram($dept);
         $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
         $curr = Curriculum::create([
@@ -188,6 +189,7 @@ class CurriculumIndependenceTest extends TestCase
         $baDept = Departments::create(['department_name' => 'BA Dept', 'department_code' => 'BA']);
 
         $user->update(['department_id' => $itDept->id]);
+        $this->withProgram($itDept);
         $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
         $itCurriculum = Curriculum::create([
@@ -248,6 +250,7 @@ class CurriculumIndependenceTest extends TestCase
             'status' => 'deactivated',
         ]);
         $user->update(['department_id' => $hmDept->id]);
+        $this->withProgram($hmDept);
         $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
 
@@ -437,6 +440,7 @@ class CurriculumIndependenceTest extends TestCase
 
         $dept = Departments::create(['department_name' => 'IT Dept', 'department_code' => 'IT']);
         $user->update(['department_id' => $dept->id]);
+        $this->withProgram($dept);
         $this->grantCapabilities($user, ['schedule.view', 'curriculum.manage']);
         $this->actingAs($user);
         $curriculum = Curriculum::create([
@@ -493,6 +497,12 @@ class CurriculumIndependenceTest extends TestCase
             'year_level' => 2,
             'semester' => 3,
         ]);
+    }
+
+    /** Curriculum authoring (curriculum.manage) needs the department to own a program. */
+    private function withProgram(Departments $department): void
+    {
+        Program::firstOrCreate(['department_id' => $department->id, 'code' => $department->department_code.'-P'], ['name' => $department->department_name.' Program']);
     }
 
     /** A secretary of the department, who manages its course records. */

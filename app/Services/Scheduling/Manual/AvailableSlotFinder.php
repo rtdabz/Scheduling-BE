@@ -30,6 +30,8 @@ final class AvailableSlotFinder
      *                                     run is the section's ticked meeting days when its rule has them,
      *                                     else any run of this many back-to-back days
      * @param  array<string, mixed>|null  $rowTemplate  Affected meeting facts for group discovery; complete-group validation follows enumeration.
+     * @param  bool  $offerRoomTba  list Room TBA for a laboratory meeting at the times no laboratory room is
+     *                              free (placement and recommendations); room transfers leave it off
      * @return array{
      *     slots: list<array<string, mixed>>,
      *     rooms: list<array{room_id: int|null, room_code: string, room_type: string, mode: string, slot_count: int}>,
@@ -50,6 +52,7 @@ final class AvailableSlotFinder
         ?string $searchFromDay = null,
         ?int $consecutiveDays = null,
         ?array $rowTemplate = null,
+        bool $offerRoomTba = false,
     ): array {
         if ($durationSlots <= 0) {
             throw new InvalidArgumentException('A meeting must be at least one slot long.');
@@ -62,7 +65,7 @@ final class AvailableSlotFinder
             return ['slots' => [], 'rooms' => [], 'total' => 0, 'truncated' => false];
         }
 
-        if (SchedulingConstraintPredicates::isLaboratoryCourse($course)) {
+        if (! SchedulingPolicy::isFieldSchedulingEligible($course)) {
             $modes = array_values(array_filter($modes, static fn (string $mode): bool => $mode !== 'field'));
         }
 
@@ -89,11 +92,24 @@ final class AvailableSlotFinder
         $countsByRoom = [];
         $truncated = false;
         $freeByPlacement = [];
+        // A laboratory meeting with no free laboratory room stays on-site as Room TBA; it is listed
+        // only for the times no laboratory room is free, and never widened to a lecture classroom.
+        $departmentId = (int) ($section['department_id'] ?? $snapshot->departmentId);
+        $offersRoomTba = $offerRoomTba
+            && ! $isRun
+            && in_array('on-site', $modes, true)
+            && SchedulingPolicy::allowsRoomTbaFallback($course, $departmentId, $meetingType, $snapshot->fieldCourseCodes);
+        $roomFreeAt = [];
+        $candidates = $this->candidateRooms($snapshot, $modes);
+        if ($offersRoomTba) {
+            $candidates[] = ['room_id' => null, 'room_code' => 'Room TBA', 'room_type' => 'laboratory', 'mode' => 'on-site', 'tba' => true];
+        }
 
-        foreach ($this->candidateRooms($snapshot, $modes) as $room) {
+        foreach ($candidates as $room) {
             $roomId = $room['room_id'];
             $mode = $room['mode'];
-            $roomKey = $this->roomKey($mode, $roomId);
+            $isTba = (bool) ($room['tba'] ?? false);
+            $roomKey = $isTba ? 'on-site:tba' : $this->roomKey($mode, $roomId);
             $countsByRoom[$roomKey] = [
                 'room_id' => $roomId,
                 'room_code' => $room['room_code'],
@@ -104,6 +120,10 @@ final class AvailableSlotFinder
 
             foreach ($days as $day) {
                 foreach ($starts as ['start_slot' => $startSlot, 'end_slot' => $endSlot, 'start_time' => $startTime, 'end_time' => $endTime]) {
+                    if ($isTba && isset($roomFreeAt[$day.'@'.$startSlot])) {
+                        continue;
+                    }
+
                     $row = new ScheduleRow(
                         semesterId: $snapshot->semesterId,
                         sectionId: $sectionId,
@@ -123,6 +143,10 @@ final class AvailableSlotFinder
 
                     if ($this->kernel->evaluateRow($row, $snapshot, $candidateRows, $ignoreScheduleIds) !== []) {
                         continue;
+                    }
+
+                    if ($mode === 'on-site' && $roomId !== null) {
+                        $roomFreeAt[$day.'@'.$startSlot] = true;
                     }
 
                     if ($isRun) {

@@ -9,9 +9,11 @@ final class ClassDurationRule
 {
     /**
      * @param  array<string, mixed>  $attempt
+     * @param  list<array<string, mixed>>  $pending  the same save's other operations; counted only for a Consecutive Days row, so
+     *                                              a whole run is judged together while other shapes keep their per-row check
      * @return array<string, mixed>|null
      */
-    public function check(array $attempt, AttemptRecords $records): ?array
+    public function check(array $attempt, AttemptRecords $records, array $pending = []): ?array
     {
         $course = $records->course;
         $placed = SchedulingPolicy::placedCourse($course, $records->section->curriculum_id === null ? null : (int) $records->section->curriculum_id);
@@ -23,7 +25,7 @@ final class ClassDurationRule
             ->where('section_id', (int) $records->section->id)
             ->where('course_id', (int) $course->id)
             ->with('split:id,schedule_id,split_group_id,meeting_type')
-            ->get(['id', 'start_time', 'end_time']);
+            ->get(['id', 'start_time', 'end_time', 'preferred_pattern']);
         if ($isIntegratedSession) {
             $rows = $rows->filter(static fn (Schedule $row): bool => $row->meeting_type === $meetingType
                 && SchedulingPolicy::isIntegratedSession($course, $row->meeting_type, $row->split_group_id));
@@ -35,9 +37,29 @@ final class ClassDurationRule
         $attemptMinutes = max(0, RuleSupport::durationMinutes((string) $attempt['start_time'], (string) $attempt['end_time']));
         $totalMinutes = $kept->sum($minutesOf) + $attemptMinutes;
 
-        $allowedMinutes = $isIntegratedSession
+        $groupId = trim((string) ($attempt['split_group_id'] ?? ''));
+        $isRun = SchedulingPolicy::consecutiveDayCount($attempt['preferred_pattern'] ?? null) !== null;
+        $linkedMeetings = 1 + $kept->filter(static fn (Schedule $row): bool => $groupId !== ''
+            && (string) $row->split_group_id === $groupId
+            && SchedulingPolicy::consecutiveDayCount($row->preferred_pattern) !== null)->count();
+        if ($isRun) {
+            foreach ($pending as $other) {
+                if ((int) ($other['semester_id'] ?? 0) !== (int) $attempt['semester_id']
+                    || (int) ($other['section_id'] ?? 0) !== (int) $records->section->id
+                    || RuleSupport::courseId($other) !== (int) $course->id) {
+                    continue;
+                }
+                $totalMinutes += max(0, RuleSupport::durationMinutes((string) ($other['start_time'] ?? '00:00'), (string) ($other['end_time'] ?? '00:00')));
+                if ($groupId !== '' && trim((string) ($other['split_group_id'] ?? '')) === $groupId
+                    && SchedulingPolicy::consecutiveDayCount($other['preferred_pattern'] ?? null) !== null) {
+                    $linkedMeetings++;
+                }
+            }
+        }
+        $allowedMinutes = ($isIntegratedSession
             ? SchedulingPolicy::componentMinutes($placed, $meetingType)
-            : SchedulingPolicy::courseDurationMinutes($placed);
+            : SchedulingPolicy::courseDurationMinutes($placed))
+            * SchedulingPolicy::durationAllowanceRepeats($attempt['preferred_pattern'] ?? null, $groupId, $linkedMeetings);
         if ($allowedMinutes <= 0) {
             return null;
         }

@@ -8,12 +8,13 @@ use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
+use App\Services\Scheduling\Generation\ComponentRequiredDays;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
 
 class YearLevelFeasibilityService
 {
-    private const REPLACEABLE_STATUSES = ['draft', 'completed', 'revision'];
+    private const REPLACEABLE_STATUSES = Schedule::PLOTTING_EDITABLE_STATUSES;
 
     private ?int $semesterId = null;
 
@@ -50,6 +51,7 @@ class YearLevelFeasibilityService
         $blocking = [...$blocking, ...$this->checkPhysicalRoomCapacity($sections, $configsBySectionId, $courses, $department, $slotsPerDay)];
         $blocking = [...$blocking, ...$this->checkFixedPatternCapacity($sections, $configsBySectionId, $courses, $department)];
         $blocking = [...$blocking, ...$this->checkForcedDayCapacity($sections, $configsBySectionId, $courses, $department)];
+        $blocking = [...$blocking, ...$this->checkComponentDayCapacity($sections, $configsBySectionId, $courses, $department)];
         $blocking = [...$blocking, ...$this->checkComponentDurationsFitTheDay($sections, $configsBySectionId, $courses, $department)];
         $blocking = [...$blocking, ...$this->checkPreferredDays($sections, $configsBySectionId, $courses, $department)];
 
@@ -239,6 +241,92 @@ class YearLevelFeasibilityService
     }
 
     /**
+     * Each pinned Integrated component is counted with its own duration and
+     * room type on its own day. An online lecture needs no room, and a pin
+     * never moves the whole course's duration onto both days.
+     *
+     * @param  list<Sections>  $sections
+     * @param  array<int, array<string, mixed>>  $configsBySectionId
+     * @param  Collection<int, Course>  $courses
+     * @return list<array<string, mixed>>
+     */
+    private function checkComponentDayCapacity(
+        array $sections,
+        array $configsBySectionId,
+        Collection $courses,
+        Departments $department,
+    ): array {
+        $demand = [];
+        foreach ($sections as $section) {
+            $config = $configsBySectionId[(int) $section->id] ?? [];
+            $modes = $config['delivery_modes_by_course_id'] ?? [];
+            foreach ((array) ($config[ComponentRequiredDays::KEY] ?? []) as $courseId => $days) {
+                $course = $courses->get((int) $courseId);
+                if ($course === null || ! is_array($days)) {
+                    continue;
+                }
+                $slots = $this->integratedHybridSlots($course, $section);
+                foreach ($days as $component => $day) {
+                    if (! isset($slots[$component]) || $slots[$component] <= 0) {
+                        continue;
+                    }
+                    if ($component === 'lecture' && ! SchedulingPolicy::isIntegratedOnSite($modes, (int) $courseId)) {
+                        continue;
+                    }
+                    $key = $courseId.'|'.$component.'|'.$day;
+                    $demand[$key] ??= ['course' => $course, 'component' => $component, 'day' => $day, 'slots' => $slots[$component], 'count' => 0];
+                    $demand[$key]['count']++;
+                }
+            }
+        }
+
+        $blocking = [];
+        foreach ($demand as $entry) {
+            $startCount = count(SchedulingPolicy::generatedStartSlotsForDuration($entry['slots']));
+            $roomTypes = $entry['component'] === 'laboratory'
+                ? SchedulingPolicy::labRoomTypes((int) $department->id)
+                : ['lecture'];
+            $capacity = $this->usableRooms($department, $roomTypes)->count();
+            if ($startCount === 0 || $capacity === 0 || $entry['count'] <= $startCount * $capacity) {
+                continue;
+            }
+            $code = (string) ($entry['course']->course_code ?? $entry['course']->course_name ?? 'Course');
+            $blocking[] = [
+                'code' => 'component_required_day_capacity_exceeded',
+                'message' => sprintf(
+                    '%s needs %d %s meetings on %s (its %s Required Day), but %s offers only %d: %d start %s in %d %s.',
+                    $code,
+                    $entry['count'],
+                    $entry['component'],
+                    $entry['day'],
+                    ucfirst($entry['component']),
+                    $entry['day'],
+                    $startCount * $capacity,
+                    $startCount,
+                    $startCount === 1 ? 'time' : 'times',
+                    $capacity,
+                    $capacity === 1 ? 'room' : 'rooms',
+                ),
+                'suggested_action' => sprintf(
+                    'Choose another %s Required Day for some sections of %s, or clear it.',
+                    ucfirst($entry['component']),
+                    $code,
+                ),
+                'context' => [
+                    'course_id' => (int) $entry['course']->id,
+                    'course_code' => $code,
+                    'component_type' => $entry['component'],
+                    'required_day' => $entry['day'],
+                    'required_placements' => $entry['count'],
+                    'available_placements' => $startCount * $capacity,
+                ],
+            ];
+        }
+
+        return $blocking;
+    }
+
+    /**
      * @return list<int>
      */
     private function legalStartSlots(Course $course, Departments $department, int $durationSlots): array
@@ -324,7 +412,7 @@ class YearLevelFeasibilityService
         }
 
         $lectureRooms = $rooms
-            ->filter(static fn (Rooms $room): bool => $room->room_type === 'lecture' || (bool) $room->allow_lecture_usage)
+            ->filter(static fn (Rooms $room): bool => $room->room_type === 'lecture')
             ->values();
         $supply = $this->weeklyRoomSlotSupply($lectureRooms, $slotsPerDay, $department)
             - $this->occupiedRoomSlots($sections, $lectureRooms->pluck('id')->map('intval')->all());

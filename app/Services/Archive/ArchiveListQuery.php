@@ -16,7 +16,6 @@ final class ArchiveListQuery
 {
     /**
      * table, department column, program column, semester column, searchable columns, joins.
-     * Joins add the parent class for meeting splits and searchable class labels.
      */
     private const SPECS = [
         'users' => ['users', 'r.department_id', 'r.program_id', null, ['r.name', 'r.username', 'r.email']],
@@ -28,28 +27,40 @@ final class ArchiveListQuery
         'designations' => ['designations', null, null, null, ['r.name', 'r.code']],
         'courses' => ['courses', 'r.department_id', 'r.program_id', null, ['r.course_code', 'r.course_name']],
         'semesters' => ['semesters', null, null, 'r.id', ['r.academic_year', 'r.semester']],
-        'schedules' => ['schedules', 'r.department_id', 'r.program_id', 'r.semester_id', ['c.course_code', 'c.course_name', 's.section_name', 'rm.room_code']],
-        'schedule-splits' => ['schedule_splits', 'p.department_id', 'p.program_id', 'p.semester_id', ['c.course_code', 'c.course_name', 's.section_name', 'rm.room_code']],
     ];
 
     public const SORTS = ['archived_at', 'type'];
 
     /**
-     * Counts per type for every filter except the type filter.
+     * Counts per type for every filter except the type filter. With a module scope, only the
+     * scope's types are counted and returned.
      *
      * @param  array<string, mixed>  $filters
+     * @param  list<string>|null  $scope
      * @return array<string, int>
      */
-    public function counts(array $filters): array
+    public function counts(array $filters, ?array $scope = null): array
     {
+        $types = $this->scopedTypes($scope);
         $found = DB::query()
-            ->fromSub($this->union(array_keys(self::SPECS), $filters), 'archive_rows')
+            ->fromSub($this->union($types, $filters), 'archive_rows')
             ->select('archive_type')
             ->selectRaw('COUNT(*) AS aggregate')
             ->groupBy('archive_type')
             ->pluck('aggregate', 'archive_type');
 
-        return collect(self::SPECS)->map(fn ($spec, string $type): int => (int) ($found[$type] ?? 0))->all();
+        return collect($types)->mapWithKeys(fn (string $type): array => [$type => (int) ($found[$type] ?? 0)])->all();
+    }
+
+    /**
+     * @param  list<string>|null  $scope
+     * @return list<string>
+     */
+    private function scopedTypes(?array $scope): array
+    {
+        return $scope === null
+            ? array_keys(self::SPECS)
+            : array_values(array_filter(array_keys(self::SPECS), fn (string $type): bool => in_array($type, $scope, true)));
     }
 
     /**
@@ -59,7 +70,7 @@ final class ArchiveListQuery
     public function page(array $filters, string $sort, string $direction, int $page, int $perPage): Collection
     {
         $type = $filters['type'] ?? null;
-        $types = $type === null ? array_keys(self::SPECS) : [$type];
+        $types = $type === null ? $this->scopedTypes($filters['types'] ?? null) : [$type];
         $query = DB::query()->fromSub($this->union($types, $filters), 'archive_rows');
 
         if ($sort === 'type') {
@@ -110,16 +121,6 @@ final class ArchiveListQuery
         }
         if ($type === 'rooms') {
             $query->where(fn (Builder $rooms) => $rooms->whereNull('r.building')->orWhereExists($liveSibling));
-        }
-
-        if ($type === 'schedule-splits') {
-            $query->leftJoin('schedules as p', 'p.id', '=', 'r.schedule_id');
-        }
-        if (in_array($type, ['schedules', 'schedule-splits'], true)) {
-            $owner = $type === 'schedules' ? 'r' : 'p';
-            $query->leftJoin('courses as c', 'c.id', '=', "{$owner}.course_id")
-                ->leftJoin('sections as s', 's.id', '=', "{$owner}.section_id")
-                ->leftJoin('rooms as rm', 'rm.id', '=', "{$owner}.room_id");
         }
 
         foreach (['department_id' => $department, 'program_id' => $program, 'semester_id' => $semester] as $filter => $column) {

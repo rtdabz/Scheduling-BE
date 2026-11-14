@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Engine\Constraints;
 
+use App\Models\Schedule;
 use App\Services\Scheduling\Domain\GenerationConfiguration;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
@@ -32,7 +33,7 @@ final class SchedulingConstraintEvaluationContextFactory
         foreach ($snapshot->persistedSchedules as $schedule) {
             if ((int) ($schedule['section_id'] ?? 0) !== $configuration->sectionId
                 || ! in_array((int) ($schedule['course_id'] ?? 0), $configuration->courseIds, true)
-                || ! in_array((string) ($schedule['status'] ?? ''), ['draft', 'completed', 'revision'], true)) {
+                || ! in_array((string) ($schedule['status'] ?? ''), Schedule::PLOTTING_EDITABLE_STATUSES, true)) {
                 continue;
             }
 

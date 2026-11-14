@@ -37,6 +37,12 @@ final class ScheduleAuthorizationService
      */
     public function visibleScheduleStatuses(Request $request): ?array
     {
+        // Published tables and Gantt views show the VPAA-approved timetable for every role. Approval queue access
+        // must not widen this view to include schedules that are still being reviewed.
+        if (in_array($request->query('view'), ['gantt', 'published'], true)) {
+            return SchedulingPolicy::VPAA_VISIBLE_STATUSES;
+        }
+
         $user = $request->user();
         if ($user?->isVpaa() !== true) {
             return null;
@@ -219,7 +225,9 @@ final class ScheduleAuthorizationService
                 && Program::query()->whereKey($user->program_id)->where('department_id', $user->department_id)->exists()
                     ? [(int) $user->program_id]
                     : [],
-            'secretary' => Program::query()
+            // Secretary and Director share the department office: every program without an
+            // active program head, never a program head's own program.
+            'secretary', 'director' => Program::query()
                 ->where('department_id', $user->department_id)
                 ->whereNotIn('id', User::query()
                     ->where('role', 'program_head')
@@ -268,7 +276,7 @@ final class ScheduleAuthorizationService
                 return $this->programIsWritable($request, (int) $row->program_id);
             }
 
-            return $user?->role === 'secretary'
+            return $user?->isSecretaryOrDirector() === true
                 && $user->is_active
                 && $user->department_id !== null
                 && (int) $row->department_id === (int) $user->department_id;

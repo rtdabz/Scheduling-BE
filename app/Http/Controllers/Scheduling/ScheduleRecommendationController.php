@@ -10,6 +10,7 @@ use App\Models\Schedule;
 use App\Models\ScheduleGenerationRun;
 use App\Models\Sections;
 use App\Models\Semester;
+use App\Services\Scheduling\Generation\ComponentRequiredDays;
 use App\Services\Scheduling\Generation\CourseSetupOverrides;
 use App\Services\Scheduling\Generation\GenerationCourseSelection;
 use App\Services\Scheduling\Generation\ScheduleGenerationPreflightService;
@@ -211,6 +212,12 @@ class ScheduleRecommendationController extends Controller
             'unplaced.*.meetings.*.meeting_type' => 'nullable|in:lecture,laboratory',
             'unplaced.*.meetings.*.modes' => 'sometimes|array',
             'unplaced.*.meetings.*.modes.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
+            // The generation's Lecture/Laboratory Required Days. Optional:
+            // review without them keeps its existing behavior.
+            'section_configs' => 'sometimes|array|max:500',
+            'section_configs.*' => 'array:section_id,'.ComponentRequiredDays::KEY,
+            'section_configs.*.section_id' => 'required|integer|distinct',
+            ...ComponentRequiredDays::rules(),
         ]);
 
         $semesterId = (int) $validated['semester_id'];
@@ -242,6 +249,16 @@ class ScheduleRecommendationController extends Controller
                 'rows' => $validated['rows'],
                 'unplaced' => $validated['unplaced'] ?? [],
                 'preferredDays' => $validated['preferred_days'] ?? null,
+                'componentRequiredDays' => ComponentRequiredDays::normalizeContext(
+                    $validated['section_configs'] ?? [],
+                    $sectionIds,
+                    SchedulingPolicy::normalizeAllowedDays($validated['preferred_days'] ?? null),
+                    // Only courses this draft holds, placed or unplaced.
+                    collect([...$validated['rows'], ...($validated['unplaced'] ?? [])])
+                        ->groupBy(static fn (array $row): int => (int) $row['section_id'])
+                        ->map(static fn ($rows): array => $rows->pluck('course_id')->map('intval')->unique()->values()->all())
+                        ->all(),
+                ),
             ],
             scope: ['semester_id' => $semesterId, 'department_id' => $departmentId, 'section_ids' => $sectionIds],
         ));
@@ -278,6 +295,7 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.allowed_days.*' => SchedulingPolicy::allowedDaysRule(),
             'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
             'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
+            ...ComponentRequiredDays::rules(),
             'section_configs.*.delivery_modes_by_course_id.*' => SchedulingPolicy::allowedDeliveryModesRule('required'),
             ...$this->ruleOverrideRules(),
             ...$this->selectedAdjustmentRules(),
@@ -356,6 +374,7 @@ class ScheduleRecommendationController extends Controller
             'generation_metrics' => $result['generation_metrics'] ?? null,
             'status' => $result['status'] ?? 'complete',
             'unplaced_courses' => $result['unplaced_courses'] ?? [],
+            ...(isset($result[ComponentRequiredDays::REPORT_KEY]) ? [ComponentRequiredDays::REPORT_KEY => $result[ComponentRequiredDays::REPORT_KEY]] : []),
             'sections' =>$sections->map(fn (Sections $section): array => [
                 'id' => (int) $section->id,
                 'name' => (string) $section->section_name,
@@ -406,6 +425,7 @@ class ScheduleRecommendationController extends Controller
             'section_configs.*.allowed_days.*' => SchedulingPolicy::allowedDaysRule(),
             'section_configs.*.preferred_rooms_by_course_id' => 'sometimes|array',
             'section_configs.*.preferred_rooms_by_course_id.*' => 'integer|exists:rooms,id',
+            ...ComponentRequiredDays::rules(),
             ...$this->ruleOverrideRules(),
             ...$this->selectedAdjustmentRules(),
         ]);
@@ -584,9 +604,11 @@ class ScheduleRecommendationController extends Controller
             $prepared[(int) $section->id] = [
                 ...$selection,
                 'mode' => (string) ($config['mode'] ?? 'on-site'),
-                'delivery_modes_by_course_id' => $config['delivery_modes_by_course_id'] ?? [],
                 'allowed_days' => SchedulingPolicy::normalizeAllowedDays($config['allowed_days'] ?? null),
                 'allow_friday_saturday_split' => (bool) ($config['allow_friday_saturday_split'] ?? false),
+                // Raw until normalized below, so a selected adjustment that
+                // would drop Integrated is refused instead of losing the pins.
+                ComponentRequiredDays::KEY => (array) ($config[ComponentRequiredDays::KEY] ?? []),
             ];
         }
         $selected = $validated['selected_adjustments'] ?? [];
@@ -612,6 +634,11 @@ class ScheduleRecommendationController extends Controller
                     if (in_array($key, ['course_ids', 'selected_split_session_course_ids', 'balanced_split_course_ids', 'hybrid_split_course_ids'], true)) {
                         sort($expected);
                         sort($actual);
+                    } elseif ($key === 'delivery_modes_by_course_id') {
+                        $expected = array_map('strval', array_combine(array_map('intval', array_keys((array) $expected)), (array) $expected) ?: []);
+                        $actual = array_map('strval', array_combine(array_map('intval', array_keys((array) $actual)), (array) $actual) ?: []);
+                        ksort($expected);
+                        ksort($actual);
                     }
                     if ($actual !== $expected) {
                         throw ValidationException::withMessages(['selected_adjustments' => 'The selected adjustment is no longer eligible for this course configuration. Refresh the recommendations.']);
@@ -627,6 +654,13 @@ class ScheduleRecommendationController extends Controller
             );
             CourseSetupOverrides::assertSundayAllowed($section, $sectionConfig['allowed_days']);
             CourseSetupOverrides::assertRequiredDaysAllowed($section, $courseIds, $sectionConfig['allowed_days']);
+            $sectionConfig[ComponentRequiredDays::KEY] = ComponentRequiredDays::normalize(
+                $section,
+                $config[ComponentRequiredDays::KEY] ?? [],
+                $courseIds,
+                $sectionConfig['selected_split_session_course_ids'],
+                $sectionConfig['allowed_days'],
+            );
             $sectionConfig[CourseSetupOverrides::PREFERRED_ROOMS_KEY] = CourseSetupOverrides::normalizePreferredRooms(
                 $section, $config['preferred_rooms_by_course_id'] ?? [], $courseIds, $sectionConfig,
             );

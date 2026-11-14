@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Rooms;
 
 use App\Http\Controllers\Controller;
 use App\Jobs\DeliverSystemNotifications;
+use App\Models\Faculty;
 use App\Models\RoomRequest;
 use App\Models\Rooms;
 use App\Models\Schedule;
@@ -12,17 +13,20 @@ use App\Models\Semester;
 use App\Models\User;
 use App\Services\RoomRecoveryService;
 use App\Services\ScheduleHistoryRecorder;
+use App\Services\ScheduleSemesterArchiver;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Support\ActorIdentity;
 use App\Support\ApiCache;
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -75,7 +79,7 @@ class RoomRequestController extends Controller
                 'course:id,course_code,course_name,course_category,units,lecture_hours,lab_hours',
                 'section:id,section_name',
                 'department:id,department_code',
-                'faculty:id,first_name,last_name,middle_name',
+                'faculty:id,first_name,last_name,middle_name,suffix,honorific_prefix,credentials',
             ])
             ->where('room_id', $roomModel->id)
             ->where('semester_id', $semester->id)
@@ -84,6 +88,16 @@ class RoomRequestController extends Controller
             ->get(['id', 'semester_id', 'course_id', 'section_id', 'faculty_id', 'room_id', 'department_id', 'day', 'start_time', 'end_time', 'mode', 'status']);
 
         $grants = $this->approvedWindows($roomModel->id, $semester->id);
+
+        // Only VPAA-approved classes are published to the room timetable. Unapproved classes
+        // inside an approved borrowing window stay in `schedules` (their time already shows as
+        // the grant) so the give-back / revoke impact still counts every class that will move.
+        $isVpaaApproved = fn (Schedule $schedule): bool => in_array((string) $schedule->status, ScheduleSemesterArchiver::VPAA_APPROVED_STATUSES, true);
+        $occupyingClasses = $schedules->filter($isVpaaApproved)->values();
+        $schedules = $schedules
+            ->filter(fn (Schedule $schedule): bool => $isVpaaApproved($schedule) || $this->insideGrant($schedule, $grants))
+            ->values();
+
         $masked = $this->maskedScheduleIds($request->user(), $roomModel, $schedules);
         $borrowing = $this->borrowingStatus($roomModel, $semester->id);
 
@@ -95,7 +109,7 @@ class RoomRequestController extends Controller
             'opening_time' => substr(SchedulingPolicy::openingTime(), 0, 5),
             'closing_time' => substr(SchedulingPolicy::closingTime(), 0, 5),
             'occupied' => [
-                ...$schedules->map(fn (Schedule $schedule): array => [
+                ...$occupyingClasses->map(fn (Schedule $schedule): array => [
                     'kind' => 'class',
                     'day' => (string) $schedule->day,
                     'start_time' => substr((string) $schedule->start_time, 0, 5),
@@ -150,9 +164,23 @@ class RoomRequestController extends Controller
                     'is_masked' => false,
                     'section' => $schedule->section?->only(['id', 'section_name']),
                     'course' => $schedule->course?->only(['id', 'course_code', 'course_name', 'course_category', 'units', 'lecture_hours', 'lab_hours']),
-                    'faculty' => $schedule->faculty?->only(['id', 'first_name', 'last_name', 'middle_name']),
+                    'faculty' => $schedule->faculty?->only(['id', ...Faculty::NAME_COLUMNS]),
                 ])->values()->all(),
         ]);
+    }
+
+    /**
+     * @param  Collection<int, object>  $grants
+     */
+    private function insideGrant(Schedule $schedule, Collection $grants): bool
+    {
+        $start = substr((string) $schedule->start_time, 0, 5);
+        $end = substr((string) $schedule->end_time, 0, 5);
+
+        return $grants->contains(fn (object $window): bool => (int) $window->department_id === (int) $schedule->department_id
+            && (string) $window->day === (string) $schedule->day
+            && substr((string) $window->start_time, 0, 5) < $end
+            && $start < substr((string) $window->end_time, 0, 5));
     }
 
     /**
@@ -230,6 +258,7 @@ class RoomRequestController extends Controller
                 'requested_by' => $user->id,
             ]);
             $roomRequest->windows()->createMany($windows);
+            $this->recordDecision($roomRequest, $user, 'room_request_submitted', null);
 
             return $roomRequest;
         });
@@ -297,12 +326,14 @@ class RoomRequestController extends Controller
                 ignoreRequestId: (int) $model->id,
             );
 
+            $previousStatus = $model->status;
             $model->update([
                 'status' => RoomRequest::STATUS_APPROVED,
                 'review_remarks' => isset($validated['remarks']) ? trim((string) $validated['remarks']) : null,
                 'reviewed_by' => $user->id,
                 'reviewed_at' => now(),
             ]);
+            $this->recordDecision($model, $user, 'room_request_approved', $previousStatus, $model->review_remarks);
 
             return $model;
         });
@@ -368,12 +399,21 @@ class RoomRequestController extends Controller
                 $released = $this->endGrant($model, $user, $status, $remarks);
             }
 
-            $model->update([
-                'status' => $status,
-                'review_remarks' => $status === RoomRequest::STATUS_CANCELLED ? $model->review_remarks : $remarks,
-                'reviewed_by' => $status === RoomRequest::STATUS_CANCELLED ? $model->reviewed_by : $user->id,
-                'reviewed_at' => $status === RoomRequest::STATUS_CANCELLED ? $model->reviewed_at : now(),
-            ]);
+            $previousStatus = $model->status;
+            $changes = ['status' => $status];
+            if ($status !== RoomRequest::STATUS_CANCELLED) {
+                $changes['review_remarks'] = $remarks;
+                if (! $wasApproved) {
+                    $changes += ['reviewed_by' => $user->id, 'reviewed_at' => now()];
+                }
+            }
+            $model->update($changes);
+            $event = match ($status) {
+                RoomRequest::STATUS_REJECTED => 'room_request_rejected',
+                RoomRequest::STATUS_REVOKED => 'room_request_revoked',
+                default => 'room_request_cancelled',
+            };
+            $this->recordDecision($model, $user, $event, $previousStatus, $remarks);
         });
 
         $model->load($this->relations());
@@ -399,6 +439,22 @@ class RoomRequestController extends Controller
             'released_schedule_count' => $released->count(),
             'released_schedule_ids' => $released->pluck('id')->map('intval')->values()->all(),
             'data' => $this->present($model),
+        ]);
+    }
+
+    private function recordDecision(RoomRequest $model, User $actor, string $event, ?string $previousStatus, ?string $remarks = null): void
+    {
+        $decision = ['event' => $event, 'occurred_at' => now()->toISOString(),
+            'actor' => ActorIdentity::snapshot($actor), 'before_status' => $previousStatus,
+            'after_status' => $model->status, 'remarks' => $remarks];
+        $snapshots = $model->actor_snapshots ?? [];
+        $snapshots['decisions'][] = $decision;
+        $model->forceFill(['actor_snapshots' => $snapshots])->save();
+        SchedulingAuditLog::create([
+            'user_id' => $actor->id, 'semester_id' => $model->semester_id,
+            'department_id' => $model->requesting_department_id, 'action' => $event,
+            'metadata' => ['target' => ['type' => 'room_request', 'id' => $model->id],
+                'room_request_id' => $model->id, 'decision' => $decision],
         ]);
     }
 
@@ -578,7 +634,7 @@ class RoomRequestController extends Controller
         return $normalized;
     }
 
-    /** @return Collection<int, object{day: string, start_time: string, end_time: string, department_code: ?string}> */
+    /** @return Collection<int, object{day: string, start_time: string, end_time: string, department_code: ?string, department_id: int}> */
     private function approvedWindows(int $roomId, int $semesterId, ?int $ignoreRequestId = null): Collection
     {
         return DB::table('room_request_windows')
@@ -595,6 +651,7 @@ class RoomRequestController extends Controller
                 'room_request_windows.start_time',
                 'room_request_windows.end_time',
                 'departments.department_code',
+                'room_requests.requesting_department_id as department_id',
             ]);
     }
 
@@ -606,9 +663,9 @@ class RoomRequestController extends Controller
     }
 
     /**
-     * Release the borrower's classes held under this grant to Room TBA and record the
-     * displacement in recovery, timetable history, revision tracking, and the scheduling
-     * audit. Runs inside the grant transaction: any failure rolls the whole transition back.
+     * Move the borrower's classes to temporary Online on revocation or Room TBA on return.
+     * Record displacement in recovery, timetable history, revision tracking, and the
+     * scheduling audit. Any failure rolls the whole grant transaction back.
      *
      * @return Collection<int, Schedule>
      */
@@ -637,7 +694,8 @@ class RoomRequestController extends Controller
             ) !== null)
             ->values();
 
-        $endedBy = $status === RoomRequest::STATUS_REVOKED ? 'owner_revoked' : 'borrower_returned';
+        $revoked = $status === RoomRequest::STATUS_REVOKED;
+        $endedBy = $revoked ? 'owner_revoked' : 'borrower_returned';
         $reason = $remarks ?? 'The borrowing department gave the room back.';
         $ids = $schedules->pluck('id')->map('intval')->values()->all();
         $metadata = [
@@ -652,10 +710,19 @@ class RoomRequestController extends Controller
         $before = $schedules->map(fn (Schedule $schedule): array => $schedule->getAttributes())->all();
         app(RoomRecoveryService::class)->recordImpact(
             (int) $model->room_id, $schedules, 'grant_ended',
-            'Approved borrowing access ended. A replacement room is required.', (int) $user->id,
+            $revoked
+                ? 'Borrowing access was revoked. Classes meet online until a replacement room is approved.'
+                : 'Approved borrowing access ended. A replacement room is required.',
+            (int) $user->id,
         );
+        $displacedAt = now();
         foreach ($schedules as $schedule) {
             $schedule->room_id = null;
+            if ($revoked) {
+                $schedule->mode = 'online';
+                $schedule->displaced_room_id = (int) $model->room_id;
+                $schedule->displaced_at = $displacedAt;
+            }
             $schedule->save();
         }
 
@@ -706,10 +773,11 @@ class RoomRequestController extends Controller
         }
 
         return sprintf(
-            '%d class meeting%s in %s moved to Room TBA: %s.',
+            '%d class meeting%s in %s moved to %s: %s.',
             $released->count(),
             $released->count() === 1 ? '' : 's',
             $model->room?->room_code ?? 'the room',
+            $model->status === RoomRequest::STATUS_REVOKED ? 'Online until a replacement room is approved' : 'Room TBA',
             $released->take(5)->map(fn (Schedule $schedule): string => sprintf(
                 '%s %s %s %s-%s',
                 $schedule->course?->course_code,
@@ -782,9 +850,9 @@ class RoomRequestController extends Controller
 
         $recipients = User::query()
             ->where('department_id', $model->requesting_department_id)
-            ->where('role', 'secretary')
+            ->whereIn('role', User::DEPARTMENT_OFFICE_ROLES)
             ->get();
-        if ($model->requester?->role === 'secretary') {
+        if ($model->requester?->isSecretaryOrDirector()) {
             $recipients->push($model->requester);
         }
 
@@ -849,7 +917,7 @@ class RoomRequestController extends Controller
     private function ownerSecretaries(RoomRequest $model): Collection
     {
         return User::query()
-            ->where('role', 'secretary')
+            ->whereIn('role', User::DEPARTMENT_OFFICE_ROLES)
             ->where('department_id', $model->owner_department_id)
             ->get();
     }
@@ -877,7 +945,10 @@ class RoomRequestController extends Controller
             'department_id' => $departmentId,
             'semester_id' => (int) $model->semester_id,
             'remarks' => $remarks,
-            'metadata' => $this->notificationMetadata($model),
+            'metadata' => [...$this->notificationMetadata($model),
+                'event_id' => (string) Str::uuid(),
+                'audience_roles' => User::withDepartmentOffice($recipients->pluck('role')->unique()->values()->all()),
+                'requires_action' => $type === 'room_request_submitted' && ! $recipients->contains('role', 'vpaa')],
         ];
     }
 
@@ -940,8 +1011,9 @@ class RoomRequestController extends Controller
             'owner_department' => $this->presentDepartment($model->ownerDepartment),
             // The room was reassigned after this request was sent; only the requester can act (cancel and resubmit).
             'owner_changed' => $model->room !== null && (int) $model->room->department_id !== (int) $model->owner_department_id,
-            'requester' => $model->requester ? ['id' => (int) $model->requester->id, 'name' => (string) $model->requester->name] : null,
-            'reviewer' => $model->reviewer ? ['id' => (int) $model->reviewer->id, 'name' => (string) $model->reviewer->name] : null,
+            'requester' => $model->actor_snapshots['requested_by'] ?? null,
+            'reviewer' => $model->actor_snapshots['reviewed_by'] ?? null,
+            'decisions' => $model->actor_snapshots['decisions'] ?? [],
             'reviewed_at' => $model->reviewed_at?->toIso8601String(),
             'created_at' => $model->created_at?->toIso8601String(),
             'windows' => $model->windows->map(fn ($window): array => [

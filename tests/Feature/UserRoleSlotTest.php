@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\User;
+use App\Support\AccountVersion;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
@@ -137,6 +138,7 @@ class UserRoleSlotTest extends TestCase
         $user = User::findOrFail($id);
 
         return $this->actingAs($this->vpaa, 'sanctum')->putJson("/api/user/{$id}", $overrides + [
+            'expected_version' => AccountVersion::of(User::findOrFail($id)),
             'first_name' => $user->first_name,
             'last_name' => $user->last_name,
             'email' => $user->email,

@@ -110,7 +110,7 @@ class YearLevelGenerationChangeReport
                 'critical',
                 'Room to be assigned',
                 'These in-person meetings have a time but no room yet. Assign a room before publishing.',
-                $this->classItems($tba, $sectionNames, $courseCodes, 'Room TBA'),
+                $this->classItems($tba, $sectionNames, $courseCodes, 'TBA'),
                 resolved: false,
             );
         }

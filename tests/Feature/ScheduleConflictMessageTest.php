@@ -63,7 +63,7 @@ class ScheduleConflictMessageTest extends TestCase
     public function test_partial_overlap_names_the_holder_and_both_windows(): void
     {
         $this->assertSame(
-            'Room BA 201 is unavailable on Mon 07:00–10:00. It is booked by CIT for PATH FIT 2 (BSIT 1I) from 07:00–09:00. Please choose another time or room.',
+            'Room BA 201 is unavailable on Mon 7:00 AM–10:00 AM. It is booked by CIT for PATH FIT 2 (BSIT 1I) from 7:00 AM–9:00 AM. Please choose another time or room.',
             $this->engineMessage('room_conflict', $this->attempt(['start_time' => '07:00', 'end_time' => '10:00'])),
         );
     }
@@ -71,7 +71,7 @@ class ScheduleConflictMessageTest extends TestCase
     public function test_exact_time_overlap_uses_the_same_wording(): void
     {
         $this->assertSame(
-            'Room BA 201 is unavailable on Mon 07:00–09:00. It is booked by CIT for PATH FIT 2 (BSIT 1I) from 07:00–09:00. Please choose another time or room.',
+            'Room BA 201 is unavailable on Mon 7:00 AM–9:00 AM. It is booked by CIT for PATH FIT 2 (BSIT 1I) from 7:00 AM–9:00 AM. Please choose another time or room.',
             $this->engineMessage('room_conflict', $this->attempt(['start_time' => '07:00', 'end_time' => '09:00'])),
         );
     }
@@ -83,7 +83,7 @@ class ScheduleConflictMessageTest extends TestCase
         $this->assertNull($this->engineMessage('room_conflict', $this->attempt(['room_id' => $otherRoom->id])));
         $this->assertNull($this->engineMessage('room_conflict', $this->attempt(['start_time' => '09:00', 'end_time' => '10:00'])));
         $this->assertStringStartsWith(
-            'Room BA 201 is unavailable on Mon 08:30–09:30.',
+            'Room BA 201 is unavailable on Mon 8:30 AM–9:30 AM.',
             (string) $this->engineMessage('room_conflict', $this->attempt(['start_time' => '08:30', 'end_time' => '09:30'])),
         );
     }
@@ -103,11 +103,11 @@ class ScheduleConflictMessageTest extends TestCase
         ]);
 
         $this->assertSame(
-            'Instructor Ana Cruz is unavailable on Mon 08:00–10:00. They are already teaching PATH FIT 2 (BSIT 1I) for CIT from 07:00–09:00. Please choose another time or instructor.',
+            'Instructor Ana Cruz is unavailable on Mon 8:00 AM–10:00 AM. They are already teaching PATH FIT 2 (BSIT 1I) for CIT from 7:00 AM–9:00 AM. Please choose another time or instructor.',
             $this->engineMessage('faculty_conflict', $attempt),
         );
         $this->assertSame(
-            'Section BSIT 1I is unavailable on Mon 08:00–10:00. It already has PATH FIT 2 from 07:00–09:00. Please choose another time.',
+            'Section BSIT 1I is unavailable on Mon 8:00 AM–10:00 AM. It already has PATH FIT 2 from 7:00 AM–9:00 AM. Please choose another time.',
             $this->engineMessage('section_conflict', $attempt),
         );
     }
@@ -128,8 +128,8 @@ class ScheduleConflictMessageTest extends TestCase
         }
 
         $this->assertArrayHasKey('room_conflict', $messages);
-        $this->assertStringStartsWith('Room BA 201 is unavailable on Mon 07:00–10:00. It is booked for ', $messages['room_conflict']);
-        $this->assertStringEndsWith(' from 07:00–09:00. Please choose another time or room.', $messages['room_conflict']);
+        $this->assertStringStartsWith('Room BA 201 is unavailable on Mon 7:00 AM–10:00 AM. It is booked for ', $messages['room_conflict']);
+        $this->assertStringEndsWith(' from 7:00 AM–9:00 AM. Please choose another time or room.', $messages['room_conflict']);
     }
 
     public function test_batch_save_clash_says_it_is_in_the_same_save(): void
@@ -143,7 +143,7 @@ class ScheduleConflictMessageTest extends TestCase
         $room = collect($described)->firstWhere('rule', 'room_conflict');
 
         $this->assertSame(
-            'Room BA 201 is unavailable on Mon 08:00–10:00. It is booked by CIT for PATH FIT 2 (BSIT 1I) from 07:00–09:00 in this same save. Please choose another time or room.',
+            'Room BA 201 is unavailable on Mon 8:00 AM–10:00 AM. It is booked by CIT for PATH FIT 2 (BSIT 1I) from 7:00 AM–9:00 AM in this same save. Please choose another time or room.',
             $room['message'] ?? null,
         );
     }
@@ -156,7 +156,7 @@ class ScheduleConflictMessageTest extends TestCase
 
         $this->assertNotNull($case);
         $this->assertSame(
-            'Room BA 201 is double-booked on Mon 08:00–09:00. CIT has PATH FIT 2 (BSIT 1I) from 07:00–09:00, and GEN has GE 101 (BSA 1A) from 08:00–10:00. Move one class to another time or room.',
+            'Room BA 201 is double-booked on Mon 8:00 AM–9:00 AM. CIT has PATH FIT 2 (BSIT 1I) from 7:00 AM–9:00 AM, and GEN has GE 101 (BSA 1A) from 8:00 AM–10:00 AM. Move one class to another time or room.',
             $case->message(),
         );
     }

@@ -16,18 +16,22 @@ use App\Models\Semester;
 use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Engine\RuleEngine;
+use App\Services\Scheduling\Generation\ComponentRequiredDays;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
 use App\Services\Scheduling\Recommendations\RecommendationContext;
 use App\Services\Scheduling\Recommendations\RecommendationEngine;
 use App\Services\Scheduling\Recommendations\RecommendationSource;
 use App\Services\Scheduling\Schedule\BatchConflictMessages;
 use App\Services\Scheduling\Schedule\BatchConflictValidator;
+use App\Services\Scheduling\Schedule\DelegatedCourseSchedules;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
 use App\Services\Scheduling\Schedule\SameTimePartnerMover;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Schedule\ScheduleConflictCase;
 use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
+use App\Services\Scheduling\ScheduleSignatories;
 use App\Services\Scheduling\Submission\RevisionChangeRecorder;
+use App\Services\Scheduling\Support\ConflictMessage;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
@@ -37,6 +41,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -44,7 +49,7 @@ class ScheduleController extends Controller
 {
     use EnforcesFacultyUnitCeiling;
 
-    private const REPLACEABLE_BATCH_STATUSES = ['draft', 'completed', 'revision'];
+    private const REPLACEABLE_BATCH_STATUSES = Schedule::PLOTTING_EDITABLE_STATUSES;
 
     private const PLOTTING_EDITABLE_STATUSES = Schedule::PLOTTING_EDITABLE_STATUSES;
 
@@ -111,17 +116,33 @@ class ScheduleController extends Controller
 
         $schedules = $query->latest()->limit($perPage)->get();
 
+        // Printed forms (e.g. an instructor's load sheet) sign with the officials recorded on each row's
+        // submission, so replacing or renaming an official never rewrites an approved schedule.
+        if ($request->boolean('with_signatories')) {
+            $recorded = app(ScheduleSignatories::class)->attachToSchedules($schedules);
+            $schedules->each(static function (Schedule $schedule) use ($recorded): void {
+                $schedule->setAttribute('signatories', $recorded[(int) $schedule->getAttribute('signatories_submission_id')] ?? null);
+            });
+        }
+
         return response()->json($schedules);
     }
 
     public function pendingDepartmentCount(Request $request): JsonResponse
     {
-        $targetStatus = $request->user()?->role === 'vpaa'
-            ? 'approved_by_dean'
-            : 'submitted';
+        $user = $request->user();
+        if (! in_array($user?->role, ['dean', 'vpaa'], true)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+        if ($user->role === 'dean' && $user->department_id === null) {
+            return response()->json(['count' => 0]);
+        }
+        $targetStatuses = $user->role === 'vpaa'
+            ? ['approved_by_dean', 'conditionally_approved']
+            : ['submitted'];
 
         $count = Schedule::query()
-            ->where('status', $targetStatus)
+            ->whereIn('status', $targetStatuses)
             ->when(
                 ($scope = $this->authorization->departmentScope($request)) !== null,
                 fn ($query) => $query->where('department_id', $scope),
@@ -216,6 +237,7 @@ class ScheduleController extends Controller
                         ],
                         'created_at' => now(),
                     ]);
+
                     return $schedule;
                 });
             });
@@ -280,6 +302,12 @@ class ScheduleController extends Controller
             'replace_section_ids' => 'sometimes|array',
             'replace_section_ids.*' => 'integer',
             'replace_semester_id' => 'nullable|integer',
+            // A generated save may carry the run's Lecture/Laboratory Required
+            // Days. They only add checks; manual batches omit them.
+            'section_configs' => 'sometimes|array|max:500',
+            'section_configs.*' => 'array:section_id,'.ComponentRequiredDays::KEY,
+            'section_configs.*.section_id' => 'required|integer|distinct',
+            ...ComponentRequiredDays::rules(),
         ]);
         $this->assertBatchReferencesExist($validated);
 
@@ -426,6 +454,12 @@ class ScheduleController extends Controller
             return $this->programForbidden();
         }
 
+        // Context sections must lie inside the authorized replacement scope.
+        $componentRequiredDays = ComponentRequiredDays::normalizeContext(
+            $validated['section_configs'] ?? [],
+            $replaceSectionIds,
+        );
+
         $plottingFields = [
             'semester_id', 'section_id', 'course_id', 'subject_id', 'room_id', 'department_id',
             'day', 'start_time', 'end_time', 'mode', 'is_hybrid', 'preferred_pattern',
@@ -477,17 +511,19 @@ class ScheduleController extends Controller
         $mergedIgnoreIds = array_values(array_unique(array_merge($operationIds, array_map('intval', $deleteIds))));
 
         $savedSchedules = [];
+        $notificationScheduleIds = [];
         $deletedScheduleIds = [];
         $resolvedConflicts = [];
         $releasedInstructorRows = new \Illuminate\Database\Eloquent\Collection;
 
         try {
-            $this->withScheduleWriteLock($this->conflictScopeSemesterIds($validated['operations'], $deleteIds), function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds, &$resolvedConflicts, &$releasedInstructorRows): void {
-                DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, &$savedSchedules, &$deletedScheduleIds, &$resolvedConflicts, &$releasedInstructorRows): void {
+            $this->withScheduleWriteLock($this->conflictScopeSemesterIds($validated['operations'], $deleteIds), function () use ($validated, $deleteIds, $mergedIgnoreIds, $componentRequiredDays, &$savedSchedules, &$notificationScheduleIds, &$deletedScheduleIds, &$resolvedConflicts, &$releasedInstructorRows): void {
+                DB::transaction(function () use ($validated, $deleteIds, $mergedIgnoreIds, $componentRequiredDays, &$savedSchedules, &$notificationScheduleIds, &$deletedScheduleIds, &$resolvedConflicts, &$releasedInstructorRows): void {
                     $sectionsById = [];
                     $allViolations = array_merge(
                         $this->checkIntraBatchConflicts($validated['operations']),
                         $this->ruleEngine->validateConfiguredMeetingGroups($validated['operations']),
+                        $this->componentRequiredDayViolations($validated['operations'], $componentRequiredDays),
                     );
 
                     $orderedOperations = $this->prioritizeSplitAnchorMeetings($validated['operations']);
@@ -511,7 +547,9 @@ class ScheduleController extends Controller
 
                         $attemptData['ignore_schedule_id'] = $mergedIgnoreIds;
 
-                        $violations = $this->ruleEngine->validate($attemptData);
+                        // A Consecutive Days run is judged with the rest of the save, so its whole duration is checked at once.
+                        $siblings = array_values(array_diff_key($validated['operations'], [$index => true]));
+                        $violations = $this->ruleEngine->validate($attemptData, $siblings);
                         if (! empty($violations)) {
                             foreach ($violations as $violation) {
                                 $allViolations[] = array_merge($violation, [
@@ -534,18 +572,11 @@ class ScheduleController extends Controller
                     $deletedBefore = collect();
                     if (! empty($deleteIds)) {
                         $deletedBefore = Schedule::whereIn('id', $deleteIds)->get();
-                        $workingIds = $deletedBefore
-                            ->filter(static fn (Schedule $schedule): bool => in_array($schedule->status, self::REPLACEABLE_BATCH_STATUSES, true))
-                            ->pluck('id')
-                            ->all();
-                        $archivedIds = array_values(array_diff(array_map('intval', $deleteIds), $workingIds));
-                        if ($workingIds !== []) {
-                            ScheduleSplit::withTrashed()->whereIn('schedule_id', $workingIds)->forceDelete();
-                            Schedule::withTrashed()->whereIn('id', $workingIds)->forceDelete();
-                        }
-                        if ($archivedIds !== []) {
-                            Schedule::whereIn('id', $archivedIds)->delete();
-                            Schedule::retireSplitsFor($archivedIds);
+                        // Schedules are never archived: removed rows and their splits are deleted permanently.
+                        $removedIds = $deletedBefore->modelKeys();
+                        if ($removedIds !== []) {
+                            ScheduleSplit::withTrashed()->whereIn('schedule_id', $removedIds)->forceDelete();
+                            Schedule::withTrashed()->whereIn('id', $removedIds)->forceDelete();
                         }
                         $deletedScheduleIds = array_map('intval', $deleteIds);
                         $releasedInstructorRows = $deletedBefore
@@ -592,6 +623,9 @@ class ScheduleController extends Controller
                             $schedule = Schedule::create($op);
                         }
                         $savedIds[] = (int) $schedule->id;
+                        if ($schedule->wasRecentlyCreated || $schedule->wasChanged()) {
+                            $notificationScheduleIds[] = (int) $schedule->id;
+                        }
                     }
 
                     $resolvedConflicts = $this->recordClearedConflicts(
@@ -682,6 +716,22 @@ class ScheduleController extends Controller
             );
         }
         $classKey = static fn (Schedule $schedule): string => $schedule->section_id.':'.$schedule->course_id;
+
+        foreach (collect($savedSchedules)->whereIn('id', $notificationScheduleIds)->groupBy(fn (Schedule $row): string => $row->department_id.':'.$row->semester_id) as $group) {
+            $first = $group->first();
+            $generated = $replaceSectionIds !== [];
+            if (! $generated) {
+                $this->notifications->notifyRoles(
+                    ['secretary', 'program_head'],
+                    'schedule_activity',
+                    'Schedules updated',
+                    $request->user()->name." updated schedules. {$group->count()} meetings saved.",
+                    actor: $request->user(), departmentId: (int) $first->department_id, semesterId: (int) $first->semester_id,
+                    metadata: ['schedule_ids' => $group->pluck('id')->map('intval')->all(), 'schedules_updated' => $group->count(),
+                        'selected_section_ids' => $group->pluck('section_id')->unique()->values()->all()],
+                );
+            }
+        }
 
         return response()->json([
             'message' => 'Batch schedule operation completed successfully.',
@@ -806,7 +856,7 @@ class ScheduleController extends Controller
                 continue;
             }
 
-            $timeConflictRules = ['section_conflict', 'subject_section_time_conflict', 'room_conflict', 'faculty_conflict', 'split_group_day_separation'];
+            $timeConflictRules = ['section_conflict', 'room_conflict', 'faculty_conflict', 'split_group_day_separation'];
             $hasTimeConflict = SchedulingPolicy::consecutiveDayCount($op['preferred_pattern'] ?? null) === null
                 && collect($violations)->contains(
                     fn ($v) => in_array($v['rule'] ?? '', $timeConflictRules, true)
@@ -861,7 +911,7 @@ class ScheduleController extends Controller
                     'start_time' => $op['start_time'],
                     'end_time' => $op['end_time'],
                     'message' => "Could not find a conflict-free time slot for {$courseCode} on {$op['day']} "
-                        ."starting at {$op['start_time']}. All slots within operating hours are occupied. "
+                        .'starting at '.ConflictMessage::time((string) $op['start_time']).'. All slots within operating hours are occupied. '
                         .'Please resolve the conflict manually or change the split day.',
                 ];
             }
@@ -1130,6 +1180,39 @@ class ScheduleController extends Controller
      * @param  list<array<string, mixed>>  $operations
      * @return list<array<string, mixed>>
      */
+    /**
+     * Rows of a generated save that break the run's Lecture/Laboratory
+     * Required Days. Rejected with the rest of the batch, before any write.
+     *
+     * @param  list<array<string, mixed>>  $operations
+     * @param  array<int, array<int, array{lecture?: string, laboratory?: string}>>  $componentRequiredDays
+     * @return list<array<string, mixed>>
+     */
+    private function componentRequiredDayViolations(array $operations, array $componentRequiredDays): array
+    {
+        if ($componentRequiredDays === []) {
+            return [];
+        }
+        $indexed = [];
+        foreach ($operations as $index => $operation) {
+            $indexed[] = [...$operation, '_operation_index' => $index];
+        }
+        $violations = [];
+        foreach (ComponentRequiredDays::violations($indexed, $componentRequiredDays) as $violation) {
+            $violations[] = [
+                'rule' => 'integrated_component_required_day',
+                'message' => $violation['message'],
+                'operation_index' => (int) ($violation['rows'][0]['_operation_index'] ?? 0),
+                'section_id' => $violation['section_id'],
+                'course_id' => $violation['course_id'],
+                'component_type' => $violation['component'],
+                'required_day' => $violation['required_day'],
+            ];
+        }
+
+        return $violations;
+    }
+
     private function checkIntraBatchConflicts(array $operations): array
     {
         return app(BatchConflictMessages::class)->describe($this->batchConflicts->validate($operations), $operations);
@@ -1368,10 +1451,6 @@ class ScheduleController extends Controller
         $semesterId = (int) ($validated['semester_id'] ?? $schedule->semester_id);
 
         $groupPartners = $this->sameTimePartners->partnersFor($schedule, $validated);
-        $runPartnerIds = $this->sameTimePartners->runPartnerIds($schedule, $groupPartners);
-        if ($runPartnerIds !== []) {
-            $attemptData['ignore_schedule_id'] = [...(array) $attemptData['ignore_schedule_id'], ...$runPartnerIds];
-        }
 
         $instructorOnly = ! $changesPlotting && array_key_exists('faculty_id', $validated);
 
@@ -1446,7 +1525,13 @@ class ScheduleController extends Controller
         }
 
         $schedule->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department']);
-        $this->notifyScheduleSaved($request, $schedule, 'updated');
+        if ($instructorOnly) {
+            if ($schedule->wasChanged('faculty_id')) {
+                $this->notifications->notifyInstructorAssignmentProgress($schedule->fresh(), $request->user());
+            }
+        } else {
+            $this->notifyScheduleSaved($request, $schedule, 'updated');
+        }
         SchedulingAuditLog::create([
             'user_id' => $request->user()?->id,
             'semester_id' => $schedule->semester_id,
@@ -1543,10 +1628,10 @@ class ScheduleController extends Controller
 
     /**
      * @param  array<string, mixed>  $attemptData
-     * @param  \Illuminate\Support\Collection<int, Schedule>  $partners
+     * @param  Collection<int, Schedule>  $partners
      * @return list<int> the partners moved to the new time
      */
-    private function moveSameTimePartners(array $attemptData, \Illuminate\Support\Collection $partners): array
+    private function moveSameTimePartners(array $attemptData, Collection $partners): array
     {
         return $this->sameTimePartners->move($attemptData, $partners);
     }
@@ -1600,14 +1685,14 @@ class ScheduleController extends Controller
                         }
 
                         foreach ($schedules as $s) {
-                            $s->delete();
+                            $s->deletePermanently();
                         }
                         $removed = $schedules;
                     } else {
                         if (! in_array($schedule->status, self::DELETABLE_STATUSES, true)) {
                             return response()->json(['message' => self::LOCKED_DELETE_MESSAGE], 422);
                         }
-                        $schedule->delete();
+                        $schedule->deletePermanently();
                         $removed = collect([$schedule]);
                     }
                     $this->revisionChanges->recordScheduleChanges($removed, [], $request->user()?->id, 'delete');
@@ -1620,10 +1705,13 @@ class ScheduleController extends Controller
                         'action' => 'schedule_deleted',
                         'metadata' => [
                             'schedule_id' => (int) $deletedSchedule->id,
+                            'schedule_ids' => $removed->pluck('id')->map('intval')->values()->all(),
                             'course_id' => $deletedSchedule->course_id,
+                            'permanent' => true,
                         ],
                         'created_at' => now(),
                     ]);
+
                     return $deletedSchedule;
                 });
             });
@@ -1636,7 +1724,10 @@ class ScheduleController extends Controller
         $this->notifyScheduleSaved($request, $result, 'deleted');
         ApiCache::forgetGroups(['faculty.index', 'initial.data']);
 
-        return response()->json(['message' => 'Schedule archived successfully']);
+        return response()->json([
+            'message' => 'Schedule permanently deleted. Schedule History is unchanged.',
+            'archived' => false,
+        ]);
     }
 
     /**
@@ -1736,24 +1827,7 @@ class ScheduleController extends Controller
 
     private function resolveDelegatedCourseScheduleMessage(int $courseId, int $targetDepartmentId, int $semesterId): ?string
     {
-        $course = Course::query()->find($courseId);
-        $teachingDepartmentId = (int) ($course?->teaching_department_id ?? 0);
-        if ($course === null || $teachingDepartmentId === 0 || $teachingDepartmentId !== $targetDepartmentId) {
-            return null;
-        }
-
-        $sourceSchedule = Schedule::query()
-            ->where('semester_id', $semesterId)
-            ->where('course_id', $courseId)
-            ->where('department_id', '!=', $targetDepartmentId)
-            ->whereNotIn('status', ['rejected', 'revision'])
-            ->first();
-
-        if ($sourceSchedule === null) {
-            return null;
-        }
-
-        return "{$course->course_code} already has a schedule owned by the source department. Assign the instructor to the existing schedule; do not create another schedule.";
+        return app(DelegatedCourseSchedules::class)->refusal($courseId, $targetDepartmentId, $semesterId);
     }
 
     private function payloadBelongsToDepartment(Request $request, int $targetDeptId): bool
@@ -1835,6 +1909,9 @@ class ScheduleController extends Controller
 
     private function notifyScheduleSaved(Request $request, Schedule $schedule, string $action): void
     {
+        if ($action === 'updated' && ! $schedule->wasChanged()) {
+            return;
+        }
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         $actor = $request->user();
@@ -1846,13 +1923,15 @@ class ScheduleController extends Controller
         $sectionName = $schedule->section?->section_name ?? 'Section';
 
         $this->notifications->notifyRoles(
-            ['vpaa', 'dean'],
+            ['secretary', 'program_head'],
             'schedule_activity',
             'Schedule '.ucfirst($action),
             "{$actor->name} {$action} schedule for {$courseCode} ({$sectionName}).",
             $actor,
             $schedule->department_id,
-            $schedule->semester_id
+            $schedule->semester_id,
+            metadata: ['schedule_id' => $schedule->id, 'program_id' => $schedule->program_id ?? $schedule->section?->program_id,
+                'course_id' => $schedule->course_id, 'section_id' => $schedule->section_id, 'action' => $action],
         );
     }
 
@@ -2065,6 +2144,10 @@ class ScheduleController extends Controller
 
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
+        foreach ($schedules->filter(fn (Schedule $row): bool => $row->wasChanged('faculty_id'))->groupBy(fn (Schedule $row): string => $row->department_id.':'.$row->semester_id.':'.($row->program_id ?? $row->section?->program_id).':'.($row->faculty_id === null ? 'released' : 'assigned')) as $group) {
+            $this->notifications->notifyInstructorAssignmentProgress($group->first(), $request->user(), $group->pluck('id')->all());
+        }
+
         return response()->json([
             'message' => 'Instructor assignments completed successfully.',
             'schedules' => Schedule::query()
@@ -2088,8 +2171,14 @@ class ScheduleController extends Controller
         $schedules->each(fn (Schedule $schedule) => $schedule->update(['faculty_assignment_done' => (bool) $validated['done']]));
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
         if ($validated['done'] && $schedules->isNotEmpty()) {
-            $first = $schedules->first()->fresh(['course.department', 'course.teachingDepartment']);
-            $this->notifications->notifyCrossDepartmentCompletion($first, $request->user(), $schedules->modelKeys());
+            $schedules->loadMissing('course');
+            foreach ($schedules->groupBy(fn (Schedule $row): string => $row->course?->department_id.':'.$row->course?->teaching_department_id.':'.$row->course?->teaching_source_program_id) as $group) {
+                if (! $group->contains(fn (Schedule $row): bool => $row->wasChanged('faculty_assignment_done'))) {
+                    continue;
+                }
+                $first = $group->first()->fresh(['course.department', 'course.teachingDepartment']);
+                $this->notifications->notifyCrossDepartmentCompletion($first, $request->user(), $group->pluck('id')->all());
+            }
         }
 
         return response()->json(['schedules' => Schedule::query()->whereIn('id', $validated['ids'])->with(Schedule::RESPONSE_RELATIONS)->get()]);

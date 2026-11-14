@@ -2,10 +2,13 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\AppendOnly;
 use Illuminate\Database\Eloquent\Model;
 
 class ScheduleHistoryItem extends Model
 {
+    use AppendOnly;
+
     protected $fillable = [
         'history_version_id', 'original_schedule_id',
         'before_snapshot', 'after_snapshot', 'snapshot_metadata',
@@ -21,5 +24,4 @@ class ScheduleHistoryItem extends Model
     {
         return $this->belongsTo(ScheduleHistoryVersion::class, 'history_version_id');
     }
-
 }

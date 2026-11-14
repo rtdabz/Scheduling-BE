@@ -25,7 +25,9 @@ class SessionInterpretationTest extends TestCase
         $integrated = [['meeting_type' => 'lecture', 'duration_slots' => 4, 'modes' => ['on-site']], ['meeting_type' => 'laboratory', 'duration_slots' => 6, 'modes' => ['on-site']]];
         $labCourse = [...$course, 'lecture_hours' => 2, 'lab_hours' => 1];
         $this->assertSame([4, 6], array_column(SessionAlternativePolicy::enhancement($labCourse, $integrated, [], [])['meetings'], 'duration_slots'));
-        $this->assertNull(SessionAlternativePolicy::enhancement([...$labCourse, 'course_category' => 'minor'], $integrated, [], []));
+        // Integrated follows lecture and laboratory units for every category, as in generation; field courses keep their own shape.
+        $this->assertSame('set_integrated_hybrid', SessionAlternativePolicy::enhancement([...$labCourse, 'course_category' => 'minor'], $integrated, [], [])['adjustment_type']);
+        $this->assertNull(SessionAlternativePolicy::enhancement($labCourse, $integrated, [], ['LECT']));
         $integrated[0]['modes'] = ['online'];
         $this->assertNull(SessionAlternativePolicy::enhancement($labCourse, $integrated, [], []));
     }
@@ -112,6 +114,19 @@ class SessionInterpretationTest extends TestCase
         $this->assertSame([2, 8], array_column($description->meetings, 'duration_slots'));
     }
 
+    public function test_configuration_carries_lecture_and_laboratory_required_days_to_each_meeting(): void
+    {
+        $config = ['selected_split_session_course_ids' => [100], 'requirements_by_course_id' => [100 => [
+            ['component_type' => 'lecture', 'duration_slots' => 4, 'allowed_delivery_modes' => ['on-site'], 'required_day' => 'Tuesday'],
+            ['component_type' => 'laboratory', 'duration_slots' => 6, 'allowed_delivery_modes' => ['on-site']],
+        ]]];
+
+        $meetings = SessionInterpreter::fromConfiguration(100, $config)->meetings;
+
+        $this->assertSame('Tuesday', $meetings[0]['required_day']);
+        $this->assertArrayNotHasKey('required_day', $meetings[1]);
+    }
+
     public function test_configuration_keeps_split_hybrid_field_and_section_specific_runs_distinct(): void
     {
         $config = ['balanced_split_course_ids' => [100], 'requirements_by_course_id' => [100 => [
@@ -124,8 +139,8 @@ class SessionInterpretationTest extends TestCase
         $this->assertSame(SessionAlternativePolicy::hybridSplitMeetings(), $description->meetings);
         $description = SessionInterpreter::fromConfiguration(100, $config, ['day_count' => 3]);
         $this->assertSame('consecutive', $description->kind);
-        // The three days share the six slots equally.
-        $this->assertSame([2, 2, 2], array_column($description->meetings, 'duration_slots'));
+        // Every one of the three days repeats the full six slots.
+        $this->assertSame([6, 6, 6], array_column($description->meetings, 'duration_slots'));
         $config['requirements_by_course_id'][100][0]['component_type'] = 'field';
         $this->assertSame('field', SessionInterpreter::fromConfiguration(100, $config)->kind);
     }

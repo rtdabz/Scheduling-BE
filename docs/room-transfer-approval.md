@@ -1,6 +1,6 @@
 # Dean and VPAA room transfer approval
 
-Room Transfer follows **Secretary → Dean → VPAA → applied schedule changes**. It reuses `room_recovery_plans`, the existing `ConfirmModal`, scheduling locks and validators, schedule history, in-app notifications, and both roles' existing Schedule Approval pages.
+Room Transfer follows **Secretary or Director → Dean → VPAA → applied schedule changes** (a department has one Secretary or one Director; both submit the same way). It reuses `room_recovery_plans`, the existing `ConfirmModal`, scheduling locks and validators, schedule history, in-app notifications, and both roles' existing Schedule Approval pages.
 
 ## Behavior
 
@@ -28,7 +28,7 @@ Room Transfer follows **Secretary → Dean → VPAA → applied schedule changes
 | Endpoint | Authorization / result |
 | --- | --- |
 | `GET /api/room-recovery/transfers` | `schedule.view`; scoped pending/approved/rejected requests, department ID, Dean review time, and physical before/after details with meeting mode |
-| `POST /api/room-recovery/plans/{plan}/submit` | Secretary plus `schedule.update`; creator-owned plan and existing ownership/program checks; body `group_keys`; returns `pending_dean`, `applied=false` |
+| `POST /api/room-recovery/plans/{plan}/submit` | Secretary or Director (`role:secretary,director`) plus `schedule.update`; creator-owned plan and existing ownership/program checks; body `group_keys`; returns `pending_dean`, `applied=false` |
 | `POST /api/room-recovery/plans/{plan}/apply` | Compatibility alias for submission; cannot apply changes directly |
 | `POST /api/room-recovery/plans/{plan}/approve` | Department Dean plus `schedule.approve_dean` forwards to VPAA; VPAA plus `schedule.approve_vpaa` applies the stored selection after Dean approval |
 | `POST /api/room-recovery/plans/{plan}/reject` | Role, department and stage checks as above; body `reason` (nonblank, maximum 1,000 characters) |

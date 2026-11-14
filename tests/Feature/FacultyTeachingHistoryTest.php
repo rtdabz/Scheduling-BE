@@ -11,6 +11,8 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\ScheduleSemesterArchiver;
+use App\Services\TeachingHistoryArchive;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -58,8 +60,7 @@ class FacultyTeachingHistoryTest extends TestCase
         $vpaa = $this->grantCapabilities(User::factory()->create(['role' => 'vpaa']));
 
         $this->actingAs($vpaa)->patchJson("/api/semesters/{$next->id}/activate")->assertOk();
-        $this->assertSame(0, Schedule::withTrashed()->count());
-        $fixture['course']->update(['units' => 2, 'course_code' => 'HIS101-NEW']);
+        $this->assertSame(2, Schedule::withTrashed()->count());
 
         $this->actingAs($fixture['user'])
             ->getJson("/api/faculties/{$fixture['faculty']->id}/teaching-history")
@@ -95,6 +96,37 @@ class FacultyTeachingHistoryTest extends TestCase
             ->assertJsonPath('semesters.0.semester_id', $next->id)
             ->assertJsonPath('semesters.1.semester_id', $fixture['semester']->id)
             ->assertJsonPath('semesters.1.courses.0.course_code', 'HIS101');
+    }
+
+    public function test_latest_semester_snapshot_is_selected_before_filtering_for_an_instructor(): void
+    {
+        $f = $this->fixture();
+        $replacement = Faculty::create([
+            'first_name' => 'Replacement', 'last_name' => 'Instructor', 'employment_type' => 'full-time',
+            'max_units' => 18, 'department_id' => $f['department']->id, 'status' => 'active',
+        ]);
+        $schedule = $this->schedule($f, ['status' => 'finalized']);
+        $archive = function () use ($f, $schedule): void {
+            app(ScheduleSemesterArchiver::class)->archive(
+                collect([$schedule->fresh()->load(['academicSemester', 'section', 'course', 'faculty', 'room', 'department', 'split'])]),
+                $f['user']->id, $f['semester']->id,
+            );
+        };
+        $archive();
+        $this->assertCount(1, app(TeachingHistoryArchive::class)->rows([$f['faculty']->id]));
+        $schedule->update(['faculty_id' => $replacement->id]);
+        $archive();
+        $schedule->delete();
+
+        $this->assertCount(0, app(TeachingHistoryArchive::class)->rows([$f['faculty']->id]));
+        $this->assertCount(0, app(TeachingHistoryArchive::class)->rows([$f['faculty']->id], $f['course']->id));
+        $this->actingAs($f['user'])
+            ->getJson("/api/faculties/{$f['faculty']->id}/teaching-history")
+            ->assertOk()->assertJsonCount(0, 'semesters');
+        $this->getJson("/api/faculties/{$replacement->id}/teaching-history")
+            ->assertOk()->assertJsonCount(1, 'semesters')
+            ->assertJsonPath('semesters.0.total_units', 3)
+            ->assertJsonPath('semesters.0.courses.0.course_code', 'HIS101');
     }
 
     public function test_history_is_hidden_from_other_departments(): void

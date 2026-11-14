@@ -5,12 +5,15 @@ namespace App\Http\Controllers\Reports;
 use App\Http\Controllers\Controller;
 use App\Models\Departments;
 use App\Models\Faculty;
+use App\Models\RoomRequest;
+use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\FacultyLoadService;
+use App\Services\Scheduling\ScheduleSignatories;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -20,7 +23,10 @@ use Illuminate\Support\Facades\DB;
 
 class ReportsController extends Controller
 {
-    public function __construct(private readonly FacultyLoadService $facultyLoad) {}
+    public function __construct(
+        private readonly FacultyLoadService $facultyLoad,
+        private readonly ScheduleSignatories $signatories,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -33,13 +39,14 @@ class ReportsController extends Controller
             ->get();
 
         $programScope = $this->viewerProgramId($user);
+        $semester = $this->requestedSemester($request);
         $completeSections = Sections::query()
-            ->whereIn('id', $this->completeSectionIds($departments->pluck('id')->all()))
+            ->whereIn('id', $this->completeSectionIds($departments->pluck('id')->all(), $semester?->id))
             ->get(['id', 'department_id', 'program_id']);
 
         $loadedFaculty = Faculty::query()
             ->whereIn('department_id', $departments->pluck('id'))
-            ->whereIn('id', $this->facultyIdsWithLoad())
+            ->whereIn('id', $this->facultyIdsWithLoad($semester?->id))
             ->get(['id', 'department_id', 'program_id']);
 
         $programTeachers = $this->facultyLoad->programTeachers(
@@ -66,6 +73,7 @@ class ReportsController extends Controller
                 'id' => (int) $department->id,
                 'code' => $department->department_code,
                 'name' => $department->department_name,
+                'logo' => $department->logo,
                 'can_print_department' => $programScope === null,
                 'complete_section_count' => $sections->count(),
                 'instructor_count' => $faculty->count(),
@@ -74,6 +82,8 @@ class ReportsController extends Controller
         })->values();
 
         return response()->json([
+            'semester' => $semester ? $this->semesterPayload($semester) : null,
+            'terms' => $this->approvedTerms($departments->pluck('id')->all(), $programScope),
             'departments' => $payload,
         ]);
     }
@@ -100,10 +110,12 @@ class ReportsController extends Controller
             abort(404, 'That program does not belong to this department.');
         }
 
-        $faculties = $this->facultyLoad->getAcrossSemesters($department, $programId);
+        // Without a term the report spans every term; a term keeps loads and documents to that period.
+        $semester = $this->requestedSemester($request);
+        $faculties = $this->facultyLoad->getForReport($department, $programId, $semester?->id);
         $sections = Sections::query()
             ->with(['department', 'program', 'academicSemester', 'curriculum'])
-            ->whereIn('id', $this->completeSectionIds([$department]))
+            ->whereIn('id', $this->completeSectionIds([$department], $semester?->id))
             ->when($programId !== null, fn (Builder $query) => $query->where('program_id', $programId))
             ->get();
 
@@ -112,15 +124,18 @@ class ReportsController extends Controller
                 'academicSemester:id,academic_year,semester',
                 'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
                 'course:id,course_code,course_name,lecture_hours,lab_hours,units,course_category,room_type_required,year_level,semester,department_id,teaching_department_id,teaching_program_id,program_id',
-                'faculty:id,first_name,last_name,middle_name,department_id,program_id',
-                'room:id,room_code,building,room_type,allow_lecture_usage,department_id',
+                'faculty:id,first_name,last_name,middle_name,suffix,honorific_prefix,credentials,department_id,program_id',
+                'room:id,room_code,building,room_type,allow_lecture_usage,status,department_id',
                 'department:id,department_name,department_code',
             ])
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
+            ->when($semester !== null, fn (Builder $query) => $query->where('semester_id', $semester->id))
             ->where(fn (Builder $scope) => $scope
                 ->whereIn('section_id', $sections->pluck('id'))
                 ->orWhereIn('faculty_id', $faculties->pluck('id')))
             ->get();
+        // Each printed schedule signs with the officials recorded when it was approved, not today's.
+        $scheduleSignatories = $this->signatories->attachToSchedules($schedules);
 
         $departments = Departments::query()
             ->whereIn('id', $schedules->pluck('department_id')->push($department)->unique()->values())
@@ -138,18 +153,20 @@ class ReportsController extends Controller
 
         SchedulingAuditLog::create([
             'user_id' => $user->id,
-            'semester_id' => null,
+            'semester_id' => $semester?->id,
             'department_id' => $department,
             'action' => 'schedule_report_generated',
             'metadata' => [
                 'department_code' => $departmentRecord->department_code,
                 'program_id' => $programId,
+                'semester_id' => $semester?->id,
             ],
             'created_at' => now(),
         ]);
 
         return response()->json([
-            'active_semester' => null,
+            'active_semester' => $semester ? $this->semesterPayload($semester) : null,
+            'terms' => $this->approvedTerms([$department], $programId),
             'time_grid' => [
                 'opening_time' => substr(SchedulingPolicy::openingTime(), 0, 5),
                 'closing_time' => substr(SchedulingPolicy::closingTime(), 0, 5),
@@ -157,10 +174,13 @@ class ReportsController extends Controller
                 'slot_count' => SchedulingPolicy::totalSlots(),
             ],
             'rooms' => $schedules->pluck('room')->filter()->unique('id')->values(),
+            'room_summary' => $this->roomSummary($department, $programId),
             'courses' => $schedules->pluck('course')->filter()->unique('id')->values(),
             'faculties' => $faculties->filter(fn (Faculty $faculty): bool => (int) $faculty->assigned_units > 0)->values(),
             'sections' => $sections->values(),
             'schedules' => $schedules->values(),
+            // Keyed by the submission each row names in `signatories_submission_id`.
+            'schedule_signatories' => (object) $scheduleSignatories,
             'departments' => $departments,
             'users' => $users,
         ]);
@@ -169,7 +189,7 @@ class ReportsController extends Controller
     public function logDownload(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'report_type' => 'required|string|in:schedule,load,conflict',
+            'report_type' => 'required|string|in:schedule,load,room,conflict',
             'department_id' => 'nullable|integer|exists:departments,id',
             'semester_id' => 'nullable|integer|exists:semesters,id',
             'program_id' => 'nullable|integer|exists:programs,id',
@@ -203,6 +223,57 @@ class ReportsController extends Controller
         return Semester::query()->where('is_active', true)->first();
     }
 
+    private function requestedSemester(Request $request): ?Semester
+    {
+        $validated = $request->validate(['semester_id' => 'nullable|integer|exists:semesters,id']);
+
+        return isset($validated['semester_id']) ? Semester::query()->find((int) $validated['semester_id']) : null;
+    }
+
+    /** @return array{id: int, academic_year: string, semester: string, is_active: bool} */
+    private function semesterPayload(Semester $semester): array
+    {
+        return [
+            'id' => (int) $semester->id,
+            'academic_year' => (string) $semester->academic_year,
+            'semester' => (string) $semester->semester,
+            'is_active' => (bool) $semester->is_active,
+        ];
+    }
+
+    /**
+     * Terms holding VPAA-approved classes in scope, newest first, so a report is printed for one term.
+     *
+     * @param  array<int, int>  $departmentIds
+     * @return array<int, array{id: int, academic_year: string, semester: string, is_active: bool}>
+     */
+    private function approvedTerms(array $departmentIds, ?int $programId): array
+    {
+        if ($departmentIds === []) {
+            return [];
+        }
+
+        $semesterIds = DB::table('schedules')
+            ->join('sections', 'schedules.section_id', '=', 'sections.id')
+            ->whereNull('schedules.deleted_at')
+            ->whereIn('schedules.status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
+            ->whereIn('sections.department_id', $departmentIds)
+            ->when($programId !== null, fn ($query) => $query->where('sections.program_id', $programId))
+            ->distinct()
+            ->pluck('schedules.semester_id');
+
+        $order = array_flip(SchedulingPolicy::SEMESTERS);
+
+        return Semester::query()
+            ->whereIn('id', $semesterIds)
+            ->get()
+            ->sort(fn (Semester $a, Semester $b): int => [(string) $b->academic_year, $order[$b->semester] ?? -1]
+                <=> [(string) $a->academic_year, $order[$a->semester] ?? -1])
+            ->map(fn (Semester $semester): array => $this->semesterPayload($semester))
+            ->values()
+            ->all();
+    }
+
     private function viewerProgramId(User $user): ?int
     {
         return $user->role === 'program_head' && $user->program_id !== null
@@ -210,11 +281,66 @@ class ReportsController extends Controller
             : null;
     }
 
+    /** @return array<string, mixed> */
+    private function roomSummary(int $departmentId, ?int $programId): array
+    {
+        // Department-wide rooms remain visible alongside the selected program's rooms.
+        $programScope = fn (Builder $query) => $query
+            ->when($programId !== null, fn (Builder $query) => $query->where(
+                fn (Builder $scope) => $scope->whereNull('home_program_id')->orWhere('home_program_id', $programId),
+            ));
+
+        $rooms = Rooms::query()
+            ->where('department_id', $departmentId)
+            ->whereNotIn('room_type', Rooms::SHARED_ROOM_TYPES)
+            ->tap($programScope)
+            ->orderBy('room_code')
+            ->get(['id', 'room_code', 'building', 'room_type', 'status', 'department_id']);
+
+        $requests = RoomRequest::query()
+            ->with([
+                'room:id,room_code',
+                'requestingDepartment:id,department_code,department_name',
+                'ownerDepartment:id,department_code,department_name',
+                'windows',
+            ])
+            ->where(fn (Builder $query) => $query
+                ->where('requesting_department_id', $departmentId)
+                ->orWhere('owner_department_id', $departmentId))
+            ->whereHas('room', $programScope)
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->get();
+
+        return [
+            'total_rooms' => $rooms->count(),
+            'total_laboratories' => $rooms->where('room_type', 'laboratory')->count(),
+            'unavailable_rooms' => $rooms->where('status', 'not available')->count(),
+            'rooms' => $rooms->values(),
+            'requests' => $requests->map(fn (RoomRequest $roomRequest): array => [
+                'id' => (int) $roomRequest->id,
+                'direction' => (int) $roomRequest->requesting_department_id === $departmentId ? 'sent' : 'received',
+                'room_code' => $roomRequest->room?->room_code,
+                'owner_department' => $roomRequest->ownerDepartment?->department_code
+                    ?: $roomRequest->ownerDepartment?->department_name,
+                'requester' => $roomRequest->requestingDepartment?->department_code
+                    ?: $roomRequest->requestingDepartment?->department_name,
+                'requested_by' => $roomRequest->actor_snapshots['requested_by']['name'] ?? 'Actor unavailable',
+                'status' => $roomRequest->status,
+                'windows' => $roomRequest->windows->map(fn ($window): array => [
+                    'day' => (string) $window->day,
+                    'start_time' => substr((string) $window->start_time, 0, 5),
+                    'end_time' => substr((string) $window->end_time, 0, 5),
+                ])->values(),
+            ])->values(),
+        ];
+    }
+
     /**
      * @param  array<int, int>  $departmentIds
      * @return array<int, int>
      */
-    private function completeSectionIds(array $departmentIds): array
+    private function completeSectionIds(array $departmentIds, ?int $semesterId = null): array
     {
         if ($departmentIds === []) {
             return [];
@@ -226,6 +352,7 @@ class ReportsController extends Controller
         return Schedule::query()
             ->join('sections', 'schedules.section_id', '=', 'sections.id')
             ->whereIn('sections.department_id', $departmentIds)
+            ->when($semesterId !== null, fn (Builder $query) => $query->where('sections.semester_id', $semesterId))
             ->groupBy('schedules.section_id')
             ->havingRaw("SUM(CASE WHEN schedules.status IN ($placeholders) THEN 0 ELSE 1 END) = 0", $approved)
             ->pluck('schedules.section_id')
@@ -234,10 +361,11 @@ class ReportsController extends Controller
     }
 
     /** @return array<int, int> */
-    private function facultyIdsWithLoad(): array
+    private function facultyIdsWithLoad(?int $semesterId = null): array
     {
         return DB::table('schedules')
             ->whereNull('deleted_at')
+            ->when($semesterId !== null, fn ($query) => $query->where('semester_id', $semesterId))
             ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)
             ->whereNotNull('faculty_id')
             ->distinct()

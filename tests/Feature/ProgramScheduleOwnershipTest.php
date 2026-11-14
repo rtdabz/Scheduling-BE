@@ -25,6 +25,9 @@ class ProgramScheduleOwnershipTest extends TestCase
 {
     use RefreshDatabase;
 
+    /** The department office role under test; the tests/Feature/DirectorParity subclasses override it. */
+    protected string $officeRole = 'secretary';
+
     public function test_secretary_cannot_change_a_program_that_has_a_program_head(): void
     {
         $f = $this->fixture();
@@ -381,7 +384,7 @@ class ProgramScheduleOwnershipTest extends TestCase
             'sectionB' => $sectionB,
             'rowA' => $row($sectionA, 'Monday'),
             'rowB' => $row($sectionB, 'Tuesday'),
-            'secretary' => $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id])),
+            'secretary' => $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id])),
             'headA' => $this->grantCapabilities(User::factory()->create([
                 'role' => 'program_head',
                 'department_id' => $department->id,

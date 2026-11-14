@@ -134,7 +134,7 @@ class CrudCacheConsistencyTest extends TestCase
         $this->getJson('/api/curriculum')->assertOk()->assertJsonPath('0.courses_count', 1);
     }
 
-    public function test_schedule_archive_and_restore_refresh_curriculum_usage_counts(): void
+    public function test_schedule_deletion_refreshes_curriculum_usage_counts_and_cannot_be_restored(): void
     {
         $schedule = $this->schedule('draft');
         $this->getJson('/api/curriculum')->assertOk()->assertJsonPath('0.scheduled_sections_count', 1);
@@ -142,8 +142,9 @@ class CrudCacheConsistencyTest extends TestCase
         $this->getJson('/api/curriculum')->assertOk()->assertJsonPath('0.scheduled_sections_count', 0);
         $this->actingAs(User::factory()->create(['role' => 'vpaa']));
         $this->getJson('/api/curriculum')->assertOk()->assertJsonPath('0.scheduled_sections_count', 0);
-        $this->postJson('/api/archives/schedules/'.$schedule->id.'/restore')->assertOk();
-        $this->getJson('/api/curriculum')->assertOk()->assertJsonPath('0.scheduled_sections_count', 1);
+        // Schedules have no archive: the delete was permanent.
+        $this->postJson('/api/archives/schedules/'.$schedule->id.'/restore')->assertNotFound();
+        $this->assertDatabaseMissing('schedules', ['id' => $schedule->id]);
     }
 
     public function test_department_rename_refreshes_nested_lookup_data(): void
@@ -159,13 +160,13 @@ class CrudCacheConsistencyTest extends TestCase
         }
     }
 
-    public function test_semester_edit_refreshes_department_section_list(): void
+    public function test_a_used_semester_cannot_relabel_the_department_section_list(): void
     {
         $this->actingAs(User::factory()->create(['role' => 'vpaa']));
         $url = '/api/sections/department/'.$this->f['department']->id;
         $this->getJson($url)->assertOk()->assertJsonPath('0.academic_semester.academic_year', '2026-2027');
-        $this->putJson('/api/semesters/'.$this->f['semester']->id, ['academic_year' => '2027-2028'])->assertOk();
-        $this->getJson($url)->assertOk()->assertJsonPath('0.academic_semester.academic_year', '2027-2028');
+        $this->putJson('/api/semesters/'.$this->f['semester']->id, ['academic_year' => '2027-2028'])->assertUnprocessable();
+        $this->getJson($url)->assertOk()->assertJsonPath('0.academic_semester.academic_year', '2026-2027');
     }
 
     public function test_room_edit_refreshes_assignment_schedule_relations(): void

@@ -6,6 +6,7 @@ use App\Models\InstitutionSetting;
 use App\Models\Schedule;
 use App\Models\ScheduleSubmission;
 use App\Models\User;
+use App\Support\ActorIdentity;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 
@@ -32,8 +33,8 @@ class ScheduleSignatories
 
     public const RECOMMENDED_TITLE = 'Vice-President for Academic Affairs';
 
-    /** Approvers sign their own slots, so an edit by them never makes them the schedule's preparer. */
-    private const APPROVER_ROLES = ['dean', 'vpaa', 'admin'];
+    /** Returned schedules are editable but retain the officials recorded on their rejected version. */
+    public const UNSIGNED_SCHEDULE_STATUSES = ['draft', 'completed', 'revision'];
 
     private const CLOSED_STATUSES = ['approved', 'rejected_by_dean', 'rejected_by_vpaa', 'withdrawn'];
 
@@ -67,16 +68,23 @@ class ScheduleSignatories
         if (in_array('reviewed', $slots, true)) {
             // A VPAA may complete the Dean step; the Dean of the department is still the reviewing official.
             $official = $actor?->role === 'dean' ? $this->official($actor, self::REVIEWED_TITLE) : $this->currentDean((int) $submission->department_id);
-            $signatories['reviewed'] = $this->acted($official ?? $signatories['reviewed'], $at);
+            $signatories['reviewed'] = $this->acted($official ?? ['user_id' => null, 'name' => 'Not recorded',
+                'title' => self::REVIEWED_TITLE, 'role' => null, 'official_status' => 'unassigned'], $at);
         }
         if (in_array('recommended', $slots, true)) {
             $official = $actor?->role === 'vpaa' ? $this->official($actor, self::RECOMMENDED_TITLE) : $this->currentVpaa();
-            $signatories['recommended'] = $this->acted($official ?? $signatories['recommended'], $at);
+            $signatories['recommended'] = $this->acted($official, $at);
         }
         if (in_array('approved', $slots, true)) {
             $signatories['approved'] = $this->acted($this->currentPresident(), $at);
         }
 
+        foreach ($slots as $slot) {
+            if (isset($signatories[$slot])) {
+                $signatories[$slot]['action_actor'] = ActorIdentity::snapshot($actor);
+                $signatories[$slot]['action_kind'] = $slot === 'approved' ? 'document_signatory' : ($actor?->id === ($signatories[$slot]['user_id'] ?? null) ? 'direct' : 'delegated');
+            }
+        }
         $signatories['frozen'] = $freeze;
         $signatories['recorded_at'] = $at->toISOString();
 
@@ -88,7 +96,7 @@ class ScheduleSignatories
     {
         $signatories = $this->stored($submission);
 
-        return $signatories['frozen'] || in_array($submission->status, self::CLOSED_STATUSES, true)
+        return $signatories['frozen'] || $this->isClosed($submission)
             ? $signatories
             : $this->refreshed($signatories, (int) $submission->department_id);
     }
@@ -100,8 +108,8 @@ class ScheduleSignatories
     }
 
     /**
-     * The stored snapshot, or for a submission recorded before signatories were kept, one rebuilt from the
-     * reviewer columns. Missing keys are filled so every caller sees the full shape.
+     * The stored snapshot. Missing historical names cannot be reconstructed from today's officials.
+     * Open legacy submissions can still follow the current officials until their workflow closes.
      */
     public function stored(ScheduleSubmission $submission): array
     {
@@ -110,21 +118,80 @@ class ScheduleSignatories
             return $stored + ['reviewed' => null, 'recommended' => null, 'approved' => null, 'frozen' => false];
         }
 
+        if ($this->isClosed($submission)) {
+            return ['prepared' => [], 'reviewed' => null, 'recommended' => null, 'approved' => null, 'frozen' => true];
+        }
+
         $sectionIds = DB::table('schedule_submission_sections')
             ->where('schedule_submission_id', $submission->id)
             ->pluck('section_id')->map('intval')->all();
-        $reviewer = fn (?int $userId, string $title, ?CarbonInterface $at) => ($user = $userId ? User::withTrashed()->find($userId) : null)
-            ? $this->acted($this->official($user, $title), $at ?? now())
-            : null;
+        $reviewer = function (string $column, string $title, ?CarbonInterface $at) use ($submission): ?array {
+            if ($at === null) {
+                return null;
+            }
+            $identity = $submission->actor_snapshots[$column] ?? null;
+
+            return ['user_id' => $submission->{$column}, 'name' => $identity['name'] ?? 'Not recorded',
+                'title' => $title, 'role' => $identity['role'] ?? null, 'acted_at' => $at->toISOString()];
+        };
         $legacy = $this->initial((int) $submission->department_id, $submission->semester_id, $sectionIds, $submission->submitted_at);
-        $legacy['reviewed'] = $reviewer($submission->dean_reviewed_by, self::REVIEWED_TITLE, $submission->dean_reviewed_at) ?? $legacy['reviewed'];
-        $legacy['recommended'] = $reviewer($submission->vpaa_reviewed_by, self::RECOMMENDED_TITLE, $submission->vpaa_reviewed_at) ?? $legacy['recommended'];
-        if ($submission->status === 'approved' && $submission->vpaa_reviewed_at !== null) {
-            $legacy['approved'] = $this->acted($legacy['approved'], $submission->vpaa_reviewed_at);
+        if ($submission->dean_reviewed_at !== null) {
+            $legacy['reviewed'] = $reviewer('dean_reviewed_by', self::REVIEWED_TITLE, $submission->dean_reviewed_at);
         }
-        $legacy['frozen'] = in_array($submission->status, self::CLOSED_STATUSES, true);
+        if ($submission->vpaa_reviewed_at !== null) {
+            $legacy['recommended'] = $reviewer('vpaa_reviewed_by', self::RECOMMENDED_TITLE, $submission->vpaa_reviewed_at);
+        }
 
         return $legacy;
+    }
+
+    /**
+     * Point each submitted row at the submission whose recorded officials it prints, and return those
+     * signature blocks keyed by submission id. A draft or a recalled row back in revision has no signed
+     * version yet, so it is left unmarked and prints the current officials.
+     *
+     * @param  iterable<Schedule>  $schedules
+     * @return array<int, array> submission id => signatories
+     */
+    public function attachToSchedules(iterable $schedules): array
+    {
+        $signed = collect($schedules)->reject(
+            static fn (Schedule $schedule): bool => in_array($schedule->status, self::UNSIGNED_SCHEDULE_STATUSES, true),
+        );
+        $latest = [];
+        foreach ($signed->groupBy(static fn (Schedule $schedule): int => (int) $schedule->semester_id) as $semesterId => $rows) {
+            foreach (array_chunk($rows->pluck('section_id')->filter()->map('intval')->unique()->values()->all(), 500) as $chunk) {
+                DB::table('schedule_submission_sections as pivot')
+                    ->join('schedule_submissions as submission', 'submission.id', '=', 'pivot.schedule_submission_id')
+                    ->whereIn('pivot.section_id', $chunk)
+                    ->where('submission.semester_id', $semesterId)
+                    ->orderByDesc('submission.revision_number')
+                    ->orderByDesc('submission.id')
+                    ->get(['pivot.section_id', 'submission.id'])
+                    ->each(function (object $row) use (&$latest, $semesterId): void {
+                        $latest[$semesterId.':'.$row->section_id] ??= (int) $row->id;
+                    });
+            }
+        }
+
+        $submissions = ScheduleSubmission::query()->whereKey(array_values(array_unique($latest)))->get()->keyBy('id');
+        $resolved = [];
+        foreach ($signed as $schedule) {
+            $submission = $submissions->get($latest[(int) $schedule->semester_id.':'.(int) $schedule->section_id] ?? 0);
+            if ($submission === null) {
+                continue;
+            }
+            $schedule->setAttribute('signatories_submission_id', (int) $submission->id);
+            $resolved[(int) $submission->id] ??= $this->resolve($submission);
+        }
+
+        return $resolved;
+    }
+
+    private function isClosed(ScheduleSubmission $submission): bool
+    {
+        return in_array($submission->status, self::CLOSED_STATUSES, true)
+            || ($submission->status === 'partially_withdrawn' && $submission->vpaa_reviewed_at !== null);
     }
 
     /** Fill each slot no official has acted on yet with whoever holds that office now. */
@@ -135,10 +202,10 @@ class ScheduleSignatories
         }
         $pending = static fn (?array $slot): bool => ($slot['acted_at'] ?? null) === null;
         if ($pending($signatories['reviewed'] ?? null)) {
-            $signatories['reviewed'] = $this->currentDean($departmentId) ?? $signatories['reviewed'] ?? null;
+            $signatories['reviewed'] = $this->currentDean($departmentId);
         }
         if ($pending($signatories['recommended'] ?? null)) {
-            $signatories['recommended'] = $this->currentVpaa() ?? $signatories['recommended'] ?? null;
+            $signatories['recommended'] = $this->currentVpaa();
         }
         if ($pending($signatories['approved'] ?? null)) {
             $signatories['approved'] = $this->currentPresident();
@@ -148,8 +215,8 @@ class ScheduleSignatories
     }
 
     /**
-     * Whoever entered each program's schedule rows (program head or secretary); a program whose rows
-     * have no recorded creator falls back to its Program Head.
+     * Whoever entered each program's rows. The creation snapshot establishes their role;
+     * missing creator evidence is never replaced with a current officeholder.
      *
      * @return list<array{program_id: int|null, user_id: int|null, name: string, title: string}>
      */
@@ -165,10 +232,9 @@ class ScheduleSignatories
             ->when($semesterId !== null, fn ($query) => $query->where('semester_id', $semesterId))
             ->whereNotNull('created_by')
             ->orderBy('id')
-            ->get(['section_id', 'created_by']);
+            ->get(['section_id', 'created_by', 'creator_identity']);
         $users = User::withTrashed()
             ->whereIn('id', $creatorRows->pluck('created_by')->unique())
-            ->whereNotIn('role', self::APPROVER_ROLES)
             ->get(['id', 'name', 'role'])
             ->keyBy('id');
 
@@ -178,14 +244,19 @@ class ScheduleSignatories
                 ->filter(fn ($row) => ($programBySection[$row->section_id] ?? null) === $programId)
                 ->pluck('created_by')->unique()
                 ->filter(fn ($id) => $users->has($id));
-            $people = $creatorIds->map(fn ($id) => $users[$id])->values();
-            if ($people->isEmpty() && $programId !== null) {
-                $head = User::query()->where('role', 'program_head')->where('program_id', $programId)
-                    ->where('is_active', true)->latest('id')->first(['id', 'name', 'role']);
-                $people = collect($head ? [$head] : []);
-            }
-            foreach ($people as $person) {
-                $preparers[] = ['program_id' => $programId, ...$this->official($person, self::PREPARED_TITLE)];
+            foreach ($creatorIds as $creatorId) {
+                $person = $users[$creatorId];
+                $recorded = $creatorRows->first(fn ($row) => (int) $row->created_by === (int) $creatorId)?->creator_identity;
+                $role = $recorded['role'] ?? null;
+                $title = match ($role) {
+                    'program_head' => self::PREPARED_TITLE,
+                    'secretary' => 'Program Head/Secretary',
+                    'director' => 'Department Director',
+                    default => 'Schedule preparer',
+                };
+                $preparers[] = ['program_id' => $programId, 'user_id' => (int) $creatorId,
+                    'name' => $person->name, 'title' => $title, 'role' => $role, 'creator_identity' => $recorded,
+                    'provenance' => $recorded ? 'recorded_creator' : 'creator_reference_at_submission'];
             }
         }
 
@@ -216,7 +287,7 @@ class ScheduleSignatories
 
     private function official(User $user, string $title): array
     {
-        return ['user_id' => (int) $user->id, 'name' => trim((string) $user->name), 'title' => $title, 'acted_at' => null];
+        return ['user_id' => (int) $user->id, 'name' => trim((string) $user->name), 'title' => $title, 'role' => $user->role, 'acted_at' => null];
     }
 
     private function acted(?array $official, CarbonInterface $at): ?array

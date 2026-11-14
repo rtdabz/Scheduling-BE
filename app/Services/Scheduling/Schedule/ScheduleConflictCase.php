@@ -15,7 +15,6 @@ final readonly class ScheduleConflictCase
         BatchConflict::RULE_SECTION => ['move_schedule'],
         BatchConflict::RULE_ROOM => ['change_room', 'change_delivery_mode', 'move_schedule'],
         BatchConflict::RULE_FACULTY => ['reassign_instructor', 'move_schedule'],
-        BatchConflict::RULE_SUBJECT_SECTION_TIME => ['move_schedule', 'change_delivery_mode'],
     ];
 
     public function __construct(

@@ -13,7 +13,7 @@ class ScheduleHistoryTest extends TestCase
 {
     use RefreshDatabase;
 
-    /** The history endpoint lists review decisions: approved, rejected, recalled. */
+    /** Review decisions remain available alongside semester snapshots. */
     private const DECISION = ['source' => 'department_workflow', 'action' => 'schedule_approved_by_vpaa'];
 
     public function test_only_vpaa_can_read_schedule_history(): void
@@ -28,45 +28,53 @@ class ScheduleHistoryTest extends TestCase
     public function test_vpaa_receives_newest_history_first(): void
     {
         $vpaa = User::factory()->create(['role' => 'vpaa']);
-        $older = ScheduleHistoryVersion::create([...self::DECISION, 'actor_user_id' => $vpaa->id, 'created_at' => now()->subMinute()]);
+        $older = ScheduleHistoryVersion::forceCreate([...self::DECISION, 'actor_user_id' => $vpaa->id, 'created_at' => now()->subMinute()]);
         ScheduleHistoryItem::create(['history_version_id' => $older->id, 'original_schedule_id' => 10, 'after_snapshot' => ['day' => 'Monday']]);
-        $newer = ScheduleHistoryVersion::create([...self::DECISION, 'actor_user_id' => $vpaa->id, 'created_at' => now()]);
+        $newer = ScheduleHistoryVersion::forceCreate([...self::DECISION, 'actor_user_id' => $vpaa->id, 'created_at' => now()]);
         ScheduleHistoryItem::create(['history_version_id' => $newer->id, 'original_schedule_id' => 10, 'after_snapshot' => ['day' => 'Tuesday']]);
-        // Ordinary edits, submissions, and semester archives are not listed.
+        // Ordinary edits and submissions are not listed; semester snapshots are.
         ScheduleHistoryVersion::create(['actor_user_id' => $vpaa->id, 'action' => 'updated']);
         ScheduleHistoryVersion::create(['actor_user_id' => $vpaa->id, 'source' => 'department_workflow', 'action' => 'schedule_submitted']);
-        ScheduleHistoryVersion::create(['actor_user_id' => $vpaa->id, 'source' => 'semester_change', 'action' => 'schedule_semester_archived']);
+        $archive = ScheduleHistoryVersion::forceCreate(['actor_user_id' => $vpaa->id, 'source' => 'semester_change', 'action' => 'schedule_semester_archived', 'created_at' => now()->subMinutes(2)]);
 
         $this->actingAs($vpaa, 'sanctum')
             ->getJson('/api/schedule-history')
             ->assertOk()
-            ->assertJsonPath('meta.total', 2)
+            ->assertJsonPath('meta.total', 3)
             ->assertJsonPath('data.0.id', $newer->id)
             ->assertJsonPath('data.0.snapshot.day', 'Tuesday')
-            ->assertJsonPath('data.1.id', $older->id);
+            ->assertJsonPath('data.1.id', $older->id)
+            ->assertJsonPath('data.2.id', $archive->id);
     }
 
-    public function test_history_filters_by_decision_type(): void
+    public function test_history_lists_only_vpaa_approved_schedules(): void
     {
         $vpaa = User::factory()->create(['role' => 'vpaa']);
         $workflow = ['source' => 'department_workflow', 'actor_user_id' => $vpaa->id];
+        // Never final: dean decisions, returns, recalls and pending submissions.
         ScheduleHistoryVersion::create([...$workflow, 'action' => 'schedule_approved_by_dean']);
-        $rejected = ScheduleHistoryVersion::create([...$workflow, 'action' => 'schedule_returned_by_dean', 'change_summary' => ['rejection_reason' => 'Room clash on Monday']]);
-        $recalled = ScheduleHistoryVersion::create([...$workflow, 'action' => 'schedule_withdrawn']);
+        ScheduleHistoryVersion::create([...$workflow, 'action' => 'schedule_returned_by_dean', 'change_summary' => ['rejection_reason' => 'Room clash on Monday']]);
+        ScheduleHistoryVersion::create([...$workflow, 'action' => 'schedule_returned_by_vpaa']);
+        ScheduleHistoryVersion::create([...$workflow, 'action' => 'schedule_withdrawn']);
+        ScheduleHistoryVersion::create([...$workflow, 'action' => 'schedule_submitted']);
+        // A VPAA action name recorded by another source is not a workflow approval.
+        ScheduleHistoryVersion::create(['source' => 'semester_change', 'action' => 'schedule_approved_by_vpaa']);
+        $approved = ScheduleHistoryVersion::create([...$workflow, 'action' => 'schedule_approved_by_vpaa']);
+        $archived = ScheduleHistoryVersion::create(['actor_user_id' => $vpaa->id, 'source' => 'semester_change', 'action' => 'schedule_semester_archived']);
 
         $this->actingAs($vpaa, 'sanctum')->getJson('/api/schedule-history')
-            ->assertOk()->assertJsonPath('meta.total', 3);
-        $this->actingAs($vpaa, 'sanctum')->getJson('/api/schedule-history?type=rejected')
+            ->assertOk()->assertJsonPath('meta.total', 2);
+        $this->getJson('/api/schedule-history?type=approved')
             ->assertOk()
             ->assertJsonPath('meta.total', 1)
-            ->assertJsonPath('data.0.id', $rejected->id)
-            ->assertJsonPath('data.0.rejection_reason', 'Room clash on Monday');
-        $this->actingAs($vpaa, 'sanctum')->getJson('/api/schedule-history?type=recalled')
+            ->assertJsonPath('data.0.id', $approved->id);
+        $this->getJson('/api/schedule-history?type=archived')
             ->assertOk()
             ->assertJsonPath('meta.total', 1)
-            ->assertJsonPath('data.0.id', $recalled->id);
-        $this->actingAs($vpaa, 'sanctum')->getJson('/api/schedule-history?type=archived')
-            ->assertUnprocessable();
+            ->assertJsonPath('data.0.id', $archived->id);
+        foreach (['rejected', 'recalled', 'updated'] as $retired) {
+            $this->getJson("/api/schedule-history?type={$retired}")->assertUnprocessable();
+        }
     }
 
     public function test_secretary_is_limited_to_their_department(): void
@@ -85,12 +93,16 @@ class ScheduleHistoryTest extends TestCase
         );
         $version = ScheduleHistoryVersion::create([...self::DECISION, 'department_id' => $departmentId]);
         ScheduleHistoryVersion::create([...self::DECISION, 'department_id' => null]);
+        $archive = ScheduleHistoryVersion::create(['source' => 'semester_change', 'action' => 'schedule_semester_archived', 'department_id' => $departmentId]);
+        ScheduleHistoryVersion::create(['source' => 'semester_change', 'action' => 'schedule_semester_archived', 'department_id' => null]);
         ScheduleHistoryItem::create(['history_version_id' => $version->id, 'after_snapshot' => ['day' => 'Friday']]);
 
         $this->actingAs($secretary, 'sanctum')
             ->getJson('/api/schedule-history')
             ->assertOk()
-            ->assertJsonPath('meta.total', 1);
+            ->assertJsonPath('meta.total', 2);
+        $this->getJson('/api/schedule-history?type=archived')->assertOk()
+            ->assertJsonPath('meta.total', 1)->assertJsonPath('data.0.id', $archive->id);
     }
 
     public function test_history_carries_department_logo_and_signatories(): void

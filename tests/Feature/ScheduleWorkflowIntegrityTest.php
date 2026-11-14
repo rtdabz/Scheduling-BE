@@ -194,9 +194,10 @@ class ScheduleWorkflowIntegrityTest extends TestCase
         $f = $this->fixture();
         $returned = $this->schedule($f, $f['courseA'], ['status' => 'rejected']);
 
-        $this->actingAs($f['user'])->deleteJson("/api/schedules/{$returned->id}")->assertOk();
+        $this->actingAs($f['user'])->deleteJson("/api/schedules/{$returned->id}")->assertOk()->assertJsonPath('archived', false);
 
-        $this->assertSoftDeleted('schedules', ['id' => $returned->id]);
+        // Returned classes are never archived; deleting one removes it permanently.
+        $this->assertDatabaseMissing('schedules', ['id' => $returned->id]);
     }
 
     public function test_applying_a_generated_timetable_keeps_courses_left_out_of_generation(): void

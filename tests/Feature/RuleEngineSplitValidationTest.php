@@ -17,7 +17,7 @@ class RuleEngineSplitValidationTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_same_subject_for_different_sections_cannot_overlap_online(): void
+    public function test_same_subject_for_different_sections_may_overlap_online(): void
     {
         $semester = Semester::create([
             'academic_year' => '2026-2027',
@@ -90,8 +90,9 @@ class RuleEngineSplitValidationTest extends TestCase
             'end_time' => '17:00',
         ])))->pluck('rule')->all();
 
-        $this->assertContains('subject_section_time_conflict', $overlappingRules);
+        $this->assertNotContains('subject_section_time_conflict', $overlappingRules);
         $this->assertNotContains('room_conflict', $overlappingRules);
+        $this->assertNotContains('section_conflict', $overlappingRules);
         $this->assertNotContains('subject_section_time_conflict', $nextSlotRules);
     }
 

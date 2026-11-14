@@ -24,7 +24,6 @@ final class ConflictResolutionLog
         $entries = [];
 
         $logs = SchedulingAuditLog::query()
-            ->with('user:id,name')
             ->where('semester_id', $semesterId)
             ->where(static function ($query): void {
                 $query->whereIn('action', ['conflict_resolved', 'conflict_overridden'])
@@ -63,7 +62,7 @@ final class ConflictResolutionLog
                     },
                     'status' => isset($open[$conflict['id']]) ? 'reopened' : ($overridden ? 'overridden' : 'resolved'),
                     'resolved_at' => $log->created_at?->toISOString(),
-                    'resolved_by' => $log->user?->name,
+                    'resolved_by' => $log->recorded_actor['name'] ?? 'Actor unavailable',
                     'reason' => $log->metadata['reason'] ?? null,
                     'fix' => $fix,
                     'affected_schedule_ids' => $conflict['affected_schedule_ids'],

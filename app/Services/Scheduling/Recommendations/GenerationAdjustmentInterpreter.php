@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling\Recommendations;
 
+use App\Services\Scheduling\Generation\ComponentRequiredDays;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use InvalidArgumentException;
 
@@ -91,12 +92,36 @@ final class GenerationAdjustmentInterpreter
             $sectionId = (int) $adjustment['section_id'];
             $updated = $this->applyOne($next[$sectionId], $adjustment['type'], (int) ($adjustment['course_id'] ?? 0), $adjustment['value'] ?? null);
             if ($updated !== $next[$sectionId]) {
+                $this->assertKeepsComponentDays($updated, $adjustment);
                 $next[$sectionId] = $updated;
                 $applied[] = $adjustment;
             }
         }
 
         return ['configs' => $next, 'applied' => $applied];
+    }
+
+    /**
+     * Lecture/Laboratory Required Days need the Integrated configuration. An
+     * adjustment never discards them; the user changes them in Setup Courses.
+     */
+    private function assertKeepsComponentDays(array $config, array $adjustment): void
+    {
+        $integrated = array_map('intval', $config['selected_split_session_course_ids'] ?? []);
+        foreach ((array) ($config[ComponentRequiredDays::KEY] ?? []) as $courseId => $days) {
+            if (! is_array($days) || array_filter($days, static fn (mixed $day): bool => $day !== null && $day !== '') === []) {
+                continue;
+            }
+            if (! in_array((int) $courseId, $integrated, true)) {
+                $code = (int) ($adjustment['course_id'] ?? 0) === (int) $courseId && ($adjustment['course_code'] ?? '') !== ''
+                    ? (string) $adjustment['course_code']
+                    : 'An Integrated course';
+                throw new InvalidArgumentException(sprintf(
+                    '%s has Lecture/Laboratory Required Days, so it must stay Integrated. Clear those days in Setup Courses before applying this adjustment.',
+                    $code,
+                ));
+            }
+        }
     }
 
     /** Semantic writes detect conflicts even when an operation is currently a no-op. */

@@ -83,12 +83,11 @@ final class ResolveScheduleConflict
             $partners = $instructorOnly
                 ? collect()
                 : $this->sameTimePartners->partnersFor($target, $changes);
-            $runPartnerIds = $this->sameTimePartners->runPartnerIds($target, $partners);
 
             $attempt = array_merge($target->toArray(), $changes, [
                 'ignore_schedule_id' => $instructorOnly
                     ? $assignmentGroupIds
-                    : ($runPartnerIds === [] ? (int) $target->id : [(int) $target->id, ...$runPartnerIds]),
+                    : (int) $target->id,
             ]);
 
             $violations = $instructorOnly

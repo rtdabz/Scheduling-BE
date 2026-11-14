@@ -2,10 +2,24 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\AppendOnly;
+use App\Support\ActorIdentity;
 use Illuminate\Database\Eloquent\Model;
 
 class ScheduleHistoryVersion extends Model
 {
+    use AppendOnly;
+
+    protected static function booted(): void
+    {
+        static::creating(fn (self $version) => ActorIdentity::capture($version, 'actor_user_id', 'change_summary'));
+    }
+
+    public function getRecordedActorAttribute(): ?array
+    {
+        return ActorIdentity::recorded($this->change_summary, $this->actor_user_id);
+    }
+
     protected $fillable = [
         'semester_id', 'academic_year', 'semester', 'department_id', 'actor_user_id', 'action', 'source', 'reason', 'change_summary', 'signatories',
     ];

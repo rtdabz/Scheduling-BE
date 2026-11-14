@@ -4,6 +4,7 @@ namespace App\Http\Requests\User;
 
 use App\Models\Faculty;
 use App\Services\UserFacultyProfileService;
+use App\Support\PersonName;
 use App\Support\ProfilePicture;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -23,9 +24,10 @@ class StoreUserRequest extends FormRequest
             'middle_initial' => ['nullable', 'string', 'size:1', 'alpha'],
             'last_name' => 'required|string|max:100',
             'suffix' => ['nullable', Rule::in(Faculty::NAME_SUFFIXES)],
+            ...PersonName::affixRules(),
             'username' => 'required|string|max:250',
             'email' => 'required|email|max:255|unique:users,email',
-            'role' => 'required|string|in:dean,program_head,secretary',
+            'role' => 'required|string|in:dean,program_head,secretary,director',
             'is_active' => 'sometimes|boolean',
             'allow_google_login' => 'sometimes|boolean',
             'department_id' => 'required|exists:departments,id,deleted_at,NULL',
@@ -51,6 +53,7 @@ class StoreUserRequest extends FormRequest
     {
         return [
             'email.unique' => 'This email belongs to an existing or archived account. If it was archived, restore it from Archives instead.',
+            ...PersonName::affixMessages(),
         ];
     }
 }

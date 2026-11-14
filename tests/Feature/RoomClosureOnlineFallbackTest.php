@@ -28,7 +28,7 @@ class RoomClosureOnlineFallbackTest extends TestCase
         $room = Rooms::create(['room_code' => 'F1', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
         $replacement = Rooms::create(['room_code' => 'F2', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
         $base = ['semester_id' => $semester->id, 'section_id' => $section->id, 'course_id' => $course->id, 'department_id' => $department->id,
-            'start_time' => '08:00', 'end_time' => '09:00', 'status' => 'draft'];
+            'start_time' => '08:00', 'end_time' => '09:00', 'status' => 'faculty_assignment'];
         $row = Schedule::create([...$base, 'room_id' => $room->id, 'day' => 'Monday', 'mode' => 'on-site']);
         $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
         $vpaa = $this->grantCapabilities(User::factory()->create(['role' => 'vpaa']));
@@ -65,7 +65,7 @@ class RoomClosureOnlineFallbackTest extends TestCase
             $this->assertTrue($row->isTemporarilyOnline());
             // Day, time and status are preserved.
             $this->assertSame('08:00', substr($row->start_time, 0, 5));
-            $this->assertSame('draft', $row->status);
+            $this->assertSame('faculty_assignment', $row->status);
         }
         $this->assertEquals($untouched, [$elsewhere->fresh()->getAttributes(), $plannedOnline->fresh()->getAttributes()]);
         $this->assertFalse($plannedOnline->fresh()->isTemporarilyOnline());

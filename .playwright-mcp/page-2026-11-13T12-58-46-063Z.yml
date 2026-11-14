@@ -1,0 +1,28 @@
+- dialog "Add New Curriculum" [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - heading "Add New Curriculum" [level=2] [ref=e4]
+      - paragraph [ref=e5]: Create the curriculum record, then add or import its courses.
+    - button "Close modal" [active] [ref=e6] [cursor=pointer]
+  - generic [ref=e11]:
+    - generic [ref=e12]:
+      - generic [ref=e13]:
+        - generic [ref=e14]: Curriculum Name *
+        - textbox "Curriculum Name" [ref=e15]:
+          - /placeholder: e.g. BS Computer Science 2024
+      - generic [ref=e16]:
+        - generic [ref=e17]: CMO No. *
+        - textbox "CMO No." [ref=e18]:
+          - /placeholder: e.g. CMO 1 S 2026
+    - generic [ref=e20]:
+      - generic [ref=e21]: Effective School Year *
+      - generic [ref=e22]:
+        - textbox "Start year" [ref=e23]:
+          - /placeholder: "2025"
+        - generic [aria-hidden] [ref=e24]: –
+        - textbox "End year" [ref=e25]:
+          - /placeholder: "2026"
+      - paragraph [ref=e26]: Enter the starting year; the ending year is the year after.
+  - contentinfo [ref=e27]:
+    - button "Cancel" [ref=e28] [cursor=pointer]
+    - button "Create Curriculum" [ref=e29] [cursor=pointer]

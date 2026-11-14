@@ -2,14 +2,11 @@
 
 namespace App\Http\Controllers\Admin;
 
-use App\Exceptions\ScheduleConflictException;
 use App\Http\Controllers\Controller;
 use App\Models\Departments;
 use App\Models\Faculty;
 use App\Models\Program;
 use App\Models\Rooms;
-use App\Models\Schedule;
-use App\Models\ScheduleSplit;
 use App\Models\SchedulingAuditLog;
 use App\Models\User;
 use App\Services\AdministrativeRoleSlots;
@@ -18,9 +15,6 @@ use App\Services\Archive\ArchiveListQuery;
 use App\Services\Archive\ArchiveProvenance;
 use App\Services\Archive\ArchiveRestoreBlocked;
 use App\Services\Archive\ArchiveRestoreChecks;
-use App\Services\Scheduling\Engine\RuleEngine;
-use App\Services\Scheduling\Lock\SchedulingScopeLock;
-use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
 use App\Services\UserFacultyProfileService;
 use App\Support\ApiCache;
 use App\Support\DatabaseErrors;
@@ -46,7 +40,6 @@ class ArchiveController extends Controller
 
     public function __construct(
         private readonly UserFacultyProfileService $facultyProfiles,
-        private readonly ScheduleConflictScanner $conflicts,
         private readonly ArchiveCatalog $catalog,
         private readonly ArchiveRestoreChecks $checks,
         private readonly ArchiveListQuery $listQuery,
@@ -58,6 +51,9 @@ class ArchiveController extends Controller
     {
         $validated = $request->validate([
             'type' => ['nullable', Rule::in(['all', ...array_keys(ArchiveCatalog::TYPES)])],
+            // A module's fixed record types. Listing, counts, and totals never leave this set.
+            'types' => ['nullable', 'array', 'min:1'],
+            'types.*' => ['string', 'distinct', Rule::in(array_keys(ArchiveCatalog::TYPES))],
             'search' => ['nullable', 'string', 'max:100'],
             'department_id' => ['nullable', 'integer', 'min:1'],
             'program_id' => ['nullable', 'integer', 'min:1'],
@@ -71,6 +67,11 @@ class ArchiveController extends Controller
         ]);
 
         $type = ($validated['type'] ?? 'all') === 'all' ? null : $validated['type'];
+        $scope = isset($validated['types']) ? array_values($validated['types']) : null;
+        if ($scope !== null && $type !== null && ! in_array($type, $scope, true)) {
+            // A type outside the module is ignored rather than exposing another module's records.
+            $type = null;
+        }
         $filters = array_filter([
             'search' => isset($validated['search']) ? trim($validated['search']) : null,
             'department_id' => $validated['department_id'] ?? null,
@@ -81,13 +82,13 @@ class ArchiveController extends Controller
         ], fn ($value) => $value !== null && $value !== '');
 
         // Type counts apply every filter except the type itself; total is the selected type's count.
-        $counts = $this->listQuery->counts($filters);
+        $counts = $this->listQuery->counts($filters, $scope);
         $total = $type === null ? array_sum($counts) : $counts[$type];
         $perPage = (int) ($validated['per_page'] ?? 25);
         $lastPage = max(1, (int) ceil($total / $perPage));
         $page = min((int) ($validated['page'] ?? 1), $lastPage);
         $rows = $this->listQuery->page(
-            [...$filters, 'type' => $type],
+            [...$filters, 'type' => $type, 'types' => $scope],
             $validated['sort'] ?? 'archived_at',
             $validated['direction'] ?? 'desc',
             $page,
@@ -105,7 +106,7 @@ class ArchiveController extends Controller
                 'to' => min($page * $perPage, $total),
             ],
             'counts' => $counts,
-            'total_archived' => $filters === [] ? array_sum($counts) : array_sum($this->listQuery->counts([])),
+            'total_archived' => $filters === [] ? array_sum($counts) : array_sum($this->listQuery->counts([], $scope)),
             'options' => $this->filterOptions(),
             'checked_at' => now()->toIso8601String(),
         ]);
@@ -144,13 +145,10 @@ class ArchiveController extends Controller
         try {
             $restored = match (true) {
                 $type === 'buildings' => $this->restoreBuilding($request, $record),
-                $record instanceof Schedule || $record instanceof ScheduleSplit => $this->restoreTimetable($request, $record),
                 default => $this->restoreRecord($request, $type, $modelClass, $id),
             };
         } catch (ArchiveRestoreBlocked $exception) {
             return response()->json($exception->payload(), 422);
-        } catch (ScheduleConflictException $exception) {
-            return response()->json([...$exception->payload(), 'code' => 'schedule_violations'], 422);
         } catch (QueryException $exception) {
             return $this->databaseFailure($exception);
         }
@@ -159,9 +157,7 @@ class ArchiveController extends Controller
             return $this->alreadyRestored($type, $record->fresh() ?? $record);
         }
 
-        ApiCache::forgetGroups($record instanceof Schedule || $record instanceof ScheduleSplit
-            ? [...self::CACHE_GROUPS, 'instructor_assignments.index']
-            : self::CACHE_GROUPS);
+        ApiCache::forgetGroups(self::CACHE_GROUPS);
 
         $primary = $restored[0];
         $linkedCount = count($restored) - 1;
@@ -255,141 +251,9 @@ class ArchiveController extends Controller
         });
     }
 
-    /**
-     * Class restores keep the scheduling scope lock, rule engine, configured meeting-group check,
-     * and conflict scan. Required meeting patterns restore their whole split group atomically.
-     *
-     * @return list<array<string, mixed>>|null
-     */
-    private function restoreTimetable(Request $request, Schedule|ScheduleSplit $record): ?array
-    {
-        $seed = $record instanceof Schedule ? $record : Schedule::find($record->schedule_id);
-        if ($seed === null) {
-            throw new ArchiveRestoreBlocked($this->checks->blockers('schedule-splits', $record));
-        }
-        $split = $record instanceof ScheduleSplit ? $record : ScheduleSplit::withTrashed()->where('schedule_id', $seed->id)->first();
-        $ids = ArchiveCatalog::timetableGroupIds($seed, $split, $record instanceof Schedule);
-        $semesterIds = Schedule::withTrashed()->whereIn('id', $ids)->pluck('semester_id')->unique()->map('intval')->all();
-
-        return app(SchedulingScopeLock::class)->execute($semesterIds, fn (): ?array => DB::transaction(function () use ($request, $record, $ids): ?array {
-            $rows = Schedule::withTrashed()->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->get();
-            $current = $record::withTrashed()->whereKey($record->getKey())->lockForUpdate()->first();
-            abort_if($current === null, 404, 'This record no longer exists.');
-            if (! $current->trashed()) {
-                return null;
-            }
-
-            $blockers = $record instanceof ScheduleSplit
-                ? $this->checks->blockers('schedule-splits', $current, locked: true)
-                : $rows->flatMap(fn (Schedule $row) => $this->checks->blockers('schedules', $row, locked: true))
-                    ->unique(fn (array $blocker): string => $blocker['message'])->values()->all();
-            if ($blockers !== []) {
-                throw new ArchiveRestoreBlocked($blockers);
-            }
-
-            $restored = [];
-            if ($record instanceof ScheduleSplit) {
-                $current->restore();
-                $this->audit($request, 'schedule-splits', $current);
-                $restored[] = $this->restoredEntry('schedule-splits', $current);
-            } else {
-                $archivedSplitIds = ScheduleSplit::onlyTrashed()->whereIn('schedule_id', $ids)->pluck('id')->all();
-                foreach ($rows->filter->trashed() as $row) {
-                    $row->restore();
-                    $this->audit($request, 'schedules', $row);
-                    $restored[] = $this->restoredEntry('schedules', $row);
-                }
-                // Restoring a class restores its split metadata through the Schedule model event.
-                foreach (ScheduleSplit::query()->whereKey($archivedSplitIds)->orderBy('id')->get() as $restoredSplit) {
-                    $this->audit($request, 'schedule-splits', $restoredSplit, ['restored_with' => 'schedules:'.$restoredSplit->schedule_id]);
-                    $restored[] = $this->restoredEntry('schedule-splits', $restoredSplit);
-                }
-                // The requested class leads the result; usort is stable for the rest.
-                $isRequested = fn (array $entry): bool => $entry['type'] === 'schedules' && $entry['id'] === (int) $record->getKey();
-                usort($restored, fn (array $a, array $b): int => $isRequested($b) <=> $isRequested($a));
-            }
-
-            $this->validateRestoredTimetable($ids);
-
-            return $restored;
-        }));
-    }
-
-    /** @param list<int> $ids */
-    private function validateRestoredTimetable(array $ids): void
-    {
-        $rows = Schedule::whereIn('id', $ids)->get();
-        $engine = app(RuleEngine::class);
-        $violations = [];
-        foreach ($rows as $row) {
-            if ($row->split === null && ArchiveCatalog::requiresMeetingGroup($row)) {
-                $violations[] = ['rule' => 'meeting_group_required', 'message' => 'This meeting pattern requires its linked split metadata before restoration.', 'schedule_id' => (int) $row->id];
-            }
-            $violations = [...$violations, ...$engine->validate([...$row->toArray(), 'ignore_schedule_id' => $row->id])];
-        }
-        $groups = $rows->pluck('split_group_id')->filter()->unique()->all();
-        $partners = Schedule::whereHas('split', fn ($query) => $query->whereIn('split_group_id', $groups))->get();
-        $violations = [...$violations, ...$engine->validateConfiguredMeetingGroups($partners->toArray())];
-        if ($violations !== []) {
-            throw new ScheduleConflictException($violations, 'This class cannot be restored under the current scheduling rules. Resolve the listed violations first.');
-        }
-
-        $cases = [];
-        foreach ($rows->pluck('semester_id')->unique() as $semesterId) {
-            $cases = [...$cases, ...$this->conflicts->scan((int) $semesterId, onlyScheduleIds: $ids)];
-        }
-        if ($cases !== []) {
-            throw new ScheduleConflictException(
-                array_map(fn ($case): array => [
-                    'rule' => $case->rule,
-                    'message' => $case->message(),
-                    'schedule_id' => $case->scheduleId,
-                    'other_schedule_id' => $case->otherScheduleId,
-                    'day' => $case->day,
-                    'overlap_start' => $case->overlapStart,
-                    'overlap_end' => $case->overlapEnd,
-                ], $cases),
-                'This class cannot be restored because it would conflict with the current timetable. Move or remove the clashing classes first.',
-            );
-        }
-    }
-
     /** @return array<string, mixed> */
     private function impact(string $type, Model $record): array
     {
-        if ($type === 'schedules') {
-            $split = ScheduleSplit::withTrashed()->where('schedule_id', $record->getKey())->first();
-            $ids = ArchiveCatalog::timetableGroupIds($record, $split, true);
-            $linked = $this->catalog->findMany('schedules', $ids)
-                ->reject(fn (Model $row): bool => (int) $row->getKey() === (int) $record->getKey())
-                ->map(fn (Model $row): array => [
-                    ...$this->catalog->reference('schedules', $row),
-                    'archived' => $row->trashed(),
-                    'relation' => $row->trashed() ? 'Restored together (required meeting pattern)' : 'Already live; validated together',
-                    'restores' => $row->trashed(),
-                ]);
-            $splits = $this->catalog->findMany('schedule-splits', ScheduleSplit::onlyTrashed()->whereIn('schedule_id', $ids)->pluck('id')->map('intval')->all())
-                ->map(fn (Model $row): array => [
-                    ...$this->catalog->reference('schedule-splits', $row),
-                    'archived' => true,
-                    'relation' => 'Split metadata restored with its class',
-                    'restores' => true,
-                ]);
-
-            return ['linked' => [...$linked->values()->all(), ...$splits->values()->all()]];
-        }
-
-        if ($type === 'schedule-splits') {
-            $parent = $this->catalog->parentSchedule($record);
-
-            return ['linked' => $parent === null ? [] : [[
-                ...$this->catalog->reference('schedules', $parent),
-                'archived' => $parent->trashed(),
-                'relation' => 'Parent class (not restored by this action)',
-                'restores' => false,
-            ]]];
-        }
-
         if ($type === 'buildings') {
             return ['linked' => $this->catalog->archivedBuildingRooms($record)->map(fn (Rooms $room): array => [
                 ...$this->catalog->reference('rooms', $room),
@@ -400,7 +264,7 @@ class ArchiveController extends Controller
         }
 
         if ($type === 'users') {
-            $profile = Faculty::withTrashed()->where('user_id', $record->getKey())->first(['id', 'first_name', 'middle_name', 'last_name', 'suffix', 'deleted_at']);
+            $profile = Faculty::withTrashed()->where('user_id', $record->getKey())->first(['id', ...Faculty::NAME_COLUMNS, 'deleted_at']);
 
             return ['linked' => $profile === null ? [] : [[
                 ...$this->catalog->reference('faculties', $profile),
@@ -476,13 +340,9 @@ class ArchiveController extends Controller
     /** @param array<string, mixed> $extra */
     private function audit(Request $request, string $type, Model $record, array $extra = []): void
     {
-        $scope = $record instanceof ScheduleSplit ? Schedule::withTrashed()->find($record->schedule_id) : $record;
-
         SchedulingAuditLog::create([
             'user_id' => $request->user()?->id,
-            'semester_id' => $scope instanceof Schedule ? $scope->semester_id : null,
-            'section_id' => $scope instanceof Schedule ? $scope->section_id : null,
-            'department_id' => $record instanceof Departments ? $record->getKey() : $scope?->getAttribute('department_id'),
+            'department_id' => $record instanceof Departments ? $record->getKey() : $record->getAttribute('department_id'),
             'action' => 'record_restored',
             'metadata' => [
                 'type' => $type,

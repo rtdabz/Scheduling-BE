@@ -14,6 +14,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\ScheduleHistoryRecorder;
+use App\Services\ScheduleSemesterArchiver;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Department\DepartmentScheduleStatusDeriver;
 use App\Services\Scheduling\Department\ScheduleOverviewService;
@@ -37,7 +38,10 @@ class DepartmentScheduleController extends Controller
 {
     private const SUBMITTABLE_STATUSES = ['draft', 'revision', 'completed', 'rejected', 'rejected_by_dean'];
 
-    private const WITHDRAWABLE_STATUSES = ['submitted', 'approved_by_dean', 'conditionally_approved', 'approved', 'faculty_assignment', 'reassignment'];
+    /** Only schedules still awaiting the Dean or the VPAA can be recalled; VPAA approval is final. */
+    private const WITHDRAWABLE_STATUSES = ['submitted', 'approved_by_dean', 'conditionally_approved'];
+
+    public const VPAA_APPROVED_RECALL_MESSAGE = 'VPAA-approved schedules cannot be recalled. VPAA approval is the final approval stage.';
 
     public function __construct(
         private readonly SystemNotificationService $notifications,
@@ -400,7 +404,7 @@ class DepartmentScheduleController extends Controller
         }
 
         $logs = SchedulingAuditLog::query()
-            ->with(['historyVersion.items', 'user:id,name,role'])
+            ->with('historyVersion.items')
             ->where('schedule_submission_id', $submission->id)
             ->whereIn('action', [
                 RevisionChangeRecorder::SCHEDULES_CHANGED,
@@ -429,7 +433,7 @@ class DepartmentScheduleController extends Controller
                 'action' => $log->action,
                 'operation' => $summary['operation'] ?? null,
                 'created_at' => $log->created_at?->toISOString(),
-                'actor' => $log->user ? ['id' => $log->user->id, 'name' => $log->user->name, 'role' => $log->user->role] : null,
+                'actor' => $log->recorded_actor,
                 'section' => $summary['section'] ?? null,
                 'course_changes' => $summary['course_changes'] ?? null,
                 'changes' => $items->map(static function (ScheduleHistoryItem $item) use ($before, $after, $added, $removed): array {
@@ -570,6 +574,7 @@ class DepartmentScheduleController extends Controller
             return [
                 'row' => $row,
                 'names' => $metadata[$side.'_names'] ?? (array_key_exists('course_code', $metadata) ? $metadata : null),
+                'faculty_name' => ($metadata[$side.'_names'] ?? $metadata)['faculty_name'] ?? null,
             ];
         })->filter()->values();
 
@@ -593,11 +598,12 @@ class DepartmentScheduleController extends Controller
                 'room' => ($names['room_name'] ?? null) === null
                     ? null
                     : ['id' => $row['room_id'] ?? null, 'room_code' => $names['room_name']],
-                'faculty' => ($names['faculty_name'] ?? null) === null ? null : [
+                'faculty' => $entry['faculty_name'] === null ? null : [
                     'id' => $row['faculty_id'] ?? null,
-                    'first_name' => $names['faculty_name'],
+                    'first_name' => $entry['faculty_name'],
                     'last_name' => '',
                 ],
+                'faculty_identity_source' => $entry['faculty_name'] === null ? 'unavailable' : 'recorded_snapshot',
                 'section' => ($names['section_name'] ?? null) === null
                     ? null
                     : ['id' => $row['section_id'] ?? null, 'section_name' => $names['section_name']],
@@ -745,10 +751,13 @@ class DepartmentScheduleController extends Controller
         $result = DB::transaction(function () use ($id, $validated, $writableProgramIds, $request, $department, $activeSemesterId, $user): array|JsonResponse {
             $this->lockDepartmentWorkflow($id);
 
-            $sections = Sections::with(['schedules' => function ($query) use ($activeSemesterId) {
-                $query->select('id', 'section_id', 'status')
-                    ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId));
-            }])
+            $sections = Sections::with([
+                'curriculum.courses' => fn ($query) => $query->where('courses.status', 'active'),
+                'schedules' => function ($query) use ($activeSemesterId) {
+                    $query->select('id', 'section_id', 'course_id', 'status')
+                        ->when($activeSemesterId, fn ($q) => $q->where('semester_id', $activeSemesterId));
+                },
+            ])
                 ->where('department_id', $id)
                 ->whereIn('program_id', $writableProgramIds)
                 ->where('status', 'active')
@@ -778,12 +787,26 @@ class DepartmentScheduleController extends Controller
                 'finalized',
             ];
             $readySectionIds = collect();
-            $protectedSectionIds = collect();
             $blockedYears = [];
+            $incompleteSectionIds = [];
 
             foreach ($sections as $section) {
                 $statuses = $section->schedules->pluck('status')->filter()->unique()->values();
-                if ($statuses->isNotEmpty() && $statuses->every(
+                if ($statuses->contains(
+                    static fn (string $status): bool => in_array($status, $protectedStatuses, true)
+                )) {
+                    continue;
+                }
+
+                $period = match ($section->semester) {
+                    '1st' => 1, '2nd' => 2, 'summer' => 3, default => 0,
+                };
+                $requiredCourseIds = $section->curriculum?->courses
+                    ->where('pivot.year_level', (int) $section->year_level)
+                    ->where('pivot.semester', $period)
+                    ->pluck('id') ?? collect();
+                $missingCourseIds = $requiredCourseIds->diff($section->schedules->pluck('course_id'));
+                if ($statuses->isNotEmpty() && $missingCourseIds->isEmpty() && $statuses->every(
                     static fn (string $status): bool => in_array($status, $readyStatuses, true)
                 )) {
                     $readySectionIds->push((int) $section->id);
@@ -791,19 +814,39 @@ class DepartmentScheduleController extends Controller
                     continue;
                 }
 
-                if ($statuses->contains(
-                    static fn (string $status): bool => in_array($status, $protectedStatuses, true)
-                )) {
-                    $protectedSectionIds->push((int) $section->id);
-
-                    continue;
-                }
-
+                $incompleteSectionIds[] = (int) $section->id;
                 $blockedYears[] = (int) $section->year_level;
             }
 
             $readySectionIds = $readySectionIds->unique()->values();
-            $protectedSectionIds = $protectedSectionIds->unique()->values();
+
+            if ($incompleteSectionIds !== []) {
+                $blockedYears = array_values(array_unique($blockedYears));
+                sort($blockedYears);
+
+                return response()->json([
+                    'message' => 'Fully plot every section before submitting the schedule.',
+                    'error_code' => 'schedule_incomplete',
+                    'section_ids' => $incompleteSectionIds,
+                    'blocked_years' => $blockedYears,
+                ], 422);
+            }
+
+            // Status changes and regenerating the identical timetable do not correct a return.
+            // Corrections may affect only some sections; retain the other timetables in the new revision.
+            // Compare persisted meetings with the immutable submitted version under the workflow lock.
+            $revisionStatuses = app(SubmissionStatusResolver::class)->forSections($readySectionIds->all(), $activeSemesterId);
+            $returnedSectionIds = $readySectionIds->filter(static fn (int $sectionId): bool => ($revisionStatuses[$sectionId]['submission_status'] ?? null) === SubmissionStatusResolver::REJECTED
+            )->values();
+            $hasSavedCorrections = $returnedSectionIds->contains(static fn (int $sectionId): bool => ($revisionStatuses[$sectionId]['revision_status'] ?? null) === SubmissionStatusResolver::MODIFIED
+            );
+            if ($returnedSectionIds->isNotEmpty() && ! $hasSavedCorrections) {
+                return response()->json([
+                    'message' => 'Save the needed corrections to the returned schedule before resubmitting. Sections without corrections may keep their existing timetables.',
+                    'error_code' => 'schedule_corrections_required',
+                    'section_ids' => $returnedSectionIds->all(),
+                ], 422);
+            }
 
             if ($requestedSectionIds->isNotEmpty() && $requestedSectionIds->sort()->values()->all() !== $readySectionIds->sort()->values()->all()) {
                 return response()->json([
@@ -815,18 +858,6 @@ class DepartmentScheduleController extends Controller
             if ($readySectionIds->isEmpty()) {
                 return response()->json([
                     'message' => 'No plotted schedule sections are ready for submission.',
-                ], 422);
-            }
-
-            if ($protectedSectionIds->isEmpty() && ! empty($blockedYears)) {
-                $blockedYears = array_values(array_unique($blockedYears));
-                sort($blockedYears);
-                $yearLabels = array_map(static fn (int $year): string => "Year {$year}", $blockedYears);
-
-                return response()->json([
-                    'message' => 'Cannot submit: some year levels still have sections with nothing plotted.',
-                    'blocked_years' => $blockedYears,
-                    'hint' => 'Plot '.implode(', ', $yearLabels).' before submitting the initial schedule.',
                 ], 422);
             }
 
@@ -1123,16 +1154,16 @@ class DepartmentScheduleController extends Controller
     {
         $query = $this->scheduleQueryFor($departmentId, $semesterId)->whereIn('section_id', $sectionIds);
 
-        if ((clone $query)->where('status', 'finalized')->exists()) {
-            return response()->json([
-                'message' => 'Finalized schedules cannot be recalled. Use Reassignment to reopen them first.',
-            ], 422);
+        // VPAA approval is the final stage: approved, faculty-assignment, reassignment and finalized
+        // classes keep their status and approval record, so a selection touching any of them is refused.
+        if ((clone $query)->whereIn('status', ScheduleSemesterArchiver::VPAA_APPROVED_STATUSES)->exists()) {
+            return response()->json(['message' => self::VPAA_APPROVED_RECALL_MESSAGE], 422);
         }
 
         $withdrawable = (clone $query)->whereIn('status', self::WITHDRAWABLE_STATUSES)->get(['section_id', 'status']);
         if ($withdrawable->isEmpty()) {
             return response()->json([
-                'message' => 'No submitted or VPAA-approved schedule is available to recall.',
+                'message' => 'No submitted schedule awaiting Dean or VPAA approval is available to recall.',
             ], 422);
         }
         $withdrawableSectionIds = $withdrawable->pluck('section_id')->map('intval')->unique()->all();
@@ -1143,14 +1174,10 @@ class DepartmentScheduleController extends Controller
         }
 
         $statuses = $withdrawable->pluck('status')->unique();
-        $stage = $statuses->contains(fn (string $status): bool => in_array($status, ['approved', 'faculty_assignment', 'reassignment'], true))
-            ? 'vpaa_approved'
-            : ($statuses->contains(
-                fn (string $status): bool => in_array($status, ['approved_by_dean', 'conditionally_approved'], true)
-            ) ? 'vpaa_review' : 'dean_review');
-        $legacyStatus = $stage === 'vpaa_approved'
-            ? 'approved'
-            : ($stage === 'vpaa_review' ? 'pending_vpaa' : 'pending_dean');
+        $stage = $statuses->contains(
+            fn (string $status): bool => in_array($status, ['approved_by_dean', 'conditionally_approved'], true)
+        ) ? 'vpaa_review' : 'dean_review';
+        $legacyStatus = $stage === 'vpaa_review' ? 'pending_vpaa' : 'pending_dean';
 
         $openStatuses = ['pending_dean', 'pending_vpaa', 'approved', 'partially_withdrawn'];
         $owners = [];
@@ -1348,7 +1375,9 @@ class DepartmentScheduleController extends Controller
                 : ' No sections remain for approval.';
         }
         $this->notifications->notifyRoles(
-            ['vpaa', 'dean', 'secretary', 'program_head'],
+            $withdrawalStage === 'vpaa_review'
+                ? ['vpaa', 'dean', 'secretary', 'program_head']
+                : ['dean', 'secretary', 'program_head'],
             'schedule_withdrawn',
             $reviewer !== null ? "Sections recalled from {$reviewer} review" : 'Schedule submission recalled',
             $message,
@@ -1593,6 +1622,7 @@ class DepartmentScheduleController extends Controller
 
         $version = null;
         if ($schedules->isNotEmpty()) {
+            $submission = $submissionId !== null ? ScheduleSubmission::query()->find($submissionId) : null;
             $version = $this->historyRecorder->record(
                 $action,
                 [],
@@ -1604,12 +1634,8 @@ class DepartmentScheduleController extends Controller
                 null,
                 $metadata,
                 $this->descriptors->for($schedules),
+                $submission !== null ? $this->signatories->frozenCopy($submission) : null,
             );
-            // The history entry keeps the officials who held each slot when this action happened.
-            $submission = $submissionId !== null ? ScheduleSubmission::query()->find($submissionId) : null;
-            if ($submission !== null) {
-                $version->update(['signatories' => $this->signatories->frozenCopy($submission)]);
-            }
         }
 
         SchedulingAuditLog::create([

@@ -5,6 +5,7 @@ namespace App\Services\Scheduling\Submission;
 use App\Models\Schedule;
 use App\Models\ScheduleHistoryItem;
 use App\Models\ScheduleSubmission;
+use App\Models\SchedulingAuditLog;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 
@@ -53,6 +54,7 @@ class SubmissionStatusResolver
                 $closedBySection[$sectionId] = $closed;
             }
         }
+        $this->useLegacySnapshots(collect($closedBySection));
         $fingerprints = $this->sectionFingerprints(collect($closedBySection)->pluck('snapshot_version_id')->filter()->all());
 
         $result = [];
@@ -85,6 +87,7 @@ class SubmissionStatusResolver
      */
     public function forSubmissions(Collection $submissions): array
     {
+        $this->useLegacySnapshots($submissions);
         $result = $submissions->mapWithKeys(fn (ScheduleSubmission $submission): array => [$submission->id => self::INITIAL])->all();
         $ordered = $submissions
             ->filter(fn (ScheduleSubmission $submission): bool => $submission->sections->isNotEmpty())
@@ -130,6 +133,8 @@ class SubmissionStatusResolver
             ->orderByDesc('revision_number')
             ->orderByDesc('id')
             ->get();
+
+        $this->useLegacySnapshots($candidates);
 
         $result = [];
         foreach ($submission->sections()->pluck('sections.id') as $sectionId) {
@@ -223,6 +228,27 @@ class SubmissionStatusResolver
         $section = $submission->sections->first(fn ($candidate): bool => (int) $candidate->id === $sectionId);
 
         return $section === null ? null : ($section->pivot->state ?? 'included');
+    }
+
+    /** Older submissions may lack a snapshot pointer but already have an immutable workflow snapshot. */
+    private function useLegacySnapshots(Collection $submissions): void
+    {
+        $missingIds = $submissions->whereNull('snapshot_version_id')->pluck('id')->unique()->all();
+        if ($missingIds === []) {
+            return;
+        }
+        $versions = SchedulingAuditLog::query()
+            ->whereIn('schedule_submission_id', $missingIds)
+            ->whereIn('action', ['schedule_submitted', 'schedule_returned_by_dean', 'schedule_returned_by_vpaa'])
+            ->whereNotNull('history_version_id')
+            ->orderBy('id')->get(['schedule_submission_id', 'history_version_id'])
+            ->unique('schedule_submission_id')->pluck('history_version_id', 'schedule_submission_id');
+        foreach ($submissions as $submission) {
+            // Resolve for this read without rewriting historical submission records.
+            if ($submission->snapshot_version_id === null && isset($versions[$submission->id])) {
+                $submission->snapshot_version_id = (int) $versions[$submission->id];
+            }
+        }
     }
 
     /**

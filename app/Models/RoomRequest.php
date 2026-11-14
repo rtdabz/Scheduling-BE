@@ -2,14 +2,25 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesApprovalActors;
 use Illuminate\Database\Eloquent\Model;
 
 class RoomRequest extends Model
 {
+    use PreservesApprovalActors;
+
+    public const RECORDED_ACTORS = ['requested_by' => null, 'reviewed_by' => 'reviewed_at'];
+
+    public const REPEATABLE_ACTORS = [];
+
     public const STATUS_PENDING = 'pending';
+
     public const STATUS_APPROVED = 'approved';
+
     public const STATUS_REJECTED = 'rejected';
+
     public const STATUS_CANCELLED = 'cancelled';
+
     public const STATUS_REVOKED = 'revoked';
 
     protected $fillable = [
@@ -26,6 +37,7 @@ class RoomRequest extends Model
     ];
 
     protected $casts = [
+        'actor_snapshots' => 'array',
         'reviewed_at' => 'datetime',
     ];
 

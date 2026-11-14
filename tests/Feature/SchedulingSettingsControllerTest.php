@@ -15,6 +15,9 @@ class SchedulingSettingsControllerTest extends TestCase
 {
     use RefreshDatabase;
 
+    /** The department office role under test; the tests/Feature/DirectorParity subclasses override it. */
+    protected string $officeRole = 'secretary';
+
     public function test_generation_constraint_options_are_scoped_to_selected_section_year_and_semester(): void
     {
         $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
@@ -45,7 +48,7 @@ class SchedulingSettingsControllerTest extends TestCase
         $curriculum->courses()->attach($yearTwoCourse->id, ['year_level' => 2, 'semester' => 1]);
         $curriculum->courses()->attach($secondSemesterCourse->id, ['year_level' => 1, 'semester' => 2]);
 
-        $user = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $user = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
 
         $response = $this->actingAs($user)->getJson('/api/scheduling-settings?section_id='.$section->id);
 
@@ -54,7 +57,7 @@ class SchedulingSettingsControllerTest extends TestCase
         $response->assertJsonMissingPath('online_slot_limit')
             ->assertJsonMissingPath('field_slot_limit');
         $this->assertSame(['IT 101'], collect($response->json('forced_day_courses'))->pluck('code')->all());
-        $this->assertSame(['IT 101'], collect($response->json('field_course_options'))->pluck('code')->all());
+        $this->assertSame([], $response->json('field_course_options'), 'Laboratory courses keep Required Day controls but cannot opt into Field placement.');
     }
 
     public function test_the_default_lab_room_requirement_is_saved_for_the_department(): void
@@ -136,7 +139,7 @@ class SchedulingSettingsControllerTest extends TestCase
         $labMajor = Course::create(['course_code' => 'IT 101', 'course_name' => 'Programming 1', 'lecture_hours' => 2, 'lab_hours' => 1, 'units' => 3, 'course_category' => 'major', 'room_type_required' => 'laboratory', 'year_level' => '1', 'semester' => '1st', 'department_id' => $department->id, 'status' => 'active']);
         $curriculum->courses()->attach($labMajor->id, ['year_level' => 1, 'semester' => 1]);
         $user = $this->grantCapabilities(User::factory()->create([
-            'role' => 'secretary',
+            'role' => $this->officeRole,
             'department_id' => $department->id,
         ]));
 
@@ -186,7 +189,7 @@ class SchedulingSettingsControllerTest extends TestCase
         $this->assertFalse((bool) $department->refresh()->sunday_classes_enabled);
     }
 
-    public function test_only_the_secretary_can_change_sunday_classes(): void
+    public function test_the_program_head_can_change_sunday_classes(): void
     {
         [, $department] = $this->laboratoryDepartment();
         $programHead = $this->grantCapabilities(User::factory()->create([
@@ -196,15 +199,17 @@ class SchedulingSettingsControllerTest extends TestCase
 
         $this->actingAs($programHead)->getJson('/api/scheduling-settings')
             ->assertOk()
-            ->assertJsonPath('can_manage_sunday_classes', false);
+            ->assertJsonPath('can_manage_sunday_classes', true);
 
         $this->actingAs($programHead)->patchJson('/api/scheduling-settings', ['sunday_classes_enabled' => true])
-            ->assertForbidden();
-        $this->assertFalse((bool) $department->refresh()->sunday_classes_enabled);
+            ->assertOk()
+            ->assertJsonPath('sunday_classes_enabled', true);
+        $this->assertTrue((bool) $department->refresh()->sunday_classes_enabled);
 
-        // Resending the current value is not a change, so it is not refused.
         $this->actingAs($programHead)->patchJson('/api/scheduling-settings', ['sunday_classes_enabled' => false])
-            ->assertOk();
+            ->assertOk()
+            ->assertJsonPath('sunday_classes_enabled', false);
+        $this->assertFalse((bool) $department->refresh()->sunday_classes_enabled);
     }
 
     /**
@@ -267,7 +272,7 @@ class SchedulingSettingsControllerTest extends TestCase
         ]);
 
         $user = $this->grantCapabilities(User::factory()->create([
-            'role' => 'secretary',
+            'role' => $this->officeRole,
             'department_id' => $department->id,
         ]));
 

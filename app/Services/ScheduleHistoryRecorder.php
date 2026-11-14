@@ -20,6 +20,7 @@ class ScheduleHistoryRecorder
         ?string $reason = null,
         array $changeSummary = [],
         array $itemMetadata = [],
+        ?array $signatories = null,
     ): ScheduleHistoryVersion {
         $beforeRows = $this->keyById($before);
         $afterRows = $this->keyById($after);
@@ -32,6 +33,7 @@ class ScheduleHistoryRecorder
                 ->keyBy('original_schedule_id');
             $beforeRows = $afterRows->mapWithKeys(function ($row, $id) use ($previous): array {
                 $item = $previous->get($id);
+
                 return [$id => $item?->after_snapshot ?: null];
             })->filter();
         }
@@ -47,6 +49,7 @@ class ScheduleHistoryRecorder
             'actor_user_id' => $actorUserId,
             'action' => $action,
             'source' => $source,
+            'signatories' => $signatories,
             'reason' => $reason,
             'change_summary' => $changeSummary + [
                 'before_count' => $beforeRows->count(),
@@ -75,6 +78,7 @@ class ScheduleHistoryRecorder
     {
         return collect($rows)->mapWithKeys(function ($row, $key): array {
             $id = $this->value($row, 'id') ?: $key;
+
             return [(int) $id => $row];
         })->filter(fn ($row, $id) => $id > 0);
     }
@@ -89,6 +93,16 @@ class ScheduleHistoryRecorder
         if ($row === null) {
             return null;
         }
-        return $row instanceof Schedule ? $row->getAttributes() : (array) $row;
+        if (! $row instanceof Schedule) {
+            return (array) $row;
+        }
+
+        // Split metadata lives on schedule_splits; keep it in the snapshot (as the semester archiver
+        // does) so a lecture/laboratory pairing can be rendered and reused from history alone.
+        return $row->getAttributes() + [
+            'split_group_id' => $row->split_group_id,
+            'meeting_type' => $row->meeting_type,
+            'meeting_index' => $row->meeting_index,
+        ];
     }
 }

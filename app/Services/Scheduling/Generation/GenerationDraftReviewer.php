@@ -31,6 +31,8 @@ final class GenerationDraftReviewer
      * @param  list<array<string, mixed>>  $unplaced  courses the generator left out:
      *                                                {section_id, course_id, reason?, meetings: list<{meeting_type?, duration_slots, modes?}>}
      * @param  list<string>|null  $preferredDays  the run's Preferred Days, ranked first
+     * @param  array<int, array<int, array{lecture?: string, laboratory?: string}>>  $componentRequiredDays
+     *                                                                                the run's normalized Lecture/Laboratory Required Days
      * @return array{issues: list<array<string, mixed>>, checked_rows: int}
      */
     public function review(
@@ -40,6 +42,7 @@ final class GenerationDraftReviewer
         array $rows,
         array $unplaced = [],
         ?array $preferredDays = null,
+        array $componentRequiredDays = [],
     ): array {
         $courseIds = [];
         $replacedClasses = [];
@@ -98,6 +101,24 @@ final class GenerationDraftReviewer
             $key = $this->classKey($scheduleRow->sectionId, $scheduleRow->courseId);
             $problemsByClass[$key] = array_values(array_unique([...($problemsByClass[$key] ?? []), ...$messages]));
             $conflictingRowsByClass[$key][] = $row;
+        }
+
+        // Rows that break a Lecture/Laboratory Required Day are hard problems
+        // too: a missing, duplicated, swapped or off-day component.
+        foreach (ComponentRequiredDays::violations(array_map(static fn (array $pair): array => $pair[0], $parsed), $componentRequiredDays) as $violation) {
+            $key = $this->classKey($violation['section_id'], $violation['course_id']);
+            $problemsByClass[$key] = array_values(array_unique([...($problemsByClass[$key] ?? []), $violation['message']]));
+            if ($violation['component'] === null) {
+                // An incomplete group is replaced as a whole.
+                $conflictingRowsByClass[$key] = $rowsByClass[$key] ?? $violation['rows'];
+
+                continue;
+            }
+            foreach ($violation['rows'] as $row) {
+                if (! in_array($row, $conflictingRowsByClass[$key] ?? [], true)) {
+                    $conflictingRowsByClass[$key][] = $row;
+                }
+            }
         }
 
         $issues = [];
@@ -162,6 +183,13 @@ final class GenerationDraftReviewer
                 'consecutive_rule' => $entry['consecutive_rule'] ?? null,
             ];
         }
+        $issues = array_map(
+            static fn (array $issue): array => self::withComponentDays(
+                $issue,
+                $componentRequiredDays[$issue['section_id']][$issue['course_id']] ?? [],
+            ),
+            $issues,
+        );
 
         usort($issues, fn (array $left, array $right): int => [
             $this->sectionName($snapshot, $left['section_id']),
@@ -192,6 +220,30 @@ final class GenerationDraftReviewer
         }
 
         return ['issues' => $reported, 'checked_rows' => count($parsed)];
+    }
+
+    /**
+     * Each pinned component meeting is probed only on its day, and the shape
+     * cannot change: fixes keep the Integrated lecture and laboratory.
+     *
+     * @param  array<string, mixed>  $issue
+     * @param  array{lecture?: string, laboratory?: string}  $pins
+     * @return array<string, mixed>
+     */
+    private static function withComponentDays(array $issue, array $pins): array
+    {
+        if ($pins === []) {
+            return $issue;
+        }
+        $issue['component_required_days'] = $pins;
+        $issue['meetings'] = array_map(
+            static fn (array $meeting): array => isset($pins[$meeting['meeting_type'] ?? ''])
+                ? [...$meeting, 'required_day' => $pins[$meeting['meeting_type']]]
+                : $meeting,
+            $issue['meetings'],
+        );
+
+        return $issue;
     }
 
     /**

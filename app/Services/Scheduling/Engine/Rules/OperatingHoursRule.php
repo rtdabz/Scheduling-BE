@@ -49,7 +49,7 @@ final class OperatingHoursRule
         if ($start < $opening) {
             return [
                 'rule' => 'operating_hours',
-                'message' => "Schedule starts at {$startTime}, which is before operating hours begin ("
+                'message' => 'Schedule starts at '.date('g:i A', strtotime($start)).', which is before operating hours begin ('
                     .date('g:i A', strtotime($opening)).').',
             ];
         }
@@ -57,7 +57,7 @@ final class OperatingHoursRule
         if ($end > $closing) {
             return [
                 'rule' => 'operating_hours',
-                'message' => "Schedule ends at {$endTime}, which exceeds operating hours ("
+                'message' => 'Schedule ends at '.date('g:i A', strtotime($end)).', which exceeds operating hours ('
                     .date('g:i A', strtotime($closing)).' cutoff).',
             ];
         }

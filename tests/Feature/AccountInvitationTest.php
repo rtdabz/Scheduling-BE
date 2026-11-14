@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Notifications\AccountInvitationNotification;
+use App\Support\AccountVersion;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
@@ -154,7 +155,8 @@ class AccountInvitationTest extends TestCase
             'is_active' => true,
         ];
         // Right after creation, so the old address's throttle must not apply.
-        $this->actingAs($vpaa, 'sanctum')->putJson("/api/user/{$user->id}", $payload)->assertOk();
+        $this->actingAs($vpaa, 'sanctum')->putJson("/api/user/{$user->id}", [
+            'expected_version' => AccountVersion::of($user->fresh())] + $payload)->assertOk();
 
         $user->refresh();
         $this->assertSame('new.address@school.edu.ph', $user->email);
@@ -163,7 +165,8 @@ class AccountInvitationTest extends TestCase
 
         // An edit that keeps the email sends nothing.
         Notification::fake();
-        $this->actingAs($vpaa, 'sanctum')->putJson("/api/user/{$user->id}", $payload)->assertOk();
+        $this->actingAs($vpaa, 'sanctum')->putJson("/api/user/{$user->id}", [
+            'expected_version' => AccountVersion::of($user->fresh())] + $payload)->assertOk();
         Notification::assertNothingSent();
     }
 }

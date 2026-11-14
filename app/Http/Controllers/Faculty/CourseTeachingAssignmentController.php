@@ -44,6 +44,11 @@ class CourseTeachingAssignmentController extends Controller
         $curriculumIds = $this->activeCurriculumIds($departmentId, $programId);
         $courses = $this->departmentCourses($departmentId, $curriculumIds, $activePeriod);
         $instructorClasses = $this->classesWithInstructor($courses->pluck('id')->map('intval')->all());
+        $sectionAssignments = $this->sectionAssignments(
+            $courses->pluck('id')->map('intval')->values()->all(),
+            $departmentId,
+            $programId,
+        );
         $incoming = Course::query()->with(['department', 'teachingDepartment', 'teachingProgram', 'teachingSourceProgram', 'program'])
             ->where('status', 'active')->delegatedTo($departmentId, $programId)
             ->when($activePeriod !== null, fn ($query) => $query->whereIn(
@@ -70,7 +75,8 @@ class CourseTeachingAssignmentController extends Controller
                 ->get(['id', 'department_id', 'code', 'name', 'major']),
             'incoming_cross_department_courses' => $incoming,
             'courses' => $courses
-                ->map(fn (Course $course): array => $this->present($course, $instructorClasses[(int) $course->id] ?? 0))
+                ->map(fn (Course $course): array => $this->present($course, $instructorClasses[(int) $course->id] ?? 0)
+                    + ['section_assignments' => $sectionAssignments[(int) $course->id] ?? []])
                 ->sortBy([['year_level', 'asc'], ['course_code', 'asc']])
                 ->values(),
         ]);
@@ -281,19 +287,22 @@ class CourseTeachingAssignmentController extends Controller
         $courses->load(['teachingSourceProgram', 'department']);
         $source = $this->sourceLabel($courses, $actor);
         $target = $targetProgram?->shortLabel() ?? Departments::find($targetId)?->department_name ?? 'your department';
-        $count = $courses->count();
-        $this->notifications->notifyRoles(
-            ['secretary', 'program_head', 'dean'],
-            'incoming_cross_department_courses',
-            'Cross-department courses assigned',
-            "{$source} assigned {$count} course".($count === 1 ? '' : 's')." to {$target}. View Cross-Department.",
-            $actor,
-            $targetId,
-            null,
-            null,
-            ['course_ids' => $courses->pluck('id')->values()->all(), 'source_department_id' => $actor?->department_id, 'teaching_department_id' => $targetId, 'teaching_program_id' => $targetProgramId],
-            $targetProgramId === null ? null : [$targetProgramId],
-        );
+        $changedCourses = $courses->filter(fn (Course $course): bool => $course->wasChanged(['teaching_department_id', 'teaching_program_id', 'teaching_source_program_id']));
+        $count = $changedCourses->count();
+        if ($count > 0) {
+            $this->notifications->notifyRoles(
+                ['secretary', 'program_head'],
+                'incoming_cross_department_courses',
+                'Cross-department courses assigned',
+                "{$source} assigned {$count} course".($count === 1 ? '' : 's')." to {$target}. View Cross-Department.",
+                $actor,
+                $targetId,
+                null,
+                null,
+                ['course_ids' => $changedCourses->pluck('id')->values()->all(), 'source_department_id' => $actor?->department_id, 'teaching_department_id' => $targetId, 'teaching_program_id' => $targetProgramId],
+                $targetProgramId === null ? null : [$targetProgramId],
+            );
+        }
 
         return response()->json(['course_ids' => $courses->pluck('id')->values()->all()]);
     }
@@ -313,6 +322,42 @@ class CourseTeachingAssignmentController extends Controller
         return response()->json([
             'message' => 'Teaching college removed.',
             'course' => $this->present($course, 0),
+        ]);
+    }
+
+    public function batchDestroy(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'course_ids' => ['required', 'array', 'min:1'],
+            'course_ids.*' => ['integer', 'distinct', 'exists:courses,id,deleted_at,NULL'],
+        ]);
+        if ($locked = $this->approvalGate->refusal((int) ($request->user()?->department_id ?? 0))) {
+            return $locked;
+        }
+
+        $courses = Course::query()
+            ->whereIn('id', $validated['course_ids'])
+            ->whereNotNull('teaching_department_id')
+            ->get();
+        $instructorClasses = $this->classesWithInstructor($courses->pluck('id')->map('intval')->all());
+        [$locked, $removable] = $courses->partition(
+            fn (Course $course): bool => ($instructorClasses[(int) $course->id] ?? 0) > 0
+                && $this->effectiveTeachingDepartmentId($course, null) !== $this->effectiveTeachingDepartmentId($course, $this->storedTeachingDepartmentId($course))
+        );
+
+        DB::transaction(fn () => $removable->each(fn (Course $course) => $course->update([
+            'teaching_department_id' => null,
+            'teaching_program_id' => null,
+            'teaching_source_program_id' => null,
+        ])));
+        ApiCache::forgetGroups(['instructor_assignments.index', 'courses.index', 'initial.data']);
+
+        $count = $removable->count();
+
+        return response()->json([
+            'message' => "{$count} teaching assignment".($count === 1 ? '' : 's').' removed.',
+            'course_ids' => $removable->pluck('id')->map('intval')->values()->all(),
+            'locked_course_ids' => $locked->pluck('id')->map('intval')->values()->all(),
         ]);
     }
 
@@ -369,7 +414,6 @@ class CourseTeachingAssignmentController extends Controller
 
     private function store(Course $course, ?int $teachingDepartmentId, ?int $teachingProgramId, ?User $actor = null): void
     {
-        $previousTeachingDepartmentId = $course->teaching_department_id === null ? null : (int) $course->teaching_department_id;
         $course->teaching_department_id = $teachingDepartmentId;
         $course->teaching_program_id = $teachingProgramId;
         $course->teaching_source_program_id = $teachingDepartmentId === null
@@ -377,12 +421,12 @@ class CourseTeachingAssignmentController extends Controller
             : ($this->sourceProgramIds(collect([$course]), $actor)[(int) $course->id] ?? null);
         $course->save();
 
-        if ($teachingDepartmentId !== null && $teachingDepartmentId !== $previousTeachingDepartmentId) {
+        if ($teachingDepartmentId !== null && $course->wasChanged(['teaching_department_id', 'teaching_program_id', 'teaching_source_program_id'])) {
             $course->load(['department', 'teachingDepartment', 'teachingProgram', 'teachingSourceProgram']);
             $source = $this->sourceLabel(collect([$course]), $actor);
             $target = $course->teachingProgram?->shortLabel() ?? $course->teachingDepartment?->department_name;
             $this->notifications->notifyRoles(
-                ['secretary', 'program_head', 'dean'],
+                ['secretary', 'program_head'],
                 'incoming_cross_department_course',
                 'Incoming cross-department course',
                 "{$source} assigned {$course->course_code} to {$target}.",
@@ -426,6 +470,51 @@ class CourseTeachingAssignmentController extends Controller
 
             return [(int) $course->id => $programId === null ? null : (int) $programId];
         })->all();
+    }
+
+    /**
+     * This department's sections taking each delegated course this semester, with the instructor the
+     * teaching college assigned to each (a section counts as assigned only when every meeting has one).
+     *
+     * @param  list<int>  $courseIds
+     * @return array<int, list<array{section_id: int, section_name: string, instructor_name: string|null, status: string}>>
+     */
+    private function sectionAssignments(array $courseIds, int $departmentId, ?int $programId): array
+    {
+        $semester = $this->activeSemester();
+        if ($semester === null || $courseIds === []) {
+            return [];
+        }
+
+        return Schedule::query()
+            ->with(['section:id,section_name', 'faculty:id,first_name,last_name'])
+            ->where('semester_id', $semester->id)
+            ->where('department_id', $departmentId)
+            ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
+            ->whereIn('course_id', $courseIds)
+            ->get(['id', 'course_id', 'section_id', 'faculty_id'])
+            ->groupBy('course_id')
+            ->map(fn (Collection $schedules): array => $schedules->groupBy('section_id')
+                ->map(function (Collection $meetings): array {
+                    $instructors = $meetings->pluck('faculty')->filter()->unique('id')
+                        ->map(fn ($faculty): string => trim("{$faculty->first_name} {$faculty->last_name}"))
+                        ->filter()->values();
+                    $unassigned = $meetings->contains(fn (Schedule $meeting): bool => $meeting->faculty_id === null);
+
+                    return [
+                        'section_id' => (int) $meetings->first()->section_id,
+                        'section_name' => $meetings->first()->section?->section_name ?? 'Section',
+                        'instructor_name' => $instructors->isEmpty() ? null : $instructors->implode(' / '),
+                        'status' => $unassigned
+                            ? ($instructors->isEmpty() ? 'Awaiting instructor' : 'Partially assigned')
+                            : 'Assigned',
+                    ];
+                })
+                ->sortBy('section_name', SORT_NATURAL | SORT_FLAG_CASE)
+                ->values()
+                ->all())
+            ->mapWithKeys(static fn (array $sections, $courseId): array => [(int) $courseId => $sections])
+            ->all();
     }
 
     /**

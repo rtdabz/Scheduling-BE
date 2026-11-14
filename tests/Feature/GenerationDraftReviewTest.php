@@ -29,7 +29,7 @@ class GenerationDraftReviewTest extends TestCase
 
     public static function unplacedRequirements(): array
     {
-        return ['even total' => [3, 2, 3, false], 'request-local run' => [3, 1, 2, true]];
+        return ['even total' => [3, 2, 3, false], 'request-local run' => [3, 1, 6, true]];
     }
 
     #[DataProvider('unplacedRequirements')]

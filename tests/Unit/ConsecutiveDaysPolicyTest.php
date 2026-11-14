@@ -107,6 +107,45 @@ class ConsecutiveDaysPolicyTest extends TestCase
         );
     }
 
+    public function test_every_day_of_a_run_repeats_the_full_course_duration(): void
+    {
+        $practicum = ['lecture_hours' => 0, 'lab_hours' => 6];
+        // PRAC 101: 6 hours a day on 3 days; 8 hours on 3 days no longer needs to divide.
+        $this->assertSame(12, SchedulingPolicy::consecutiveMeetingSlots($practicum, 3));
+        $this->assertSame(16, SchedulingPolicy::consecutiveMeetingSlots(['lecture_hours' => 0, 'lab_hours' => 8], 3));
+        $this->assertNull(SchedulingPolicy::consecutiveMeetingSlots($practicum, 1));
+        $this->assertNull(SchedulingPolicy::consecutiveMeetingSlots(['lecture_hours' => 0, 'lab_hours' => 0], 3));
+        // The course itself is never multiplied.
+        $this->assertSame(360, SchedulingPolicy::courseDurationMinutes($practicum));
+    }
+
+    public function test_the_duration_allowance_repeats_only_for_linked_run_meetings(): void
+    {
+        $this->assertSame(3, SchedulingPolicy::durationAllowanceRepeats('consecutive:3', 'run', 3));
+        $this->assertSame(2, SchedulingPolicy::durationAllowanceRepeats('consecutive:3', 'run', 2), 'an incomplete run earns what it links');
+        $this->assertSame(3, SchedulingPolicy::durationAllowanceRepeats('consecutive:3', 'run', 5), 'never more than the marker');
+        $this->assertSame(1, SchedulingPolicy::durationAllowanceRepeats('consecutive:7', null, 1), 'an unlinked marker earns nothing');
+        $this->assertSame(1, SchedulingPolicy::durationAllowanceRepeats(null, 'split', 2), 'ordinary split groups keep one allowance');
+        $this->assertSame(1, SchedulingPolicy::durationAllowanceRepeats('MWF', 'split', 3));
+    }
+
+    public function test_the_kernel_allows_a_complete_prac_101_run_and_refuses_more(): void
+    {
+        $course = ['course_code' => 'PRAC 101', 'lecture_hours' => 0, 'lab_hours' => 6];
+        $snapshot = \App\Services\Scheduling\Domain\SchedulingSnapshot::fromArray(['fingerprint' => 'run', 'semester_id' => 1, 'department_id' => 1]);
+        $run = array_map(fn (string $day): array => [
+            ...$this->row($day, '07:00:00', '13:00:00'),
+            'semester_id' => 1, 'section_id' => 1, 'course_id' => 1, 'department_id' => 1,
+            'split_group_id' => 'run', 'preferred_pattern' => 'consecutive:3',
+        ], ['Monday', 'Tuesday', 'Wednesday']);
+        $load = new \App\Services\Scheduling\Engine\Constraints\Families\SectionLoadConstraints;
+        $check = static fn (array $row, array $others): array => $load->forRow(\App\Services\Scheduling\Domain\ScheduleRow::fromArray($row), $course, $others, $snapshot);
+
+        $this->assertSame([], $check($run[0], [$run[1], $run[2]]), '6 hours/day x 3 days = 18 hours');
+        $this->assertCount(1, $check($run[0], [$run[1], $run[2], [...$run[2], 'day' => 'Thursday', 'split_group_id' => null, 'preferred_pattern' => null]]));
+        $this->assertCount(1, $check([...$run[0], 'split_group_id' => null], [[...$run[1], 'split_group_id' => null]]), 'unlinked rows keep the single allowance');
+    }
+
     public function test_a_complete_run_at_one_time_passes_the_group_rule(): void
     {
         $this->assertSame([], $this->mismatches([

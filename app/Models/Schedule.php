@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\ActorIdentity;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
@@ -13,14 +14,25 @@ class Schedule extends Model
 
     public const UNLOCKED_STATUSES = ['draft', 'completed', 'revision', 'rejected', 'rejected_by_dean'];
 
-    public const PLOTTING_EDITABLE_STATUSES = ['draft', 'completed', 'revision'];
+    public const PLOTTING_EDITABLE_STATUSES = self::UNLOCKED_STATUSES;
+
+    /**
+     * Schedules are never archived. Deleting a class removes it and every split row permanently;
+     * Schedule History keeps its own snapshots and is not touched. Rows soft-deleted before this
+     * rule stay hidden and cannot be restored.
+     */
+    public function deletePermanently(): void
+    {
+        ScheduleSplit::withTrashed()->where('schedule_id', $this->getKey())->forceDelete();
+        $this->forceDelete();
+    }
 
     public const RESPONSE_RELATIONS = [
         'academicSemester:id,academic_year,semester',
         'section:id,section_name,year_level,semester,department_id,program_id,semester_id',
         'section.program:id,code',
         'course:id,course_code,course_name,lecture_hours,lab_hours,units,course_category,room_type_required,year_level,semester,department_id,teaching_department_id,teaching_program_id,program_id',
-        'faculty:id,first_name,last_name,middle_name,department_id,program_id',
+        'faculty:id,first_name,last_name,middle_name,suffix,honorific_prefix,credentials,department_id,program_id',
         'room:id,room_code,building,room_type,allow_lecture_usage,department_id',
         'department:id,department_name,department_code',
         'program',
@@ -57,11 +69,12 @@ class Schedule extends Model
     ];
 
     protected $casts = [
+        'creator_identity' => 'array',
         'faculty_assignment_done' => 'boolean',
         'displaced_at' => 'datetime',
     ];
 
-    /** A face-to-face class running online only because its room was closed; it still needs a reviewed room reassignment. */
+    /** A displaced face-to-face class meeting online until a reviewed room reassignment. */
     public function isTemporarilyOnline(): bool
     {
         return $this->displaced_room_id !== null;
@@ -128,6 +141,7 @@ class Schedule extends Model
         // Stamped server-side (not fillable) so the "Prepared by" signatory cannot be spoofed by a client.
         static::creating(function (Schedule $schedule): void {
             $schedule->created_by ??= auth()->id();
+            $schedule->creator_identity = ActorIdentity::snapshot($schedule->created_by ? User::withTrashed()->find($schedule->created_by) : null);
         });
 
         // Once a displaced class is face-to-face in a room again, it no longer needs reassignment.
@@ -169,14 +183,6 @@ class Schedule extends Model
         static::restored(function (Schedule $schedule): void {
             ScheduleSplit::withTrashed()->where('schedule_id', $schedule->id)->restore();
         });
-    }
-
-    /**
-     * @param  \Illuminate\Contracts\Database\Query\Builder|array<int, int>|\Illuminate\Support\Collection  $scheduleIds
-     */
-    public static function retireSplitsFor($scheduleIds): void
-    {
-        ScheduleSplit::query()->whereIn('schedule_id', $scheduleIds)->delete();
     }
 
     public function academicSemester()

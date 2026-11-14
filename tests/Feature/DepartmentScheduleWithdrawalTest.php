@@ -2,49 +2,259 @@
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\Scheduling\DepartmentScheduleController;
 use App\Models\Course;
+use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Faculty;
 use App\Models\Program;
 use App\Models\Rooms;
 use App\Models\Schedule;
+use App\Models\ScheduleHistoryItem;
 use App\Models\ScheduleHistoryVersion;
 use App\Models\ScheduleSubmission;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\FacultyLoadService;
+use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Submission\SubmissionStatusResolver;
 use App\Support\ApiCache;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class DepartmentScheduleWithdrawalTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_secretary_can_withdraw_selected_sections_after_vpaa_approval(): void
+    /** The department office role under test; the tests/Feature/DirectorParity subclasses override it. */
+    protected string $officeRole = 'secretary';
+
+    public static function returnStages(): array
+    {
+        return ['Dean manual correction' => [false, false], 'VPAA manual correction' => [true, false],
+            'Dean regeneration' => [false, true], 'VPAA regeneration' => [true, true]];
+    }
+
+    public function test_a_legacy_return_without_a_snapshot_pointer_can_be_corrected_and_resubmitted(): void
+    {
+        [$department, , , , $section, $secretary, $schedule, $submission] = $this->returnedVersion();
+        // Older returns still have the immutable workflow history even without this newer pointer.
+        $submission->update(['snapshot_version_id' => null]);
+        $this->editedDirectly();
+        $this->assertSectionStatus($secretary, $section, 'rejected', 'initial');
+        $url = "/api/departments/{$department->id}/submit-schedules";
+        $this->actingAs($secretary)->postJson($url, ['section_ids' => [$section->id]])
+            ->assertStatus(422)->assertJsonPath('error_code', 'schedule_corrections_required');
+        $this->actingAs($secretary)->patchJson("/api/schedules/{$schedule->id}", ['day' => 'Thursday'])->assertOk();
+        $this->assertSectionStatus($secretary, $section, 'rejected', 'modified');
+        $this->actingAs($secretary)->postJson($url, ['section_ids' => [$section->id]])->assertOk();
+        $this->assertNull($submission->refresh()->snapshot_version_id, 'Reading a legacy baseline must not rewrite its submission.');
+    }
+
+    #[DataProvider('returnStages')]
+    public function test_returned_schedules_require_saved_corrections_before_reapproval(bool $byVpaa, bool $regenerate): void
+    {
+        [$department, $semester, $room, $course, $section, $otherSection] = $this->fixture();
+        $otherSection->delete();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
+        $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
+        $vpaa = $this->grantCapabilities(User::factory()->create(['role' => 'vpaa', 'department_id' => null]));
+        $schedule = $this->schedule($department, $semester, $room, $course, $section);
+        $submitUrl = "/api/departments/{$department->id}/submit-schedules";
+        $selection = ['section_ids' => [$section->id]];
+        $this->actingAs($secretary)->postJson($submitUrl, $selection)->assertOk();
+        if ($byVpaa) {
+            $this->actingAs($dean)->postJson("/api/departments/{$department->id}/approve-by-dean")->assertOk();
+        }
+        $this->actingAs($byVpaa ? $vpaa : $dean)
+            ->postJson("/api/departments/{$department->id}/return-by-".($byVpaa ? 'vpaa' : 'dean'), ['rejection_reason' => 'Correct the timetable.'])
+            ->assertOk();
+        $returnedSubmission = ScheduleSubmission::query()->latest('id')->firstOrFail();
+        $this->assertSectionStatus($secretary, $section, 'rejected', 'initial');
+        $this->actingAs($secretary)->postJson($submitUrl, $selection)
+            ->assertStatus(422)->assertJsonPath('error_code', 'schedule_corrections_required');
+        $this->assertDatabaseCount('schedule_submissions', 1);
+
+        if ($regenerate) {
+            // A generated replacement with the same content is still unchanged, even with new IDs.
+            $replacement = $schedule->only(['semester_id', 'section_id', 'course_id', 'room_id', 'department_id', 'day', 'start_time', 'end_time', 'mode']);
+            $batch = ['operations' => [$replacement], 'replace_section_ids' => [$section->id], 'replace_semester_id' => $semester->id];
+            $this->actingAs($secretary)->postJson('/api/schedules/batch', $batch)->assertOk();
+            $this->actingAs($secretary)->postJson($submitUrl, $selection)
+                ->assertStatus(422)->assertJsonPath('error_code', 'schedule_corrections_required');
+            $batch['operations'][0]['day'] = 'Thursday';
+            $this->actingAs($secretary)->postJson('/api/schedules/batch', $batch)->assertOk();
+        } else {
+            // No reopening/status action is needed to correct a returned meeting.
+            $this->actingAs($secretary)->patchJson("/api/schedules/{$schedule->id}", ['day' => 'Thursday'])->assertOk();
+            $this->assertSectionStatus($secretary, $section, 'rejected', 'modified');
+            // Reverting the correction disables resubmission again.
+            $this->actingAs($secretary)->patchJson("/api/schedules/{$schedule->id}", ['day' => 'Monday'])->assertOk();
+            $this->actingAs($secretary)->patchJson('/api/schedules/batch-status', ['ids' => [$schedule->id], 'status' => 'revision'])->assertOk();
+            $this->actingAs($secretary)->postJson($submitUrl, $selection)
+                ->assertStatus(422)->assertJsonPath('error_code', 'schedule_corrections_required');
+            $this->actingAs($secretary)->patchJson("/api/schedules/{$schedule->id}", ['day' => 'Thursday'])->assertOk();
+        }
+
+        $this->assertSectionStatus($secretary, $section, 'rejected', 'modified');
+        $this->actingAs($secretary)->postJson($submitUrl, $selection)->assertOk();
+        $revised = ScheduleSubmission::query()->latest('id')->firstOrFail();
+        $this->assertSame($returnedSubmission->id, $revised->parent_submission_id);
+        $this->assertSame('pending_dean', $revised->status);
+        $this->assertSame($byVpaa ? 'rejected_by_vpaa' : 'rejected_by_dean', $returnedSubmission->refresh()->status);
+        $this->actingAs($dean)->postJson("/api/departments/{$department->id}/approve-by-dean")->assertOk();
+        $this->actingAs($vpaa)->postJson("/api/departments/{$department->id}/approve-by-vpaa")->assertOk();
+        $approved = Schedule::query()->where('section_id', $section->id)->firstOrFail();
+        $this->assertSame('faculty_assignment', $approved->status);
+        $this->actingAs($secretary)->patchJson("/api/schedules/{$approved->id}", ['day' => 'Friday'])->assertStatus(422);
+    }
+
+    #[DataProvider('returnStages')]
+    public function test_a_partially_revised_return_resubmits_unchanged_sections_without_replotting(bool $byVpaa, bool $regenerate): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
+        $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
+        $vpaa = $this->grantCapabilities(User::factory()->create(['role' => 'vpaa', 'department_id' => null]));
+        $first = $this->schedule($department, $semester, $room, $course, $firstSection);
+        $second = $this->schedule($department, $semester, $room, $course, $secondSection, ['day' => 'Tuesday']);
+        $unchanged = $second->refresh()->only(['id', 'section_id', 'course_id', 'faculty_id', 'room_id', 'day', 'start_time', 'end_time', 'mode', 'is_hybrid', 'preferred_pattern']);
+        $submitUrl = "/api/departments/{$department->id}/submit-schedules";
+        $selection = ['section_ids' => [$firstSection->id, $secondSection->id]];
+        $this->actingAs($secretary)->postJson($submitUrl, $selection)->assertOk();
+        if ($byVpaa) {
+            $this->actingAs($dean)->postJson("/api/departments/{$department->id}/approve-by-dean")->assertOk();
+        }
+        $this->actingAs($byVpaa ? $vpaa : $dean)
+            ->postJson("/api/departments/{$department->id}/return-by-".($byVpaa ? 'vpaa' : 'dean'), [
+                'rejection_reason' => 'Move only BSIT 1A to Thursday; BSIT 1B can keep its timetable.',
+            ])->assertOk();
+        $returned = ScheduleSubmission::query()->latest('id')->firstOrFail();
+        $this->actingAs($secretary)->postJson($submitUrl, $selection)
+            ->assertStatus(422)->assertJsonPath('error_code', 'schedule_corrections_required');
+
+        $this->actingAs($secretary)->patchJson("/api/schedules/{$first->id}", ['day' => 'Tuesday'])->assertStatus(422);
+        $this->assertSame('Monday', $first->refresh()->day);
+
+        if ($regenerate) {
+            $replacement = $first->only(['semester_id', 'section_id', 'course_id', 'room_id', 'department_id', 'day', 'start_time', 'end_time', 'mode']);
+            $replacement['day'] = 'Thursday';
+            $this->actingAs($secretary)->postJson('/api/schedules/batch', [
+                'operations' => [$replacement], 'replace_section_ids' => [$firstSection->id], 'replace_semester_id' => $semester->id,
+            ])->assertOk();
+        } else {
+            $this->actingAs($secretary)->patchJson("/api/schedules/{$first->id}", ['day' => 'Thursday'])->assertOk();
+        }
+        $this->assertSectionStatus($secretary, $firstSection, 'rejected', 'modified');
+        $this->assertSectionStatus($secretary, $secondSection, 'rejected', 'initial');
+        $this->actingAs($secretary)->postJson($submitUrl, ['section_ids' => [$firstSection->id]])
+            ->assertStatus(422)->assertJsonPath('ready_section_ids', $selection['section_ids']);
+        $this->actingAs($secretary)->postJson($submitUrl, $selection)->assertOk()->assertJsonPath('schedules_updated', 2);
+        $revised = ScheduleSubmission::query()->latest('id')->firstOrFail();
+        $this->assertSame($returned->id, $revised->parent_submission_id);
+        $this->assertSame('pending_dean', $revised->status);
+        $this->assertSame(2, $revised->section_count);
+        $this->assertEqualsCanonicalizing($selection['section_ids'], $revised->sections()->pluck('sections.id')->all());
+        $this->assertSame($unchanged, $second->refresh()->only(array_keys($unchanged)));
+        $this->assertSame('submitted', $second->status);
+        $this->assertSame($byVpaa ? 'rejected_by_vpaa' : 'rejected_by_dean', $returned->refresh()->status);
+        $this->actingAs($secretary)->getJson("/api/schedule-submissions/{$returned->id}/snapshot")
+            ->assertOk()->assertJsonPath('data.schedules.0.day', 'Monday');
+
+        // Both sections go through the complete approval chain again, including the retained timetable.
+        $this->actingAs($vpaa)->postJson("/api/departments/{$department->id}/approve-by-vpaa")->assertStatus(422);
+        $this->actingAs($dean)->postJson("/api/departments/{$department->id}/approve-by-dean")->assertOk();
+        $this->actingAs($vpaa)->postJson("/api/departments/{$department->id}/approve-by-vpaa")->assertOk();
+        $this->assertSame('faculty_assignment', $second->refresh()->status);
+        $this->assertSame($unchanged, $second->only(array_keys($unchanged)));
+    }
+
+    public function test_an_unrelated_draft_does_not_count_as_a_correction_to_a_returned_schedule(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secretary] = $this->returnedVersion();
+        $newSection = Sections::create([
+            'section_name' => 'BSIT 1C', 'year_level' => 1, 'semester' => '1st',
+            'department_id' => $department->id, 'program_id' => $firstSection->program_id,
+            'semester_id' => $semester->id, 'status' => 'active',
+        ]);
+        $draft = $this->schedule($department, $semester, $room, $course, $newSection, ['status' => 'draft', 'day' => 'Wednesday']);
+        $this->actingAs($secretary)->postJson("/api/departments/{$department->id}/submit-schedules", [
+            'section_ids' => [$firstSection->id, $newSection->id],
+        ])->assertStatus(422)->assertJsonPath('error_code', 'schedule_corrections_required');
+        $this->assertSame('draft', $draft->refresh()->status);
+        $this->assertDatabaseCount('schedule_submissions', 1);
+    }
+
+    public function test_submission_requires_every_course_from_each_sections_curriculum_period(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
+        User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
+        $secondCourse = $course->replicate();
+        $secondCourse->fill(['course_code' => 'IT 102', 'year_level' => '2', 'semester' => '2nd'])->save();
+        $curriculum = Curriculum::create([
+            'department_id' => $department->id, 'program_id' => $firstSection->program_id,
+            'name' => 'IT Curriculum', 'code' => 'IT-2026', 'effective_school_year' => '2026-2027', 'status' => 'active',
+        ]);
+        $curriculum->courses()->attach([$course->id, $secondCourse->id], ['year_level' => 1, 'semester' => 1]);
+        $firstSection->update(['curriculum_id' => $curriculum->id]);
+        $secondSection->update(['curriculum_id' => $curriculum->id]);
+        $first = $this->schedule($department, $semester, $room, $course, $firstSection);
+        $this->schedule($department, $semester, $room, $course, $secondSection, ['day' => 'Tuesday']);
+        $this->schedule($department, $semester, $room, $secondCourse, $secondSection, ['day' => 'Thursday']);
+        $selection = ['section_ids' => [$firstSection->id, $secondSection->id]];
+        $url = "/api/departments/{$department->id}/submit-schedules";
+        $this->actingAs($secretary)->postJson($url, $selection)->assertStatus(422)
+            ->assertJsonPath('error_code', 'schedule_incomplete')->assertJsonPath('section_ids', [$firstSection->id]);
+        $this->assertSame('completed', $first->refresh()->status);
+        $this->assertDatabaseCount('schedule_submissions', 0);
+        $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'schedule_submitted']);
+
+        $this->schedule($department, $semester, $room, $secondCourse, $firstSection, ['day' => 'Wednesday']);
+        $this->actingAs($secretary)->postJson($url, $selection)->assertOk()->assertJsonPath('schedules_updated', 4);
+    }
+
+    public function test_an_approved_section_does_not_allow_another_empty_section_to_be_submitted(): void
+    {
+        [$department, $semester, $room, $course, $emptySection, $approvedSection] = $this->fixture();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
+        User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
+        $approved = $this->schedule($department, $semester, $room, $course, $approvedSection, ['status' => 'faculty_assignment']);
+        $url = "/api/departments/{$department->id}/submit-schedules";
+        $this->actingAs($secretary)->postJson($url)->assertStatus(422)
+            ->assertJsonPath('error_code', 'schedule_incomplete')->assertJsonPath('section_ids', [$emptySection->id]);
+        $this->assertSame('faculty_assignment', $approved->refresh()->status);
+        $this->assertDatabaseCount('schedule_submissions', 0);
+        $this->schedule($department, $semester, $room, $course, $emptySection, ['day' => 'Wednesday']);
+        $this->actingAs($secretary)->postJson($url, ['section_ids' => [$emptySection->id]])
+            ->assertOk()->assertJsonPath('schedules_updated', 1);
+        $this->assertSame('faculty_assignment', $approved->refresh()->status);
+    }
+
+    public function test_secretary_can_withdraw_selected_sections_awaiting_vpaa_approval(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
         $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
 
         $first = $this->schedule($department, $semester, $room, $course, $firstSection, [
-            'status' => 'faculty_assignment',
+            'status' => 'approved_by_dean',
         ]);
         $second = $this->schedule($department, $semester, $room, $course, $secondSection, [
             // Another day: two sections in one room at one time is a conflict,
             // and approval refuses a package that still has one.
             'day' => 'Tuesday',
-            'status' => 'faculty_assignment',
+            'status' => 'approved_by_dean',
         ]);
-        $submission = $this->submission($department, $semester, [$firstSection, $secondSection], 'approved', [
-            'dean_reviewed_by' => $vpaa->id,
+        $submission = $this->submission($department, $semester, [$firstSection, $secondSection], 'pending_vpaa', [
+            'dean_reviewed_by' => $dean->id,
             'dean_reviewed_at' => now(),
-            'vpaa_reviewed_by' => $vpaa->id,
-            'vpaa_reviewed_at' => now(),
         ]);
 
         $response = $this->actingAs($secretary)->postJson("/api/departments/{$department->id}/withdraw-submission", [
@@ -52,14 +262,13 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         ]);
 
         $response->assertOk()
-            ->assertJsonPath('withdrawal_stage', 'vpaa_approved')
+            ->assertJsonPath('withdrawal_stage', 'vpaa_review')
             ->assertJsonPath('sections_unlocked', 1);
 
         $this->assertSame('revision', $first->refresh()->status);
-        $this->assertSame('faculty_assignment', $second->refresh()->status);
+        $this->assertSame('approved_by_dean', $second->refresh()->status);
         $this->assertSame('partially_withdrawn', $submission->refresh()->status);
-        $this->assertSame($vpaa->id, $submission->dean_reviewed_by);
-        $this->assertSame($vpaa->id, $submission->vpaa_reviewed_by);
+        $this->assertSame($dean->id, $submission->dean_reviewed_by);
         $this->assertDatabaseHas('schedule_submission_sections', [
             'schedule_submission_id' => $submission->id,
             'section_id' => $firstSection->id,
@@ -80,23 +289,88 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         $this->assertSame([$firstSection->id], $history->first()->changes['selected_section_ids']);
     }
 
-    public function test_finalized_schedule_cannot_be_withdrawn(): void
+    public static function vpaaApprovedStatuses(): array
     {
-        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
-        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'finalized']);
+        return [
+            'approved' => ['approved'],
+            'faculty assignment' => ['faculty_assignment'],
+            'reassignment' => ['reassignment'],
+            'finalized' => ['finalized'],
+        ];
+    }
+
+    /**
+     * VPAA approval is final: the recall is refused and the schedule, its instructor, and the
+     * submission's approval record and approvers stay exactly as they were.
+     */
+    #[DataProvider('vpaaApprovedStatuses')]
+    public function test_a_vpaa_approved_schedule_cannot_be_recalled(string $status): void
+    {
+        [$department, $semester, $room, $course, $firstSection] = $this->fixture();
+        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
+        $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
+        $instructor = $this->instructor($department);
+        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, [
+            'status' => $status,
+            'faculty_id' => $instructor->id,
+            'faculty_assignment_done' => true,
+        ]);
+        $submission = $this->submission($department, $semester, [$firstSection], 'approved', [
+            'dean_reviewed_by' => $dean->id,
+            'dean_reviewed_at' => now(),
+            'vpaa_reviewed_by' => $vpaa->id,
+            'vpaa_reviewed_at' => now(),
+        ]);
 
         $this->actingAs($secretary)
             ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
+            ->assertStatus(422)
+            ->assertJsonPath('message', DepartmentScheduleController::VPAA_APPROVED_RECALL_MESSAGE);
+
+        $schedule->refresh();
+        $this->assertSame($status, $schedule->status);
+        $this->assertSame($instructor->id, (int) $schedule->faculty_id);
+        $this->assertTrue((bool) $schedule->faculty_assignment_done);
+        $submission->refresh();
+        $this->assertSame('approved', $submission->status);
+        $this->assertSame($dean->id, $submission->dean_reviewed_by);
+        $this->assertSame($vpaa->id, $submission->vpaa_reviewed_by);
+        $this->assertNull($submission->withdrawn_at);
+        $this->assertDatabaseHas('schedule_submission_sections', [
+            'schedule_submission_id' => $submission->id,
+            'section_id' => $firstSection->id,
+            'state' => 'included',
+        ]);
+        $this->assertDatabaseMissing('scheduling_audit_logs', ['action' => 'schedule_withdrawn']);
+        $this->assertDatabaseMissing('system_notifications', ['type' => 'schedule_withdrawn']);
+    }
+
+    /** One VPAA-approved section in the selection refuses the whole recall; nothing is half-applied. */
+    public function test_a_selection_mixing_pending_and_vpaa_approved_sections_is_refused_whole(): void
+    {
+        [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
+        $pending = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'submitted']);
+        $approved = $this->schedule($department, $semester, $room, $course, $secondSection, [
+            'day' => 'Tuesday',
+            'status' => 'approved',
+        ]);
+
+        $this->actingAs($secretary)
+            ->postJson("/api/departments/{$department->id}/withdraw-submission", [
+                'section_ids' => [$firstSection->id, $secondSection->id],
+            ])
             ->assertStatus(422);
 
-        $this->assertSame('finalized', $schedule->refresh()->status);
+        $this->assertSame('submitted', $pending->refresh()->status);
+        $this->assertSame('approved', $approved->refresh()->status);
     }
 
     public function test_withdrawal_ignores_finalized_schedules_in_unselected_sections(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $withdrawn = $this->schedule($department, $semester, $room, $course, $firstSection, [
             'status' => 'submitted',
         ]);
@@ -121,7 +395,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     public function test_finalized_section_status_is_not_downgraded_by_legacy_draft_rows(): void
     {
         [$department, $semester, $room, $course, $firstSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'draft']);
         $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'finalized']);
 
@@ -136,18 +410,18 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     public function test_withdrawal_keeps_instructors_on_every_section(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $instructor = $this->instructor($department);
 
         $withdrawn = $this->schedule($department, $semester, $room, $course, $firstSection, [
-            'status' => 'faculty_assignment',
+            'status' => 'approved_by_dean',
             'faculty_id' => $instructor->id,
         ]);
         $untouched = $this->schedule($department, $semester, $room, $course, $secondSection, [
             // Another day: two sections in one room at one time is a conflict,
             // and approval refuses a package that still has one.
             'day' => 'Tuesday',
-            'status' => 'faculty_assignment',
+            'status' => 'approved_by_dean',
             'faculty_id' => $instructor->id,
         ]);
 
@@ -165,19 +439,19 @@ class DepartmentScheduleWithdrawalTest extends TestCase
 
         // The unselected approval cohort remains completely intact.
         $this->assertSame($instructor->id, $untouched->refresh()->faculty_id);
-        $this->assertSame('faculty_assignment', $untouched->status);
+        $this->assertSame('approved_by_dean', $untouched->status);
     }
 
     public function test_withdrawn_section_can_complete_the_full_reapproval_workflow(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $dean = User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
         $vpaa = User::factory()->create(['role' => 'vpaa', 'department_id' => null]);
         $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, [
-            'status' => 'faculty_assignment',
+            'status' => 'submitted',
         ]);
-        $withdrawnSubmission = $this->submission($department, $semester, [$firstSection], 'approved');
+        $withdrawnSubmission = $this->submission($department, $semester, [$firstSection], 'pending_dean');
         $secondSection->update(['section_name' => 'BSIT 4A', 'year_level' => '4']);
         $finalized = $this->schedule($department, $semester, $room, $course, $secondSection, [
             // Another day: two sections in one room at one time is a conflict,
@@ -267,7 +541,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     public function test_initial_submission_cannot_skip_unfinished_year_levels(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $ready = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
         $draft = $this->schedule($department, $semester, $room, $course, $secondSection, [
             // Another day: two sections in one room at one time is a conflict,
@@ -288,7 +562,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     public function test_withdrawal_without_instructors_reports_none_released(): void
     {
         [$department, $semester, $room, $course, $firstSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'submitted']);
 
         $this->actingAs($secretary)
@@ -306,34 +580,6 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     }
 
     /**
-     * Reassignment no longer has to be emptied first: recalling keeps the
-     * instructors, including one another college assigned to a delegated course.
-     */
-    public function test_a_reassignment_section_with_instructors_can_be_recalled(): void
-    {
-        [$department, $semester, $room, $course, $firstSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
-        $otherCollege = Departments::create(['department_name' => 'Arts and Sciences', 'department_code' => 'CAS']);
-        $delegatedInstructor = $this->instructor($otherCollege);
-
-        $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, [
-            'status' => 'reassignment',
-            'faculty_id' => $delegatedInstructor->id,
-            'faculty_assignment_done' => true,
-        ]);
-
-        $this->actingAs($secretary)
-            ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
-            ->assertOk()
-            ->assertJsonPath('message', 'Selected section schedules recalled for revision.');
-
-        $schedule->refresh();
-        $this->assertSame('revision', $schedule->status);
-        $this->assertSame($delegatedInstructor->id, $schedule->faculty_id);
-        $this->assertFalse((bool) $schedule->faculty_assignment_done);
-    }
-
-    /**
      * A withdrawn class leaves the assignment screens and the instructor's load,
      * so it must not keep blocking that instructor from other classes at the same
      * time -- nobody can see it to clear it.
@@ -341,12 +587,12 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     public function test_a_withdrawn_class_no_longer_blocks_its_instructor_elsewhere(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $instructor = $this->instructor($department);
         $otherRoom = Rooms::create(['room_code' => 'CIT 102', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
 
         $this->schedule($department, $semester, $room, $course, $firstSection, [
-            'status' => 'faculty_assignment',
+            'status' => 'approved_by_dean',
             'faculty_id' => $instructor->id,
         ]);
         $sameHour = $this->schedule($department, $semester, $otherRoom, $course, $secondSection, [
@@ -370,12 +616,12 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     public function test_a_recalled_class_still_counts_in_load_and_explains_why_it_blocks_its_instructor(): void
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $instructor = $this->instructor($department);
         $otherRoom = Rooms::create(['room_code' => 'CIT 102', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $department->id]);
 
         $this->schedule($department, $semester, $room, $course, $firstSection, [
-            'status' => 'faculty_assignment',
+            'status' => 'approved_by_dean',
             'faculty_id' => $instructor->id,
         ]);
         $sameHour = $this->schedule($department, $semester, $otherRoom, $course, $secondSection, [
@@ -386,7 +632,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
             ->postJson("/api/departments/{$department->id}/withdraw-submission", ['section_ids' => [$firstSection->id]])
             ->assertOk();
 
-        $this->assertSame(1, app(\App\Services\FacultyLoadService::class)
+        $this->assertSame(1, app(FacultyLoadService::class)
             ->projectLoad($instructor->refresh(), $semester->id, [])['current_units']);
 
         $response = $this->actingAs($secretary)
@@ -401,7 +647,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         // Submission refuses to skip a year-level section with nothing scheduled.
         $secondSection->delete();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
         $original = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
 
@@ -463,7 +709,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         // Submission refuses to skip a year-level section with nothing scheduled.
         $secondSection->delete();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
         $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
 
@@ -488,7 +734,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secondSection->delete();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
         $original = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
 
@@ -569,7 +815,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secondSection->delete();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
         $moved = $this->schedule($department, $semester, $room, $course, $firstSection);
         $kept = $this->schedule($department, $semester, $room, $course, $firstSection, ['day' => 'Tuesday']);
@@ -608,7 +854,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     {
         [$department, $semester, $room, $course, $firstSection, $secondSection] = $this->fixture();
         $secondSection->delete();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         User::factory()->create(['role' => 'dean', 'department_id' => $department->id]);
         $schedule = $this->schedule($department, $semester, $room, $course, $firstSection, ['status' => 'completed']);
 
@@ -724,7 +970,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     {
         [$department, $semester, $room, $course, $section, $secondSection] = $this->fixture();
         $secondSection->delete();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $schedule = $this->schedule($department, $semester, $room, $course, $section, ['status' => 'draft']);
 
         $this->actingAs($secretary)->patchJson("/api/schedules/{$schedule->id}", ['day' => 'Thursday'])->assertOk();
@@ -737,7 +983,7 @@ class DepartmentScheduleWithdrawalTest extends TestCase
     {
         [$department, $semester, $room, $course, $section, $secondSection] = $this->fixture();
         $secondSection->delete();
-        $secretary = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id]));
+        $secretary = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
         $dean = $this->grantCapabilities(User::factory()->create(['role' => 'dean', 'department_id' => $department->id]));
         $schedule = $this->schedule($department, $semester, $room, $course, $section, ['status' => 'completed']);
 
@@ -773,12 +1019,64 @@ class DepartmentScheduleWithdrawalTest extends TestCase
         [$department, $semester, , , $firstSection] = $this->fixture();
         $other = Departments::create(['department_name' => 'Nursing', 'department_code' => 'CON']);
         Program::create(['department_id' => $other->id, 'code' => 'BSN', 'name' => 'Nursing']);
-        $outsider = $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $other->id]));
+        $outsider = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $other->id]));
         $submission = $this->submission($department, $semester, [$firstSection], 'withdrawn');
 
         $this->actingAs($outsider)
             ->getJson("/api/schedule-submissions/{$submission->id}/snapshot")
             ->assertForbidden();
+    }
+
+    public static function historicalInstructorNames(): array
+    {
+        return [
+            'missing legacy descriptors' => [[], null],
+            'recorded instructor only' => [['faculty_name' => 'Original Instructor'], 'Original Instructor'],
+            'recorded descriptors' => [['course_code' => 'IT 101', 'faculty_name' => 'Original Instructor'], 'Original Instructor'],
+        ];
+    }
+
+    #[DataProvider('historicalInstructorNames')]
+    public function test_submission_history_never_reconstructs_an_instructor_identity_from_the_current_profile(array $metadata, ?string $expectedName): void
+    {
+        [$department, $semester, $room, $course, $section] = $this->fixture();
+        $viewer = $this->grantCapabilities(User::factory()->create(['role' => $this->officeRole, 'department_id' => $department->id]));
+        $instructor = $this->instructor($department);
+        $instructor->update(['first_name' => 'Original', 'last_name' => 'Instructor']);
+        $schedule = $this->schedule($department, $semester, $room, $course, $section, ['faculty_id' => $instructor->id]);
+        $version = ScheduleHistoryVersion::create([
+            'department_id' => $department->id, 'semester_id' => $semester->id, 'actor_user_id' => $viewer->id,
+            'action' => 'schedule_submitted', 'source' => 'department_workflow',
+        ]);
+        ScheduleHistoryItem::create([
+            'history_version_id' => $version->id, 'original_schedule_id' => $schedule->id,
+            'before_snapshot' => $schedule->getAttributes(), 'after_snapshot' => $schedule->getAttributes(),
+            'snapshot_metadata' => $metadata,
+        ]);
+        $submission = $this->submission($department, $semester, [$section], 'rejected_by_dean', ['snapshot_version_id' => $version->id]);
+        SchedulingAuditLog::create([
+            'department_id' => $department->id, 'semester_id' => $semester->id, 'user_id' => $viewer->id,
+            'history_version_id' => $version->id, 'schedule_submission_id' => $submission->id,
+            'action' => RevisionChangeRecorder::SCHEDULES_CHANGED,
+        ]);
+        $assertIdentity = function () use ($viewer, $submission, $instructor, $expectedName): void {
+            $snapshot = $this->actingAs($viewer)
+                ->getJson("/api/schedule-submissions/{$submission->id}/snapshot")->assertOk();
+            $snapshot->assertJsonPath('data.schedules.0.faculty_id', $instructor->id)
+                ->assertJsonPath('data.schedules.0.faculty.first_name', $expectedName)
+                ->assertJsonPath('data.schedules.0.faculty_identity_source', $expectedName === null ? 'unavailable' : 'recorded_snapshot');
+            $changes = $this->getJson("/api/schedule-submissions/{$submission->id}/changes")->assertOk();
+            foreach (['before', 'after'] as $side) {
+                $changes->assertJsonPath("data.0.changes.0.{$side}.faculty.first_name", $expectedName);
+            }
+        };
+        $assertIdentity();
+        $instructor->update(['first_name' => 'Renamed']);
+        $assertIdentity();
+        $instructor->delete();
+        $replacement = $this->instructor($department);
+        $assertIdentity();
+        $this->assertNotSame($instructor->id, $replacement->id);
     }
 
     private function instructor(Departments $department): Faculty

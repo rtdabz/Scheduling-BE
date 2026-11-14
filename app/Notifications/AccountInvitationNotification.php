@@ -28,9 +28,9 @@ class AccountInvitationNotification extends Notification implements ShouldQueue
         $hours = intdiv((int) config('auth.passwords.invites.expire'), 60);
 
         return (new MailMessage)
-            ->subject('Set up your WICARS account')
-            ->greeting('Welcome to WICARS, '.$notifiable->first_name.'!')
-            ->line('The VPAA office has created a WICARS account for you.')
+            ->subject('Set up your TCC Scheduling account')
+            ->greeting('Welcome to TCC Scheduling, '.$notifiable->first_name.'!')
+            ->line('The VPAA office has created a TCC Scheduling account for you.')
             ->line('Your username is: '.$notifiable->username)
             ->line('Open the link below to choose your password.')
             ->action('Set up my account', $url)

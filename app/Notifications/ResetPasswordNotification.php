@@ -26,8 +26,8 @@ class ResetPasswordNotification extends Notification implements ShouldQueue
         ]);
 
         return (new MailMessage)
-            ->subject('Reset your WICARS password')
-            ->line('A password reset was requested for your WICARS account.')
+            ->subject('Reset your TCC Scheduling password')
+            ->line('A password reset was requested for your TCC Scheduling account.')
             ->action('Reset Password', $url)
             ->line('This link expires in '.config('auth.passwords.users.expire').' minutes.')
             ->line('If you did not request this, no action is required.');

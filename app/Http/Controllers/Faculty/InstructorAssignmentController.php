@@ -320,8 +320,8 @@ class InstructorAssignmentController extends Controller
 
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
-        if ($faculty !== null && $request->user()) {
-            $this->notifications->notifyInstructorAssignmentProgress($updatedSchedules->first(), $request->user());
+        if ($request->user() && $linkedSchedules->contains(fn (Schedule $row): bool => ($row->faculty_id === null ? null : (int) $row->faculty_id) !== $facultyId)) {
+            $this->notifications->notifyInstructorAssignmentProgress($updatedSchedules->first(), $request->user(), $updatedSchedules->modelKeys());
         }
 
         $load = $faculty === null

@@ -10,7 +10,9 @@ use App\Services\AuthenticationAuditService;
 use App\Services\FacultyLoadService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\UserFacultyProfileService;
+use App\Support\AccountVersion;
 use App\Support\ApiCache;
+use App\Support\PersonName;
 use App\Support\ProfilePicture;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,7 +21,6 @@ use Illuminate\Validation\Rule;
 
 class ProfileController extends Controller
 {
-
     public function __construct(
         private readonly AuthenticationAuditService $audit,
         private readonly UserFacultyProfileService $facultyProfiles,
@@ -35,16 +36,24 @@ class ProfileController extends Controller
     {
         $user = $request->user();
         $validated = $request->validate([
+            'expected_version' => ['required', 'string', 'size:64'],
             'first_name' => 'required|string|max:100',
             'middle_initial' => ['nullable', 'string', 'size:1', 'alpha'],
             'last_name' => 'required|string|max:100',
             'suffix' => ['nullable', Rule::in(Faculty::NAME_SUFFIXES)],
+            ...PersonName::affixRules(),
             'profile_picture' => ProfilePicture::rules(sometimes: true),
-        ]);
+        ], PersonName::affixMessages());
+        // Omitted title/credentials keep their stored value; explicit null clears them.
+        $validated += $user->only(PersonName::AFFIX_FIELDS);
 
-        DB::transaction(function () use ($request, $user, $validated) {
+        DB::transaction(function () use ($request, &$user, $validated) {
+            $user = User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
+            AccountVersion::check($user, $validated['expected_version']);
             $user->update([
                 'name' => User::composeDisplayName($validated),
+                'honorific_prefix' => $validated['honorific_prefix'],
+                'credentials' => $validated['credentials'],
                 'first_name' => trim($validated['first_name']),
                 'middle_initial' => filled($validated['middle_initial'] ?? null) ? strtoupper(trim($validated['middle_initial'])) : null,
                 'last_name' => trim($validated['last_name']),
@@ -66,6 +75,21 @@ class ProfileController extends Controller
         ]);
     }
 
+    /** Title and suffix choices shared by every name form. */
+    public function nameOptions(): JsonResponse
+    {
+        return response()->json(self::nameOptionsPayload());
+    }
+
+    /** @return array{suffixes: list<string>, honorific_prefixes: list<string>} */
+    private static function nameOptionsPayload(): array
+    {
+        return [
+            'suffixes' => Faculty::NAME_SUFFIXES,
+            'honorific_prefixes' => PersonName::HONORIFIC_PREFIXES,
+        ];
+    }
+
     /** @return array<string, mixed> */
     private function payload(User $user): array
     {
@@ -74,10 +98,11 @@ class ProfileController extends Controller
         return [
             'user' => $user->only([
                 'id', 'name', 'first_name', 'middle_initial', 'last_name', 'suffix',
+                'honorific_prefix', 'credentials',
                 'username', 'email', 'role', 'profile_picture', 'google_email',
                 'google_linked_at', 'last_login_at', 'created_at', 'department', 'program',
-            ]),
-            'suffixes' => Faculty::NAME_SUFFIXES,
+            ]) + ['account_version' => AccountVersion::of($user)],
+            ...self::nameOptionsPayload(),
             'teaching' => $this->teaching($user),
         ];
     }

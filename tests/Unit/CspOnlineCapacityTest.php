@@ -207,7 +207,7 @@ final class CspOnlineCapacityTest extends TestCase
             'lab_hours' => 1,
         ]);
 
-        foreach ($pairs->invoke($solver, $course, true, false) as $pair) {
+        foreach ($pairs->invoke($solver, $course, true) as $pair) {
             self::assertNotSame($pair[0], $pair[1]);
         }
 

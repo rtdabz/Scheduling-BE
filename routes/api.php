@@ -11,6 +11,7 @@ use App\Http\Controllers\Academic\SemesterController;
 use App\Http\Controllers\Admin\ActivityLogController;
 use App\Http\Controllers\Admin\ArchiveController;
 use App\Http\Controllers\Admin\InstitutionSettingsController;
+use App\Http\Controllers\Admin\LoginActivityController;
 use App\Http\Controllers\Admin\RealtimeConfigController;
 use App\Http\Controllers\Admin\SystemNotificationController;
 use App\Http\Controllers\Admin\UserController;
@@ -24,8 +25,8 @@ use App\Http\Controllers\Reports\PdfPreviewController;
 use App\Http\Controllers\Reports\ReportsController;
 use App\Http\Controllers\Reports\VpaaDashboardController;
 use App\Http\Controllers\Rooms\ProgramRoomController;
-use App\Http\Controllers\Rooms\RoomRequestController;
 use App\Http\Controllers\Rooms\RoomRecoveryController;
+use App\Http\Controllers\Rooms\RoomRequestController;
 use App\Http\Controllers\Rooms\RoomsController;
 use App\Http\Controllers\Scheduling\DepartmentScheduleController;
 use App\Http\Controllers\Scheduling\InitialDataController;
@@ -33,9 +34,11 @@ use App\Http\Controllers\Scheduling\ScheduleConflictController;
 use App\Http\Controllers\Scheduling\ScheduleController;
 use App\Http\Controllers\Scheduling\ScheduleHistoryController;
 use App\Http\Controllers\Scheduling\ScheduleRecommendationController;
+use App\Http\Controllers\Scheduling\ScheduleResetController;
 use App\Http\Controllers\Scheduling\ScheduleSplitController;
 use App\Http\Controllers\Scheduling\SchedulingSettingsController;
 use App\Http\Controllers\Scheduling\TimeslotController;
+use App\Http\Middleware\ResolvePdfPreview;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
@@ -48,7 +51,7 @@ Route::post('/auth/google/exchange', [AuthController::class, 'googleExchange'])-
 Route::get('/pdf-previews/{preview}/{filename}', [PdfPreviewController::class, 'show'])
     ->whereUuid('preview')
     ->name('pdf-previews.show')
-    ->middleware([\App\Http\Middleware\ResolvePdfPreview::class, 'auth:sanctum', 'active', 'capability:schedule.view', 'throttle:60,1']);
+    ->middleware([ResolvePdfPreview::class, 'auth:sanctum', 'active', 'capability:schedule.view', 'throttle:60,1']);
 
 Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
@@ -56,6 +59,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::get('/profile', [ProfileController::class, 'show']);
     Route::patch('/profile', [ProfileController::class, 'update'])->middleware('throttle:20,1');
+    Route::get('/name-options', [ProfileController::class, 'nameOptions']);
     Route::get('/initial-data', InitialDataController::class);
     Route::get('/institution-settings', [InstitutionSettingsController::class, 'show']);
     Route::get('/notifications', [SystemNotificationController::class, 'index']);
@@ -65,12 +69,16 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
     Route::middleware('role:vpaa')->group(function () {
         Route::get('/activity-log', [ActivityLogController::class, 'index']);
+        Route::get('/activity-log/login-locations', [LoginActivityController::class, 'locations'])->middleware('throttle:60,1');
+        Route::get('/activity-log/login-history', [LoginActivityController::class, 'history'])->middleware('throttle:60,1');
+        Route::get('/activity-log/logins/{id}', [LoginActivityController::class, 'show'])->whereNumber('id')->middleware('throttle:60,1');
         Route::get('/vpaa/dashboard-insights', VpaaDashboardController::class);
         Route::get('/user', [UserController::class, 'index']);
         Route::get('/user/linkable-faculty', [UserController::class, 'linkableFaculty']);
         Route::get('/user/instructor-defaults', [UserController::class, 'instructorDefaults']);
         Route::post('/user', [UserController::class, 'store']);
         Route::put('/user/{user}', [UserController::class, 'update']);
+        Route::patch('/user/{user}/status', [UserController::class, 'status']);
         Route::delete('/user/{user}', [UserController::class, 'destroy']);
         Route::delete('/user/{user}/google-link', [UserController::class, 'unlinkGoogle']);
         Route::post('/user/{user}/invitation', [UserController::class, 'resendInvitation']);
@@ -90,12 +98,14 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     Route::middleware('capability:schedule.view')->get('/schedule-history', [ScheduleHistoryController::class, 'index']);
+    Route::middleware(['capability:schedule.view', 'throttle:30,1'])->get('/schedule-history/{version}/export', [ScheduleHistoryController::class, 'export'])->whereNumber('version');
+    Route::middleware(['capability:schedule.create', 'throttle:10,1'])->post('/schedule-history/{version}/reuse', [ScheduleHistoryController::class, 'reuse'])->whereNumber('version');
     Route::middleware('capability:schedule.view')->get('room-recovery', [RoomRecoveryController::class, 'index']);
     Route::middleware('capability:schedule.view')->get('room-recovery/transfers', [RoomRecoveryController::class, 'transfers']);
     Route::middleware(['capability:schedule.update', 'throttle:10,1'])->group(function () {
         Route::post('room-recovery/preview', [RoomRecoveryController::class, 'preview']);
-        Route::post('room-recovery/plans/{plan}/apply', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary');
-        Route::post('room-recovery/plans/{plan}/submit', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary');
+        Route::post('room-recovery/plans/{plan}/apply', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary,director');
+        Route::post('room-recovery/plans/{plan}/submit', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary,director');
     });
     Route::middleware(['role:dean,vpaa', 'capability:schedule.approve_dean,schedule.approve_vpaa'])->group(function () {
         Route::post('room-recovery/plans/{plan}/approve', [RoomRecoveryController::class, 'approve']);
@@ -190,6 +200,9 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('capability:schedule.delete')->group(function () {
         Route::delete('schedules/{schedule}', [ScheduleController::class, 'destroy']);
         Route::delete('schedule-splits/{scheduleSplit}', [ScheduleSplitController::class, 'destroy']);
+        // Permanent Reset of editable sections: separate from batch replacement and from Delete/Archive.
+        Route::post('schedules/reset/preview', [ScheduleResetController::class, 'preview']);
+        Route::post('schedules/reset', [ScheduleResetController::class, 'reset']);
     });
 
     Route::middleware('capability:schedule.submit')->post(
@@ -285,6 +298,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('capability:schedule.assign_instructor_cross_department')->group(function () {
         Route::get('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'index']);
         Route::post('course-teaching-assignments/batch', [CourseTeachingAssignmentController::class, 'batch']);
+        Route::post('course-teaching-assignments/batch-remove', [CourseTeachingAssignmentController::class, 'batchDestroy']);
         Route::match(['put', 'patch'], 'course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'update']);
         Route::delete('course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'destroy']);
     });
@@ -319,6 +333,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('curriculum/{curriculum}/courses/batch', [CurriculumController::class, 'attachCoursesBatch']);
         Route::post('curriculum/{curriculum}/courses/batch-create', [CurriculumController::class, 'batchCreateAndAttachCourses']);
         Route::delete('curriculum/{curriculum}/courses/{course}', [CurriculumController::class, 'detachCourse']);
+        Route::put('curriculum/{curriculum}/courses/{course}/hours', [CurriculumController::class, 'updateCourseHours'])->middleware('throttle:60,1');
         Route::post('/curriculum', [CurriculumController::class, 'store']);
         Route::match(['put', 'patch'], '/curriculum/{curriculum}', [CurriculumController::class, 'update']);
         Route::delete('/curriculum/{curriculum}', [CurriculumController::class, 'destroy']);

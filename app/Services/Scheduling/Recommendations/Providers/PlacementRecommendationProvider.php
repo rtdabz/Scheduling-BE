@@ -69,7 +69,8 @@ final class PlacementRecommendationProvider implements RecommendationProvider
 
             return $this->manualGroups($context, $inputs, $placement);
         }
-        $result = $this->finder->find(...$inputs);
+        // Manual placement may leave a laboratory meeting as Room TBA when no laboratory is free.
+        $result = $this->finder->find(...[...$inputs, 'offerRoomTba' => true]);
 
         return RecommendationResult::adapt(
             $context, $result, $result['slots'], 'requested_placement',
@@ -105,7 +106,10 @@ final class PlacementRecommendationProvider implements RecommendationProvider
 
         $alternative = [];
         $course = $snapshot->courseFor($sectionId, $courseId);
-        if (! $consecutive && is_array($course)
+        // Lecture/Laboratory Required Days hold the Integrated shape: no
+        // alternative or enhancement may replace its two components.
+        $pinned = ($issue['component_required_days'] ?? []) !== [];
+        if (! $pinned && ! $consecutive && is_array($course)
             && SessionAlternativePolicy::draftHybridEligible($course, $issue['shape'] ?? null)) {
             $alternative = $this->shapeOptions($snapshot, [
                 ...$issue,
@@ -135,13 +139,13 @@ final class PlacementRecommendationProvider implements RecommendationProvider
             $configuredFits = true;
             break;
         }
-        $enhancements = $consecutive || $configuredFits
+        $enhancements = $pinned || $consecutive || $configuredFits
             ? []
             : $this->sessionEnhancements($snapshot, $issue, $draft, $preferredDays);
         $hasOnlineEnhancement = array_filter($enhancements, static fn (array $option): bool => $option['adjustment_type'] === 'enable_balanced_split'
             && array_unique(array_column($option['rows'], 'mode')) === ['online']) !== [];
 
-        if (! $hasOnlineEnhancement && ! $consecutive && $configured === [] && $alternative === [] && is_array($course)
+        if (! $pinned && ! $hasOnlineEnhancement && ! $consecutive && $configured === [] && $alternative === [] && is_array($course)
             && ($halfSlots = SessionAlternativePolicy::draftOnlineMeetingSlots($course)) !== null) {
             $alternative = $this->shapeOptions($snapshot, [
                 ...$issue,
@@ -304,7 +308,7 @@ final class PlacementRecommendationProvider implements RecommendationProvider
         $ignoreIds = $inputs['ignoreScheduleIds'] ?? [];
         $scoped = PlacementGroupValidator::discoverySnapshot($snapshot, $tentative, $ignoreIds);
         $discovery = $this->finder->find(...[
-            ...$inputs, 'snapshot' => $scoped,
+            ...$inputs, 'snapshot' => $scoped, 'offerRoomTba' => true,
             'rowTemplate' => [...$current, 'preferred_pattern' => SchedulingPolicy::consecutiveDayCount($current['preferred_pattern'] ?? null) !== null ? $current['preferred_pattern'] : null],
         ]);
         $description = SessionInterpreter::fromRows($rows);
@@ -484,7 +488,6 @@ final class PlacementRecommendationProvider implements RecommendationProvider
                 || ((string) ($row['day'] ?? '') === $day && (
                     isset($snapshot->roomsById[(int) ($row['room_id'] ?? 0)])
                     || isset($facultyIds[(int) ($row['faculty_id'] ?? 0)])
-                    || ((string) ($row['mode'] ?? '') === 'online' && (int) ($row['course_id'] ?? 0) === $courseId)
                 ));
             $scoped = $snapshot->toArray();
             $scoped['persisted_schedules'] = array_values(array_filter($snapshot->persistedSchedules, $relevant));
@@ -500,7 +503,10 @@ final class PlacementRecommendationProvider implements RecommendationProvider
         $candidatesByMeeting = [];
         foreach ($issue['meetings'] as $meeting) {
             $slots = [];
-            foreach ($dayScopes as [$daySnapshot, $dayTentative, $otherDays]) {
+            foreach ($dayScopes as $scopeDay => [$daySnapshot, $dayTentative, $otherDays]) {
+                if (isset($meeting['required_day']) && $meeting['required_day'] !== $scopeDay) {
+                    continue;
+                }
                 if (isset($issue['probe_deadline']) && microtime(true) >= $issue['probe_deadline']) {
                     return [];
                 }
@@ -603,7 +609,7 @@ final class PlacementRecommendationProvider implements RecommendationProvider
             }
 
             $rows = $this->optionRows($snapshot, $issue, $chosen);
-            if (! $this->validator->passes($snapshot, $rows, $tentative)) {
+            if (! $this->validator->passes($snapshot, $rows, $tentative, componentDays: $this->componentDays($issue))) {
                 continue;
             }
             $options[$signature] = [
@@ -807,6 +813,25 @@ final class PlacementRecommendationProvider implements RecommendationProvider
         }
 
         return $rows;
+    }
+
+    /**
+     * The group's Lecture/Laboratory Required Days: Draft Review passes them on the issue,
+     * a generation probe on each pinned meeting.
+     *
+     * @param  array<string, mixed>  $issue
+     * @return array{lecture?: string, laboratory?: string}
+     */
+    private function componentDays(array $issue): array
+    {
+        $days = (array) ($issue['component_required_days'] ?? []);
+        foreach ($issue['meetings'] as $meeting) {
+            if (isset($meeting['required_day'], $meeting['meeting_type'])) {
+                $days[(string) $meeting['meeting_type']] ??= (string) $meeting['required_day'];
+            }
+        }
+
+        return array_intersect_key($days, array_flip(['lecture', 'laboratory']));
     }
 
     /** @param  array<string, mixed>  $slot */

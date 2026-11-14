@@ -3,7 +3,6 @@
 namespace Tests\Unit;
 
 use App\Models\Course;
-use App\Models\Rooms;
 use App\Services\Scheduling\Domain\ConstraintViolation;
 use App\Services\Scheduling\Domain\ScheduleRow;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
@@ -95,22 +94,22 @@ class KernelRuleEngineParityTest extends TestCase
         $this->assertContains('faculty_active', $this->rules($this->kernel()->evaluateRow($row, $this->snapshot())));
     }
 
-    public function test_lab_for_lecture_answers_the_same_for_model_and_snapshot_forms(): void
+    public function test_major_without_laboratory_units_answers_the_same_for_model_and_snapshot_forms(): void
     {
-        $lab = ['room_type' => 'laboratory', 'allow_lecture_usage' => true];
-        $major = ['course_category' => 'major', 'lecture_hours' => 3, 'lab_hours' => 0, 'room_type_required' => 'lecture'];
+        $major = ['course_category' => 'major', 'lecture_hours' => 3, 'lab_hours' => 0, 'room_type_required' => 'laboratory'];
         $uncategorised = ['course_category' => null] + $major;
+        $withLab = ['lab_hours' => 1] + $major;
 
-        foreach ([$major, $uncategorised] as $course) {
+        foreach ([$major, $uncategorised, $withLab] as $course) {
             $this->assertSame(
-                SchedulingPolicy::laboratoryServesLecture($course, $lab),
-                SchedulingPolicy::laboratoryServesLecture((new Course)->forceFill($course), (new Rooms)->forceFill($lab)),
+                SchedulingPolicy::isMajorWithoutLaboratoryUnits($course),
+                SchedulingPolicy::isMajorWithoutLaboratoryUnits((new Course)->forceFill($course)),
             );
         }
 
-        $this->assertTrue(SchedulingPolicy::laboratoryServesLecture($major, $lab));
-        // Used to count as major on the model path only.
-        $this->assertFalse(SchedulingPolicy::laboratoryServesLecture((new Course)->forceFill($uncategorised), (new Rooms)->forceFill($lab)));
+        $this->assertTrue(SchedulingPolicy::isMajorWithoutLaboratoryUnits($major));
+        $this->assertFalse(SchedulingPolicy::isMajorWithoutLaboratoryUnits($uncategorised));
+        $this->assertFalse(SchedulingPolicy::isMajorWithoutLaboratoryUnits($withLab));
     }
 
     public function test_a_room_marked_unavailable_is_refused(): void

@@ -28,9 +28,9 @@ class CurriculumImportController extends Controller
 
     public function updateSettings(Request $request): JsonResponse
     {
-        // Department-wide policy belongs to the department secretary; curriculum.manage alone does not grant it.
+        // Department-wide policy belongs to the department office (Secretary or Director); curriculum.manage alone does not grant it.
         if (! $this->canManageSettings($request)) {
-            return response()->json(['message' => 'Only the department secretary can change curriculum import settings.'], 403);
+            return response()->json(['message' => 'Only the department Secretary or Director can change curriculum import settings.'], 403);
         }
 
         $rate = ['required', 'integer', 'min:'.SchedulingPolicy::SLOT_MINUTES, 'max:'.CurriculumImportSettings::MAX_MINUTES_PER_UNIT, 'multiple_of:'.SchedulingPolicy::SLOT_MINUTES];
@@ -88,6 +88,6 @@ class CurriculumImportController extends Controller
 
     private function canManageSettings(Request $request): bool
     {
-        return $request->user()?->role === 'secretary';
+        return $request->user()?->isSecretaryOrDirector() === true;
     }
 }

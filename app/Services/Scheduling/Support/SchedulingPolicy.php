@@ -7,7 +7,6 @@ namespace App\Services\Scheduling\Support;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Program;
-use App\Models\Rooms;
 use App\Services\TimeslotService;
 use Carbon\Carbon;
 use Illuminate\Database\QueryException;
@@ -50,6 +49,29 @@ final class SchedulingPolicy
         'Friday',
         'Saturday',
         'Sunday',
+    ];
+
+    /**
+     * Default teaching hours by employment type, as [day_index, start, end].
+     * An instructor's availability is this default week plus any windows they
+     * add (faculty_availabilities); added windows extend, never replace, it.
+     */
+    public const STANDARD_FACULTY_HOURS = [
+        'full-time' => [
+            [0, '07:00:00', '20:30:00'],
+            [1, '07:00:00', '20:30:00'],
+            [2, '07:00:00', '20:30:00'],
+            [3, '07:00:00', '20:30:00'],
+            [4, '07:00:00', '20:30:00'],
+        ],
+        'part-time' => [
+            [0, '17:30:00', '20:30:00'],
+            [1, '17:30:00', '20:30:00'],
+            [2, '17:30:00', '20:30:00'],
+            [3, '17:30:00', '20:30:00'],
+            [4, '17:30:00', '20:30:00'],
+            [5, '07:00:00', '20:30:00'],
+        ],
     ];
 
     public const WEEKDAYS = [
@@ -399,12 +421,6 @@ final class SchedulingPolicy
             'description' => 'A section cannot attend overlapping classes in the same semester.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
-        'subject_section_time_conflict' => [
-            'severity' => 'hard',
-            'category' => 'resource_conflict',
-            'description' => 'Different online sections taking the same subject cannot overlap in the same semester and time slot.',
-            'enforced_by' => ['rule_engine', 'csp'],
-        ],
         'room_conflict' => [
             'severity' => 'hard',
             'category' => 'resource_conflict',
@@ -534,7 +550,7 @@ final class SchedulingPolicy
         'part_time_faculty_availability' => [
             'severity' => 'hard',
             'category' => 'faculty',
-            'description' => 'A part-time instructor with recorded availability windows can only be assigned inside them. One with no windows recorded is unrestricted.',
+            'description' => 'An instructor of either employment type can only be assigned inside their availability: the default hours of their employment type plus any windows added for them. The identifier keeps its historical name for API compatibility.',
             'enforced_by' => ['rule_engine'],
         ],
         'section_active' => [
@@ -576,7 +592,7 @@ final class SchedulingPolicy
         'hybrid_eligibility' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
-            'description' => 'Hybrid scheduling is limited to eligible lecture-and-laboratory courses under the department setting.',
+            'description' => 'Lecture/laboratory components are limited to non-field courses with both lecture and laboratory units; every such course is given both components automatically.',
             'enforced_by' => ['rule_engine', 'csp', 'schedule_generation_preflight'],
         ],
         'hybrid_component_type' => [
@@ -591,6 +607,12 @@ final class SchedulingPolicy
             'description' => 'An Integrated Hybrid lecture is online and its laboratory on-site, at the lengths chosen for the course; each Hybrid Split meeting lasts the fixed Hybrid Split length.',
             'enforced_by' => ['rule_engine', 'csp'],
         ],
+        'integrated_component_required_day' => [
+            'severity' => 'hard',
+            'category' => 'meeting_group',
+            'description' => 'An Integrated component with a Lecture or Laboratory Required Day meets exactly once, on that day.',
+            'enforced_by' => ['rule_engine', 'csp', 'schedule_generation_preflight'],
+        ],
         'minor_split_component_count' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
@@ -600,7 +622,7 @@ final class SchedulingPolicy
         'minor_split_eligibility' => [
             'severity' => 'hard',
             'category' => 'meeting_group',
-            'description' => 'Balanced split sessions are available for minor courses and for majors with lecture or laboratory units selected in Step 2.',
+            'description' => 'Balanced split sessions are available for courses without laboratory units selected in Step 2.',
             'enforced_by' => ['rule_engine', 'csp', 'schedule_generation_preflight'],
         ],
         'minor_split_pattern' => [
@@ -762,7 +784,7 @@ final class SchedulingPolicy
         'lab_preference' => [
             'severity' => 'soft',
             'category' => 'preference',
-            'description' => 'Major courses that require a laboratory room prefer a lab; a lecture room is accepted as a fallback when no lab is available for the department.',
+            'description' => 'Laboratory meetings use laboratory rooms only. When no laboratory room is free the meeting stays on-site with Room TBA; it never falls back to a lecture classroom.',
             'enforced_by' => ['csp'],
         ],
         'online_preference' => [
@@ -940,20 +962,36 @@ final class SchedulingPolicy
     }
 
     /**
+     * Room types a laboratory meeting may use. A laboratory session always needs a laboratory room;
+     * when none is free it stays on-site with Room TBA, never in a lecture classroom. The department's
+     * legacy Classroom/Either setting is still stored and reported but no longer widens this list.
+     *
      * @return list<string>
      */
     public static function labRoomTypes(?int $departmentId): array
     {
-        return match (self::labRoomType($departmentId)) {
-            'lecture' => ['lecture'],
-            'either' => ['laboratory', 'lecture'],
-            default => ['laboratory'],
-        };
+        return ['laboratory'];
     }
 
     public static function isLabClassroomFallback(string $roomType, ?int $departmentId): bool
     {
-        return $roomType === 'lecture' && self::labRoomType($departmentId) === 'either';
+        return false;
+    }
+
+    /**
+     * Whether a course meets as two linked components: a lecture in a lecture room and a laboratory
+     * in a laboratory room. Inferred from its units (LEC > 0 and LAB > 0) for every course category;
+     * field courses keep their own shape. Each component's length comes from lectureComponentSlots()
+     * and laboratoryComponentSlots(), so pass the course from placedCourse().
+     *
+     * @param  Course|array<string, mixed>  $course
+     * @param  list<string>|null  $fieldCourseCodes  see isFieldCourse()
+     */
+    public static function hasLectureAndLaboratoryComponents(Course|array $course, ?int $departmentId = null, ?array $fieldCourseCodes = null): bool
+    {
+        return (int) (self::courseAttribute($course, 'lecture_hours') ?? 0) > 0
+            && (int) (self::courseAttribute($course, 'lab_hours') ?? 0) > 0
+            && ! self::isFieldCourse($course, $departmentId, $fieldCourseCodes);
     }
 
     public static function totalSlots(): int
@@ -966,6 +1004,61 @@ final class SchedulingPolicy
     public static function normalizeTime(string $time): string
     {
         return strlen($time) === 5 ? $time.':00' : $time;
+    }
+
+    /**
+     * The employment type's standard week, clipped to the institution's
+     * operating hours.
+     *
+     * @return list<array{day_index: int, start_time: string, end_time: string}>
+     */
+    public static function standardFacultyHours(?string $employmentType): array
+    {
+        $opening = self::openingTime();
+        $closing = self::closingTime();
+        $windows = [];
+
+        foreach (self::STANDARD_FACULTY_HOURS[$employmentType ?? ''] ?? [] as [$dayIndex, $start, $end]) {
+            $start = max($start, $opening);
+            $end = min($end, $closing);
+            if ($start < $end) {
+                $windows[] = ['day_index' => $dayIndex, 'start_time' => $start, 'end_time' => $end];
+            }
+        }
+
+        return $windows;
+    }
+
+    /**
+     * One day's availability: the default hours plus added windows, as
+     * normalized [start, end] pairs. Overlapping or adjacent pairs are fine;
+     * coverage is checked continuously.
+     *
+     * @param  iterable<array<string, mixed>|object>  $addedWindows
+     * @return list<array{0: string, 1: string}>
+     */
+    public static function facultyDayWindows(?string $employmentType, iterable $addedWindows, int $dayIndex): array
+    {
+        // Raw defaults (no settings lookup): the operating_hours rule bounds
+        // every meeting separately, so clipping here would change nothing.
+        $windows = [];
+        foreach (self::STANDARD_FACULTY_HOURS[$employmentType ?? ''] ?? [] as [$day, $start, $end]) {
+            if ($day === $dayIndex) {
+                $windows[] = [$start, $end];
+            }
+        }
+
+        foreach ($addedWindows as $window) {
+            $window = is_object($window) ? $window : (object) $window;
+            if ((int) ($window->day_index ?? -1) === $dayIndex) {
+                $windows[] = [
+                    self::normalizeTime((string) $window->start_time),
+                    self::normalizeTime((string) $window->end_time),
+                ];
+            }
+        }
+
+        return $windows;
     }
 
     public static function isWithinOperatingHours(string $startTime, string $endTime): bool
@@ -1373,6 +1466,9 @@ final class SchedulingPolicy
      */
     public static function isFieldCourse(Course|array $course, ?int $departmentId = null, ?array $fieldCourseCodes = null): bool
     {
+        if (! self::isFieldSchedulingEligible($course)) {
+            return false;
+        }
         if (self::courseAttribute($course, 'room_type_required') === 'field') {
             return true;
         }
@@ -1389,6 +1485,14 @@ final class SchedulingPolicy
         return isset(self::fieldCourseCodeMap($departmentId)[$code]);
     }
 
+    public const LABORATORY_FIELD_MESSAGE = 'Courses with laboratory requirements cannot use Field placement. Choose a laboratory room or Room TBA.';
+
+    public static function isFieldSchedulingEligible(Course|array $course): bool
+    {
+        return (int) (self::courseAttribute($course, 'lab_hours') ?? 0) <= 0
+            && self::courseAttribute($course, 'room_type_required') !== 'laboratory';
+    }
+
     public static function isCasServiceCourse(Course $course): bool
     {
         $code = strtoupper(trim((string) $course->course_code));
@@ -1400,9 +1504,30 @@ final class SchedulingPolicy
     /** @param Course|array<string, mixed> $course */
     public static function isLaboratoryCourse(Course|array $course): bool
     {
+        if (self::isMajorWithoutLaboratoryUnits($course)) {
+            return false;
+        }
+
         return (int) (self::courseAttribute($course, 'lab_hours') ?? 0) > 0
             || (string) (self::courseAttribute($course, 'room_type_required') ?? '') === 'laboratory';
     }
+
+    /**
+     * A Major course whose units are all lecture (LEC > 0, LAB = 0). Its room eligibility follows
+     * those units rather than its stored room type: it meets in lecture rooms only, so laboratory
+     * rooms stay free for the courses that carry laboratory units.
+     *
+     * @param  Course|array<string, mixed>  $course
+     */
+    public static function isMajorWithoutLaboratoryUnits(Course|array $course): bool
+    {
+        return self::isMajorCourse($course)
+            && (int) (self::courseAttribute($course, 'lecture_hours') ?? 0) > 0
+            && (int) (self::courseAttribute($course, 'lab_hours') ?? 0) === 0
+            && ! in_array((string) (self::courseAttribute($course, 'room_type_required') ?? ''), ['field', 'online'], true);
+    }
+
+    public const NO_LABORATORY_UNITS_MESSAGE = 'This course has no laboratory units. Please select a lecture room.';
 
     /**
      * The class minutes Curriculum Import recorded for each course placed in a curriculum. Courses
@@ -1519,8 +1644,9 @@ final class SchedulingPolicy
     }
 
     /**
-     * Each consecutive-day meeting's share of the Total Hours, or null when the days cannot split it
-     * into equal whole slots.
+     * Each consecutive-day meeting's length: the course's full Total Hours, repeated on every
+     * selected day (PRAC 101 at 6 hours on 3 days meets 6 hours a day, 18 hours in all). Null when
+     * the course has no time or the day count is not a run.
      *
      * @param  Course|array<string, mixed>  $course
      */
@@ -1528,7 +1654,25 @@ final class SchedulingPolicy
     {
         $total = self::courseDurationSlots($course);
 
-        return $dayCount > 0 && $total > 0 && $total % $dayCount === 0 ? intdiv($total, $dayCount) : null;
+        return $dayCount >= self::MIN_CONSECUTIVE_DAYS && $total > 0 ? $total : null;
+    }
+
+    /**
+     * How many times a section's weekly duration allowance repeats for a row: a Consecutive Days
+     * run repeats its course's time once per linked meeting, never more than its marker's day
+     * count. The count comes from the run's linked rows (which MeetingGroupRule holds to exactly the
+     * marker's day count), so a lone or unlinked row carrying a marker earns no repeat.
+     *
+     * @param  int  $linkedMeetings  rows of this section and course in the row's split group carrying a run marker, the row included
+     */
+    public static function durationAllowanceRepeats(mixed $pattern, ?string $splitGroupId, int $linkedMeetings): int
+    {
+        $dayCount = self::consecutiveDayCount($pattern);
+        if ($dayCount === null || trim((string) $splitGroupId) === '') {
+            return 1;
+        }
+
+        return max(1, min($dayCount, $linkedMeetings));
     }
 
     /**
@@ -1550,6 +1694,14 @@ final class SchedulingPolicy
     {
         if (self::isFieldCourse($course, $departmentId, $fieldCourseCodes)) {
             return 'field';
+        }
+
+        if (self::isMajorWithoutLaboratoryUnits($course)) {
+            return 'lecture';
+        }
+
+        if ($meetingType === 'field' && ! self::isFieldSchedulingEligible($course)) {
+            return 'laboratory';
         }
 
         if ($meetingType !== null && in_array($meetingType, ['lecture', 'laboratory', 'field'], true)) {
@@ -1613,18 +1765,20 @@ final class SchedulingPolicy
      */
     public static function balancedSplitEligible(array|Course $course, array $departmentSettings): bool
     {
+        $lectureHours = (int) ($course instanceof Course ? ($course->lecture_hours ?? 0) : ($course['lecture_hours'] ?? 0));
+        $labHours = (int) ($course instanceof Course ? ($course->lab_hours ?? 0) : ($course['lab_hours'] ?? 0));
+
+        // A course with laboratory units never becomes a Split Session: its laboratory meets as its
+        // own laboratory session (see hasLectureAndLaboratoryComponents()).
+        if ($labHours > 0) {
+            return false;
+        }
+
         $isMajor = $course instanceof Course
             ? self::isMajorCourse($course)
             : strtolower(trim((string) ($course['course_category'] ?? $course['subject_category'] ?? ''))) === 'major';
 
-        if (! $isMajor) {
-            return true;
-        }
-
-        $lectureHours = (int) ($course instanceof Course ? ($course->lecture_hours ?? 0) : ($course['lecture_hours'] ?? 0));
-        $labHours = (int) ($course instanceof Course ? ($course->lab_hours ?? 0) : ($course['lab_hours'] ?? 0));
-
-        return $lectureHours > 0 || $labHours > 0;
+        return ! $isMajor || $lectureHours > 0;
     }
 
     public static function balancedSplitSettings(?Departments $department): array
@@ -1658,19 +1812,6 @@ final class SchedulingPolicy
     public static function hybridSplitMeetingSlots(): int
     {
         return intdiv(self::HYBRID_SPLIT_MEETING_MINUTES, self::SLOT_MINUTES);
-    }
-
-    /**
-     * @param  Course|array<string, mixed>  $course
-     * @param  Rooms|array<string, mixed>  $room
-     */
-    public static function laboratoryServesLecture(Course|array $course, Rooms|array $room): bool
-    {
-        $roomValue = static fn (string $key): mixed => is_array($room) ? ($room[$key] ?? null) : $room->{$key};
-
-        return self::isLectureOnlyMajor($course)
-            && (string) $roomValue('room_type') === 'laboratory'
-            && (bool) $roomValue('allow_lecture_usage');
     }
 
     /**

@@ -35,7 +35,6 @@ final class SchedulingConstraintKernel
         'room_availability' => 310,
         'room_department_alignment' => 320,
         'section_conflict' => 400,
-        'subject_section_time_conflict' => 410,
         'faculty_conflict' => 420,
         'room_conflict' => 430,
         'faculty_active' => 440,

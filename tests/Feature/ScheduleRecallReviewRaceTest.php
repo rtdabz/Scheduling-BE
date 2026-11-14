@@ -306,6 +306,11 @@ class ScheduleRecallReviewRaceTest extends TestCase
 
         foreach ([$this->dean, $this->vpaa] as $recipient) {
             $notice = DB::table('system_notifications')->where('user_id', $recipient->id)->where('type', 'schedule_withdrawn')->first();
+            if ($recipient->isVpaa() && $reviewer === 'Dean') {
+                $this->assertNull($notice, 'VPAA has no responsibility for a recall from Dean review.');
+
+                continue;
+            }
             $this->assertNotNull($notice);
             $this->assertSame("Sections recalled from {$reviewer} review", $notice->title);
             $this->assertStringContainsString('Recalled: BSIT 1A.', $notice->message);
@@ -325,21 +330,21 @@ class ScheduleRecallReviewRaceTest extends TestCase
         ];
     }
 
-    public function test_recalling_every_section_says_none_remain_and_an_approved_recall_keeps_its_title(): void
+    public function test_recalling_every_section_says_none_remain_and_an_approved_section_cannot_be_recalled(): void
     {
         $this->fixture(['A' => 'submitted', 'B' => 'faculty_assignment']);
         $this->submission(['A'], 'pending_dean');
-        $this->submission(['B'], 'approved');
+        $approved = $this->submission(['B'], 'approved');
 
         $this->recall(['A'])->assertOk();
-        $this->recall(['B'])->assertOk();
+        $this->recall(['B'])->assertUnprocessable();
 
+        $this->assertSame('faculty_assignment', $this->meetingStatus('B'));
+        $this->assertSame('approved', $approved->refresh()->status);
         $notices = DB::table('system_notifications')->where('user_id', $this->dean->id)->where('type', 'schedule_withdrawn')->orderBy('id')->get();
+        $this->assertCount(1, $notices);
         $this->assertSame('Sections recalled from Dean review', $notices[0]->title);
         $this->assertStringContainsString('No sections remain for approval.', $notices[0]->message);
-        $this->assertSame('Schedule submission recalled', $notices[1]->title);
-        $this->assertStringContainsString('Recalled: BSIT 1B.', $notices[1]->message);
-        $this->assertStringNotContainsString('remain', $notices[1]->message);
     }
 
     public function test_a_failure_while_recording_history_rolls_the_whole_decision_back(): void

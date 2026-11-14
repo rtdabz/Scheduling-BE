@@ -7,6 +7,7 @@ use App\Models\Designation;
 use App\Models\Faculty;
 use App\Models\Program;
 use App\Models\User;
+use App\Support\AccountVersion;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
@@ -152,6 +153,7 @@ class UserFacultyProfileLinkingTest extends TestCase
         $this->assertDatabaseMissing('faculties', ['user_id' => $userId]);
 
         $this->actingAs($this->vpaa, 'sanctum')->putJson("/api/user/{$userId}", [
+            'expected_version' => AccountVersion::of(User::findOrFail($userId)),
             'first_name' => 'Renamed',
             'last_name' => 'Account',
             'email' => 'new.account@school.edu.ph',
@@ -167,6 +169,7 @@ class UserFacultyProfileLinkingTest extends TestCase
     {
         $userId = $this->createUser()->assertCreated()->json('data.id');
         $edit = fn (bool $active) => $this->actingAs($this->vpaa, 'sanctum')->putJson("/api/user/{$userId}", [
+            'expected_version' => AccountVersion::of(User::findOrFail($userId)),
             'first_name' => 'New',
             'last_name' => 'Account',
             'email' => 'new.account@school.edu.ph',

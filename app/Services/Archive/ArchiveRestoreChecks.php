@@ -8,9 +8,6 @@ use App\Models\Designation;
 use App\Models\Faculty;
 use App\Models\Program;
 use App\Models\Rooms;
-use App\Models\Schedule;
-use App\Models\ScheduleSplit;
-use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\AdministrativeRoleSlots;
@@ -20,8 +17,6 @@ use Illuminate\Database\Eloquent\Model;
 /**
  * Known restore preconditions, shared by the archive list, the detail view, and the restore
  * itself. Previews run unlocked and can go stale; the restore re-runs them under its locks.
- * Passing them does not prove a class schedule is valid: the rule engine and conflict scan
- * still decide that when the restore is submitted.
  */
 final class ArchiveRestoreChecks
 {
@@ -59,8 +54,6 @@ final class ArchiveRestoreChecks
                 Semester::query()->where('academic_year', $record->getAttribute('academic_year'))->where('semester', $record->getAttribute('semester')),
                 'An active semester already covers this academic year and term.',
             ),
-            'schedules' => $this->scheduleBlockers($record, $locked),
-            'schedule-splits' => $this->splitBlockers($record, $locked),
             default => [],
         };
 
@@ -93,11 +86,11 @@ final class ArchiveRestoreChecks
     private function archivedParents(Model $record, bool $locked): array
     {
         $departmentColumns = $record instanceof Course ? ['department_id', 'teaching_department_id'] : ['department_id'];
-        if ($record instanceof Departments || $record instanceof Designation || $record instanceof Semester || $record instanceof ScheduleSplit) {
+        if ($record instanceof Departments || $record instanceof Designation || $record instanceof Semester) {
             $departmentColumns = [];
         }
         $programColumns = match (true) {
-            $record instanceof Program, $record instanceof Departments, $record instanceof Designation, $record instanceof Semester, $record instanceof ScheduleSplit => [],
+            $record instanceof Program, $record instanceof Departments, $record instanceof Designation, $record instanceof Semester => [],
             $record instanceof Rooms => ['home_program_id'],
             $record instanceof Course => ['program_id', 'teaching_program_id', 'teaching_source_program_id'],
             default => ['program_id'],
@@ -138,11 +131,15 @@ final class ArchiveRestoreChecks
             return [];
         }
 
-        $label = AdministrativeRoleSlots::roleLabel($role);
+        // Name the holder's actual role: a Director blocks a Secretary restore (and vice versa).
+        $label = AdministrativeRoleSlots::roleLabel((string) $holder->role);
+        $shared = in_array($role, User::DEPARTMENT_OFFICE_ROLES, true)
+            ? ' A department has one Secretary or one Director, not both.'
+            : '';
 
         return [[
             'code' => 'role_occupied',
-            'message' => "{$holder->name} (@{$holder->username}) is already the active {$label} for this scope. Deactivate or archive that account first.",
+            'message' => "{$holder->name} (@{$holder->username}) is already the active {$label} for this scope.{$shared} Deactivate or archive that account first.",
             'record' => ['type' => 'users', 'id' => (int) $holder->id, 'label' => $holder->name, 'archived' => false],
         ]];
     }
@@ -161,60 +158,6 @@ final class ArchiveRestoreChecks
                 ->when($parentId === null, fn ($query) => $query->whereNull('parent_id'), fn ($query) => $query->where('parent_id', $parentId)),
             'A designation with this name already exists here. Rename it first.',
         );
-    }
-
-    /** @return list<array<string, mixed>> */
-    private function scheduleBlockers(Model $schedule, bool $locked): array
-    {
-        $blockers = [];
-        $semester = Semester::withTrashed()->find($schedule->getAttribute('semester_id'));
-        if ($semester === null || $semester->trashed()) {
-            $blockers[] = $semester === null
-                ? ['code' => 'missing_parent', 'message' => 'The semester this class belonged to no longer exists.']
-                : $this->parentBlocker('semesters', $semester, 'Restore the semester from Archives first.');
-        } elseif (! $semester->is_active) {
-            $blockers[] = [
-                'code' => 'inactive_semester',
-                'message' => 'This class belongs to a semester that is no longer active. Classes from past terms are kept in Schedule History and cannot be restored to the live timetable.',
-            ];
-        }
-        if (! Sections::whereKey($schedule->getAttribute('section_id'))->exists()) {
-            $blockers[] = ['code' => 'missing_parent', 'message' => 'The section this class belonged to was permanently removed, so the class cannot be restored.'];
-        }
-        foreach ([
-            [Course::class, 'courses', 'course_id', 'Restore the course from Archives first.'],
-            [Rooms::class, 'rooms', 'room_id', 'Restore the room from Archives first.'],
-            [Faculty::class, 'faculties', 'faculty_id', 'Restore the instructor from Archives first.'],
-        ] as [$modelClass, $type, $column, $message]) {
-            $parent = $this->archived($modelClass, $schedule->getAttribute($column), $locked);
-            if ($parent !== null) {
-                $blockers[] = $this->parentBlocker($type, $parent, $message);
-            }
-        }
-
-        return $blockers;
-    }
-
-    /** @return list<array<string, mixed>> */
-    private function splitBlockers(Model $split, bool $locked): array
-    {
-        $schedule = Schedule::withTrashed()->find($split->getAttribute('schedule_id'));
-        if ($schedule === null) {
-            return [['code' => 'missing_parent', 'message' => 'The class this meeting belonged to was permanently removed.']];
-        }
-        if ($schedule->trashed()) {
-            return [$this->parentBlocker('schedules', $schedule, 'Restore the class this meeting belongs to first. Restoring the class also restores its meeting splits.')];
-        }
-
-        $blockers = [...$this->archivedParents($schedule, $locked), ...$this->scheduleBlockers($schedule, $locked)];
-        if (! in_array($schedule->status, Schedule::PLOTTING_EDITABLE_STATUSES, true)) {
-            $blockers[] = ['code' => 'approval_stage', 'message' => 'This class is locked at its current approval stage. Recall it before restoring split metadata.'];
-        }
-
-        return [...$blockers, ...$this->liveDuplicate(
-            ScheduleSplit::query()->where('schedule_id', $schedule->id),
-            'This class already has live meeting split metadata.',
-        )];
     }
 
     /** @return list<array<string, mixed>> */

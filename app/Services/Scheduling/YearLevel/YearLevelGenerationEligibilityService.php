@@ -8,11 +8,9 @@ use Illuminate\Support\Collection;
 
 final class YearLevelGenerationEligibilityService
 {
-    public const BLOCKED_MESSAGE = 'Schedules for this year level have already been plotted. Generation is unavailable unless the entire year level is recalled.';
+    public const BLOCKED_MESSAGE = 'This year level includes schedules under review or already approved. Only editable sections can be regenerated.';
 
-    public const SECTIONS_BLOCKED_MESSAGE = 'Schedules for the selected sections have already moved past plotting. Generation is unavailable unless those sections are recalled.';
-
-    private const PLOTTING_STATUSES = ['draft', 'completed'];
+    public const SECTIONS_BLOCKED_MESSAGE = 'The selected sections include schedules under review or already approved. Only editable sections can be regenerated.';
 
     /**
      * @param  Collection<int, Sections>  $sections
@@ -35,17 +33,8 @@ final class YearLevelGenerationEligibilityService
         }
 
         $statuses = $statusesBySection->flatten()->pluck('status');
-        if (! $statuses->contains('revision')) {
-            return $statuses->every(
-                static fn (string $status): bool => in_array($status, self::PLOTTING_STATUSES, true),
-            );
-        }
-
-        return $sectionIds->every(function (int $sectionId) use ($statusesBySection): bool {
-            $statuses = $statusesBySection->get($sectionId, collect())->pluck('status');
-
-            return $statuses->isNotEmpty()
-                && $statuses->every(static fn (string $status): bool => $status === 'revision');
-        });
+        return $statuses->every(
+            static fn (string $status): bool => in_array($status, Schedule::PLOTTING_EDITABLE_STATUSES, true),
+        );
     }
 }

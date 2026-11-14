@@ -13,6 +13,7 @@ use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Domain\SchedulingSnapshot;
 use App\Services\Scheduling\Recommendations\GenerationAdjustmentInterpreter;
+use App\Services\Scheduling\Recommendations\PlacementGroupValidator;
 use App\Services\Scheduling\Recommendations\Providers\PlacementRecommendationProvider;
 use App\Services\Scheduling\Recommendations\RecommendationContext;
 use App\Services\Scheduling\Recommendations\RecommendationEngine;
@@ -414,7 +415,14 @@ class PlacementRecommendationGroupTest extends TestCase
             $otherSection->save();
             $online = Schedule::create([...$this->identified($f, []), 'section_id' => $otherSection->id,
                 'day' => 'Wednesday', 'start_time' => '07:00', 'end_time' => '08:30', 'mode' => 'online']);
-            $this->assertSame([], $this->manual($f, $rows, $payload)->assertOk()->json('recommendations'), 'The same online course cannot overlap another section.');
+            // Online is shared: another section taking the same course online at
+            // that time does not block the recommendation.
+            $shared = $this->manual($f, $rows, $payload)->assertOk()->json('recommendations');
+            $this->assertNotEmpty($shared, 'The same online course may run for another section at once.');
+            $this->assertContains(['Wednesday', '07:00:00'], array_map(
+                static fn (array $row): array => [$row['day'], $row['start_time']],
+                array_merge(...array_column($shared, 'rows')),
+            ));
             $online->delete();
         }
         $old = Schedule::create([...$this->identified($f, $rows[0]), 'split_group_id' => null]);
@@ -542,6 +550,44 @@ class PlacementRecommendationGroupTest extends TestCase
             $this->booking($f, $day, '00:00', '23:30')->update(['section_id' => $otherSection->id, 'room_id' => $lab->id]);
         }
         $this->assertSame([], $this->manual($f, $rows, [...$payload, 'ignore_schedule_ids' => $ids])->assertOk()->json('recommendations'), 'An online lecture does not fix a laboratory shortage.');
+    }
+
+    public function test_pinned_integrated_components_are_validated_and_probed_only_on_their_required_days(): void
+    {
+        $f = $this->fixture();
+        $f['course']->update(['course_category' => 'minor', 'lecture_hours' => 2, 'lab_hours' => 1, 'room_type_required' => 'laboratory']);
+        $lab = Rooms::create(['room_code' => 'LAB', 'building' => 'IT', 'room_type' => 'laboratory', 'status' => 'available', 'department_id' => $f['department']->id]);
+        $otherSection = $f['section']->replicate();
+        $otherSection->section_name = 'Other';
+        $otherSection->save();
+        foreach (SchedulingPolicy::PERSISTABLE_DAYS as $day) {
+            $this->booking($f, $day, '00:00', '23:30')->update(['section_id' => $otherSection->id]);
+        }
+        $rows = [
+            [...$this->pair($f)[0], 'start_time' => '07:00', 'end_time' => '09:00', 'preferred_pattern' => 'days:0-2'],
+            [...$this->pair($f)[1], 'start_time' => '07:00', 'end_time' => '08:00', 'meeting_type' => 'laboratory', 'room_id' => $lab->id, 'preferred_pattern' => 'days:0-2'],
+        ];
+        $snapshot = app(SchedulingSnapshotRepository::class)->capture($f['semester']->id, $f['department']->id, [$f['section']->id], [$f['course']->id]);
+
+        // A Minor lecture + laboratory course gets Integrated Hybrid too, with the laboratory held on its pinned day.
+        $config = ['course_ids' => [$f['course']->id], 'selected_split_session_course_ids' => [$f['course']->id],
+            'delivery_modes_by_course_id' => [$f['course']->id => 'on-site'], 'requirements_by_course_id' => [$f['course']->id => [
+                ['component_type' => 'lecture', 'duration_slots' => 4, 'allowed_delivery_modes' => ['on-site']],
+                ['component_type' => 'laboratory', 'duration_slots' => 2, 'allowed_delivery_modes' => ['on-site'], 'required_day' => 'Thursday'],
+            ]]];
+        $generation = app(RecommendationEngine::class)->recommend(new RecommendationContext(RecommendationSource::Search, [
+            'snapshot' => $snapshot, 'bottleneck' => null, 'strategies' => [], 'configsBySectionId' => [$f['section']->id => $config],
+        ]))->legacyPayload;
+        $option = collect($generation)->firstWhere('title', 'Integrated Hybrid');
+        $this->assertNotNull($option);
+        $witness = $option['group_witness'];
+        $this->assertSame('Thursday', collect($witness)->firstWhere('meeting_type', 'laboratory')['day']);
+
+        $validator = app(PlacementGroupValidator::class);
+        $this->assertTrue($validator->passes($snapshot, $witness, componentDays: ['laboratory' => 'Thursday']));
+        $this->assertFalse($validator->passes($snapshot, $witness, componentDays: ['laboratory' => 'Friday']), 'A laboratory off its Required Day is not a valid group.');
+        $lecture = array_values(array_filter($witness, static fn (array $row): bool => $row['meeting_type'] === 'lecture'));
+        $this->assertFalse($validator->passes($snapshot, $lecture, componentDays: ['laboratory' => 'Thursday']), 'A missing pinned component is not a valid group.');
     }
 
     #[DataProvider('enhancementFallbackDays')]

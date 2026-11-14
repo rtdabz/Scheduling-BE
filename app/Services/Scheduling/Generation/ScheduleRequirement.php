@@ -16,9 +16,9 @@ final readonly class ScheduleRequirement
         public int $durationSlots,
         public array $eligibleRoomTypes,
         public array $allowedDeliveryModes,
-        public bool $allowLectureLaboratoryFallback = false,
         public bool $isSplitComponent = false,
         public ?int $preferredRoomId = null,
+        public ?string $requiredDay = null,
     ) {}
 
     /** @param array<string, mixed> $payload */
@@ -30,9 +30,9 @@ final readonly class ScheduleRequirement
             durationSlots: (int) ($payload['duration_slots'] ?? 0),
             eligibleRoomTypes: array_values(array_map('strval', (array) ($payload['eligible_room_types'] ?? []))),
             allowedDeliveryModes: array_values(array_map('strval', (array) ($payload['allowed_delivery_modes'] ?? []))),
-            allowLectureLaboratoryFallback: (bool) ($payload['allow_lecture_laboratory_fallback'] ?? false),
             isSplitComponent: (bool) ($payload['is_split_component'] ?? false),
             preferredRoomId: isset($payload['preferred_room_id']) ? (int) $payload['preferred_room_id'] : null,
+            requiredDay: isset($payload['required_day']) && $payload['required_day'] !== '' ? (string) $payload['required_day'] : null,
         );
     }
 
@@ -45,9 +45,11 @@ final readonly class ScheduleRequirement
             'duration_slots' => $this->durationSlots,
             'eligible_room_types' => $this->eligibleRoomTypes,
             'allowed_delivery_modes' => $this->allowedDeliveryModes,
-            'allow_lecture_laboratory_fallback' => $this->allowLectureLaboratoryFallback,
             'is_split_component' => $this->isSplitComponent,
             'preferred_room_id' => $this->preferredRoomId,
+            // Only pinned Integrated components carry a day, so unpinned
+            // requirements (and their cache identity) are unchanged.
+            ...($this->requiredDay === null ? [] : ['required_day' => $this->requiredDay]),
         ];
     }
 }

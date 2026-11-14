@@ -44,4 +44,16 @@ return [
 
     'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
 
+    /*
+     * Approximate IP geolocation for the Activity Log "Login Locations" view.
+     * Only the client IP is sent to the provider; coordinates are rounded to ~1 km
+     * and location rows are pruned after the retention window (audit rows are kept).
+     */
+    'ip_geolocation' => [
+        'enabled' => (bool) env('IP_GEOLOCATION_ENABLED', true),
+        'provider' => env('IP_GEOLOCATION_PROVIDER', 'ipapi'), // ipapi (ipapi.co, HTTPS) | ip-api (ip-api.com, flags VPN/hosting)
+        'timeout' => (int) env('IP_GEOLOCATION_TIMEOUT', 3),
+        'retention_days' => (int) env('IP_GEOLOCATION_RETENTION_DAYS', 90),
+    ],
+
 ];

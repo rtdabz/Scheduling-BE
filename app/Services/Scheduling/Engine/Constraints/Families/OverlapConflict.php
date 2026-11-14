@@ -64,23 +64,6 @@ final class OverlapConflict
                     $this->booking($other, $snapshot),
                 ), context: $context);
             }
-
-            if ($row->mode === 'online'
-                && ConstraintSupport::stringValue($other, 'mode') === 'online'
-                && $row->courseId === ConstraintSupport::intValue($other, 'course_id')
-                && $row->sectionId !== $otherSectionId) {
-                $violations['subject_section_time_conflict'] ??= ConstraintSupport::violation(
-                    'subject_section_time_conflict',
-                    ConflictMessage::onlineCourse(
-                        $this->courseCode($row->courseId, $snapshot),
-                        $row->day,
-                        $row->startTime,
-                        $row->endTime,
-                        $this->booking($other, $snapshot),
-                    ),
-                    context: $context,
-                );
-            }
         }
 
         return array_values($violations);

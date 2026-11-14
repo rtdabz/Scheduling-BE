@@ -3,6 +3,7 @@
 namespace App\Services\Scheduling\Engine\Rules;
 
 use App\Models\Schedule;
+use App\Services\Scheduling\Support\ConflictMessage;
 
 final class InstructorConflictRule
 {
@@ -37,7 +38,8 @@ final class InstructorConflictRule
 
         return [
             'rule' => 'faculty_conflict',
-            'message' => "Faculty is already teaching on {$day} from {$conflict->start_time} to {$conflict->end_time} "
+            'message' => "Faculty is already teaching on {$day} from ".ConflictMessage::time((string) $conflict->start_time)
+                .' to '.ConflictMessage::time((string) $conflict->end_time).' '
                 ."for {$conflict->course?->course_code} ({$conflict->section?->section_name}).",
             'conflicting_schedule_id' => $conflict->id,
             'conflicting_schedule_ids' => $conflicts->pluck('id')->map(static fn ($id): int => (int) $id)->all(),

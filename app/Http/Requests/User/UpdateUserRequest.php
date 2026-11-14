@@ -4,6 +4,7 @@ namespace App\Http\Requests\User;
 
 use App\Models\Faculty;
 use App\Models\User;
+use App\Support\PersonName;
 use App\Support\ProfilePicture;
 use Illuminate\Auth\Access\Response;
 use Illuminate\Foundation\Http\FormRequest;
@@ -22,12 +23,14 @@ class UpdateUserRequest extends FormRequest
     public function rules(): array
     {
         return [
+            'expected_version' => ['required', 'string', 'size:64'],
             'first_name' => 'required|string|max:100',
             'middle_initial' => ['nullable', 'string', 'size:1', 'alpha'],
             'last_name' => 'required|string|max:100',
             'suffix' => ['nullable', Rule::in(Faculty::NAME_SUFFIXES)],
+            ...PersonName::affixRules(),
             'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($this->targetUser()->id)],
-            'role' => 'required|string|in:dean,program_head,secretary',
+            'role' => 'required|string|in:dean,program_head,secretary,director',
             'is_active' => 'required|boolean',
             'allow_google_login' => 'sometimes|boolean',
             'department_id' => 'required|exists:departments,id,deleted_at,NULL',
@@ -38,6 +41,12 @@ class UpdateUserRequest extends FormRequest
                 Rule::exists('programs', 'id')->whereNull('deleted_at')->where(fn ($query) => $query->where('department_id', $this->input('department_id'))),
             ],
         ];
+    }
+
+    /** @return array<string, string> */
+    public function messages(): array
+    {
+        return PersonName::affixMessages();
     }
 
     private function targetUser(): User

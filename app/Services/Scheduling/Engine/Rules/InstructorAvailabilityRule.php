@@ -37,31 +37,48 @@ final class InstructorAvailabilityRule
         }
 
         $day = (string) ($attempt['day'] ?? '');
-        $dayIndex = self::DAY_INDEX[$day] ?? null;
-
-        if ($faculty->employment_type === 'part-time' && $dayIndex !== null) {
-            $start = SchedulingPolicy::normalizeTime((string) ($attempt['start_time'] ?? '00:00'));
-            $end = SchedulingPolicy::normalizeTime((string) ($attempt['end_time'] ?? '00:00'));
-
-            $recorded = $faculty->availabilities()->get();
-            $windows = $recorded
-                ->filter(static fn ($window): bool => (int) $window->day_index === $dayIndex)
-                ->map(static fn ($window): array => [
-                    SchedulingPolicy::normalizeTime((string) $window->start_time),
-                    SchedulingPolicy::normalizeTime((string) $window->end_time),
-                ])
-                ->values()
-                ->all();
-
-            if ($recorded->isNotEmpty() && ! self::coveredContinuously($windows, $start, $end)) {
-                $violations[] = [
-                    'rule' => 'part_time_faculty_availability',
-                    'message' => 'The selected assignment falls outside the instructor\'s availability window for '.$day.'.',
-                ];
-            }
+        if (self::outsideAvailability(
+            $faculty->employment_type,
+            $faculty->availabilities()->get(),
+            $day,
+            (string) ($attempt['start_time'] ?? '00:00'),
+            (string) ($attempt['end_time'] ?? '00:00'),
+        )) {
+            $violations[] = self::violation($day);
         }
 
         return $violations;
+    }
+
+    /**
+     * True when the meeting is not fully covered by the instructor's default
+     * hours plus added windows for that day. Shared by the rule engine, the
+     * snapshot kernel and the availability-change impact check.
+     *
+     * @param  iterable<array<string, mixed>|object>  $addedWindows
+     */
+    public static function outsideAvailability(?string $employmentType, iterable $addedWindows, string $day, string $startTime, string $endTime): bool
+    {
+        $dayIndex = self::DAY_INDEX[$day] ?? null;
+        if ($dayIndex === null) {
+            return false;
+        }
+
+        return ! self::coveredContinuously(
+            SchedulingPolicy::facultyDayWindows($employmentType, $addedWindows, $dayIndex),
+            SchedulingPolicy::normalizeTime($startTime),
+            SchedulingPolicy::normalizeTime($endTime),
+        );
+    }
+
+    /** @return array{rule: string, message: string} */
+    public static function violation(string $day): array
+    {
+        return [
+            'rule' => 'part_time_faculty_availability',
+            'message' => 'The selected assignment falls outside the instructor\'s availability for '.$day
+                .' (default hours for their employment type plus any added windows).',
+        ];
     }
 
     /**

@@ -11,6 +11,7 @@ use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\TeachingHistoryArchive;
 use App\Services\UserFacultyProfileService;
 use App\Support\ApiCache;
+use App\Support\PersonName;
 use App\Support\ProfilePicture;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -65,6 +66,7 @@ class FacultyController extends Controller
             'last_name' => 'required|string|max:255',
             'middle_name' => 'nullable|string|max:255',
             'suffix' => ['nullable', Rule::in(self::NAME_SUFFIXES)],
+            ...PersonName::affixRules(),
             'employment_type' => 'required|in:full-time,part-time',
             'max_units' => 'sometimes|integer|min:0',
             'overload_units' => 'nullable|integer|min:0',
@@ -73,7 +75,7 @@ class FacultyController extends Controller
             'program_id' => $this->programRule($departmentId ?? $request->input('department_id')),
             'status' => 'nullable|in:active,inactive',
             'profile_picture' => ProfilePicture::rules(),
-        ]);
+        ], PersonName::affixMessages());
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
@@ -244,6 +246,7 @@ class FacultyController extends Controller
                 'last_name' => 'sometimes|required|string|max:255',
                 'middle_name' => 'nullable|string|max:255',
                 'suffix' => ['nullable', Rule::in(self::NAME_SUFFIXES)],
+                ...PersonName::affixRules(),
                 'employment_type' => 'sometimes|required|in:full-time,part-time',
                 'department_id' => 'sometimes|required|exists:departments,id,deleted_at,NULL',
                 'program_id' => $this->programRule(
@@ -256,7 +259,7 @@ class FacultyController extends Controller
             ];
         }
 
-        $validator = Validator::make($request->all(), $rules);
+        $validator = Validator::make($request->all(), $rules, PersonName::affixMessages());
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
@@ -265,6 +268,15 @@ class FacultyController extends Controller
         $payload = $validator->validated();
         if (! $loadOnly && $departmentId !== null) {
             $payload['department_id'] = $departmentId;
+        }
+        // A program belongs to one department; moving departments without naming a new
+        // program must not keep the old one (null lets the model pick a sole program).
+        if (
+            isset($payload['department_id'])
+            && (int) $payload['department_id'] !== (int) $faculty->department_id
+            && ! array_key_exists('program_id', $payload)
+        ) {
+            $payload['program_id'] = null;
         }
 
         $renames = array_intersect_key($payload, array_flip(['first_name', 'middle_name', 'last_name', 'suffix', 'department_id']));
@@ -282,12 +294,27 @@ class FacultyController extends Controller
         }
 
         DB::transaction(function () use ($faculty, $payload, $submitsDesignation, $designationIds): void {
+            // A new employment type changes the default hours; refuse it while
+            // assigned classes would fall outside the new availability.
+            if (isset($payload['employment_type']) && $payload['employment_type'] !== $faculty->employment_type) {
+                $current = Faculty::query()->whereKey($faculty->id)->lockForUpdate()->firstOrFail();
+                app(\App\Services\Scheduling\FacultyAvailabilityImpact::class)->assertNoneOutside(
+                    $current,
+                    (string) $payload['employment_type'],
+                    $current->availabilities()->get(),
+                    'employment_type',
+                );
+            }
             $faculty->update($payload);
+            if (array_intersect_key($payload, array_flip(PersonName::AFFIX_FIELDS)) !== []) {
+                app(UserFacultyProfileService::class)->pushAffixesToAccount($faculty);
+            }
             if ($submitsDesignation) {
                 $this->designations->sync($faculty, $designationIds);
             }
         });
-        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
+        // Employment type drives standard hours, which instructor assignment shows.
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data', 'instructor_assignments.index']);
 
         return response()->json($this->present($faculty->refresh()));
     }

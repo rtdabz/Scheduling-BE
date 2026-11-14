@@ -4,10 +4,13 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\InstitutionSetting;
+use App\Models\SchedulingAuditLog;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class InstitutionSettingsController extends Controller
 {
@@ -19,7 +22,14 @@ class InstitutionSettingsController extends Controller
             fn () => $this->signatory(InstitutionSetting::current()),
         );
 
-        return response()->json($settings);
+        return response()->json([
+            ...(array) $settings,
+            // Applied automatically by employment type; added windows extend it.
+            'default_faculty_availability' => [
+                'full-time' => SchedulingPolicy::standardFacultyHours('full-time'),
+                'part-time' => SchedulingPolicy::standardFacultyHours('part-time'),
+            ],
+        ]);
     }
 
     public function update(Request $request): JsonResponse
@@ -29,13 +39,21 @@ class InstitutionSettingsController extends Controller
             'president_title' => ['sometimes', 'required', 'string', 'max:150'],
         ]);
 
-        $settings = InstitutionSetting::current();
+        $settings = DB::transaction(function () use ($request, $validated): InstitutionSetting {
+            $settings = InstitutionSetting::query()->whereKey(InstitutionSetting::current()->id)->lockForUpdate()->firstOrFail();
+            $before = $this->signatory($settings);
+            foreach ($validated as $field => $value) {
+                $settings->{$field} = trim($value);
+            }
+            $settings->save();
+            SchedulingAuditLog::create([
+                'user_id' => $request->user()->id,
+                'action' => 'institution_signatories_updated',
+                'metadata' => ['target' => ['type' => 'institution_settings', 'id' => $settings->id], 'before' => $before, 'after' => $this->signatory($settings)],
+            ]);
 
-        foreach ($validated as $field => $value) {
-            $settings->{$field} = trim($value);
-        }
-
-        $settings->save();
+            return $settings;
+        });
         ApiCache::forgetGroups(['institution.settings', 'initial.data']);
 
         return response()->json([

@@ -232,23 +232,24 @@ class InstructorManagementTest extends TestCase
         $this->actingAs($f['vpaa'])
             ->putJson("/api/faculties/{$f['faculty']->id}/availabilities", [
                 'availabilities' => [
-                    ['day_index' => 0, 'start_time' => '08:00', 'end_time' => '12:00'],
-                    ['day_index' => 0, 'start_time' => '13:00', 'end_time' => '16:00'],
-                    ['day_index' => 5, 'start_time' => '08:00', 'end_time' => '17:00'],
+                    // Weekdays are already covered by the full-time default.
+                    ['day_index' => 5, 'start_time' => '08:00', 'end_time' => '12:00'],
+                    ['day_index' => 5, 'start_time' => '13:00', 'end_time' => '16:00'],
+                    ['day_index' => 6, 'start_time' => '08:00', 'end_time' => '17:00'],
                 ],
             ])
             ->assertOk()
             ->assertJsonCount(3, 'availabilities')
-            ->assertJsonPath('availabilities.0.day_label', 'Monday');
+            ->assertJsonPath('availabilities.0.day_label', 'Saturday');
 
         // A replace is a whole-week replace, not an append.
         $this->actingAs($f['vpaa'])
             ->putJson("/api/faculties/{$f['faculty']->id}/availabilities", [
-                'availabilities' => [['day_index' => 2, 'start_time' => '09:00', 'end_time' => '11:00']],
+                'availabilities' => [['day_index' => 6, 'start_time' => '09:00', 'end_time' => '11:00']],
             ])
             ->assertOk()
             ->assertJsonCount(1, 'availabilities')
-            ->assertJsonPath('availabilities.0.day_label', 'Wednesday');
+            ->assertJsonPath('availabilities.0.day_label', 'Sunday');
 
         $this->assertSame(1, $f['faculty']->availabilities()->count());
     }
@@ -282,7 +283,7 @@ class InstructorManagementTest extends TestCase
     public function test_availability_is_writable_only_with_the_assignment_capability(): void
     {
         $f = $this->fixture();
-        $window = ['availabilities' => [['day_index' => 3, 'start_time' => '08:00', 'end_time' => '10:00']]];
+        $window = ['availabilities' => [['day_index' => 5, 'start_time' => '08:00', 'end_time' => '10:00']]];
 
         $granted = User::factory()->create(['role' => 'secretary', 'department_id' => $f['department']->id]);
         $this->actingAs($granted)
@@ -326,12 +327,8 @@ class InstructorManagementTest extends TestCase
         );
     }
 
-    /**
-     * The rule requires the attempt to fit inside a window for that day, so an
-     * empty window set blocks a part-timer everywhere. That makes the editor the
-     * only way such an instructor becomes assignable at all.
-     */
-    public function test_a_part_timer_without_windows_is_unrestricted(): void
+    /** Without added windows a part-timer follows the default weekday-evening hours. */
+    public function test_a_part_timer_without_windows_follows_the_default_hours(): void
     {
         $f = $this->fixture();
         $f['faculty']->update(['employment_type' => 'part-time']);
@@ -349,7 +346,7 @@ class InstructorManagementTest extends TestCase
             'mode' => 'on-site',
         ]);
 
-        $this->assertNotContains('part_time_faculty_availability', array_column($violations, 'rule'));
+        $this->assertContains('part_time_faculty_availability', array_column($violations, 'rule'));
     }
 
     public function test_a_class_inside_a_window_clears_the_availability_rule(): void
@@ -392,6 +389,102 @@ class InstructorManagementTest extends TestCase
             ->postJson('/api/faculties', $this->payload($f) + ['program_id' => $foreign->id])
             ->assertStatus(422)
             ->assertJsonValidationErrors('program_id');
+    }
+
+    public function test_an_instructor_may_have_no_specific_program_when_the_department_has_several(): void
+    {
+        $f = $this->fixture();
+        Program::create(['department_id' => $f['department']->id, 'code' => 'BSA', 'name' => 'Accountancy']);
+        $bsba = Program::create(['department_id' => $f['department']->id, 'code' => 'BSBA', 'name' => 'Business Admin']);
+
+        $id = $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', $this->payload($f) + ['program_id' => null])
+            ->assertCreated()
+            ->assertJsonPath('program_id', null)
+            ->json('id');
+
+        $this->actingAs($f['vpaa'])
+            ->putJson("/api/faculties/{$id}", ['program_id' => $bsba->id])
+            ->assertOk()
+            ->assertJsonPath('program_id', $bsba->id);
+
+        $this->actingAs($f['vpaa'])
+            ->putJson("/api/faculties/{$id}", ['program_id' => null])
+            ->assertOk()
+            ->assertJsonPath('program_id', null);
+    }
+
+    public function test_department_stays_required_when_the_program_is_left_empty(): void
+    {
+        $f = $this->fixture();
+        $payload = $this->payload($f);
+        unset($payload['department_id']);
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', $payload + ['program_id' => null])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('department_id');
+
+        $this->actingAs($f['vpaa'])
+            ->putJson("/api/faculties/{$f['faculty']->id}", ['department_id' => null, 'program_id' => null])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('department_id');
+
+        $this->assertSame($f['department']->id, (int) $f['faculty']->fresh()->department_id);
+    }
+
+    public function test_the_only_program_of_a_department_is_selected_automatically(): void
+    {
+        $f = $this->fixture();
+        $sole = Program::create(['department_id' => $f['department']->id, 'code' => 'BSBA', 'name' => 'Business Admin']);
+
+        $this->actingAs($f['vpaa'])
+            ->postJson('/api/faculties', $this->payload($f) + ['program_id' => null])
+            ->assertCreated()
+            ->assertJsonPath('program_id', $sole->id);
+    }
+
+    public function test_moving_an_instructor_to_another_department_drops_the_old_program(): void
+    {
+        $f = $this->fixture();
+        $own = Program::create(['department_id' => $f['department']->id, 'code' => 'BSBA', 'name' => 'Business Admin']);
+        Program::create(['department_id' => $f['department']->id, 'code' => 'BSA', 'name' => 'Accountancy']);
+        $f['faculty']->update(['program_id' => $own->id]);
+        $target = Departments::create(['department_name' => 'Education', 'department_code' => 'CED']);
+        Program::create(['department_id' => $target->id, 'code' => 'BEED', 'name' => 'Elementary']);
+        Program::create(['department_id' => $target->id, 'code' => 'BSED', 'name' => 'Secondary']);
+
+        $this->actingAs($f['vpaa'])
+            ->putJson("/api/faculties/{$f['faculty']->id}", ['department_id' => $target->id])
+            ->assertOk()
+            ->assertJsonPath('department_id', $target->id)
+            ->assertJsonPath('program_id', null);
+    }
+
+    public function test_account_sync_keeps_the_instructor_program_of_a_non_program_head(): void
+    {
+        $f = $this->fixture();
+        $bsba = Program::create(['department_id' => $f['department']->id, 'code' => 'BSBA', 'name' => 'Business Admin']);
+        Program::create(['department_id' => $f['department']->id, 'code' => 'BSA', 'name' => 'Accountancy']);
+        $dean = User::factory()->create(['role' => 'dean', 'department_id' => $f['department']->id, 'program_id' => null]);
+        $f['faculty']->update(['user_id' => $dean->id, 'program_id' => $bsba->id]);
+
+        app(UserFacultyProfileService::class)->sync($dean->fresh());
+
+        $this->assertSame($bsba->id, (int) $f['faculty']->fresh()->program_id);
+    }
+
+    public function test_account_sync_applies_a_program_heads_program(): void
+    {
+        $f = $this->fixture();
+        Program::create(['department_id' => $f['department']->id, 'code' => 'BSBA', 'name' => 'Business Admin']);
+        $bsa = Program::create(['department_id' => $f['department']->id, 'code' => 'BSA', 'name' => 'Accountancy']);
+        $head = User::factory()->create(['role' => 'program_head', 'department_id' => $f['department']->id, 'program_id' => $bsa->id]);
+        $f['faculty']->update(['user_id' => $head->id, 'program_id' => null]);
+
+        app(UserFacultyProfileService::class)->sync($head->fresh());
+
+        $this->assertSame($bsa->id, (int) $f['faculty']->fresh()->program_id);
     }
 
     public function test_program_head_faculty_index_is_scoped_to_the_assigned_program(): void

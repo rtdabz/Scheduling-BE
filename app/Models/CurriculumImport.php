@@ -2,10 +2,17 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesApprovalActors;
 use Illuminate\Database\Eloquent\Model;
 
 class CurriculumImport extends Model
 {
+    use PreservesApprovalActors;
+
+    public const RECORDED_ACTORS = ['user_id' => null];
+
+    public const REPEATABLE_ACTORS = [];
+
     protected $table = 'curriculum_imports';
 
     protected $fillable = [
@@ -14,6 +21,7 @@ class CurriculumImport extends Model
     ];
 
     protected $casts = [
+        'actor_snapshots' => 'array',
         'curriculum_id' => 'integer',
         'department_id' => 'integer',
         'user_id' => 'integer',

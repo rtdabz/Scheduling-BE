@@ -44,15 +44,27 @@ class AuthController extends Controller
             ->first();
 
         if (! $user || ! Hash::check($credentials['password'], $user->password)) {
+            $this->recordFailedLogin($request, $user, 'password', $user ? 'invalid_password' : 'unknown_account');
+
             return response()->json(['message' => 'Invalid credentials'], 401);
         }
 
         if (! $user->is_active) {
+            $this->recordFailedLogin($request, $user, 'password', 'account_disabled');
+
             return response()->json(['message' => 'This account has been disabled. Contact the VPAA office.'], 403);
         }
 
         if (! $this->capabilities->supportsRole((string) $user->role)) {
+            $this->recordFailedLogin($request, $user, 'password', 'role_unsupported');
+
             return response()->json(['message' => 'This account role is no longer supported. Contact the VPAA office.'], 403);
+        }
+
+        if ($user->awaitingRoleReview()) {
+            $this->recordFailedLogin($request, $user, 'password', 'role_review_pending');
+
+            return response()->json(['message' => User::ROLE_REVIEW_MESSAGE], 403);
         }
 
         return $this->authenticatedResponse($request, $user, 'password');
@@ -144,18 +156,32 @@ class AuthController extends Controller
             ->first();
 
         if (! $user) {
+            $this->recordFailedLogin($request, null, 'google', 'unknown_account');
+
             return $this->googleErrorRedirect($frontendUrl, 'No active account matches this institutional Google email.');
         }
 
         if (! $user->is_active) {
+            $this->recordFailedLogin($request, $user, 'google', 'account_disabled');
+
             return $this->googleErrorRedirect($frontendUrl, 'This account has been disabled. Contact the VPAA office.');
         }
 
         if (! $this->capabilities->supportsRole((string) $user->role)) {
+            $this->recordFailedLogin($request, $user, 'google', 'role_unsupported');
+
             return $this->googleErrorRedirect($frontendUrl, 'This account role is no longer supported. Contact the VPAA office.');
         }
 
+        if ($user->awaitingRoleReview()) {
+            $this->recordFailedLogin($request, $user, 'google', 'role_review_pending');
+
+            return $this->googleErrorRedirect($frontendUrl, User::ROLE_REVIEW_MESSAGE);
+        }
+
         if (strtolower((string) $user->email) !== $email) {
+            $this->recordFailedLogin($request, $user, 'google', 'email_mismatch');
+
             return $this->googleErrorRedirect($frontendUrl, 'The Google email does not match the approved account email.');
         }
 
@@ -191,7 +217,7 @@ class AuthController extends Controller
             ? User::find($exchange['user_id'])
             : null;
 
-        if (! $user || ! $user->is_active || ! $this->capabilities->supportsRole((string) ($user->role ?? ''))) {
+        if (! $user || ! $user->is_active || ! $this->capabilities->supportsRole((string) ($user->role ?? '')) || $user->awaitingRoleReview()) {
             return response()->json(['message' => 'The Google login request is invalid or expired.'], 401);
         }
 
@@ -270,13 +296,31 @@ class AuthController extends Controller
 
     private function userPayload(User $user): array
     {
+        $programCount = $user->department_id === null
+            ? 0
+            : Program::query()->where('department_id', $user->department_id)->count();
+
         return array_merge($user->load(['department', 'program'])->toArray(), [
             'permissions' => $user->capabilityNames(),
             'capability_catalog' => $this->capabilities->catalogFor($user),
             'modules' => $this->capabilities->modulesFor($user),
-            'scheduling_ready' => $user->department_id === null || Program::query()->where('department_id', $user->department_id)->exists(),
+            'scheduling_ready' => $user->department_id === null || $programCount > 0,
+            'department_program_count' => $programCount,
             'can_edit_program_ids' => app(ScheduleAuthorizationService::class)->writableProgramIdsFor($user),
         ]);
+    }
+
+    /**
+     * Failed attempts go through the same append-only audit trail as successful ones. The typed
+     * username is never stored (people paste passwords into it); a matched account is the subject.
+     */
+    private function recordFailedLogin(Request $request, ?User $user, string $method, string $reason): void
+    {
+        try {
+            $this->audit->record($request, 'login_failed', $user, ['method' => $method, 'reason' => $reason]);
+        } catch (Throwable $exception) {
+            report($exception);
+        }
     }
 
     private function googleErrorRedirect(string $frontendUrl, string $message): RedirectResponse

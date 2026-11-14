@@ -45,15 +45,23 @@ final class SectionLoadConstraints
                 ));
 
         $total = self::minutes($row);
+        $linkedMeetings = 1;
+        $groupId = trim((string) $row->splitGroupId);
         foreach ($sameSection as $other) {
             if (ConstraintSupport::intValue($other, 'course_id') === $row->courseId && $counts($other)) {
                 $total += self::minutes($other);
+                if ($groupId !== ''
+                    && ConstraintSupport::stringValue($other, 'split_group_id') === $groupId
+                    && SchedulingPolicy::consecutiveDayCount(ConstraintSupport::stringValue($other, 'preferred_pattern')) !== null) {
+                    $linkedMeetings++;
+                }
             }
         }
 
-        $allowed = $isIntegratedSession
+        $allowed = ($isIntegratedSession
             ? SchedulingPolicy::componentMinutes($course, $row->meetingType)
-            : SchedulingPolicy::courseDurationMinutes($course);
+            : SchedulingPolicy::courseDurationMinutes($course))
+            * SchedulingPolicy::durationAllowanceRepeats($row->preferredPattern, $groupId, $linkedMeetings);
         if ($allowed <= 0) {
             return null;
         }

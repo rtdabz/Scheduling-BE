@@ -38,11 +38,11 @@ class ConsecutiveDaysYearLevelGenerationTest extends TestCase
         foreach ($runs as $sectionRows) {
             $days = $sectionRows->pluck('day')->all();
             sort($days);
-            // Every section meets on the ticked days, sharing its 3 hours: one hour each day.
+            // Every section meets on the ticked days for its full 3 hours each day.
             $this->assertSame(['Monday', 'Tuesday', 'Wednesday'], $days);
             $this->assertCount(1, $sectionRows->pluck('split_group_id')->unique());
             $this->assertCount(1, $sectionRows->pluck('start_time')->unique());
-            $this->assertSame(60, SchedulingPolicy::timeToMinutes($sectionRows->first()['end_time']) - SchedulingPolicy::timeToMinutes($sectionRows->first()['start_time']));
+            $this->assertSame(180, SchedulingPolicy::timeToMinutes($sectionRows->first()['end_time']) - SchedulingPolicy::timeToMinutes($sectionRows->first()['start_time']));
         }
         // One laboratory: the two sections share it at different times.
         $this->assertCount(2, $runs->map(static fn ($sectionRows) => $sectionRows->first()['start_time'])->unique());
@@ -74,10 +74,59 @@ class ConsecutiveDaysYearLevelGenerationTest extends TestCase
     }
 
     /**
+     * PRAC 101 regression: a 6-hour course on 3 selected days meets 6 hours every day, 18 hours in
+     * all, in the preview and after the wizard's batch save; academic units stay at 6.
+     */
+    public function test_prac_101_repeats_its_six_hours_on_each_of_three_days_through_save(): void
+    {
+        [$user, $payload, $practicum] = $this->scenario(['PRAC 1A'], clinicalHours: 6, clinicalCode: 'PRAC 101');
+
+        $preview = $this->actingAs($user)->postJson('/api/schedule-recommendations/year-level-preview', $payload);
+
+        $this->assertSame(200, $preview->status(), json_encode($preview->json(), JSON_PRETTY_PRINT));
+        $rows = collect($preview->json('schedules'))->where('course_id', (int) $practicum->id)->values();
+        $this->assertCount(3, $rows);
+        $this->assertSame(['Monday', 'Tuesday', 'Wednesday'], $rows->pluck('day')->sort()->values()->all());
+        $this->assertCount(1, $rows->pluck('split_group_id')->unique());
+        foreach ($rows as $row) {
+            $this->assertSame('consecutive:3', $row['preferred_pattern']);
+            $this->assertSame(360, SchedulingPolicy::timeToMinutes($row['end_time']) - SchedulingPolicy::timeToMinutes($row['start_time']));
+        }
+
+        $save = $this->actingAs($user)->postJson('/api/schedules/batch', [
+            'operations' => collect($preview->json('schedules'))->map(static fn (array $row): array => [
+                'semester_id' => (int) $row['semester_id'],
+                'section_id' => (int) $row['section_id'],
+                'course_id' => (int) $row['course_id'],
+                'room_id' => $row['mode'] === 'online' ? null : ((int) ($row['room_id'] ?? 0) ?: null),
+                'department_id' => (int) $row['department_id'],
+                'day' => $row['day'],
+                'start_time' => substr((string) $row['start_time'], 0, 5),
+                'end_time' => substr((string) $row['end_time'], 0, 5),
+                'mode' => $row['mode'] ?? 'on-site',
+                'is_hybrid' => (bool) ($row['is_hybrid'] ?? false),
+                'preferred_pattern' => $row['preferred_pattern'] ?? null,
+                'split_group_id' => $row['split_group_id'] ?? null,
+                'meeting_type' => $row['meeting_type'] ?? null,
+                'meeting_index' => $row['meeting_index'] ?? null,
+                'status' => 'draft',
+            ])->values()->all(),
+            'replace_section_ids' => array_column($payload['section_configs'], 'section_id'),
+            'replace_semester_id' => $payload['semester_id'],
+        ]);
+
+        $this->assertSame(200, $save->status(), json_encode($save->json(), JSON_PRETTY_PRINT));
+        $saved = Schedule::query()->where('course_id', $practicum->id)->get();
+        $this->assertCount(3, $saved);
+        $this->assertSame(1080, $saved->sum(static fn (Schedule $row): int => SchedulingPolicy::timeToMinutes((string) $row->end_time) - SchedulingPolicy::timeToMinutes((string) $row->start_time)));
+        $this->assertSame(6, (int) $practicum->fresh()->units, 'academic units are not multiplied');
+    }
+
+    /**
      * @param  list<string>  $sectionNames
      * @return array{0: User, 1: array<string, mixed>, 2: Course}
      */
-    private function scenario(array $sectionNames): array
+    private function scenario(array $sectionNames, int $clinicalHours = 3, string $clinicalCode = 'NCM 101'): array
     {
         $semester = Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $department = Departments::create([
@@ -104,13 +153,13 @@ class ConsecutiveDaysYearLevelGenerationTest extends TestCase
             'status' => 'active',
             'course_category' => 'major',
         ];
-        // Three units: three hours on each of the three days.
+        // Three units by default: three hours on each of the three days.
         $clinical = Course::create($shared + [
-            'course_code' => 'NCM 101',
+            'course_code' => $clinicalCode,
             'course_name' => 'Clinical Duty',
             'lecture_hours' => 0,
-            'lab_hours' => 3,
-            'units' => 3,
+            'lab_hours' => $clinicalHours,
+            'units' => $clinicalHours,
             'room_type_required' => 'laboratory',
         ]);
         $lecture = Course::create($shared + [

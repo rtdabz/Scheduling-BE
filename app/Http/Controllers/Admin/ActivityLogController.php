@@ -9,11 +9,17 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ActivityLogController extends Controller
 {
     private const ARCHIVE_EVENTS = ['record_restored', 'record_archived'];
+
+    /** Roles as recorded at event time, plus the two non-account identities. */
+    private const ROLE_FILTERS = ['vpaa', 'dean', 'secretary', 'director', 'program_head', 'system', 'unavailable'];
+
+    private const MAX_ACTOR_FACETS = 500;
 
     /** Archive type => [activity target type, activity category]. */
     private const ARCHIVE_TARGETS = [
@@ -38,10 +44,11 @@ class ActivityLogController extends Controller
             'to' => ['nullable', 'date', 'after_or_equal:from'],
             'category' => ['nullable', 'in:account_access,institutional_setup,academic_setup,scheduling,approval,instructor_assignment,room_request,reports,authentication,schedule_management,conflict_detection,recommendation,review_approval,user_management,schedule_workflow,faculty_assignment'],
             'event' => ['nullable', 'string', 'max:80'],
-            'actor_id' => ['nullable', 'integer', 'exists:users,id'],
+            'actor_id' => ['nullable', 'integer', 'min:1'],
             'department_id' => ['nullable', 'integer', 'exists:departments,id'],
             'semester_id' => ['nullable', 'integer', 'exists:semesters,id'],
             'status' => ['nullable', 'in:completed,approved,returned,rejected,failed'],
+            'role' => ['nullable', 'in:'.implode(',', self::ROLE_FILTERS)],
             'search' => ['nullable', 'string', 'max:100'],
             'export' => ['nullable', 'in:csv'],
         ]);
@@ -55,78 +62,101 @@ class ActivityLogController extends Controller
         $status = $validated['status'] ?? null;
         $search = isset($validated['search']) ? mb_strtolower(trim($validated['search'])) : null;
 
-        $candidateLimit = min(10000, max(500, ($page * $perPage) + $perPage));
-
+        // Scan every matching source in bounded chunks; never truncate before normalization/filtering.
         $scheduling = SchedulingAuditLog::query()
-            ->with('user:id,name,username,role')
-            // Only archive events about accounts can be Account & Access entries in this source.
-            ->when(in_array($category, ['account_access', 'authentication'], true), fn ($q) => $q->whereIn('action', self::ARCHIVE_EVENTS))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))
-            ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('user_id', $id))
+            // actor_id is applied in the loop below so the actor facet lists every identity under the other filters.
             ->when($validated['department_id'] ?? null, fn ($q, $id) => $q->where('department_id', $id))
             ->when($validated['semester_id'] ?? null, fn ($q, $id) => $q->where('semester_id', $id))
             ->when($event, fn ($q, $ev) => $this->applyEventFilter($q, $ev, 'action'))
-            ->latest('created_at')->latest('id')
-            ->limit($candidateLimit)
-            ->get()
+            ->lazyById(500)
             ->map(fn (SchedulingAuditLog $log) => $this->schedulingEntry($log));
 
         $authentication = AuthenticationAuditLog::query()
-            ->with(['actor:id,name,username,role,department_id', 'subject:id,name,username,role,department_id'])
-            ->when(in_array($category, ['academic_setup', 'scheduling', 'approval', 'instructor_assignment', 'room_request', 'reports', 'schedule_management', 'conflict_detection', 'recommendation', 'review_approval', 'schedule_workflow', 'faculty_assignment'], true), fn ($q) => $q->whereRaw('1 = 0'))
             ->when(($validated['semester_id'] ?? null) !== null, fn ($q) => $q->whereRaw('1 = 0'))
             ->when($from, fn ($q) => $q->where('created_at', '>=', $from))
             ->when($to, fn ($q) => $q->where('created_at', '<=', $to))
-            ->when($validated['actor_id'] ?? null, fn ($q, $id) => $q->where('actor_user_id', $id))
             ->when($event, fn ($q, $ev) => $this->applyEventFilter($q, $ev, 'event'))
-            ->when(in_array($category, ['account_access', 'institutional_setup', 'authentication', 'user_management'], true), function ($q) use ($category) {
-                $institutionalEvents = ['department_created', 'department_updated', 'program_created', 'program_updated', 'room_created', 'room_updated', 'instructor_created', 'instructor_updated', 'designation_updated'];
-                if ($category === 'account_access' || $category === 'authentication') {
-                    return $q->whereNotIn('event', $institutionalEvents);
-                }
-                if ($category === 'institutional_setup') {
-                    return $q->whereIn('event', $institutionalEvents);
-                }
-                return $q;
-            })
-            ->latest('created_at')->latest('id')
-            ->limit($candidateLimit)
-            ->get()
+            ->lazyById(500)
             ->map(fn (AuthenticationAuditLog $log) => $this->authenticationEntry($log));
 
         $departmentId = $validated['department_id'] ?? null;
         $semesterId = $validated['semester_id'] ?? null;
-        $entries = $scheduling->concat($authentication)
-            ->filter(fn (array $entry) => (! $category || $entry['category'] === $category || $this->categoryMatchesAlias($category, $entry['category'], $entry['event']))
-                && (! $event || $entry['event'] === $event || $this->eventMatchesAlias($event, $entry['event']))
-                && (! $departmentId || (int) $entry['department_id'] === (int) $departmentId)
-                && (! $semesterId || (int) $entry['semester_id'] === (int) $semesterId)
-                && (! $status || $entry['status'] === $status)
-                && (! $search || str_contains(mb_strtolower(json_encode($entry)), $search)))
-            ->sortByDesc(fn (array $entry) => $entry['occurred_at']->getTimestamp().'|'.$entry['id'])
-            ->values();
+        $actorId = $validated['actor_id'] ?? null;
+        $role = $validated['role'] ?? null;
+        $export = ($validated['export'] ?? null) === 'csv';
+        $keep = $export ? 10001 : $page * $perPage;
+        $latest = new \SplMinHeap;
+        $total = 0;
+        $summary = ['approved' => 0, 'returned' => 0, 'rejected' => 0, 'failed' => 0];
+        $actorsInResult = [];
+        $actorFacets = [];
+        foreach ($scheduling->concat($authentication) as $entry) {
+            if (($category && ! $this->categoryMatchesAlias($category, $entry['category'], $entry['event']))
+                || ($event && ! $this->eventMatchesAlias($event, $entry['event']))
+                || ($departmentId && (int) $entry['department_id'] !== (int) $departmentId)
+                || ($semesterId && (int) $entry['semester_id'] !== (int) $semesterId)
+                || ($status && $entry['status'] !== $status)
+                || ($search && ! str_contains($this->searchText($entry), $search))) {
+                continue;
+            }
 
-        $total = $entries->count();
+            $entryActorId = isset($entry['actor']['id']) ? (int) $entry['actor']['id'] : null;
+            if ($entryActorId !== null && (isset($actorFacets[$entryActorId]) || count($actorFacets) < self::MAX_ACTOR_FACETS)) {
+                // Recorded identities only: an unavailable snapshot stays null instead of borrowing the live account.
+                $previous = $actorFacets[$entryActorId] ?? [];
+                $actorFacets[$entryActorId] = ['id' => $entryActorId] + array_map(
+                    fn (string $field) => $entry['actor'][$field] ?? $previous[$field] ?? null,
+                    ['name' => 'name', 'username' => 'username', 'role' => 'role'],
+                );
+            }
+            if (($actorId && $entryActorId !== (int) $actorId)
+                || ($role && $this->recordedRole($entry) !== $role)) {
+                continue;
+            }
+
+            $total++;
+            if (isset($summary[$entry['status']])) {
+                $summary[$entry['status']]++;
+            }
+            if ($entryActorId !== null) {
+                $actorsInResult[$entryActorId] = true;
+            }
+            $latest->insert([$entry['occurred_at']->format('U.u'), $entry['source'], (int) substr(strrchr($entry['id'], ':'), 1), $entry]);
+            if ($latest->count() > $keep) {
+                $latest->extract();
+            }
+        }
+        $entries = collect(iterator_to_array($latest, false))->reverse()->map(fn (array $row) => $row[3])->values();
 
         if (($validated['export'] ?? null) === 'csv') {
             abort_if($total > 10000, 422, 'Narrow the filters before exporting more than 10,000 audit entries.');
-            return response()->streamDownload(function () use ($entries) {
+
+            $departmentCodes = DB::table('departments')->pluck('department_code', 'id');
+
+            return response()->streamDownload(function () use ($entries, $departmentCodes) {
                 $output = fopen('php://output', 'w');
-                fputcsv($output, ['Timestamp', 'Category', 'Event', 'Status', 'Actor', 'Role', 'Department ID', 'Semester ID', 'Target', 'Metadata']);
+                fputcsv($output, ['Entry ID', 'Timestamp', 'Category', 'Event', 'Status', 'Actor', 'Username', 'Recorded Role', 'Identity',
+                    'Department ID', 'Department Code', 'Semester ID', 'Target', 'Metadata']);
                 foreach ($entries as $entry) {
-                    fputcsv($output, [
+                    $actor = $entry['actor'];
+                    fputcsv($output, array_map([$this, 'csvCell'], [
+                        $entry['id'],
                         $entry['occurred_at']->toISOString(),
                         $entry['category'],
                         $entry['event'],
                         $entry['status'],
-                        $entry['actor']['name'] ?? 'System',
-                        $entry['actor']['role'] ?? 'system',
+                        $actor['name'] ?? ($entry['actor_type'] === 'system' ? 'System' : ($actor ? 'Actor unavailable (user #'.$actor['id'].')' : 'Actor unavailable')),
+                        $actor['username'] ?? '',
+                        $this->recordedRole($entry),
+                        $actor['provenance'] ?? ($entry['actor_type'] === 'system' ? 'system' : 'unavailable'),
                         $entry['department_id'],
+                        $entry['department_id'] ? ($departmentCodes[$entry['department_id']] ?? '') : '',
                         $entry['semester_id'],
                         $entry['target']['type'].':'.($entry['target']['id'] ?? ''),
-                        json_encode($entry['metadata']),
-                    ]);
+                        json_encode($entry['metadata'], JSON_UNESCAPED_UNICODE),
+                    ]));
                 }
                 fclose($output);
             }, 'vpaa-activity-log-'.now()->format('Y-m-d-His').'.csv', ['Content-Type' => 'text/csv']);
@@ -134,6 +164,7 @@ class ActivityLogController extends Controller
 
         $data = $entries->slice(($page - 1) * $perPage, $perPage)->map(function (array $entry) {
             $entry['occurred_at'] = $entry['occurred_at']->toISOString();
+
             return $entry;
         })->values();
 
@@ -144,16 +175,45 @@ class ActivityLogController extends Controller
                 'per_page' => $perPage,
                 'total' => $total,
                 'last_page' => max(1, (int) ceil($total / $perPage)),
+                'summary' => $summary + ['total' => $total, 'actors' => count($actorsInResult)],
+                'facets' => [
+                    'actors' => collect($actorFacets)->sortBy(fn (array $actor) => mb_strtolower($actor['name'] ?? "\u{FFFF}{$actor['id']}"))->values(),
+                ],
             ],
         ]);
+    }
+
+    /** Role recorded at event time; never the account's current role. */
+    private function recordedRole(array $entry): string
+    {
+        if (! empty($entry['actor']['role'])) {
+            return (string) $entry['actor']['role'];
+        }
+
+        return $entry['actor_type'] === 'system' ? 'system' : 'unavailable';
+    }
+
+    /** Lower-cased haystack that also matches readable event/category names ("schedule approved"). */
+    private function searchText(array $entry): string
+    {
+        return mb_strtolower(json_encode($entry, JSON_UNESCAPED_UNICODE)
+            .' '.str_replace('_', ' ', $entry['event'].' '.$entry['category'].' '.$entry['target']['type']));
+    }
+
+    /** Neutralise spreadsheet formula injection without altering the recorded value beyond a leading quote. */
+    private function csvCell(mixed $value): mixed
+    {
+        return is_string($value) && $value !== '' && in_array($value[0], ['=', '+', '-', '@', "\t", "\r"], true) ? "'".$value : $value;
     }
 
     private function schedulingEntry(SchedulingAuditLog $log): array
     {
         $metadata = $log->metadata ?? [];
-        if ($log->history_version_id === null) {
+        $isSemesterTransition = in_array($log->action, ['semester_activated', 'semester_ended'], true);
+        if ($log->history_version_id === null && ! $isSemesterTransition) {
             $metadata['legacy_history'] = true;
         }
+
         return [
             'id' => 'scheduling:'.$log->id,
             'source' => 'scheduling',
@@ -161,11 +221,14 @@ class ActivityLogController extends Controller
             'event' => $log->action,
             'status' => $this->status($log->action),
             'occurred_at' => $log->created_at,
-            'actor' => $this->user($log->user),
+            'actor' => $log->recorded_actor,
+            'actor_type' => $metadata['_actor_type'] ?? 'unknown',
             'department_id' => $log->department_id,
             'semester_id' => $log->semester_id,
-            'target' => $this->archiveTarget($log->action, $metadata)
-                ?? ['type' => $log->schedule_recommendation_id ? 'schedule_recommendation' : 'schedule_workflow', 'id' => $log->schedule_recommendation_id ?? $log->section_id],
+            'target' => ($metadata['target'] ?? null) ?? $this->archiveTarget($log->action, $metadata)
+                ?? ($isSemesterTransition
+                    ? ['type' => 'semester', 'id' => $log->action === 'semester_activated' ? ($metadata['activated_semester_id'] ?? $log->semester_id) : $log->semester_id]
+                    : ['type' => $log->schedule_recommendation_id ? 'schedule_recommendation' : 'schedule_workflow', 'id' => $log->schedule_recommendation_id ?? $log->section_id]),
             'metadata' => $metadata,
         ];
     }
@@ -187,9 +250,8 @@ class ActivityLogController extends Controller
     {
         $metadata = $log->metadata ?? [];
         $subjectSnapshot = $metadata['_subject'] ?? null;
-        $isUserManagement = in_array($log->event, ['user_created', 'user_updated', 'user_deactivated', 'user_deleted'], true);
         $isInstitutional = in_array($log->event, ['department_created', 'department_updated', 'program_created', 'program_updated', 'room_created', 'room_updated', 'instructor_created', 'instructor_updated', 'designation_updated'], true);
-        $actor = $log->actor ?? (($isUserManagement || $isInstitutional) ? null : $log->subject);
+        $actor = $log->recorded_actor;
 
         $category = 'account_access';
         if ($isInstitutional) {
@@ -203,8 +265,9 @@ class ActivityLogController extends Controller
             'event' => $log->event,
             'status' => $this->status($log->event),
             'occurred_at' => $log->created_at,
-            'actor' => $this->user($actor),
-            'department_id' => $log->subject?->department_id ?? $subjectSnapshot['department_id'] ?? null,
+            'actor' => $actor,
+            'actor_type' => $metadata['_actor_type'] ?? ($actor ? 'user' : 'unknown'),
+            'department_id' => $subjectSnapshot['department_id'] ?? null,
             'semester_id' => null,
             'target' => ['type' => 'user', 'id' => $log->subject_user_id ?? $subjectSnapshot['id'] ?? null],
             'metadata' => array_filter(array_merge($metadata, ['ip_address' => $log->ip_address, 'user_agent' => $log->user_agent])),
@@ -220,11 +283,6 @@ class ActivityLogController extends Controller
             str_starts_with($event, 'schedule_approved') || $event === 'room_request_approved' => 'approved',
             default => 'completed',
         };
-    }
-
-    private function user($user): ?array
-    {
-        return $user ? ['id' => $user->id, 'name' => $user->name, 'username' => $user->username, 'role' => $user->role] : null;
     }
 
     private function schedulingCategory(string $action): string
@@ -243,6 +301,10 @@ class ActivityLogController extends Controller
             'room_requested',
             'room_request_approved',
             'room_request_rejected',
+            'room_request_submitted',
+            'room_request_cancelled',
+            'room_request_revoked',
+            'room_grant_ended',
         ], true)) {
             return 'room_request';
         }
@@ -277,7 +339,9 @@ class ActivityLogController extends Controller
             'semester_created',
             'semester_updated',
             'settings_updated',
+            'institution_signatories_updated',
             'semester_activated',
+            'semester_ended',
             'schedule_semester_archived',
         ], true)) {
             return 'academic_setup';

@@ -9,6 +9,7 @@ use App\Models\Departments;
 use App\Models\Program;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
+use App\Support\ActorIdentity;
 use App\Support\ApiCache;
 use App\Support\DatabaseErrors;
 use Illuminate\Database\QueryException;
@@ -229,6 +230,7 @@ final class CurriculumImportService
             'confirmation' => [
                 'user_id' => (int) $user->id,
                 'user_name' => $user->name,
+                'actor' => ActorIdentity::snapshot($user),
                 'confirmed_at' => now()->toIso8601String(),
                 'fingerprint' => (string) $payload['fingerprint'],
             ],

@@ -20,12 +20,13 @@ class FacultyLoadService
         return $this->decorateMany($faculties, $semesterId);
     }
 
-    public function getAcrossSemesters(?int $departmentId, ?int $programId = null): Collection
+    /** Approved loads for a report: one term when $semesterId is given, otherwise every term combined. */
+    public function getForReport(?int $departmentId, ?int $programId = null, ?int $semesterId = null): Collection
     {
         $faculties = $programId === null
             ? $this->faculties($departmentId, null)
             : $this->programReportFaculties($departmentId, $programId);
-        $byFaculty = $this->assignmentRows(null, $faculties->pluck('id')->all())->groupBy('faculty_id');
+        $byFaculty = $this->assignmentRows($semesterId, $faculties->pluck('id')->all())->groupBy('faculty_id');
 
         return $faculties->each(function (Faculty $faculty) use ($byFaculty): void {
             $this->applyRows($faculty, $byFaculty->get($faculty->id, collect()));
@@ -238,5 +239,6 @@ class FacultyLoadService
         $faculty->setAttribute('live_schedule_count', $rows->unique('schedule_id')->count());
         $faculty->setAttribute('required_units', SchedulingPolicy::facultyRequiredUnits($faculty));
         $faculty->setAttribute('unit_ceiling', SchedulingPolicy::facultyUnitCeiling($faculty));
+        $faculty->append(Faculty::AVAILABILITY_APPENDS);
     }
 }

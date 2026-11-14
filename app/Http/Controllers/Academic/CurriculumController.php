@@ -6,7 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Course\BatchStoreCoursesRequest;
 use App\Models\Course;
 use App\Models\Curriculum;
+use App\Services\Curriculum\CurriculumCourseHours;
+use App\Services\Curriculum\CurriculumCourseHoursBlocked;
+use App\Services\Curriculum\CurriculumImportSettings;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
+use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -544,6 +548,42 @@ class CurriculumController extends Controller
         ]);
     }
 
+    /**
+     * Edit Hours per Unit: sets how many minutes each lecture and laboratory unit of one course takes in
+     * this curriculum. The course's academic units stay as they are.
+     */
+    public function updateCourseHours(Request $request, Curriculum $curriculum, Course $course, CurriculumCourseHours $hours)
+    {
+        if (! $this->canAuthor($request, $curriculum)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $rate = ['integer', 'min:'.SchedulingPolicy::SLOT_MINUTES, 'max:'.CurriculumImportSettings::MAX_MINUTES_PER_UNIT, 'multiple_of:'.SchedulingPolicy::SLOT_MINUTES];
+        $validated = $request->validate([
+            'use_department_default' => 'sometimes|boolean',
+            'lecture_minutes_per_unit' => ['exclude_if:use_department_default,true', 'required', ...$rate],
+            'laboratory_minutes_per_unit' => ['exclude_if:use_department_default,true', 'required', ...$rate],
+            'confirm_draft_changes' => 'sometimes|boolean',
+        ], [
+            'lecture_minutes_per_unit.multiple_of' => 'Lecture hours per unit must be in '.SchedulingPolicy::SLOT_MINUTES.'-minute steps.',
+            'laboratory_minutes_per_unit.multiple_of' => 'Laboratory hours per unit must be in '.SchedulingPolicy::SLOT_MINUTES.'-minute steps.',
+        ]);
+
+        try {
+            $result = $hours->update($curriculum, $course, $validated, $request->user()?->id);
+        } catch (CurriculumCourseHoursBlocked $blocked) {
+            return response()->json(['message' => $blocked->getMessage(), ...$blocked->context], $blocked->status);
+        }
+
+        ApiCache::forgetGroups(['curriculum.index', 'courses.index', 'initial.data']);
+
+        return response()->json([
+            'message' => sprintf('Hours per unit updated for %s.', $course->course_code),
+            'course_id' => (int) $course->id,
+            'hours' => $result,
+        ]);
+    }
+
     public function detachCourse(Request $request, Curriculum $curriculum, Course $course)
     {
         if (! $this->canAuthor($request, $curriculum)) {
@@ -606,6 +646,7 @@ class CurriculumController extends Controller
                         'program_id' => $c->program_id,
                         'department_id' => $c->department_id,
                         'prerequisites_text' => $c->pivot->prerequisites_text,
+                        'hours' => CurriculumCourseHours::describe($c, $c->pivot),
                         // Null for placements written before imports: those keep the legacy credit-derived durations.
                         'placement' => $c->pivot->conversion_snapshot === null ? null : [
                             'lecture_units' => $c->pivot->lecture_units,
@@ -638,6 +679,12 @@ class CurriculumController extends Controller
                 'description' => $curriculum->description,
                 'notes' => $curriculum->notes,
                 'courses_count' => $curriculum->courses_count,
+                'hours_defaults' => [
+                    'lecture_minutes_per_unit' => (int) ($curriculum->department?->lecture_minutes_per_unit ?? CurriculumCourseHours::LEGACY_MINUTES_PER_UNIT),
+                    'laboratory_minutes_per_unit' => (int) ($curriculum->department?->laboratory_minutes_per_unit ?? CurriculumCourseHours::LEGACY_MINUTES_PER_UNIT),
+                    'slot_minutes' => SchedulingPolicy::SLOT_MINUTES,
+                    'max_minutes_per_unit' => CurriculumImportSettings::MAX_MINUTES_PER_UNIT,
+                ],
             ],
             'semesters' => $grouped,
         ]);

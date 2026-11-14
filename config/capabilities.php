@@ -16,6 +16,19 @@
  * whose only unlocked pages answered 403 to their own data fetches. A role's
  * defaults must therefore include everything its capabilities require.
  */
+/*
+ * A department office account is held by EITHER a Secretary OR a Director:
+ * the two roles share one department slot (AdministrativeRoleSlots) and do the
+ * same work, so they share one capability list. Defining it once keeps the two
+ * roles from drifting apart.
+ */
+$departmentOfficeCapabilities = [
+    'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
+    'schedule.generate', 'schedule.submit', 'schedule.withdraw',
+    'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
+    'room.request', 'room.review_requests', 'room.assign_program', 'curriculum.manage',
+];
+
 return [
     'permissions' => [
         'schedule.view' => [
@@ -107,7 +120,7 @@ return [
             'requires_program' => true,
             // Room borrowing is secretary to secretary; program heads and the
             // VPAA take no part (the VPAA is only notified).
-            'allowed_roles' => ['secretary'],
+            'allowed_roles' => ['secretary', 'director'],
             'title' => 'Request Rooms',
             'description' => "Ask another department to lend one of its vacant rooms during specific weekly windows.",
         ],
@@ -118,7 +131,7 @@ return [
             'description' => "Approve, reject, or revoke other departments' requests for your department's rooms.",
             // The department that owns the room decides whether to lend it; the
             // controller also checks the room belongs to the reviewer's department.
-            'allowed_roles' => ['secretary'],
+            'allowed_roles' => ['secretary', 'director'],
         ],
         'room.assign_program' => [
             'requires' => ['schedule.view'],
@@ -128,11 +141,14 @@ return [
             'description' => "Choose which program each of the department's rooms belongs to and how programs share them.",
             // Like lending a room to another department, dividing the rooms
             // between the department's own programs is the secretary's call.
-            'allowed_roles' => ['secretary'],
+            'allowed_roles' => ['secretary', 'director'],
         ],
         'curriculum.manage' => [
             'requires' => ['schedule.view'],
             'module' => 'curriculum',
+            // A curriculum belongs to a department's programs, so authoring waits for the first
+            // program like every other department module (docs/plan/department_module_locking_plan.md).
+            'requires_program' => true,
             'title' => 'Manage Curriculum',
             'description' => 'Create, edit, duplicate, activate, and archive curricula and their course placements.',
             // Curriculum authoring sits with the department: the secretary for
@@ -140,7 +156,7 @@ return [
             // (CurriculumController scopes that). The dean and the VPAA read
             // curricula through the view routes and hold no write access, so
             // neither role may be granted this.
-            'allowed_roles' => ['secretary', 'program_head'],
+            'allowed_roles' => ['secretary', 'director', 'program_head'],
         ],
     ],
 
@@ -181,6 +197,9 @@ return [
      * hold the same power, and changing it means editing this list and adding
      * a migration that re-syncs the stored roles.
      *
+     * Directors hold exactly the secretary's capabilities (a department has
+     * one or the other, never both).
+     *
      * Secretaries and program heads build their department's timetable end to
      * end; approvals and designations stay with the dean and VPAA. The
      * secretary alone requests other departments' rooms, decides on requests
@@ -203,12 +222,9 @@ return [
             'faculty.manage_designations',
         ],
         'dean' => ['schedule.view', 'schedule.approve_dean'],
-        'secretary' => [
-            'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
-            'schedule.generate', 'schedule.submit', 'schedule.withdraw',
-            'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
-            'room.request', 'room.review_requests', 'room.assign_program', 'curriculum.manage',
-        ],
+        'secretary' => $departmentOfficeCapabilities,
+        // Same workflow and department scope as the secretary; see above.
+        'director' => $departmentOfficeCapabilities,
         'program_head' => [
             'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
             'schedule.generate', 'schedule.submit', 'schedule.withdraw',

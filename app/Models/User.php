@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\HasNameAffixes;
 use App\Notifications\ResetPasswordNotification;
+use App\Support\PersonName;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -15,9 +17,50 @@ use Spatie\Permission\Traits\HasRoles;
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
-    use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes;
+    use HasApiTokens, HasFactory, HasNameAffixes, HasRoles, Notifiable, SoftDeletes;
 
     protected string $guard_name = 'api';
+
+    /**
+     * Roles that run a department's office. A department has EITHER one active Secretary OR one
+     * active Director; the two share one slot (see AdministrativeRoleSlots) and one workflow.
+     *
+     * @var list<string>
+     */
+    public const DEPARTMENT_OFFICE_ROLES = ['secretary', 'director'];
+
+    public const ROLE_REVIEW_MESSAGE = 'This Director account is awaiting VPAA review. Contact the VPAA office to reactivate it.';
+
+    /** @var list<string> */
+    public const SLOT_ROLES = ['dean', 'secretary', 'director', 'program_head'];
+
+    /**
+     * Expands a recipient/role list so a Director is included wherever a Secretary is.
+     *
+     * @param  list<string>  $roles
+     * @return list<string>
+     */
+    public static function withDepartmentOffice(array $roles): array
+    {
+        return in_array('secretary', $roles, true)
+            ? array_values(array_unique([...$roles, ...self::DEPARTMENT_OFFICE_ROLES]))
+            : $roles;
+    }
+
+    /**
+     * The roles that compete for the same slot as $role: Secretary and Director share the
+     * department office slot, every other slot role competes only with itself.
+     *
+     * @return list<string>
+     */
+    public static function slotRolesFor(string $role): array
+    {
+        if (in_array($role, self::DEPARTMENT_OFFICE_ROLES, true)) {
+            return self::DEPARTMENT_OFFICE_ROLES;
+        }
+
+        return in_array($role, self::SLOT_ROLES, true) ? [$role] : [];
+    }
 
     /**
      * @var list<string>
@@ -28,6 +71,8 @@ class User extends Authenticatable
         'middle_initial',
         'last_name',
         'suffix',
+        'honorific_prefix',
+        'credentials',
         'username',
         'email',
         'password',
@@ -46,7 +91,11 @@ class User extends Authenticatable
     protected static function booted(): void
     {
         static::saved(function (User $user): void {
-            if (! $user->wasRecentlyCreated && ! $user->wasChanged('role')) {
+            // Activation also reconciles the Spatie role: a quarantined legacy Director keeps its
+            // users.role value but lost its role assignment, so reactivating it must restore that
+            // assignment even though the role column did not change.
+            $activated = $user->wasChanged('is_active') && $user->is_active;
+            if (! $user->wasRecentlyCreated && ! $user->wasChanged('role') && ! $activated) {
                 return;
             }
 
@@ -86,13 +135,14 @@ class User extends Authenticatable
 
     public static function activeRoleHolder(string $role, ?int $departmentId, ?int $programId, ?int $ignoreUserId = null, bool $lock = false): ?self
     {
-        if (! in_array($role, ['dean', 'secretary', 'program_head'], true)) {
+        $slotRoles = self::slotRolesFor($role);
+        if ($slotRoles === []) {
             return null;
         }
 
         return self::query()
             ->with(['department', 'program'])
-            ->where('role', $role)
+            ->whereIn('role', $slotRoles)
             ->where('is_active', true)
             ->when($ignoreUserId !== null, fn ($query) => $query->whereKeyNot($ignoreUserId))
             ->when(
@@ -105,18 +155,33 @@ class User extends Authenticatable
     }
 
     /**
-     * @param  array{first_name: string, middle_initial?: ?string, last_name: string, suffix?: ?string}  $parts
+     * The stored display name, e.g. "Dr. Juan P. Dela Cruz Jr., DM".
+     *
+     * @param  array{first_name: string, middle_initial?: ?string, last_name: string, suffix?: ?string, honorific_prefix?: ?string, credentials?: ?string}  $parts
      */
     public static function composeDisplayName(array $parts): string
     {
-        $middle = trim((string) ($parts['middle_initial'] ?? ''));
-
-        return trim(implode(' ', array_filter([
-            trim($parts['first_name']),
-            $middle !== '' ? strtoupper($middle).'.' : null,
-            trim($parts['last_name']),
+        return PersonName::format(
+            $parts['honorific_prefix'] ?? null,
+            $parts['first_name'],
+            $parts['middle_initial'] ?? null,
+            $parts['last_name'],
             $parts['suffix'] ?? null,
-        ])));
+            $parts['credentials'] ?? null,
+        );
+    }
+
+    /** Recomposes the display name from the account's own structured fields. */
+    public function composedName(): string
+    {
+        return self::composeDisplayName([
+            'first_name' => (string) $this->first_name,
+            'middle_initial' => $this->middle_initial,
+            'last_name' => (string) $this->last_name,
+            'suffix' => $this->suffix,
+            'honorific_prefix' => $this->honorific_prefix,
+            'credentials' => $this->credentials,
+        ]);
     }
 
     /**
@@ -155,6 +220,27 @@ class User extends Authenticatable
     public function isSecretary(): bool
     {
         return $this->role === 'secretary';
+    }
+
+    public function isDirector(): bool
+    {
+        return $this->role === 'director';
+    }
+
+    /**
+     * A Director account without its Spatie role assignment is a legacy (pre-reintroduction)
+     * account that has not been reviewed and reactivated by the VPAA. It must not authenticate,
+     * even if the application is deployed before the quarantine migration has run.
+     */
+    public function awaitingRoleReview(): bool
+    {
+        return $this->isDirector() && ! $this->roles()->where('name', 'director')->where('guard_name', 'api')->exists();
+    }
+
+    /** Secretary or Director: the department office, which shares one workflow and one slot. */
+    public function isSecretaryOrDirector(): bool
+    {
+        return in_array($this->role, self::DEPARTMENT_OFFICE_ROLES, true);
     }
 
     public function hasCapability(string $capability): bool

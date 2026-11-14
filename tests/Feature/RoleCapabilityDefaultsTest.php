@@ -90,27 +90,36 @@ class RoleCapabilityDefaultsTest extends TestCase
         $this->assertSame([], $secretary->getDirectPermissions()->pluck('name')->all());
     }
 
-    public function test_director_is_no_longer_an_assignable_account_role(): void
+    public function test_director_is_an_assignable_account_role_with_the_secretary_capabilities(): void
     {
+        $defaults = app(CapabilityRegistry::class)->roleDefaults();
+        $this->assertSame($defaults['secretary'], $defaults['director']);
+        $this->assertNotContains('schedule.approve_dean', $defaults['director']);
+        $this->assertNotContains('schedule.approve_vpaa', $defaults['director']);
+        $this->assertNotContains('faculty.manage_designations', $defaults['director']);
+
         $department = Departments::create([
             'department_code' => 'CCS',
             'department_name' => 'College of Computer Studies',
         ]);
+        Program::create(['department_id' => $department->id, 'code' => 'BSIT', 'name' => 'BS Information Technology']);
         $vpaa = User::factory()->create(['role' => 'vpaa', 'is_active' => true]);
         Sanctum::actingAs($vpaa);
 
-        $this->postJson('/api/user', [
-            'first_name' => 'Former',
+        $id = $this->postJson('/api/user', [
+            'first_name' => 'Dana',
             'last_name' => 'Director',
-            'username' => 'former.director',
-            'email' => 'former.director@example.test',
+            'username' => 'dana.director',
+            'email' => 'dana.director@example.test',
             'password' => 'CorrectHorse42',
             'role' => 'director',
             'department_id' => $department->id,
             'faculty_mode' => 'none',
-        ])->assertUnprocessable()->assertJsonValidationErrors('role');
+        ])->assertCreated()->json('data.id');
 
-        $this->assertDatabaseMissing('users', ['username' => 'former.director']);
+        $director = User::findOrFail($id);
+        $this->assertEqualsCanonicalizing($defaults['secretary'], $director->capabilityNames());
+        $this->assertSame([], $director->getDirectPermissions()->pluck('name')->all());
     }
 
     public function test_the_per_account_permission_endpoints_are_gone(): void

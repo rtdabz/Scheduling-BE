@@ -24,6 +24,9 @@ final class TeachingHistoryArchive
             ->join('schedule_history_versions', 'schedule_history_versions.id', '=', 'schedule_history_items.history_version_id')
             ->join('semesters', 'semesters.id', '=', 'schedule_history_versions.semester_id')
             ->where('schedule_history_versions.action', self::ARCHIVE_ACTION)
+            ->whereIn('schedule_history_versions.id', DB::table('schedule_history_versions')
+                ->selectRaw('MAX(id)')->where('action', self::ARCHIVE_ACTION)
+                ->groupBy('semester_id', 'department_id'))
             ->whereNull('semesters.deleted_at')
             ->when($exceptSemesterIds !== [], fn ($query) => $query->whereNotIn('semesters.id', $exceptSemesterIds))
             ->where(fn ($query) => $query
@@ -43,12 +46,7 @@ final class TeachingHistoryArchive
                 'schedule_history_items.snapshot_metadata',
             ]);
 
-        $latestVersionByScope = $items
-            ->groupBy(static fn ($item): string => $item->semester_id.'|'.$item->department_id)
-            ->map(static fn ($scope): int => (int) $scope->max('version_id'));
-
         return $items
-            ->filter(static fn ($item): bool => (int) $item->version_id === $latestVersionByScope->get($item->semester_id.'|'.$item->department_id))
             ->map(static function ($item): object {
                 $snapshot = json_decode((string) $item->after_snapshot, true) ?: [];
                 $metadata = json_decode((string) $item->snapshot_metadata, true) ?: [];

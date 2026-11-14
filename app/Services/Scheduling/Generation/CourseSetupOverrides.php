@@ -111,6 +111,10 @@ final class CourseSetupOverrides
 
             $code = (string) ($course->course_code ?? "Course {$courseId}");
             $room = $rooms->get($roomId);
+            if (! SchedulingPolicy::isFieldSchedulingEligible($course)
+                && ($mode === 'field' || $room?->room_type === 'field')) {
+                self::failRoom(SchedulingPolicy::LABORATORY_FIELD_MESSAGE);
+            }
             if ($room === null || (string) $room->status !== 'available') {
                 self::failRoom("{$code}: the preferred room is not available. Choose another room or clear the preference.");
             }
@@ -123,7 +127,7 @@ final class CourseSetupOverrides
             $fits = match (true) {
                 $isField => $room->room_type === 'field',
                 $needsLaboratory => in_array($room->room_type, SchedulingPolicy::labRoomTypes($departmentId), true),
-                default => $room->room_type === 'lecture' || SchedulingPolicy::laboratoryServesLecture($course, $room),
+                default => $room->room_type === 'lecture',
             };
             if (! $fits) {
                 self::failRoom(sprintf(

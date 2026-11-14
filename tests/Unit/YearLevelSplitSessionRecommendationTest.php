@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Models\Course;
 use App\Models\Sections;
+use App\Services\Scheduling\Generation\ComponentRequiredDays;
 use App\Services\Scheduling\YearLevel\YearLevelGenerationDiagnostics;
 use App\Services\Scheduling\YearLevel\YearLevelRetryStrategyPlanner;
 use Illuminate\Support\Collection;
@@ -237,6 +238,72 @@ class YearLevelSplitSessionRecommendationTest extends TestCase
         // No suggestion when the caller found no day to add.
         $this->assertFalse(collect((new YearLevelGenerationDiagnostics)->searchRecommendations(null, [], null, $configs))
             ->contains(static fn (array $r): bool => str_starts_with($r['id'], 'add-preferred-day')));
+    }
+
+    public function test_courses_with_component_required_days_are_never_offered_dropping_integrated(): void
+    {
+        $courses = $this->integratedCourses();
+        $configs = $this->integratedConfigs(pinned: true);
+        $bottleneck = [...$this->bottleneck(), 'type' => YearLevelGenerationDiagnostics::TYPE_LECTURE_LAB_SPLIT, 'course_id' => 200, 'course_code' => 'IT 102'];
+
+        $strategies = (new YearLevelRetryStrategyPlanner)->plan([$this->section()], $configs, $courses, $bottleneck);
+        $keys = array_column($strategies, 'key');
+
+        // IT 102 is pinned: only the unpinned IT 103 may lose Integrated, and the section stays Integrated.
+        $this->assertNotContains('disable_section_hybrid', $keys);
+        $split = $strategies[array_search('clear_bottleneck_split', $keys, true)];
+        $this->assertSame([201], array_column($split['adjustments'], 'course_id'));
+
+        // With every Integrated course pinned, no drop is offered at all.
+        $configs[self::SECTION_ID][ComponentRequiredDays::KEY][201] = ['laboratory' => 'Friday'];
+        $keys = array_column((new YearLevelRetryStrategyPlanner)->plan([$this->section()], $configs, $courses, $bottleneck), 'key');
+        $this->assertNotContains('clear_bottleneck_split', $keys);
+        $this->assertNotContains('disable_section_hybrid', $keys);
+    }
+
+    public function test_a_laboratory_room_shortage_never_recommends_dropping_integrated(): void
+    {
+        $bottleneck = [...$this->bottleneck(), 'type' => YearLevelGenerationDiagnostics::TYPE_LABORATORY_ROOM, 'course_id' => 200, 'course_code' => 'IT 102'];
+
+        $keys = array_column((new YearLevelRetryStrategyPlanner)->plan(
+            [$this->section()], $this->integratedConfigs(pinned: false), $this->integratedCourses(), $bottleneck,
+        ), 'key');
+
+        // A Regular course with laboratory units needs a laboratory room for its whole duration.
+        $this->assertNotContains('clear_bottleneck_split', $keys);
+        $this->assertNotContains('disable_section_hybrid', $keys);
+    }
+
+    public function test_component_required_day_capacity_gets_a_specific_title(): void
+    {
+        $recommendations = (new YearLevelGenerationDiagnostics)->feasibilityRecommendations([[
+            'code' => 'component_required_day_capacity_exceeded', 'message' => 'full', 'suggested_action' => 'move',
+            'context' => ['course_code' => 'IT 102', 'component_type' => 'laboratory', 'required_day' => 'Monday'],
+        ]]);
+
+        $this->assertSame('Move or clear the Laboratory Required Day for IT 102', $recommendations[0]['title']);
+    }
+
+    /** @return Collection<int, Course> */
+    private function integratedCourses(): Collection
+    {
+        return collect([200 => 'IT 102', 201 => 'IT 103'])->map(static fn (string $code, int $id): Course => (new Course)->forceFill([
+            'id' => $id, 'course_code' => $code, 'units' => 3, 'lecture_hours' => 2, 'lab_hours' => 1,
+        ]));
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function integratedConfigs(bool $pinned): array
+    {
+        return [self::SECTION_ID => [
+            'course_ids' => [200, 201],
+            'selected_split_session_course_ids' => [200, 201],
+            'is_hybrid' => true,
+            'balanced_split_course_ids' => [],
+            'hybrid_split_course_ids' => [],
+            'preferred_patterns' => [],
+            ComponentRequiredDays::KEY => $pinned ? [200 => ['lecture' => 'Monday', 'laboratory' => 'Wednesday']] : [],
+        ]];
     }
 
     private function section(): Sections

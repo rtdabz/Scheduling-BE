@@ -225,12 +225,10 @@ final class ValidateGenerationConfiguration
             $isMinorSplit = in_array($courseId, $configuration->balancedSplitCourseIds, true);
             $isHybridSplit = in_array($courseId, $configuration->hybridSplitCourseIds, true);
 
-            if ($isLectureLabSplit && (! SchedulingConstraintPredicates::isMajorCourse($course)
-                || (int) ($course['lecture_hours'] ?? 0) <= 0
-                || (int) ($course['lab_hours'] ?? 0) <= 0)) {
+            if ($isLectureLabSplit && ! SchedulingPolicy::hasLectureAndLaboratoryComponents($course, $snapshot->departmentId, $snapshot->fieldCourseCodes)) {
                 $violations[] = $this->violation(
                     'hybrid_eligibility',
-                    'Hybrid Laboratory requires a major course with both lecture and laboratory hours.',
+                    'Separate lecture and laboratory sessions require a course with both lecture and laboratory units.',
                     $this->courseContext($course),
                 );
                 $recommendations[] = $this->disableSplitRecommendation($configuration, $course, 'disable_lecture_lab_split');
@@ -239,7 +237,7 @@ final class ValidateGenerationConfiguration
             if ($isMinorSplit && ! SchedulingPolicy::balancedSplitEligible($course, $snapshot->departmentSettings)) {
                 $violations[] = $this->violation(
                     'minor_split_eligibility',
-                    'Split Session requires a minor course or a major with lecture or laboratory units.',
+                    'Split Session is available only for courses without laboratory units.',
                     $this->courseContext($course),
                 );
                 $recommendations[] = $this->disableSplitRecommendation($configuration, $course, 'disable_minor_split');
@@ -292,10 +290,10 @@ final class ValidateGenerationConfiguration
                 $recommendations[] = $this->deliveryModeRecommendation($configuration, $course, 'automatic');
             }
 
-            if ($mode === 'field' && SchedulingConstraintPredicates::isLaboratoryCourse($course)) {
+            if ($mode === 'field' && ! SchedulingPolicy::isFieldSchedulingEligible($course)) {
                 $violations[] = $this->violation(
                     'room_type_match',
-                    'A laboratory course cannot be converted to field delivery.',
+                    SchedulingPolicy::LABORATORY_FIELD_MESSAGE,
                     $this->courseContext($course),
                 );
                 $recommendations[] = $this->deliveryModeRecommendation($configuration, $course, 'automatic');
@@ -338,9 +336,7 @@ final class ValidateGenerationConfiguration
 
             $explicitlyOnSite = ($configuration->deliveryModesByCourseId[$courseId] ?? null) === 'on-site';
             $isField = $mode === 'field' || SchedulingConstraintPredicates::isFieldCourse($course, $snapshot->fieldCourseCodes);
-            $hasCompatibleLectureRoom = $hasLectureRoom || collect($availableRooms)->contains(
-                static fn (array $room): bool => SchedulingPolicy::laboratoryServesLecture($course, $room),
-            );
+            $hasCompatibleLectureRoom = $hasLectureRoom;
             if ($mode === 'on-site' && ! $isField && ! $isLaboratory && ! $isLectureLabSplit && ! $isHybridSplit
                 && ! $hasCompatibleLectureRoom && $explicitlyOnSite) {
                 $violations[] = $this->violation(

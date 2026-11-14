@@ -8,6 +8,7 @@ use App\Http\Requests\Course\UpdateCourseRequest;
 use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Schedule;
+use App\Services\Curriculum\CurriculumCourseHours;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Support\ApiCache;
@@ -215,7 +216,11 @@ class CoursesController extends Controller
         $original = $course->getAttributes();
         $course->update($validated);
         $this->revisionChanges->recordCourseChanged($original, $course, $request->user()?->id);
-        ApiCache::forgetGroups(['courses.index', 'initial.data']);
+        if ($course->wasChanged(['lecture_hours', 'lab_hours'])) {
+            // Placements keep their hours per unit; their weekly minutes follow the new units.
+            CurriculumCourseHours::recalculateForCourse($course);
+        }
+        ApiCache::forgetGroups(['courses.index', 'initial.data', 'curriculum.index']);
 
         return response()->json($course->load(['department', 'program']));
     }
@@ -245,7 +250,7 @@ class CoursesController extends Controller
                 'message' => 'This course cannot be archived while classes of it are scheduled.',
             ], 422);
         }
-        $course->delete();
+        DB::transaction(fn () => $course->delete());
         ApiCache::forgetGroups(['courses.index', 'initial.data']);
 
         return response()->json(['message' => 'Course archived successfully']);

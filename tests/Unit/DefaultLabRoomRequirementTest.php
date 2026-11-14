@@ -64,30 +64,36 @@ class DefaultLabRoomRequirementTest extends TestCase
         $this->assertNull($this->mismatch(self::LABORATORY));
     }
 
-    public function test_classroom_setting_schedules_a_laboratory_course_in_a_regular_classroom(): void
+    public function test_legacy_classroom_setting_never_puts_a_laboratory_meeting_in_a_classroom(): void
     {
         $this->useLabRoomType('lecture');
 
-        $this->assertNull($this->mismatch(self::CLASSROOM));
-        $this->assertNotNull($this->mismatch(self::LABORATORY));
-        // Room TBA stays available to a laboratory meeting.
+        $this->assertSame(['laboratory'], SchedulingPolicy::labRoomTypes($this->departmentId));
+        $this->assertNotNull($this->mismatch(self::CLASSROOM));
+        $this->assertNull($this->mismatch(self::LABORATORY));
+        // With no laboratory room the meeting waits as Room TBA.
         $this->assertNull(RoomTypeRule::mismatch(self::LAB_ONLY_COURSE, null, 'on-site', null, $this->departmentId, []));
     }
 
-    public function test_either_setting_accepts_both_rooms(): void
+    public function test_legacy_either_setting_no_longer_falls_back_to_a_classroom(): void
     {
         $this->useLabRoomType('either');
 
-        $this->assertSame(['laboratory', 'lecture'], SchedulingPolicy::labRoomTypes($this->departmentId));
-        $this->assertNull($this->mismatch(self::CLASSROOM));
+        $this->assertSame(['laboratory'], SchedulingPolicy::labRoomTypes($this->departmentId));
+        $this->assertFalse(SchedulingPolicy::isLabClassroomFallback('lecture', $this->departmentId));
+        $this->assertNotNull($this->mismatch(self::CLASSROOM));
         $this->assertNull($this->mismatch(self::LABORATORY));
     }
 
-    public function test_split_is_allowed_for_courses_with_laboratory_units(): void
+    public function test_split_is_not_offered_for_courses_with_laboratory_units(): void
     {
-        $this->assertTrue(SchedulingPolicy::balancedSplitEligible(self::LAB_ONLY_COURSE, []));
-        $this->assertTrue(SchedulingPolicy::balancedSplitEligible(
+        $this->assertFalse(SchedulingPolicy::balancedSplitEligible(self::LAB_ONLY_COURSE, []));
+        $this->assertFalse(SchedulingPolicy::balancedSplitEligible(
             [...self::LAB_ONLY_COURSE, 'lecture_hours' => 2, 'lab_hours' => 1],
+            [],
+        ));
+        $this->assertTrue(SchedulingPolicy::balancedSplitEligible(
+            [...self::LAB_ONLY_COURSE, 'lecture_hours' => 3, 'lab_hours' => 0, 'room_type_required' => 'lecture'],
             [],
         ));
     }
@@ -108,7 +114,11 @@ class DefaultLabRoomRequirementTest extends TestCase
         ])->id;
         $this->useLabRoomType('lecture');
 
-        $this->assertNull($this->mismatch(self::CLASSROOM));
+        // The stored value is still read per department, but no department lets a laboratory
+        // meeting use a classroom.
+        $this->assertSame('lecture', SchedulingPolicy::labRoomType($this->departmentId));
+        $this->assertSame('laboratory', SchedulingPolicy::labRoomType($other));
+        $this->assertNotNull($this->mismatch(self::CLASSROOM));
         $this->assertNotNull($this->mismatch(self::CLASSROOM, $other));
     }
 }

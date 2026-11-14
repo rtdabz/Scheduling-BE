@@ -52,7 +52,7 @@ class SchedulingSettingsController extends Controller
         if ($sundayClassesEnabled !== (bool) $department->sunday_classes_enabled
             && ! $this->canManageSundayClasses($request)) {
             return response()->json([
-                'message' => 'Only the department secretary can enable or disable Sunday classes.',
+                'message' => 'Only the department Secretary, Director, or Program Head can enable or disable Sunday classes.',
             ], 403);
         }
 
@@ -95,7 +95,9 @@ class SchedulingSettingsController extends Controller
 
     private function canManageSundayClasses(Request $request): bool
     {
-        return $request->user()?->role === 'secretary';
+        $user = $request->user();
+
+        return $user !== null && ($user->isSecretaryOrDirector() || $user->role === 'program_head');
     }
 
     private function sundayClassCount(Departments $department): int
@@ -290,7 +292,8 @@ class SchedulingSettingsController extends Controller
             ->orderBy('course_code');
 
         return $query
-            ->get(['courses.id', 'course_code', 'course_name'])
+            ->get(['courses.id', 'course_code', 'course_name', 'lab_hours', 'room_type_required'])
+            ->filter(static fn (Course $course): bool => SchedulingPolicy::isFieldSchedulingEligible($course))
             ->map(static fn (Course $course): array => [
                 'id' => (int) $course->id,
                 'code' => (string) $course->course_code,

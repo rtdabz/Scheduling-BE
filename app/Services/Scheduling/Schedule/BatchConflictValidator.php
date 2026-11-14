@@ -91,16 +91,6 @@ class BatchConflictValidator
                     $add(BatchConflict::RULE_SECTION);
                 }
 
-                if (
-                    $left['course_id'] > 0
-                    && $left['course_id'] === $right['course_id']
-                    && $left['section_id'] !== $right['section_id']
-                    && $left['mode'] === 'online'
-                    && $right['mode'] === 'online'
-                ) {
-                    $add(BatchConflict::RULE_SUBJECT_SECTION_TIME);
-                }
-
                 if ($this->sharesExclusiveRoom($left, $right, $roomTypes)) {
                     $add(BatchConflict::RULE_ROOM);
                 }

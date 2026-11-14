@@ -65,6 +65,8 @@ final class SchedulingSnapshotRepository
         $courseIds = $this->positiveIds($courseIds);
 
         $sectionsQuery = Sections::query()
+            // SectionCurriculumResolver reuses a loaded curriculum instead of querying one per section.
+            ->with('curriculum')
             ->where('semester_id', $semesterId)
             ->where('department_id', $departmentId)
             ->orderBy('id');
@@ -114,7 +116,7 @@ final class SchedulingSnapshotRepository
                 $query->where(function ($scope) use ($sectionIds, $courseIds, $replacedClasses): void {
                     $scope
                         ->whereNotIn('section_id', $sectionIds)
-                        ->orWhereNotIn('status', ['draft', 'completed', 'revision']);
+                        ->orWhereNotIn('status', Schedule::PLOTTING_EDITABLE_STATUSES);
                     if ($replacedClasses !== null) {
                         $scope->orWhere(function ($kept) use ($replacedClasses): void {
                             foreach ($replacedClasses as [$sectionId, $courseId]) {

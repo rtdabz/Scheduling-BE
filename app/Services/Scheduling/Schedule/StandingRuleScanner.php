@@ -9,7 +9,7 @@ use App\Services\Scheduling\Engine\RuleEngine;
 
 final class StandingRuleScanner
 {
-    private const PAIRWISE_RULES = ['section_conflict', 'room_conflict', 'faculty_conflict', 'subject_section_time_conflict'];
+    private const PAIRWISE_RULES = ['section_conflict', 'room_conflict', 'faculty_conflict'];
 
 
     /**

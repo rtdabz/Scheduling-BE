@@ -1164,6 +1164,11 @@ class ScheduleQualityEvaluator
             return true;
         }
 
+        $componentDay = ComponentRequiredDays::forCourse($config, $courseId)[(string) ($row['meeting_type'] ?? '')] ?? null;
+        if ($componentDay !== null && $componentDay === $day) {
+            return true;
+        }
+
         foreach ($config['anchored_schedules'] ?? [] as $anchor) {
             if ((int) ($anchor['course_id'] ?? 0) === $courseId && ($anchor['day'] ?? null) === $day) {
                 return true;

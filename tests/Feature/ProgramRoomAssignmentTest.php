@@ -18,6 +18,9 @@ class ProgramRoomAssignmentTest extends TestCase
 {
     use RefreshDatabase;
 
+    /** The department office role under test; the tests/Feature/DirectorParity subclasses override it. */
+    protected string $officeRole = 'secretary';
+
     public function test_secretary_sees_only_the_departments_own_lecture_and_laboratory_rooms(): void
     {
         $f = $this->fixture();
@@ -127,11 +130,56 @@ class ProgramRoomAssignmentTest extends TestCase
         $f['room1']->forceFill(['home_program_id' => $f['x']->id])->save();
         $f['x']->delete();
 
-        $this->actingAs($f['secretary'])
+        $programHead = User::factory()->create(['role' => 'program_head', 'department_id' => $f['cas']->id, 'program_id' => $f['y']->id]);
+
+        $this->actingAs($programHead)
             ->getJson('/api/program-rooms')
             ->assertOk()
             ->assertJsonCount(1, 'data.programs')
+            ->assertJsonPath('data.can_manage', false)
             ->assertJsonPath('data.rooms.0.home_program_id', null);
+    }
+
+    public function test_program_rooms_access_follows_the_departments_registered_program_count(): void
+    {
+        $f = $this->fixture();
+        $f['y']->delete();
+        // Programs elsewhere and archived programs must not unlock this department.
+        Program::create(['department_id' => $f['cit']->id, 'code' => 'OTHER', 'name' => 'Other Program']);
+
+        $this->actingAs($f['secretary'])->getJson('/api/me')
+            ->assertJsonPath('scheduling_ready', true)
+            ->assertJsonPath('department_program_count', 1);
+        $this->getJson('/api/program-rooms')->assertForbidden()
+            ->assertJsonPath('message', 'Program Rooms is available when your department has more than one program. Room allocation is unnecessary for a single program.');
+        $this->putJson('/api/program-rooms', [
+            'room_sharing_policy' => 'strict',
+            'assignments' => [['room_id' => $f['room1']->id, 'program_id' => $f['x']->id]],
+        ])->assertForbidden();
+        $this->assertSame('open', $f['cas']->fresh()->room_sharing_policy);
+        $this->assertNull($f['room1']->fresh()->home_program_id);
+
+        $second = Program::create(['department_id' => $f['cas']->id, 'code' => 'Z', 'name' => 'Program Z']);
+        $this->getJson('/api/me')->assertJsonPath('department_program_count', 2);
+        $this->getJson('/api/program-rooms')->assertOk()->assertJsonPath('data.can_manage', true);
+        $this->putJson('/api/program-rooms', ['room_sharing_policy' => 'home_first'])->assertOk();
+
+        $second->delete();
+        $this->getJson('/api/me')->assertJsonPath('department_program_count', 1);
+        $this->getJson('/api/program-rooms')->assertForbidden();
+        $this->putJson('/api/program-rooms', ['room_sharing_policy' => 'strict'])->assertForbidden();
+        $this->assertSame('home_first', $f['cas']->fresh()->room_sharing_policy);
+
+        $f['x']->delete();
+        $this->getJson('/api/me')->assertJsonPath('department_program_count', 0);
+        $this->getJson('/api/program-rooms')->assertForbidden();
+        $this->putJson('/api/program-rooms', ['room_sharing_policy' => 'strict'])->assertForbidden();
+
+        $f['x']->restore();
+        $second->restore();
+        $this->getJson('/api/me')->assertJsonPath('department_program_count', 2);
+        $this->getJson('/api/program-rooms')->assertOk();
+        $this->putJson('/api/program-rooms', ['room_sharing_policy' => 'strict'])->assertOk();
     }
 
     private function room(string $code, string $type, ?int $departmentId): Rooms
@@ -159,7 +207,7 @@ class ProgramRoomAssignmentTest extends TestCase
             'room1' => $this->room('CAS-101', 'lecture', $cas->id),
             'room2' => $this->room('CAS-102', 'lecture', $cas->id),
             'room3' => $this->room('CAS-LAB', 'laboratory', $cas->id),
-            'secretary' => User::factory()->create(['role' => 'secretary', 'department_id' => $cas->id]),
+            'secretary' => User::factory()->create(['role' => $this->officeRole, 'department_id' => $cas->id]),
         ];
     }
 }

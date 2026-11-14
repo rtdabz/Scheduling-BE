@@ -72,6 +72,11 @@ final class GenerationRecommendationPolicy
                     'Release the %s Required Day or add rooms',
                     (string) ($context['forced_day'] ?? ''),
                 ),
+                'component_required_day_capacity_exceeded' => sprintf(
+                    'Move or clear the %s Required Day for %s',
+                    ucfirst((string) ($context['component_type'] ?? 'component')),
+                    $courseCode !== '' ? $courseCode : 'the course',
+                ),
                 default => 'Adjust the generation scope',
             };
 

@@ -96,11 +96,8 @@ class BatchConflictValidatorTest extends TestCase
         $this->assertContains(BatchConflict::RULE_FACULTY, $rules);
     }
 
-    /**
-     * The batch save enforced this rule; the recommendation-accept path did not.
-     * Consolidating means both do.
-     */
-    public function test_detects_same_course_online_for_two_sections_at_once(): void
+    /** Online is shared like the field: other sections may take the same online course at once. */
+    public function test_allows_same_course_online_for_two_sections_at_once(): void
     {
         [$semester, $dept, $sectionA] = $this->fixture();
         $sectionB = $this->section('BCV-1B', $dept, $semester);
@@ -111,7 +108,18 @@ class BatchConflictValidatorTest extends TestCase
             array_merge($this->row($semester, $dept, $sectionB, $course, null, 'Monday', '09:00', '10:00'), ['mode' => 'online']),
         ]);
 
-        $this->assertContains(BatchConflict::RULE_SUBJECT_SECTION_TIME, $rules);
+        $this->assertSame([], $rules);
+
+        // The shared online slot does not excuse a section or instructor double-booking.
+        $online = static fn (array $row, array $extra = []): array => array_merge($row, ['mode' => 'online'], $extra);
+        $rules = $this->rules([
+            $online($this->row($semester, $dept, $sectionA, $course, null, 'Monday', '08:00', '09:30'), ['faculty_id' => 41]),
+            $online($this->row($semester, $dept, $sectionB, $course, null, 'Monday', '09:00', '10:00'), ['faculty_id' => 41]),
+            $online($this->row($semester, $dept, $sectionB, $this->course('BCV102', $dept), null, 'Monday', '09:00', '10:00')),
+        ]);
+
+        $this->assertContains(BatchConflict::RULE_FACULTY, $rules);
+        $this->assertContains(BatchConflict::RULE_SECTION, $rules);
     }
 
     public function test_shared_field_room_is_not_a_collision_across_departments(): void

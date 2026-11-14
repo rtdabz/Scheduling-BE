@@ -35,7 +35,6 @@ class ConflictDetectionParityTest extends TestCase
     /** The rules the three validators all implement; others are out of scope. */
     private const CONFLICT_RULES = [
         'section_conflict',
-        'subject_section_time_conflict',
         'faculty_conflict',
         'room_conflict',
     ];
@@ -97,6 +96,33 @@ class ConflictDetectionParityTest extends TestCase
         );
     }
 
+    /**
+     * Online is a shared resource like the field: other sections may take the
+     * same online course at the same time. Section and instructor clashes stay.
+     */
+    public function test_the_same_online_course_runs_concurrently_for_other_sections(): void
+    {
+        $course = $this->course();
+        $online = ['course_id' => $course->id, 'mode' => 'online', 'room_id' => null];
+        $this->persist($online);
+        $this->persist($online + ['department_id' => $this->otherDepartment->id]);
+
+        $attempt = $this->attempt($online);
+        $this->assertAllLayers([], $attempt);
+        $this->assertNotContains('subject_section_time_conflict', $this->engineRules($attempt, all: true));
+        $this->assertNotContains('subject_section_time_conflict', $this->kernelRules($attempt, all: true));
+
+        $faculty = Faculty::create(['first_name' => 'On', 'last_name' => 'Line', 'employment_type' => 'full-time', 'department_id' => $this->department->id, 'status' => 'active']);
+        $section = $this->section();
+        $this->persist($online + ['faculty_id' => $faculty->id]);
+        $this->persist($online + ['section_id' => $section->id, 'start_time' => '08:30', 'end_time' => '09:30']);
+
+        $this->assertAllLayers(
+            ['faculty_conflict', 'section_conflict'],
+            $this->attempt($online + ['section_id' => $section->id, 'faculty_id' => $faculty->id]),
+        );
+    }
+
     public function test_part_time_availability_accepts_back_to_back_windows(): void
     {
         $faculty = Faculty::create(['first_name' => 'Part', 'last_name' => 'Timer', 'employment_type' => 'part-time', 'department_id' => $this->department->id, 'status' => 'active']);
@@ -138,7 +164,7 @@ class ConflictDetectionParityTest extends TestCase
     }
 
     /** @return list<string> */
-    private function kernelRules(array $attempt): array
+    private function kernelRules(array $attempt, bool $all = false): array
     {
         $snapshot = app(SchedulingSnapshotRepository::class)->capture(
             semesterId: $this->semester->id,
@@ -148,7 +174,7 @@ class ConflictDetectionParityTest extends TestCase
         );
         $violations = (new SchedulingConstraintKernel)->evaluateRow(ScheduleRow::fromArray($attempt), $snapshot);
 
-        return $this->ruleIds(array_map(static fn ($violation): string => $violation->ruleId, $violations));
+        return $this->ruleIds(array_map(static fn ($violation): string => $violation->ruleId, $violations), $all);
     }
 
     /** @return list<string> */

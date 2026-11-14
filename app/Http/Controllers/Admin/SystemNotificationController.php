@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\SystemNotification;
+use App\Support\ActorIdentity;
+use App\Support\LiveUpdates;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -14,16 +16,18 @@ class SystemNotificationController extends Controller
         $limit = min(max((int) $request->query('limit', 10), 1), 50);
 
         $notifications = SystemNotification::query()
-            ->with(['actor:id,name,role', 'department:id,department_name,department_code', 'academicSemester:id,semester,academic_year'])
-            ->where('user_id', $request->user()->id)
+            ->with(['department:id,department_name,department_code', 'academicSemester:id,semester,academic_year'])
+            ->visibleTo($request->user())
             ->latest()
+            ->latest('id')
             ->limit($limit)
-            ->get();
+            ->get()
+            ->each(fn (SystemNotification $notification) => $notification->setAttribute('actor', ActorIdentity::recorded($notification->metadata, $notification->actor_id)));
 
         return response()->json([
             'data' => $notifications,
             'unread_count' => SystemNotification::query()
-                ->where('user_id', $request->user()->id)
+                ->visibleTo($request->user())
                 ->whereNull('read_at')
                 ->count(),
         ]);
@@ -31,12 +35,13 @@ class SystemNotificationController extends Controller
 
     public function markAsRead(Request $request, SystemNotification $notification): JsonResponse
     {
-        if ((int) $notification->user_id !== (int) $request->user()->id) {
+        if (! SystemNotification::query()->visibleTo($request->user())->whereKey($notification->id)->exists()) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
         if ($notification->read_at === null) {
             $notification->update(['read_at' => now()]);
+            app(LiveUpdates::class)->notifyUser((int) $request->user()->id);
         }
 
         return response()->json($notification->fresh());
@@ -45,9 +50,10 @@ class SystemNotificationController extends Controller
     public function markAllAsRead(Request $request): JsonResponse
     {
         SystemNotification::query()
-            ->where('user_id', $request->user()->id)
+            ->visibleTo($request->user())
             ->whereNull('read_at')
             ->update(['read_at' => now(), 'updated_at' => now()]);
+        app(LiveUpdates::class)->notifyUser((int) $request->user()->id);
 
         return response()->json(['message' => 'Notifications marked as read.']);
     }

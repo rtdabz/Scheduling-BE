@@ -61,6 +61,8 @@ final class SessionInterpreter
             'meeting_type' => count($requirements) > 1 ? ($requirement['component_type'] ?? null) : null,
             'duration_slots' => (int) ($requirement['duration_slots'] ?? 0),
             'modes' => array_values((array) ($requirement['allowed_delivery_modes'] ?? [])),
+            // A pinned Integrated component (Lecture/Laboratory Required Day) is probed only on its day.
+            ...(isset($requirement['required_day']) && $requirement['required_day'] !== '' ? ['required_day' => (string) $requirement['required_day']] : []),
         ], $requirements);
         $selected = static fn (string $key): bool => in_array($courseId, array_map('intval', (array) ($configuration[$key] ?? [])), true);
         $mode = (string) ($configuration['delivery_modes_by_course_id'][$courseId] ?? $configuration['mode'] ?? $configuration['delivery_mode'] ?? 'on-site');
@@ -87,9 +89,9 @@ final class SessionInterpreter
             // Equal meetings must retain the supplied total; an odd total stays unresolved.
             $meeting = [...$meetings[0], 'meeting_type' => 'lecture', 'duration_slots' => intdiv($meetings[0]['duration_slots'], 2)];
             $meetings = [$meeting, $meeting];
-        } elseif ($kind === 'consecutive' && count($meetings) === 1 && $meetings[0]['duration_slots'] > 0 && $meetings[0]['duration_slots'] % $expected === 0) {
-            // The days share the supplied total equally; an uneven total stays unresolved.
-            $meetings = array_fill(0, $expected, [...$meetings[0], 'duration_slots' => intdiv($meetings[0]['duration_slots'], $expected)]);
+        } elseif ($kind === 'consecutive' && count($meetings) === 1 && $meetings[0]['duration_slots'] > 0) {
+            // Every day of the run repeats the course's full duration.
+            $meetings = array_fill(0, $expected, $meetings[0]);
         }
 
         return new SessionDescription(

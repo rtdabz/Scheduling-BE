@@ -6,12 +6,15 @@ use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Faculty;
 use App\Models\Program;
+use App\Models\RoomRequest;
 use App\Models\Rooms;
 use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -167,6 +170,255 @@ class ReportsTest extends TestCase
             ->assertJsonCount(2, 'sections')
             ->assertJsonCount(2, 'schedules')
             ->assertJsonPath('faculties.0.assigned_units', 6);
+    }
+
+    public function test_a_requested_term_scopes_counts_sections_schedules_and_loads(): void
+    {
+        $f = $this->fixture();
+        $first = $f['semester'];
+        $current = $this->section($f, 'IT-1A');
+        $this->schedule($f, $current, ['status' => 'finalized', 'faculty_id' => $f['faculty']->id]);
+
+        $second = Semester::create(['academic_year' => '2026-2027', 'semester' => '2nd', 'is_active' => false, 'is_enabled' => true]);
+        $f['semester'] = $second;
+        $later = $this->section($f, 'IT-1B');
+        $this->schedule($f, $later, ['status' => 'finalized', 'faculty_id' => $f['faculty']->id]);
+        // Unapproved work in a third term never offers that term for reporting.
+        $draftTerm = Semester::create(['academic_year' => '2027-2028', 'semester' => '1st', 'is_active' => false, 'is_enabled' => true]);
+        $f['semester'] = $draftTerm;
+        $this->schedule($f, $this->section($f, 'IT-1C'), ['status' => 'approved_by_dean', 'faculty_id' => $f['faculty']->id]);
+
+        $overview = $this->actingAs($f['secretary'])
+            ->getJson("/api/reports?semester_id={$second->id}")
+            ->assertOk()
+            ->assertJsonPath('semester.id', $second->id)
+            ->assertJsonPath('departments.0.complete_section_count', 1)
+            ->assertJsonPath('departments.0.instructor_count', 1);
+        $this->assertSame([$second->id, $first->id], collect($overview->json('terms'))->pluck('id')->all());
+
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/reports/departments/{$f['department']->id}?semester_id={$second->id}")
+            ->assertOk()
+            ->assertJsonPath('active_semester.id', $second->id)
+            ->assertJsonPath('active_semester.semester', '2nd')
+            ->assertJsonCount(1, 'sections')
+            ->assertJsonPath('sections.0.section_name', 'IT-1B')
+            ->assertJsonCount(1, 'schedules')
+            ->assertJsonPath('faculties.0.assigned_units', 3)
+            ->assertJsonCount(2, 'terms');
+    }
+
+    public function test_the_overview_includes_each_department_logo(): void
+    {
+        $f = $this->fixture();
+        $logo = 'data:image/png;base64,iVBORw0KGgo=';
+        $f['department']->update(['logo' => $logo]);
+
+        $this->actingAs($f['secretary'])
+            ->getJson('/api/reports')
+            ->assertOk()
+            ->assertJsonPath('departments.0.logo', $logo);
+    }
+
+    public function test_an_unknown_term_is_rejected(): void
+    {
+        $f = $this->fixture();
+
+        $this->actingAs($f['secretary'])->getJson('/api/reports?semester_id=999999')->assertUnprocessable();
+        $this->actingAs($f['secretary'])
+            ->getJson("/api/reports/departments/{$f['department']->id}?semester_id=999999")
+            ->assertUnprocessable();
+    }
+
+    public function test_room_report_downloads_are_logged(): void
+    {
+        $f = $this->fixture();
+
+        $this->actingAs($f['secretary'])
+            ->postJson('/api/reports/log-download', ['report_type' => 'room', 'department_id' => $f['department']->id])
+            ->assertOk();
+
+        $this->assertDatabaseHas('scheduling_audit_logs', ['action' => 'report_downloaded', 'department_id' => $f['department']->id]);
+    }
+
+    public function test_room_summary_uses_department_inventory_and_requests_in_both_directions(): void
+    {
+        $f = $this->fixture();
+        $other = Departments::create(['department_name' => 'Business', 'department_code' => 'CBA']);
+        $third = Departments::create(['department_name' => 'Education', 'department_code' => 'CED']);
+        $otherUser = User::factory()->create(['name' => 'Business Requester', 'department_id' => $other->id]);
+        $room = fn (string $code, string $type, string $status = 'available', ?int $departmentId = null) => Rooms::create([
+            'room_code' => $code, 'room_type' => $type, 'status' => $status,
+            'department_id' => $departmentId ?? $f['department']->id,
+        ]);
+        $lab = $room('IT-LAB', 'laboratory', 'not available');
+        $lab->update(['building' => 'Technology Building']);
+        $room('IT-CLOSED', 'lecture', 'not available');
+        $room('ONLINE', 'online');
+        $room('FIELD', 'field');
+        $room('IT-ARCHIVED', 'lecture', 'not available')->delete();
+        $room('CBA-LIVE', 'lecture', 'available', $other->id);
+        Rooms::create(['room_code' => 'CAMPUS-SHARED', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => null]);
+        $otherRoom = $room('CBA-101', 'lecture', 'available', $other->id);
+        $oldSemester = Semester::create(['academic_year' => '2025-2026', 'semester' => '2nd', 'is_active' => false, 'is_enabled' => false]);
+        $outgoing = RoomRequest::create([
+            'room_id' => $otherRoom->id, 'semester_id' => $oldSemester->id,
+            'requesting_department_id' => $f['department']->id, 'owner_department_id' => $other->id,
+            'requested_by' => $f['secretary']->id, 'status' => 'rejected',
+        ]);
+        $outgoing->windows()->createMany([
+            ['day' => 'Monday', 'start_time' => '13:00:00', 'end_time' => '14:30:00'],
+            ['day' => 'Monday', 'start_time' => '08:00:00', 'end_time' => '09:30:00'],
+        ]);
+        $incoming = RoomRequest::create([
+            'room_id' => $f['room']->id, 'semester_id' => $f['semester']->id,
+            'requesting_department_id' => $other->id, 'owner_department_id' => $f['department']->id,
+            'requested_by' => $otherUser->id, 'status' => 'pending',
+        ]);
+        $incoming->windows()->create(['day' => 'Friday', 'start_time' => '14:00:00', 'end_time' => '15:30:00']);
+        RoomRequest::create([
+            'room_id' => $otherRoom->id, 'semester_id' => $f['semester']->id,
+            'requesting_department_id' => $third->id, 'owner_department_id' => $other->id,
+            'requested_by' => $otherUser->id, 'status' => 'pending',
+        ]);
+        // Request history keeps the recorded owner and times after a room is reassigned and archived.
+        $otherRoom->update(['department_id' => $third->id]);
+        $otherRoom->delete();
+        $this->schedule($f, $this->section($f, 'IT-1A'), ['status' => 'finalized', 'faculty_id' => $f['faculty']->id]);
+
+        $response = $this->actingAs($f['secretary'])
+            ->getJson("/api/reports/departments/{$f['department']->id}")
+            ->assertOk()
+            ->assertJsonCount(1, 'rooms')
+            ->assertJsonPath('rooms.0.status', 'available')
+            ->assertJsonPath('room_summary.total_rooms', 3)
+            ->assertJsonPath('room_summary.total_laboratories', 1)
+            ->assertJsonPath('room_summary.unavailable_rooms', 2)
+            ->assertJsonCount(3, 'room_summary.rooms')
+            ->assertJsonPath('room_summary.rooms.1', [
+                'id' => $lab->id,
+                'room_code' => 'IT-LAB',
+                'building' => 'Technology Building',
+                'room_type' => 'laboratory',
+                'status' => 'not available',
+                'department_id' => $f['department']->id,
+            ])
+            ->assertJsonCount(2, 'room_summary.requests')
+            ->assertJsonPath('room_summary.requests.0.id', $incoming->id)
+            ->assertJsonPath('room_summary.requests.0.direction', 'received')
+            ->assertJsonPath('room_summary.requests.0.owner_department', 'IT')
+            ->assertJsonPath('room_summary.requests.0.requester', 'CBA')
+            ->assertJsonPath('room_summary.requests.0.requested_by', 'Business Requester')
+            ->assertJsonPath('room_summary.requests.0.windows', [
+                ['day' => 'Friday', 'start_time' => '14:00', 'end_time' => '15:30'],
+            ])
+            ->assertJsonPath('room_summary.requests.1.id', $outgoing->id)
+            ->assertJsonPath('room_summary.requests.1.direction', 'sent')
+            ->assertJsonPath('room_summary.requests.1.room_code', 'CBA-101')
+            ->assertJsonPath('room_summary.requests.1.owner_department', 'CBA')
+            ->assertJsonPath('room_summary.requests.1.requester', 'IT')
+            ->assertJsonPath('room_summary.requests.1.requested_by', $f['secretary']->name)
+            ->assertJsonPath('room_summary.requests.1.status', 'rejected')
+            ->assertJsonPath('room_summary.requests.1.windows', [
+                ['day' => 'Monday', 'start_time' => '08:00', 'end_time' => '09:30'],
+                ['day' => 'Monday', 'start_time' => '13:00', 'end_time' => '14:30'],
+            ]);
+        $this->assertSame(['IT-CLOSED', 'IT-LAB', 'IT101'], collect($response->json('room_summary.rooms'))->pluck('room_code')->all());
+    }
+
+    public function test_room_summary_respects_the_program_heads_room_scope(): void
+    {
+        $f = $this->fixture();
+        $otherProgram = Program::create(['department_id' => $f['department']->id, 'code' => 'BSCS', 'name' => 'Computer Science']);
+        $other = Departments::create(['department_name' => 'Business', 'department_code' => 'CBA']);
+        $f['room']->forceFill(['home_program_id' => $f['program']->id])->save();
+        $otherRoom = Rooms::create([
+            'room_code' => 'CS-101', 'room_type' => 'lecture', 'status' => 'not available', 'department_id' => $f['department']->id,
+        ]);
+        $otherRoom->forceFill(['home_program_id' => $otherProgram->id])->save();
+        Rooms::create([
+            'room_code' => 'SHARED-LAB', 'room_type' => 'laboratory', 'status' => 'not available', 'department_id' => $f['department']->id,
+        ]);
+        $externalRoom = Rooms::create([
+            'room_code' => 'CBA-101', 'room_type' => 'lecture', 'status' => 'available', 'department_id' => $other->id,
+        ]);
+        foreach ([$f['room'], $otherRoom] as $room) {
+            RoomRequest::create([
+                'room_id' => $room->id, 'semester_id' => $f['semester']->id,
+                'requesting_department_id' => $other->id, 'owner_department_id' => $f['department']->id,
+                'requested_by' => $f['secretary']->id, 'status' => 'pending',
+            ]);
+        }
+        RoomRequest::create([
+            'room_id' => $externalRoom->id, 'semester_id' => $f['semester']->id,
+            'requesting_department_id' => $f['department']->id, 'owner_department_id' => $other->id,
+            'requested_by' => $f['secretary']->id, 'status' => 'approved',
+        ]);
+        $head = $this->grantCapabilities(User::factory()->create([
+            'role' => 'program_head', 'department_id' => $f['department']->id, 'program_id' => $f['program']->id,
+        ]));
+
+        $response = $this->actingAs($head)
+            ->getJson("/api/reports/departments/{$f['department']->id}")
+            ->assertOk()
+            ->assertJsonPath('room_summary.total_rooms', 2)
+            ->assertJsonPath('room_summary.total_laboratories', 1)
+            ->assertJsonPath('room_summary.unavailable_rooms', 1)
+            ->assertJsonCount(2, 'room_summary.rooms')
+            ->assertJsonCount(2, 'room_summary.requests');
+        $this->assertSame(['IT101', 'SHARED-LAB'], collect($response->json('room_summary.rooms'))->pluck('room_code')->all());
+        $this->assertSame(['CBA-101', 'IT101'], collect($response->json('room_summary.requests'))->pluck('room_code')->all());
+        $this->assertSame(['sent', 'received'], collect($response->json('room_summary.requests'))->pluck('direction')->all());
+        $this->assertSame(['CBA', 'IT'], collect($response->json('room_summary.requests'))->pluck('owner_department')->all());
+        $this->assertSame([[], []], collect($response->json('room_summary.requests'))->pluck('windows')->all());
+
+        $this->actingAs($head)
+            ->getJson("/api/reports/departments/{$f['department']->id}?program_id={$otherProgram->id}")
+            ->assertForbidden();
+    }
+
+    public static function roomRequesterRoles(): array
+    {
+        return [['secretary'], ['director']];
+    }
+
+    #[DataProvider('roomRequesterRoles')]
+    public function test_room_report_preserves_the_requester_after_account_changes_and_replacement(string $role): void
+    {
+        $f = $this->fixture();
+        $other = Departments::create(['department_name' => 'Business', 'department_code' => 'CBA']);
+        $requester = User::factory()->create([
+            'name' => 'Original Requester', 'role' => $role, 'department_id' => $other->id,
+        ]);
+        $attributes = [
+            'room_id' => $f['room']->id, 'semester_id' => $f['semester']->id,
+            'requesting_department_id' => $other->id, 'owner_department_id' => $f['department']->id,
+            'requested_by' => $requester->id, 'status' => 'rejected',
+        ];
+        $recorded = RoomRequest::create($attributes);
+        $legacyId = DB::table('room_requests')->insertGetId($attributes + [
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $assertRecordedIdentity = function () use ($f, $recorded, $legacyId): void {
+            $rows = collect($this->actingAs($f['secretary'])
+                ->getJson("/api/reports/departments/{$f['department']->id}")
+                ->assertOk()->json('room_summary.requests'))->keyBy('id');
+            $this->assertSame('Original Requester', $rows[$recorded->id]['requested_by']);
+            $this->assertSame('Actor unavailable', $rows[$legacyId]['requested_by']);
+        };
+        $assertRecordedIdentity();
+
+        $requester->update(['name' => 'Renamed Requester', 'is_active' => false]);
+        $assertRecordedIdentity();
+        $requester->delete();
+        $replacement = User::factory()->create([
+            'name' => 'Replacement Requester', 'role' => $role, 'department_id' => $other->id,
+        ]);
+        $assertRecordedIdentity();
+
+        $this->assertNotSame($requester->id, $replacement->id);
+        $this->assertSame($requester->id, $recorded->fresh()->actor_snapshots['requested_by']['id']);
     }
 
     /** @return array<string, mixed> */

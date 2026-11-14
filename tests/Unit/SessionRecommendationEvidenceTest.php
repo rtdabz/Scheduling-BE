@@ -69,8 +69,8 @@ class SessionRecommendationEvidenceTest extends TestCase
         $this->assertSame($diagnostics->searchRecommendations(...$inputs), $result->legacyPayload);
         $this->assertSame('consecutive', $result->metadata['sessions']['10:100']['kind']);
         $this->assertSame('regular', $result->metadata['sessions']['11:100']['kind']);
-        // The two days share the course's four slots.
-        $this->assertSame([2, 2], array_column($result->metadata['sessions']['10:100']['meetings'], 'duration_slots'));
+        // Each of the two days repeats the course's full four slots.
+        $this->assertSame([4, 4], array_column($result->metadata['sessions']['10:100']['meetings'], 'duration_slots'));
         $this->assertArrayNotHasKey('snapshot', $result->toArray()['context']);
     }
 }

@@ -21,16 +21,14 @@ class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
             $courseId = (int) $course->id;
             $mode = (string) ($deliveryModes[$courseId] ?? $deliveryModes[(string) $courseId] ?? $defaultMode);
             $isLaboratory = SchedulingPolicy::isLaboratoryCourse($course);
-            $isMajor = SchedulingPolicy::isMajorCourse($course);
-            $hasLectureAndLaboratory = $isMajor
-                && in_array($courseId, $splitIds, true)
-                && (int) ($course->lecture_hours ?? 0) > 0
-                && (int) ($course->lab_hours ?? 0) > 0;
+            $hasLectureAndLaboratory = in_array($courseId, $splitIds, true)
+                && SchedulingPolicy::hasLectureAndLaboratoryComponents($course, (int) $section->department_id);
 
             $preferredRoomId = CourseSetupOverrides::preferredRoomId($options, $courseId);
 
             if ($hasLectureAndLaboratory) {
                 $lectureOnSite = SchedulingPolicy::isIntegratedOnSite($deliveryModes, $courseId);
+                $componentDays = ComponentRequiredDays::forCourse($options, $courseId);
                 $requirements[$courseId] = [
                     (new ScheduleRequirement(
                         courseId: $courseId,
@@ -39,6 +37,7 @@ class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
                         eligibleRoomTypes: $lectureOnSite ? ['lecture'] : ['online'],
                         allowedDeliveryModes: $lectureOnSite ? ['on-site'] : ['online'],
                         isSplitComponent: true,
+                        requiredDay: $componentDays['lecture'] ?? null,
                     ))->toArray(),
                     (new ScheduleRequirement(
                         courseId: $courseId,
@@ -48,6 +47,7 @@ class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
                         allowedDeliveryModes: ['on-site'],
                         isSplitComponent: true,
                         preferredRoomId: $preferredRoomId,
+                        requiredDay: $componentDays['laboratory'] ?? null,
                     ))->toArray(),
                 ];
 
@@ -56,7 +56,8 @@ class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
 
             $componentType = match (true) {
                 $mode === 'online' => 'online',
-                SchedulingPolicy::isFieldCourse($course, (int) $section->department_id) || $mode === 'field' => 'field',
+                SchedulingPolicy::isFieldSchedulingEligible($course)
+                    && (SchedulingPolicy::isFieldCourse($course, (int) $section->department_id) || $mode === 'field') => 'field',
                 $isLaboratory => 'laboratory',
                 default => 'lecture',
             };
@@ -68,8 +69,7 @@ class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
                 'online' => ['online'],
                 default => $isExplicitMode ? [$mode] : ['on-site', 'online'],
             };
-            $lectureLabFallback = $componentType === 'lecture' && SchedulingPolicy::isLectureOnlyMajor($course);
-            $lectureRoomTypes = $lectureLabFallback ? ['lecture', 'laboratory'] : ['lecture'];
+            $lectureRoomTypes = ['lecture'];
             $roomTypes = match ($componentType) {
                 'online' => ['online'],
                 'field' => ['field'],
@@ -86,7 +86,6 @@ class CourseScheduleRequirementBuilder implements ScheduleRequirementBuilder
                     durationSlots: max(1, SchedulingPolicy::courseDurationSlots($course)),
                     eligibleRoomTypes: $roomTypes,
                     allowedDeliveryModes: $allowedModes,
-                    allowLectureLaboratoryFallback: $lectureLabFallback,
                     preferredRoomId: $componentType === 'online' ? null : $preferredRoomId,
                 ))->toArray(),
             ];

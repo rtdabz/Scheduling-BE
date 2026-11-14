@@ -11,6 +11,7 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Support\AccountVersion;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -28,6 +29,7 @@ class ProfileTest extends TestCase
 
         $this->actingAs($user)
             ->patchJson('/api/profile', [
+                'expected_version' => AccountVersion::of($user->fresh()),
                 'first_name' => 'Maria',
                 'middle_initial' => 'c',
                 'last_name' => 'Santos',
@@ -56,6 +58,7 @@ class ProfileTest extends TestCase
 
         $this->actingAs($user)
             ->patchJson('/api/profile', [
+                'expected_version' => AccountVersion::of($user->fresh()),
                 'first_name' => 'Ana',
                 'last_name' => 'Reyes',
                 'profile_picture' => 'https://example.com/photo.png',

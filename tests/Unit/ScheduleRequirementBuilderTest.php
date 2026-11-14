@@ -30,7 +30,6 @@ class ScheduleRequirementBuilderTest extends TestCase
 
         $this->assertSame(['lecture', 'online'], $requirements[10][0]['eligible_room_types']);
         $this->assertNotContains('laboratory', $requirements[10][0]['eligible_room_types']);
-        $this->assertFalse($requirements[10][0]['allow_lecture_laboratory_fallback']);
     }
 
     public function test_builder_schedules_nstp_as_a_normal_minor_unless_the_department_made_it_field(): void

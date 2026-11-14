@@ -4,6 +4,10 @@ namespace App\Http\Controllers\Faculty;
 
 use App\Http\Controllers\Controller;
 use App\Models\Faculty;
+use App\Models\Semester;
+use App\Services\Scheduling\FacultyAvailabilityImpact;
+use App\Services\Scheduling\Lock\SchedulingScopeLock;
+use App\Services\Scheduling\Support\ConflictMessage;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
@@ -34,11 +38,11 @@ class FacultyAvailabilityController extends Controller
             'employment_type' => $faculty->employment_type,
             'opening_time' => SchedulingPolicy::openingTime(),
             'closing_time' => SchedulingPolicy::closingTime(),
-            'availabilities' => $this->windows($faculty),
+            ...$this->modeFields($faculty),
         ]);
     }
 
-    public function replace(Request $request, Faculty $faculty): JsonResponse
+    public function replace(Request $request, Faculty $faculty, FacultyAvailabilityImpact $impact, SchedulingScopeLock $lock): JsonResponse
     {
         if ($response = $this->guardDepartment($request, $faculty)) {
             return $response;
@@ -51,7 +55,7 @@ class FacultyAvailabilityController extends Controller
             'availabilities.*.end_time' => 'required|date_format:H:i,H:i:s',
         ]);
 
-        $validator->after(function ($validator) use ($request) {
+        $validator->after(function ($validator) use ($request, $faculty) {
             $windows = $request->input('availabilities', []);
             if (! is_array($windows)) {
                 return;
@@ -86,6 +90,21 @@ class FacultyAvailabilityController extends Controller
                 }
 
                 $day = (int) ($window['day_index'] ?? -1);
+                // Added windows extend the default hours; overlapping them adds nothing.
+                foreach (SchedulingPolicy::standardFacultyHours($faculty->employment_type) as $default) {
+                    if ($default['day_index'] === $day && $start < $default['end_time'] && $end > $default['start_time']) {
+                        $validator->errors()->add(
+                            "availabilities.{$index}.start_time",
+                            'This window overlaps the default '.$faculty->employment_type.' hours for '
+                                .(self::DAY_LABELS[$day] ?? "day {$day}").' ('
+                                .ConflictMessage::time($default['start_time']).' - '.ConflictMessage::time($default['end_time'])
+                                .'). Add only hours outside the default.'
+                        );
+
+                        continue 2;
+                    }
+                }
+
                 foreach ($byDay[$day] ?? [] as $existing) {
                     if ($start < $existing['end'] && $end > $existing['start']) {
                         $label = self::DAY_LABELS[$day] ?? "day {$day}";
@@ -117,19 +136,51 @@ class FacultyAvailabilityController extends Controller
             ])
             ->all();
 
-        DB::transaction(function () use ($faculty, $windows): void {
-            $faculty->availabilities()->delete();
+        // Same per-semester lock as assignment saves, so an assignment cannot
+        // slip in between this impact check and the write.
+        $activeSemesterId = (int) Semester::query()->where('is_active', true)->value('id');
+        $lock->execute([$activeSemesterId], fn () => DB::transaction(function () use ($faculty, $windows, $impact): void {
+            $current = Faculty::query()->whereKey($faculty->id)->lockForUpdate()->firstOrFail();
+            $impact->assertNoneOutside(
+                $current,
+                $current->employment_type,
+                array_map(static fn (array $window): array => [
+                    'day_index' => SchedulingPolicy::dayIndex($window['day']),
+                    'start_time' => $window['start_time'],
+                    'end_time' => $window['end_time'],
+                ], $windows),
+                'availabilities',
+            );
+
+            $current->availabilities()->delete();
             if ($windows !== []) {
                 DB::table('faculty_availabilities')->insert($windows);
             }
-        });
+        }));
 
         ApiCache::forgetGroups(['faculty.index', 'initial.data', 'instructor_assignments.index']);
 
         return response()->json([
             'faculty_id' => $faculty->id,
-            'availabilities' => $this->windows($faculty->refresh()),
+            ...$this->modeFields($faculty->refresh()),
         ]);
+    }
+
+    /**
+     * The default week of the employment type and the windows added on top of
+     * it. Availability is their union; "custom" means windows were added.
+     *
+     * @return array<string, mixed>
+     */
+    private function modeFields(Faculty $faculty): array
+    {
+        $windows = $this->windows($faculty);
+
+        return [
+            'availability_mode' => $windows === [] ? 'standard' : 'custom',
+            'availabilities' => $windows,
+            'standard_availabilities' => SchedulingPolicy::standardFacultyHours($faculty->employment_type),
+        ];
     }
 
     /** @return array<int, array<string, mixed>> */

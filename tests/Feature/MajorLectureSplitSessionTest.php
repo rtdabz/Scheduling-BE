@@ -142,7 +142,7 @@ class MajorLectureSplitSessionTest extends TestCase
         $this->assertCount(2, $rows, 'Split Session is selected per course and is independent of the retired department switch.');
     }
 
-    public function test_a_major_carrying_laboratory_units_may_be_split(): void
+    public function test_a_major_carrying_laboratory_units_is_not_split(): void
     {
         [$department, $section, $course, $user] = $this->scenario(majorLectureSplitEnabled: true, labHours: 1);
 
@@ -150,7 +150,9 @@ class MajorLectureSplitSessionTest extends TestCase
 
         $this->assertSame(200, $response->status(), json_encode($response->json(), JSON_PRETTY_PRINT));
         $rows = collect($response->json('schedules'))->where('course_id', (int) $course->id)->values();
-        $this->assertCount(2, $rows, 'A major with laboratory units is eligible for Split Session.');
+        // Split Session is only for courses without laboratory units; the request is dropped and
+        // the course keeps one full-length meeting.
+        $this->assertCount(1, $rows, 'A course with laboratory units is never a Split Session.');
     }
 
     /**

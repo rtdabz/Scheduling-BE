@@ -39,8 +39,9 @@ final class SessionAlternativePolicy
         }
         $types = array_column($meetings, 'meeting_type');
         sort($types);
-        if ($types !== ['laboratory', 'lecture'] || (int) ($course['lecture_hours'] ?? 0) <= 0
-            || (int) ($course['lab_hours'] ?? 0) <= 0 || ! SchedulingPolicy::isMajorCourse($course)
+        // Integrated is open to any non-field course with lecture and laboratory units, as in generation.
+        if ($types !== ['laboratory', 'lecture']
+            || ! SchedulingPolicy::hasLectureAndLaboratoryComponents($course, null, $fieldCodes)
             || array_filter($meetings, static fn (array $meeting): bool => $meeting['modes'] !== ['on-site']) !== []) {
             return null;
         }

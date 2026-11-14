@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Faculty;
 use App\Models\User;
 use App\Notifications\ResetPasswordNotification;
+use App\Support\AccountVersion;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -64,7 +65,22 @@ class AuthenticationWorkflowTest extends TestCase
             ->assertStatus(403);
     }
 
-    public function test_legacy_director_account_cannot_login_after_portal_removal(): void
+    public function test_legacy_director_account_without_a_role_assignment_cannot_login(): void
+    {
+        // Director was retired and later reintroduced; an account whose Spatie role was removed by
+        // the retirement stays locked until the VPAA reviews and reactivates it.
+        $user = User::factory()->create([
+            'role' => 'director',
+            'password' => Hash::make('StrongPass123'),
+        ]);
+        $user->syncRoles([]);
+
+        $this->postJson('/api/login', ['username' => $user->username, 'password' => 'StrongPass123'])
+            ->assertStatus(403)
+            ->assertJsonPath('message', User::ROLE_REVIEW_MESSAGE);
+    }
+
+    public function test_an_active_director_can_login(): void
     {
         $user = User::factory()->create([
             'role' => 'director',
@@ -72,8 +88,8 @@ class AuthenticationWorkflowTest extends TestCase
         ]);
 
         $this->postJson('/api/login', ['username' => $user->username, 'password' => 'StrongPass123'])
-            ->assertStatus(403)
-            ->assertJsonPath('message', 'This account role is no longer supported. Contact the VPAA office.');
+            ->assertOk()
+            ->assertJsonPath('user.role', 'director');
     }
 
     public function test_vpaa_can_create_and_disable_a_google_enabled_user(): void
@@ -99,6 +115,7 @@ class AuthenticationWorkflowTest extends TestCase
 
         $user = User::where('username', 'approved.user')->firstOrFail();
         $this->actingAs($vpaa, 'sanctum')->putJson("/api/user/{$user->id}", [
+            'expected_version' => AccountVersion::of(User::findOrFail($user->id)),
             'first_name' => $user->first_name,
             'last_name' => $user->last_name,
             'email' => $user->email,
@@ -177,5 +194,4 @@ class AuthenticationWorkflowTest extends TestCase
 
         Notification::assertSentTo(User::first(), ResetPasswordNotification::class);
     }
-
 }

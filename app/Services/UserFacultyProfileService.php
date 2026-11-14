@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Faculty;
 use App\Models\User;
+use App\Support\PersonName;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Validation\ValidationException;
 
@@ -39,6 +40,8 @@ class UserFacultyProfileService
             'middle_name' => $middleName,
             'last_name' => $lastName,
             'suffix' => $suffix,
+            'honorific_prefix' => $user->honorific_prefix,
+            'credentials' => $user->credentials,
             'employment_type' => 'full-time',
             'max_units' => self::defaultMaxUnits(),
             'overload_units' => 0,
@@ -77,6 +80,7 @@ class UserFacultyProfileService
         $faculty->update([
             'user_id' => $user->id,
             'administrative_role' => $user->role,
+            ...$this->reconcileAffixes($user, $faculty),
         ]);
         if ($designationIds !== []) {
             $this->designations->sync($faculty, $designationIds);
@@ -95,7 +99,7 @@ class UserFacultyProfileService
             ->where('department_id', $departmentId)
             ->orderBy('last_name')
             ->orderBy('first_name')
-            ->get(['id', 'first_name', 'middle_name', 'last_name', 'employment_type', 'max_units', 'program_id', 'status']);
+            ->get(['id', ...Faculty::NAME_COLUMNS, 'employment_type', 'max_units', 'program_id', 'status']);
     }
 
     public function sync(User $user): ?Faculty
@@ -113,18 +117,48 @@ class UserFacultyProfileService
             default => [],
         };
 
-        $faculty->update($status + [
+        // Only a Program Head's account carries a program, and it is authoritative. Other
+        // accounts have none, so keep the instructor's own program (set on the instructor
+        // profile) unless the department changed, which makes the old program invalid.
+        $program = match (true) {
+            $user->program_id !== null => ['program_id' => $user->program_id],
+            (int) $faculty->department_id !== (int) $user->department_id => ['program_id' => null],
+            default => [],
+        };
+
+        $faculty->update($status + $program + [
             'administrative_role' => $user->role,
             'first_name' => $firstName,
             'middle_name' => $middleName,
             'last_name' => $lastName,
             'suffix' => $suffix,
+            ...$this->reconcileAffixes($user, $faculty),
             'department_id' => $user->department_id,
-            'program_id' => $user->program_id,
             'profile_picture' => $user->profile_picture,
         ]);
 
         return $faculty->fresh();
+    }
+
+    /**
+     * Copies a linked instructor's title and credentials to the account after they were
+     * edited on the instructor profile, so the next account sync does not undo the edit.
+     */
+    public function pushAffixesToAccount(Faculty $faculty): void
+    {
+        $user = $faculty->user;
+        if ($user === null) {
+            return;
+        }
+
+        $user->fill($faculty->only(PersonName::AFFIX_FIELDS));
+        if ($user->isDirty(PersonName::AFFIX_FIELDS)) {
+            if (filled($user->first_name) && filled($user->last_name)) {
+                $user->name = $user->composedName();
+            }
+            $user->save();
+            app(AuthenticationAuditService::class)->record(request(), 'profile_updated', $user, ['source' => 'faculty_profile']);
+        }
     }
 
     public function detachAsRegularFaculty(User $user): void
@@ -169,6 +203,41 @@ class UserFacultyProfileService
         };
 
         throw ValidationException::withMessages(['faculty_mode' => $message]);
+    }
+
+    /**
+     * The title and credentials an instructor profile should carry for its account.
+     *
+     * A value on the account wins. A value cleared on the account in this save clears the
+     * profile too. Otherwise a value already on the profile (for example, one recorded on a
+     * roster instructor before it was linked) is kept and copied onto the account instead of
+     * being silently dropped.
+     *
+     * @return array{honorific_prefix: ?string, credentials: ?string}
+     */
+    private function reconcileAffixes(User $user, Faculty $faculty): array
+    {
+        $resolved = [];
+        foreach (PersonName::AFFIX_FIELDS as $field) {
+            $resolved[$field] = match (true) {
+                $user->{$field} !== null => $user->{$field},
+                $user->wasChanged($field) => null,
+                default => $faculty->{$field},
+            };
+        }
+
+        $user->fill($resolved);
+        if ($user->isDirty(PersonName::AFFIX_FIELDS)) {
+            if (filled($user->first_name) && filled($user->last_name)) {
+                $user->name = $user->composedName();
+            }
+            // A direct write keeps the caller's wasChanged() view of this request intact.
+            $columns = [...PersonName::AFFIX_FIELDS, 'name'];
+            User::query()->whereKey($user->getKey())->update($user->only($columns));
+            $user->syncOriginalAttributes($columns);
+        }
+
+        return $resolved;
     }
 
     /**

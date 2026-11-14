@@ -2,13 +2,19 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\PreservesApprovalActors;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Prunable;
 
 class RoomRecoveryPlan extends Model
 {
+    use PreservesApprovalActors;
     use Prunable;
+
+    public const RECORDED_ACTORS = ['created_by' => null, 'dean_reviewed_by' => 'dean_reviewed_at', 'reviewed_by' => 'reviewed_at'];
+
+    public const REPEATABLE_ACTORS = [];
 
     public $incrementing = false;
 
@@ -16,7 +22,7 @@ class RoomRecoveryPlan extends Model
 
     protected $guarded = [];
 
-    protected $casts = ['payload' => 'array', 'applied_groups' => 'array', 'selected_groups' => 'array',
+    protected $casts = ['actor_snapshots' => 'array', 'payload' => 'array', 'applied_groups' => 'array', 'selected_groups' => 'array',
         'expires_at' => 'datetime', 'applied_at' => 'datetime', 'submitted_at' => 'datetime', 'reviewed_at' => 'datetime',
         'dean_reviewed_at' => 'datetime'];
 

@@ -36,6 +36,8 @@ class CurriculumCreationTest extends TestCase
         $other = Departments::create(['department_name' => 'Education', 'department_code' => 'EDUC']);
         $secretary = $this->secretary();
         $secretary->update(['department_id' => $own->id]);
+        // Curriculum authoring needs the department to own a program.
+        Program::create(['department_id' => $own->id, 'code' => 'BSBA', 'name' => 'Business Administration']);
 
         $this->actingAs($secretary->fresh())->postJson('/api/curriculum', [
             'name' => 'BS Business Administration',

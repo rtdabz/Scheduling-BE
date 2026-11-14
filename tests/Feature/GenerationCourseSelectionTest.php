@@ -66,6 +66,60 @@ class GenerationCourseSelectionTest extends TestCase
         $this->assertSame([], $selection['preferred_patterns']);
     }
 
+    public function test_a_regular_laboratory_course_keeps_one_full_length_meeting(): void
+    {
+        [$section, $plain, , $lab] = $this->scaffold();
+
+        $selection = app(GenerationCourseSelection::class)->resolve($section, [
+            'course_ids' => [$plain->id, $lab->id],
+            'delivery_modes_by_course_id' => [$lab->id => 'on-site'],
+        ]);
+
+        // Nothing is split behind a Regular course: lecture and laboratory units stay one meeting.
+        $this->assertSame([], $selection['selected_split_session_course_ids']);
+        $this->assertSame([$lab->id => 'on-site'], $selection['delivery_modes_by_course_id']);
+        $this->assertFalse($selection['is_hybrid']);
+    }
+
+    public function test_an_explicit_integrated_choice_applies_to_every_course_category(): void
+    {
+        [$section, , , $lab] = $this->scaffold();
+        $lab->update(['course_category' => 'minor']);
+
+        $selection = app(GenerationCourseSelection::class)->resolve($section, [
+            'course_ids' => [$lab->id],
+            'selected_split_session_course_ids' => [$lab->id],
+            'delivery_modes_by_course_id' => [$lab->id => 'on-site'],
+        ]);
+
+        $this->assertSame([$lab->id], $selection['selected_split_session_course_ids']);
+    }
+
+    public function test_split_session_is_never_given_to_a_laboratory_course(): void
+    {
+        [$section, , , $lab] = $this->scaffold();
+
+        $selection = app(GenerationCourseSelection::class)->resolve($section, [
+            'course_ids' => [$lab->id],
+            'selected_gec_course_ids' => [$lab->id],
+        ]);
+
+        $this->assertSame([], $selection['balanced_split_course_ids']);
+    }
+
+    public function test_a_field_course_is_never_integrated(): void
+    {
+        [$section, , , $lab] = $this->scaffold();
+        $lab->update(['room_type_required' => 'field']);
+
+        $selection = app(GenerationCourseSelection::class)->resolve($section, [
+            'course_ids' => [$lab->id],
+            'selected_split_session_course_ids' => [$lab->id],
+        ]);
+
+        $this->assertSame([], $selection['selected_split_session_course_ids']);
+    }
+
     /** @return array{0: Sections, 1: Course, 2: Course, 3: Course} */
     private function scaffold(): array
     {

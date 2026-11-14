@@ -207,6 +207,43 @@ class AvailableSlotFinderTest extends TestCase
         );
     }
 
+    /**
+     * A laboratory meeting never borrows a lecture classroom: with no laboratory room it is
+     * offered on-site as Room TBA, and Room TBA is listed only where no laboratory is free.
+     */
+    public function test_a_laboratory_meeting_is_offered_room_tba_and_never_a_lecture_room(): void
+    {
+        $context = $this->scaffold();
+        $course = $this->course($context, 'IT 101', 3, 'minor');
+        $course->update(['lecture_hours' => 2, 'lab_hours' => 1, 'room_type_required' => 'laboratory']);
+        $lecture = $this->lectureRoom($context, 'LEC-1');
+        $context['department']->forceFill(['lab_room_type' => 'either'])->save();
+        SchedulingPolicy::clearFieldCourseCache();
+
+        $withoutLab = $this->find($context, $course, 2, ['on-site'], 'laboratory', offerRoomTba: true);
+
+        $this->assertNotEmpty($withoutLab['slots']);
+        $this->assertNotContains((int) $lecture->id, array_column($withoutLab['slots'], 'room_id'));
+        $this->assertSame([null], array_values(array_unique(array_column($withoutLab['slots'], 'room_id'))));
+        $this->assertSame(['Room TBA'], array_values(array_unique(array_column($withoutLab['slots'], 'room_code'))));
+
+        $laboratory = Rooms::create([
+            'room_code' => 'LAB-1', 'building' => 'Main', 'room_type' => 'laboratory', 'status' => 'available',
+            'department_id' => $context['department']->id, 'max_concurrent_classes' => 1,
+        ]);
+        $withLab = $this->find($context, $course, 2, ['on-site'], 'laboratory', offerRoomTba: true);
+
+        $this->assertSame([(int) $laboratory->id], array_values(array_unique(array_column($withLab['slots'], 'room_id'))));
+
+        // The lecture component keeps lecture rooms.
+        $lectureSlots = $this->find($context, $course, 4, ['on-site'], 'lecture');
+        $this->assertSame([(int) $lecture->id], array_values(array_unique(array_column($lectureSlots['slots'], 'room_id'))));
+
+        // Room transfers ask without Room TBA: it is not a room a class can be moved into.
+        $laboratory->update(['status' => 'not available']);
+        $this->assertSame([], $this->find($context, $course, 2, ['on-site'], 'laboratory')['slots']);
+    }
+
     /** Schedule endpoints refuse a department with no program. */
     private function requireProgram(array $context): void
     {
@@ -310,7 +347,7 @@ class AvailableSlotFinderTest extends TestCase
      * @param  array{semester: Semester, department: Departments, section: Sections}  $context
      * @param  list<string>  $modes
      */
-    private function find(array $context, Course $course, int $durationSlots, array $modes = ['on-site'], ?string $meetingType = null, array $excludedDays = [], ?string $searchFromDay = null): array
+    private function find(array $context, Course $course, int $durationSlots, array $modes = ['on-site'], ?string $meetingType = null, array $excludedDays = [], ?string $searchFromDay = null, bool $offerRoomTba = false): array
     {
         $snapshot = app(SchedulingSnapshotRepository::class)->capture(
             semesterId: (int) $context['semester']->id,
@@ -328,6 +365,7 @@ class AvailableSlotFinderTest extends TestCase
             meetingType: $meetingType,
             excludedDays: $excludedDays,
             searchFromDay: $searchFromDay,
+            offerRoomTba: $offerRoomTba,
         );
     }
 

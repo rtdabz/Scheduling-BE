@@ -9,14 +9,20 @@ use App\Models\CurriculumImport;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\User;
+use App\Services\Curriculum\CurriculumImportService;
 use App\Services\Curriculum\CurriculumImportSettings;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 class CurriculumImportTest extends TestCase
 {
     use RefreshDatabase;
+
+    /** The department office role under test; the tests/Feature/DirectorParity subclasses override it. */
+    protected string $officeRole = 'secretary';
 
     private Departments $department;
 
@@ -30,8 +36,8 @@ class CurriculumImportTest extends TestCase
 
         $this->department = Departments::create(['department_name' => 'Computer Studies', 'department_code' => 'CCS']);
         $this->program = Program::create(['department_id' => $this->department->id, 'code' => 'BSIT', 'name' => 'Information Technology']);
-        $this->secretary = User::factory()->create(['role' => 'secretary', 'department_id' => $this->department->id]);
-        $this->secretary->assignRole('secretary');
+        $this->secretary = User::factory()->create(['role' => $this->officeRole, 'department_id' => $this->department->id]);
+        $this->secretary->assignRole($this->officeRole);
         $this->secretary = $this->secretary->fresh();
     }
 
@@ -81,7 +87,7 @@ class CurriculumImportTest extends TestCase
         return $payload;
     }
 
-    private function validateDraft(array $payload): \Illuminate\Testing\TestResponse
+    private function validateDraft(array $payload): TestResponse
     {
         return $this->actingAs($this->secretary)->postJson('/api/curriculum-imports/validate', $payload)->assertOk();
     }
@@ -225,6 +231,40 @@ class CurriculumImportTest extends TestCase
         $this->assertSame(1, Curriculum::count());
         $this->assertSame(1, CurriculumImport::count());
         $this->assertSame(59, Course::count());
+    }
+
+    public function test_import_confirmation_keeps_the_original_official_after_account_replacement(): void
+    {
+        $this->tccRules();
+        $payload = $this->commitPayload($this->withoutErrors($this->reviewedFixture()));
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $payload)->assertCreated();
+        $import = CurriculumImport::sole();
+        $confirmation = $import->record['confirmation'];
+        $identity = $import->actor_snapshots;
+        $this->secretary->update(['name' => 'Renamed Former Official', 'is_active' => false]);
+        $this->secretary->delete();
+        $replacement = User::factory()->create(['role' => $this->officeRole, 'department_id' => $this->department->id]);
+
+        $this->actingAs($replacement)->postJson('/api/curriculum-imports', $payload)
+            ->assertOk()->assertJsonPath('replayed', true)
+            ->assertJsonPath('confirmation.user_id', $this->secretary->id)
+            ->assertJsonPath('confirmation.user_name', $confirmation['user_name']);
+        $this->assertSame($identity, $import->fresh()->actor_snapshots);
+        $this->assertSame($confirmation, $import->fresh()->record['confirmation']);
+        $this->assertSame($this->officeRole, $identity['user_id']['role']);
+
+        $forgedSummary = $import->summary;
+        $forgedSummary['confirmation']['user_id'] = $replacement->id;
+        foreach ([['user_id' => $replacement->id], ['actor_snapshots' => '{}'], ['record' => '{}'], ['summary' => json_encode($forgedSummary)], null] as $changes) {
+            try {
+                $query = DB::table('curriculum_imports')->where('id', $import->id);
+                $changes === null ? $query->delete() : $query->update($changes);
+                $this->fail('The database allowed import confirmation evidence to be replaced or deleted.');
+            } catch (QueryException) {
+                $this->assertSame($confirmation, $import->fresh()->record['confirmation']);
+                $this->assertSame($identity, $import->fresh()->actor_snapshots);
+            }
+        }
     }
 
     public function test_the_internal_code_is_assigned_automatically_and_cannot_be_supplied(): void
@@ -453,7 +493,7 @@ class CurriculumImportTest extends TestCase
         $curriculum = Curriculum::create(['name' => 'Legacy', 'code' => 'LEGACY-1', 'effective_school_year' => '2020-2021', 'department_id' => $this->department->id]);
         $legacy = CurriculumImport::create([
             'curriculum_id' => $curriculum->id, 'department_id' => $this->department->id, 'user_id' => $this->secretary->id,
-            'request_key' => 'legacy-import-0001', 'payload_hash' => \App\Services\Curriculum\CurriculumImportService::payloadHash($payload),
+            'request_key' => 'legacy-import-0001', 'payload_hash' => CurriculumImportService::payloadHash($payload),
             'source_format' => 'pdf', 'source_filename' => 'old.pdf', 'source_sha256' => str_repeat('a', 64), 'extractor_version' => 'old',
             'record' => ['acknowledged' => ['group_total_mismatch:3-2' => ['reason' => 'Matches the registrar copy', 'message' => 'Totals differ']]],
             'summary' => ['curriculum' => ['id' => $curriculum->id], 'acknowledged' => ['group_total_mismatch:3-2' => ['reason' => 'Matches the registrar copy', 'message' => 'Totals differ']]],
@@ -726,5 +766,4 @@ class CurriculumImportTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('rows.0.lecture_units');
     }
-
 }
