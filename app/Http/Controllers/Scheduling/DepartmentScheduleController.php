@@ -645,7 +645,11 @@ class DepartmentScheduleController extends Controller
             'sections' => $result->values(),
             'department_status' => $this->deriveStatus($result->pluck('status')->toArray()),
             'has_dean' => $this->departmentHasDean((int) $department->id),
-            'cross_department_unlocked' => $this->crossDepartmentGate->allowsSectionStatuses($result->pluck('status')->all()),
+            // A Program Head's Course Assignment opens with their own program's VPAA approval.
+            'cross_department_unlocked' => $request->user()?->role === 'program_head'
+                && (int) $request->user()->department_id === (int) $department->id
+                    ? $this->crossDepartmentGate->isOpenFor($request->user(), $activeSemesterId)
+                    : $this->crossDepartmentGate->allowsSectionStatuses($result->pluck('status')->all()),
             'cross_department_pending' => $this->crossDepartmentPendingCount(
                 (int) $department->id,
                 $activeSemesterId,
@@ -673,8 +677,8 @@ class DepartmentScheduleController extends Controller
             ->distinct()
             ->get(['section_id', 'course_id', 'department_id']);
 
-        // Colleges that recalled their timetable are out of Cross-Department until re-approved.
-        $recalled = $this->crossDepartmentGate->awaitingReapproval(
+        // Colleges not yet fully VPAA-approved are out of Cross-Department (matches its index).
+        $recalled = $this->crossDepartmentGate->awaitingApproval(
             $rows->pluck('department_id')->reject(fn ($id): bool => (int) $id === $departmentId),
             $activeSemesterId,
         );

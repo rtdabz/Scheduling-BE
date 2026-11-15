@@ -16,6 +16,7 @@ use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
@@ -40,6 +41,7 @@ class InstructorAssignmentController extends Controller
         private readonly ManualHybridFacultyAssignmentResolver $manualHybridAssignments,
         private readonly ScheduleHistoryRecorder $historyRecorder,
         private readonly CrossDepartmentApprovalGate $approvalGate,
+        private readonly ScheduleAuthorizationService $authorization,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -59,7 +61,7 @@ class InstructorAssignmentController extends Controller
         ], [
             'department_id' => $departmentId,
             'program_id' => $programId,
-            'version' => 5,
+            'version' => 6,
         ]);
 
         $data = Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($departmentId, $programId) {
@@ -73,24 +75,15 @@ class InstructorAssignmentController extends Controller
                     'subjects' => [],
                     'faculties' => [],
                     'schedules' => [],
-                    'incoming_courses' => [],
                 ];
             }
-
-            $incomingCourses = Course::query()
-                ->with(['department:id,department_code,department_name', 'teachingSourceProgram:id,code,major'])
-                ->where('status', 'active')
-                ->delegatedTo($departmentId, $programId)
-                ->orderBy('course_code')
-                ->get(['id', 'course_code', 'course_name', 'units', 'year_level', 'department_id', 'teaching_department_id', 'program_id', 'teaching_program_id', 'teaching_source_program_id']);
 
             $schedules = Schedule::query()
                 ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
                 ->where('semester_id', $activeSemester->id)
-                // Retained instructors remain visible when the source schedule returns to review.
-                // Assignment writes still require ASSIGNABLE_STATUSES.
-                ->where(fn ($query) => $query->whereIn('status', self::VISIBLE_STATUSES)
-                    ->orWhereNotNull('faculty_id'))
+                // Only VPAA-approved rows. A row still in Draft, Submitted or Dean review stays
+                // out of view even when it already carries a (retained) instructor.
+                ->whereIn('status', self::VISIBLE_STATUSES)
                 ->whereHas('course', fn ($query) => $query->where('status', 'active'))
                 ->where(function ($query) use ($departmentId) {
                     $query->where('department_id', $departmentId)
@@ -110,15 +103,17 @@ class InstructorAssignmentController extends Controller
                 ->orderBy('start_time')
                 ->get();
 
-            // A college that recalled its timetable leaves Cross-Department until the VPAA
-            // approves it again; its kept instructors stay recorded, just out of view.
-            $recalled = $this->approvalGate->awaitingReapproval(
+            // Another college's delegated classes enter Cross-Department only once the VPAA has
+            // approved that college's whole timetable — the same gate that opens its Course
+            // Assignment. Partially approved or recalled colleges stay out of view; any kept
+            // instructors remain recorded.
+            $unapproved = $this->approvalGate->awaitingApproval(
                 $schedules->pluck('department_id')->reject(fn ($id): bool => (int) $id === $departmentId),
                 (int) $activeSemester->id,
             );
-            if ($recalled !== []) {
+            if ($unapproved !== []) {
                 $schedules = $schedules
-                    ->reject(fn (Schedule $schedule): bool => in_array((int) $schedule->department_id, $recalled, true))
+                    ->reject(fn (Schedule $schedule): bool => in_array((int) $schedule->department_id, $unapproved, true))
                     ->values();
             }
 
@@ -151,7 +146,6 @@ class InstructorAssignmentController extends Controller
                 'subjects' => $courses,
                 'faculties' => $faculties,
                 'schedules' => $schedules,
-                'incoming_courses' => $incomingCourses,
             ];
         });
 
@@ -194,6 +188,10 @@ class InstructorAssignmentController extends Controller
                     ? 'Only the department that offers this major can assign its instructor.'
                     : 'Only the college that offers this course can assign its instructor.',
             ], 403);
+        }
+
+        if ($this->authorization->majorInstructorAssignmentBlocked($request, [$schedule])) {
+            return response()->json(['message' => ScheduleAuthorizationService::MAJOR_INSTRUCTOR_FORBIDDEN_MESSAGE], 403);
         }
 
         if (! in_array($schedule->status, self::ASSIGNABLE_STATUSES, true)) {
@@ -533,6 +531,10 @@ class InstructorAssignmentController extends Controller
             ? SchedulingPolicy::majorTeachingDepartmentId($schedule->course, (int) $schedule->department_id)
             : SchedulingPolicy::assignedTeachingDepartmentId($schedule->course) ?? (int) $schedule->department_id;
         if ((int) $teachingDepartmentId !== $departmentId) {
+            return false;
+        }
+
+        if ($this->authorization->majorInstructorAssignmentBlocked($request, [$schedule])) {
             return false;
         }
 

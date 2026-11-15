@@ -389,6 +389,41 @@ class ConsecutiveDaysManualSchedulingTest extends TestCase
         ]);
     }
 
+    public function test_changing_one_days_modality_leaves_every_other_meeting_untouched(): void
+    {
+        $context = $this->lectureRun($this->scaffold());
+        [$thursday, $friday, $saturday] = $this->savedRun($context, ['Thursday', 'Friday', 'Saturday']);
+        $siblingsBefore = [$friday->getAttributes(), $saturday->getAttributes()];
+
+        // Modality only, then modality with the day's own (unchanged) time, as the builder sends it.
+        $this->actingAs($context['user'])->putJson("/api/schedules/{$thursday->id}", [
+            'mode' => 'online', 'room_id' => null,
+        ])->assertOk();
+        $this->assertSame('online', $thursday->refresh()->mode);
+        $this->assertSame($siblingsBefore, [$friday->refresh()->getAttributes(), $saturday->refresh()->getAttributes()]);
+
+        $this->actingAs($context['user'])->putJson("/api/schedules/{$friday->id}", [
+            'day' => 'Friday', 'start_time' => '09:00', 'end_time' => '10:00', 'mode' => 'online', 'room_id' => null,
+        ])->assertOk();
+        $this->assertSame(['online', '09:00'], [$friday->refresh()->mode, substr((string) $friday->start_time, 0, 5)]);
+        $this->assertSame('online', $thursday->refresh()->mode);
+        $this->assertSame($siblingsBefore[1], $saturday->refresh()->getAttributes());
+        $this->assertSame(['on-site', (int) $context['room']->id], [$saturday->mode, (int) $saturday->room_id]);
+    }
+
+    public function test_creating_a_run_still_requires_one_mode(): void
+    {
+        $context = $this->lectureRun($this->scaffold());
+        $operations = $this->runOperations($context, ['Thursday', 'Friday', 'Saturday']);
+        $operations[1]['mode'] = 'online';
+        $operations[1]['room_id'] = null;
+
+        $response = $this->actingAs($context['user'])->postJson('/api/schedules/batch', ['operations' => $operations])->assertStatus(422);
+
+        $this->assertStringContainsString('consecutive_mode', $response->getContent());
+        $this->assertSame(0, Schedule::query()->count());
+    }
+
     public function test_creating_a_run_still_requires_matching_times(): void
     {
         $context = $this->scaffold();
@@ -511,6 +546,28 @@ class ConsecutiveDaysManualSchedulingTest extends TestCase
             'lab_hours' => 6,
             'units' => 6,
         ])];
+    }
+
+    /** A lecture course in a lecture room, so any day of its run may also meet online. */
+    private function lectureRun(array $context): array
+    {
+        return [
+            ...$context,
+            'course' => Course::create([
+                ...$this->courseAttributes($context['department']),
+                'course_code' => 'NCM 101',
+                'lecture_hours' => 3,
+                'lab_hours' => 0,
+                'room_type_required' => 'lecture',
+                'course_category' => 'minor',
+            ]),
+            'room' => Rooms::create([
+                'room_code' => 'LEC-1',
+                'room_type' => 'lecture',
+                'status' => 'available',
+                'department_id' => $context['department']->id,
+            ]),
+        ];
     }
 
     private function minutes(Schedule $row): int

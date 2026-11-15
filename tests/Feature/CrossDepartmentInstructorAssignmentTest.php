@@ -58,7 +58,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
     }
 
     #[DataProvider('preApprovalStatuses')]
-    public function test_existing_assignments_remain_visible_before_approval_without_allowing_edits(string $status): void
+    public function test_classes_awaiting_vpaa_approval_stay_out_of_cross_department_even_with_a_retained_instructor(string $status): void
     {
         $fixture = $this->fixture();
         $blocks = $this->meetingBlocks($fixture);
@@ -68,8 +68,6 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             'faculty_assignment_done' => false,
         ]);
 
-        // A different section is still awaiting its first instructor and must
-        // not enter the receiving college's assignment queue before approval.
         $unassignedSection = $fixture['section']->replicate();
         $unassignedSection->section_name = 'BSIT 1B';
         $unassignedSection->save();
@@ -81,27 +79,51 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonPath('message', 'Instructor assignment is available only after VPAA approval.');
 
-        $response = $this->actingAs($fixture['casSecretary'])
+        $this->actingAs($fixture['casSecretary'])
             ->getJson('/api/instructor-assignments')
             ->assertOk()
-            ->assertJsonCount(3, 'schedules')
-            ->assertJsonCount(1, 'courses')
-            ->assertJsonPath('courses.0.id', $fixture['gec']->id);
+            ->assertJsonCount(0, 'schedules')
+            ->assertJsonCount(0, 'courses')
+            ->assertJsonCount(0, 'departments')
+            ->assertJsonMissingPath('incoming_courses');
 
+        // The retained instructor is still recorded, just out of view.
+        $this->assertSame($fixture['casInstructor']->id, (int) Schedule::findOrFail($blocks->first()->id)->faculty_id);
+    }
+
+    /**
+     * A college whose timetable is only partly VPAA-approved stays out of Cross-Department; once
+     * the VPAA approves the rest, every delegated class appears exactly once.
+     */
+    public function test_a_partly_approved_college_appears_only_after_full_vpaa_approval(): void
+    {
+        $fixture = $this->fixture();
+        $approved = $this->meetingBlocks($fixture);
+        $pendingSection = $fixture['section']->replicate();
+        $pendingSection->section_name = 'BSIT 1B';
+        $pendingSection->save();
+        $pending = $this->meetingBlocks(array_replace($fixture, ['section' => $pendingSection]));
+        Schedule::whereIn('id', $pending->pluck('id'))->update(['status' => 'approved_by_dean']);
+
+        $schedules = fn (): array => collect(
+            $this->actingAs($fixture['casSecretary'])->getJson('/api/instructor-assignments')->assertOk()->json('schedules'),
+        )->pluck('id')->all();
+        $pendingCount = fn (): int => (int) $this->actingAs($fixture['casSecretary'])
+            ->getJson("/api/departments/{$fixture['cas']->id}/schedule-status")->assertOk()->json('cross_department_pending');
+
+        $this->assertSame([], $schedules());
+        $this->assertSame(0, $pendingCount());
+
+        Schedule::whereIn('id', $pending->pluck('id'))->update(['status' => 'faculty_assignment']);
+        ApiCache::forgetGroups(['instructor_assignments.index', 'initial.data']);
+
+        $visible = $schedules();
+        $this->assertCount(count(array_unique($visible)), $visible);
         $this->assertEqualsCanonicalizing(
-            $blocks->pluck('id')->all(),
-            collect($response->json('schedules'))->pluck('id')->all(),
+            [...$approved->pluck('id')->all(), ...$pending->pluck('id')->all()],
+            $visible,
         );
-        foreach ($response->json('schedules') as $schedule) {
-            $this->assertSame($status, $schedule['status']);
-            $this->assertSame($fixture['casInstructor']->id, $schedule['faculty_id']);
-            $this->assertSame($fixture['casInstructor']->first_name, $schedule['faculty']['first_name']);
-            $this->assertSame($fixture['cas']->id, $schedule['faculty']['department_id']);
-            $this->assertSame($fixture['section']->id, $schedule['section']['id']);
-            $this->assertSame($fixture['it']->id, $schedule['department_id']);
-            $this->assertSame($fixture['cas']->id, $schedule['course']['teaching_department_id']);
-            $this->assertFalse($schedule['faculty_assignment_done']);
-        }
+        $this->assertSame(2, $pendingCount());
     }
 
     public static function preApprovalStatuses(): array
@@ -117,7 +139,6 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         $fixture = $this->fixture();
         $blocks = $this->meetingBlocks($fixture);
         Schedule::whereIn('id', $blocks->pluck('id'))->update([
-            'status' => 'submitted',
             'faculty_id' => $fixture['casInstructor']->id,
         ]);
         $otherSemester = Semester::create([
@@ -186,10 +207,6 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->getJson('/api/instructor-assignments')
             ->assertOk()
             ->assertJsonCount(3, 'schedules')
-            ->assertJsonCount(1, 'incoming_courses')
-            ->assertJsonPath('incoming_courses.0.id', $fixture['gec']->id)
-            ->assertJsonPath('incoming_courses.0.teaching_program_id', $fixture['itProgram']->id)
-            ->assertJsonPath('incoming_courses.0.teaching_source_program.code', 'BLIS')
             ->assertJsonCount(1, 'faculties')
             ->assertJsonPath('faculties.0.id', $fixture['itInstructor']->id);
 
@@ -208,7 +225,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         foreach ([$blis->id, $unrelated->id] as $programId) {
             $this->actingAs($head($programId))->getJson('/api/instructor-assignments')
                 ->assertOk()
-                ->assertJsonCount(0, 'incoming_courses');
+                ->assertJsonMissingPath('incoming_courses');
         }
     }
 

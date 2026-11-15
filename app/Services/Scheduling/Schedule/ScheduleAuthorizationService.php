@@ -283,6 +283,53 @@ final class ScheduleAuthorizationService
         });
     }
 
+    public const MAJOR_INSTRUCTOR_FORBIDDEN_MESSAGE = 'Only the Program Head can assign instructors to this program\'s major courses.';
+
+    /**
+     * The department office (Secretary or Director) may not assign or change instructors on its own
+     * department's major classes when the major's program has an active Program Head. Programs without
+     * a Program Head keep the office as the fallback. Minor courses and classes delegated in from
+     * another department are outside this rule.
+     *
+     * @param  iterable<Schedule>  $schedules
+     */
+    public function majorInstructorAssignmentBlocked(Request $request, iterable $schedules): bool
+    {
+        $user = $request->user();
+        if ($user === null || ! $user->isSecretaryOrDirector()) {
+            return false;
+        }
+
+        $programIds = [];
+        foreach ($schedules as $schedule) {
+            $schedule->loadMissing('course');
+            $course = $schedule->course;
+            if ($course === null
+                || ! SchedulingPolicy::isMajorCourse($course)
+                || (int) $schedule->department_id !== (int) $user->department_id) {
+                continue;
+            }
+            // Many majors are recorded at department level (no program on the course). Those belong
+            // to the program of the class itself: the schedule's program, else its section's.
+            // A course delegated to another department's teachers names no program and stays out.
+            $programId = SchedulingPolicy::requiredTeachingProgramId($course);
+            if ($programId === null && $course->teaching_department_id === null) {
+                $schedule->loadMissing('section');
+                $programId = $schedule->program_id ?? $schedule->section?->program_id;
+                $programId = $programId === null ? null : (int) $programId;
+            }
+            if ($programId !== null) {
+                $programIds[$programId] = true;
+            }
+        }
+
+        return $programIds !== [] && User::query()
+            ->where('role', 'program_head')
+            ->where('is_active', true)
+            ->whereIn('program_id', array_keys($programIds))
+            ->exists();
+    }
+
     /** @return list<int> */
     private function normalizeIds(array $ids): array
     {

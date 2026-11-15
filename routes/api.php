@@ -21,6 +21,7 @@ use App\Http\Controllers\Faculty\CourseTeachingAssignmentController;
 use App\Http\Controllers\Faculty\FacultyAvailabilityController;
 use App\Http\Controllers\Faculty\FacultyController;
 use App\Http\Controllers\Faculty\InstructorAssignmentController;
+use App\Http\Controllers\Faculty\InstructorAssignmentDraftController;
 use App\Http\Controllers\Reports\PdfPreviewController;
 use App\Http\Controllers\Reports\ReportsController;
 use App\Http\Controllers\Reports\VpaaDashboardController;
@@ -33,6 +34,7 @@ use App\Http\Controllers\Scheduling\InitialDataController;
 use App\Http\Controllers\Scheduling\ScheduleConflictController;
 use App\Http\Controllers\Scheduling\ScheduleController;
 use App\Http\Controllers\Scheduling\ScheduleHistoryController;
+use App\Http\Controllers\Scheduling\ScheduleGenerationDraftController;
 use App\Http\Controllers\Scheduling\ScheduleRecommendationController;
 use App\Http\Controllers\Scheduling\ScheduleResetController;
 use App\Http\Controllers\Scheduling\ScheduleSplitController;
@@ -292,6 +294,9 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('instructor-assignments/clear', [InstructorAssignmentController::class, 'clearSections']);
         Route::get('instructor-assignments/{schedule}/recommendations', [InstructorAssignmentController::class, 'recommendations']);
         Route::patch('instructor-assignments/{schedule}', [InstructorAssignmentController::class, 'update']);
+        Route::get('instructor-assignment-draft', [InstructorAssignmentDraftController::class, 'show']);
+        Route::put('instructor-assignment-draft', [InstructorAssignmentDraftController::class, 'update']);
+        Route::delete('instructor-assignment-draft', [InstructorAssignmentDraftController::class, 'destroy']);
 
     });
 
@@ -304,6 +309,9 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     Route::middleware('capability:schedule.generate')->group(function () {
+        Route::get('schedule-generation-draft', [ScheduleGenerationDraftController::class, 'show']);
+        Route::put('schedule-generation-draft', [ScheduleGenerationDraftController::class, 'update']);
+        Route::delete('schedule-generation-draft', [ScheduleGenerationDraftController::class, 'destroy']);
         Route::post('schedule-recommendations/available-slots', [ScheduleRecommendationController::class, 'availableSlots']);
         Route::post('schedule-recommendations/draft-review', [ScheduleRecommendationController::class, 'reviewDraft'])->middleware('throttle:30,1');
         Route::post('schedule-recommendations/year-level-preview', [ScheduleRecommendationController::class, 'yearLevelPreview'])->middleware('throttle:5,1');

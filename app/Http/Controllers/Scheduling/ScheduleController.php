@@ -1363,6 +1363,12 @@ class ScheduleController extends Controller
             return $this->programForbidden();
         }
 
+        if (array_key_exists('faculty_id', $validated)
+            && (int) ($schedule->faculty_id ?? 0) !== (int) ($validated['faculty_id'] ?? 0)
+            && $this->authorization->majorInstructorAssignmentBlocked($request, [$schedule])) {
+            return response()->json(['message' => ScheduleAuthorizationService::MAJOR_INSTRUCTOR_FORBIDDEN_MESSAGE], 403);
+        }
+
         if (array_key_exists('faculty_id', $validated)) {
             $stageError = $this->instructorAssignmentStageError(
                 $schedule,
@@ -2005,6 +2011,10 @@ class ScheduleController extends Controller
             ->whereIn('id', $scheduleIds)
             ->get()
             ->keyBy(static fn (Schedule $schedule): int => (int) $schedule->id);
+
+        if ($this->authorization->majorInstructorAssignmentBlocked($request, $schedules)) {
+            return response()->json(['message' => ScheduleAuthorizationService::MAJOR_INSTRUCTOR_FORBIDDEN_MESSAGE], 403);
+        }
 
         if ($programId !== null) {
             $programScheduleCount = Schedule::query()

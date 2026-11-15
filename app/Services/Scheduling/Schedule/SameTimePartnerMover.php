@@ -108,8 +108,9 @@ final class SameTimePartnerMover
 
         $groupViolations = array_values(array_filter(
             $this->ruleEngine->validateConfiguredMeetingGroups([$attemptData, ...$partnerRows]),
-            // Matching times form a consecutive run, but must not force a group relocation.
-            static fn (array $violation): bool => ! $isRun || $violation['rule'] !== 'split_group_same_time',
+            // Matching times and one mode form a consecutive run, but must not force a group-wide change:
+            // a saved run's meetings keep their own time and modality when one of them is edited.
+            static fn (array $violation): bool => ! $isRun || ! in_array($violation['rule'], ['split_group_same_time', 'consecutive_mode'], true),
         ));
         if ($groupViolations !== []) {
             throw new ScheduleConflictException($groupViolations, 'Schedule update breaks its linked meetings.');

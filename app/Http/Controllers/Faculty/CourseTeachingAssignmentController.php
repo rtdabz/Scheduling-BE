@@ -11,6 +11,7 @@ use App\Models\Schedule;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
 use App\Support\ApiCache;
@@ -22,9 +23,20 @@ use Illuminate\Support\Facades\DB;
 
 class CourseTeachingAssignmentController extends Controller
 {
+    public const OUTSIDE_PROGRAM_MESSAGE = 'Program Heads can only manage Course Assignment for their own program\'s courses.';
+
+    public const OWN_DEPARTMENT_MESSAGE = 'Your department\'s courses are managed within your department, so they cannot be assigned to it through Course Assignment. Choose another college.';
+
+    public const OWN_DEPARTMENT_PROGRAM_REQUIRED_MESSAGE = 'Within your own department, choose a specific program other than your own.';
+
+    public const OWN_PROGRAM_MESSAGE = 'Courses cannot be assigned to your own program through Course Assignment. Choose another program or college.';
+
+    private const RESTRICTED_ROLES = ['program_head', 'secretary', 'director'];
+
     public function __construct(
         private readonly SystemNotificationService $notifications,
         private readonly CrossDepartmentApprovalGate $approvalGate,
+        private readonly ScheduleAuthorizationService $authorization,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -59,7 +71,8 @@ class CourseTeachingAssignmentController extends Controller
 
         return response()->json([
             'current_department_id' => $departmentId,
-            'cross_department_unlocked' => $this->approvalGate->isOpen($departmentId),
+            'cross_department_unlocked' => $this->approvalGate->isOpenFor($request->user()),
+            'assignment_restrictions' => $this->targetRestrictions($request->user()),
             'has_active_curriculum' => $curriculumIds->isNotEmpty(),
             'active_semester' => $activeSemester === null ? null : [
                 'id' => (int) $activeSemester->id,
@@ -201,6 +214,164 @@ class CourseTeachingAssignmentController extends Controller
         });
     }
 
+    /**
+     * A Program Head may not manage a course that belongs only to a sibling program of
+     * their department. Course Assignment opens per program, so without this an approved
+     * program could change a course whose own program is still awaiting VPAA approval.
+     * Courses shared across the department, and other colleges' courses (decision 3 in
+     * CourseTeachingAssignmentTest), are unaffected.
+     *
+     * @param  list<int>  $courseIds
+     */
+    private function refuseOutsideProgram(?User $actor, array $courseIds): ?JsonResponse
+    {
+        if ($actor?->role !== 'program_head' || $actor->program_id === null || $actor->department_id === null || $courseIds === []) {
+            return null;
+        }
+
+        $outside = $this->siblingProgramCourseIds((int) $actor->department_id, (int) $actor->program_id, $courseIds);
+        if ($outside === []) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => self::OUTSIDE_PROGRAM_MESSAGE,
+            'outside_program_course_ids' => $outside,
+        ], 403);
+    }
+
+    /**
+     * Of the given courses, those that belong to a sibling program of the department —
+     * placed in, or owned by, another of its programs — and not to `$programId`'s own
+     * active curricula (including the department's shared ones) or to the program itself.
+     *
+     * @param  list<int>  $courseIds
+     * @return list<int>
+     */
+    private function siblingProgramCourseIds(int $departmentId, int $programId, array $courseIds): array
+    {
+        $placedIn = fn (Collection $curriculumIds): Collection => $curriculumIds->isEmpty()
+            ? collect()
+            : DB::table('curriculum_course')
+                ->whereIn('curriculum_id', $curriculumIds)
+                ->whereIn('course_id', $courseIds)
+                ->pluck('course_id')
+                ->map(static fn ($id): int => (int) $id);
+
+        $siblingProgramIds = Program::query()
+            ->where('department_id', $departmentId)
+            ->whereKeyNot($programId)
+            ->pluck('id');
+        if ($siblingProgramIds->isEmpty()) {
+            return [];
+        }
+
+        $sibling = $placedIn(Curriculum::query()
+            ->where('department_id', $departmentId)
+            ->where('status', 'active')
+            ->whereIn('program_id', $siblingProgramIds)
+            ->pluck('id'))
+            ->merge(Course::query()->whereIn('id', $courseIds)->whereIn('program_id', $siblingProgramIds)->pluck('id')
+                ->map(static fn ($id): int => (int) $id));
+
+        $own = $placedIn($this->activeCurriculumIds($departmentId, $programId))
+            ->merge(Course::query()->whereIn('id', $courseIds)->where('program_id', $programId)->pluck('id')
+                ->map(static fn ($id): int => (int) $id));
+
+        return $sibling->unique()->diff($own)->sort()->values()->all();
+    }
+
+    /**
+     * Which targets a Program Head or department office may not give their own
+     * department's courses to — the single source for both the writes and the listing.
+     * Own programs are resolved per request from program ownership: the Program Head's
+     * program, or for the office every program without an active Program Head.
+     *
+     * The own department is excluded outright when it has a single program, when every
+     * one of its programs is the user's own, or when a Program Head has no program to
+     * identify (fail closed). Otherwise a specific program other than the user's own is
+     * required, since "any program" of the department would include it.
+     *
+     * @return array{department_id: int, own_program_ids: list<int>, own_department_excluded: bool, requires_program: bool}|null
+     */
+    private function targetRestrictions(?User $actor): ?array
+    {
+        if ($actor === null || $actor->department_id === null || ! in_array($actor->role, self::RESTRICTED_ROLES, true)) {
+            return null;
+        }
+
+        $departmentId = (int) $actor->department_id;
+        $programIds = Program::query()->where('department_id', $departmentId)->pluck('id')->map('intval')->all();
+        $own = $this->authorization->writableProgramIdsFor($actor);
+        if ($actor->role === 'program_head' && $actor->program_id !== null) {
+            $own[] = (int) $actor->program_id;
+        }
+        $own = array_values(array_unique(array_intersect($own, $programIds)));
+        sort($own);
+
+        $excluded = count($programIds) <= 1
+            || array_diff($programIds, $own) === []
+            || ($actor->role === 'program_head' && $own === []);
+
+        return [
+            'department_id' => $departmentId,
+            'own_program_ids' => $own,
+            'own_department_excluded' => $excluded,
+            'requires_program' => ! $excluded,
+        ];
+    }
+
+    /**
+     * Refuses giving any of the actor's own department's courses to the actor's own
+     * department or program (see targetRestrictions). Another college's course, which
+     * any college may claim (decision 3 in CourseTeachingAssignmentTest), is unaffected.
+     *
+     * @param  list<int>  $courseIds
+     */
+    private function ownTargetRefusal(?User $actor, array $courseIds, ?int $targetDepartmentId, ?int $targetProgramId): ?JsonResponse
+    {
+        $restrictions = $this->targetRestrictions($actor);
+        if ($restrictions === null || $targetDepartmentId !== $restrictions['department_id']
+            || ! $this->includesOwnDepartmentCourse($restrictions['department_id'], $courseIds)) {
+            return null;
+        }
+
+        [$reason, $message] = match (true) {
+            $restrictions['own_department_excluded'] => ['own_department', self::OWN_DEPARTMENT_MESSAGE],
+            $targetProgramId === null => ['own_department_program_required', self::OWN_DEPARTMENT_PROGRAM_REQUIRED_MESSAGE],
+            in_array($targetProgramId, $restrictions['own_program_ids'], true) => ['own_program', self::OWN_PROGRAM_MESSAGE],
+            default => [null, null],
+        };
+
+        return $reason === null ? null : response()->json(['message' => $message, 'reason' => $reason], 422);
+    }
+
+    /**
+     * Whether any course belongs to the department: owned by it, or unowned and placed
+     * in one of its active curricula (what the listing offers as the department's).
+     *
+     * @param  list<int>  $courseIds
+     */
+    private function includesOwnDepartmentCourse(int $departmentId, array $courseIds): bool
+    {
+        if ($courseIds === []) {
+            return false;
+        }
+
+        if (Course::query()->whereIn('id', $courseIds)->where('department_id', $departmentId)->exists()) {
+            return true;
+        }
+
+        $curriculumIds = $this->activeCurriculumIds($departmentId);
+
+        return $curriculumIds->isNotEmpty() && DB::table('curriculum_course')
+            ->join('courses', 'courses.id', '=', 'curriculum_course.course_id')
+            ->whereIn('curriculum_course.curriculum_id', $curriculumIds)
+            ->whereIn('curriculum_course.course_id', $courseIds)
+            ->whereNull('courses.department_id')
+            ->exists();
+    }
+
     public function update(Request $request, Course $course): JsonResponse
     {
         $validated = $request->validate([
@@ -208,8 +379,12 @@ class CourseTeachingAssignmentController extends Controller
             'teaching_program_id' => 'sometimes|nullable|integer|exists:programs,id,deleted_at,NULL',
         ]);
 
-        if ($locked = $this->approvalGate->refusal((int) ($request->user()?->department_id ?? 0))) {
+        if ($locked = $this->approvalGate->refusal($request->user())) {
             return $locked;
+        }
+
+        if ($outside = $this->refuseOutsideProgram($request->user(), [(int) $course->id])) {
+            return $outside;
         }
 
         $teachingDepartmentId = $validated['teaching_department_id'] === null
@@ -224,6 +399,10 @@ class CourseTeachingAssignmentController extends Controller
 
         if ($teachingDepartmentId !== null && ($refusal = SchedulingPolicy::majorDelegationRefusal($course, $teachingProgram, $teachingDepartmentId))) {
             return response()->json(['message' => $refusal], 422);
+        }
+
+        if ($own = $this->ownTargetRefusal($request->user(), [(int) $course->id], $teachingDepartmentId, $teachingProgramId)) {
+            return $own;
         }
 
         if ($locked = $this->refuseIfInstructorAssigned($course, $teachingDepartmentId)) {
@@ -248,8 +427,11 @@ class CourseTeachingAssignmentController extends Controller
             'teaching_department_id' => ['required', 'integer', 'exists:departments,id,deleted_at,NULL'],
             'teaching_program_id' => ['nullable', 'integer', 'exists:programs,id,deleted_at,NULL'],
         ]);
-        if ($locked = $this->approvalGate->refusal((int) ($request->user()?->department_id ?? 0))) {
+        if ($locked = $this->approvalGate->refusal($request->user())) {
             return $locked;
+        }
+        if ($outside = $this->refuseOutsideProgram($request->user(), array_map('intval', $validated['course_ids']))) {
+            return $outside;
         }
         $targetId = (int) $validated['teaching_department_id'];
         $targetProgramId = isset($validated['teaching_program_id']) ? (int) $validated['teaching_program_id'] : null;
@@ -262,6 +444,9 @@ class CourseTeachingAssignmentController extends Controller
             if ($refusal = SchedulingPolicy::majorDelegationRefusal($course, $targetProgram, $targetId)) {
                 return response()->json(['message' => "{$course->course_code}: {$refusal}"], 422);
             }
+        }
+        if ($own = $this->ownTargetRefusal($request->user(), $courses->pluck('id')->map('intval')->all(), $targetId, $targetProgramId)) {
+            return $own;
         }
         $instructorClasses = $this->classesWithInstructor($courses->pluck('id')->map('intval')->all());
         $locked = $courses->filter(fn (Course $course): bool => ($instructorClasses[(int) $course->id] ?? 0) > 0
@@ -309,8 +494,12 @@ class CourseTeachingAssignmentController extends Controller
 
     public function destroy(Request $request, Course $course): JsonResponse
     {
-        if ($locked = $this->approvalGate->refusal((int) ($request->user()?->department_id ?? 0))) {
+        if ($locked = $this->approvalGate->refusal($request->user())) {
             return $locked;
+        }
+
+        if ($outside = $this->refuseOutsideProgram($request->user(), [(int) $course->id])) {
+            return $outside;
         }
 
         if ($locked = $this->refuseIfInstructorAssigned($course, null)) {
@@ -331,8 +520,11 @@ class CourseTeachingAssignmentController extends Controller
             'course_ids' => ['required', 'array', 'min:1'],
             'course_ids.*' => ['integer', 'distinct', 'exists:courses,id,deleted_at,NULL'],
         ]);
-        if ($locked = $this->approvalGate->refusal((int) ($request->user()?->department_id ?? 0))) {
+        if ($locked = $this->approvalGate->refusal($request->user())) {
             return $locked;
+        }
+        if ($outside = $this->refuseOutsideProgram($request->user(), array_map('intval', $validated['course_ids']))) {
+            return $outside;
         }
 
         $courses = Course::query()
@@ -428,7 +620,7 @@ class CourseTeachingAssignmentController extends Controller
             $this->notifications->notifyRoles(
                 ['secretary', 'program_head'],
                 'incoming_cross_department_course',
-                'Incoming cross-department course',
+                'Cross-department course assigned',
                 "{$source} assigned {$course->course_code} to {$target}.",
                 $actor,
                 $teachingDepartmentId,
