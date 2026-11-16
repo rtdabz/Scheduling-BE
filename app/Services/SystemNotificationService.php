@@ -164,7 +164,8 @@ class SystemNotificationService
     {
         $schedule->loadMissing(['course.department', 'course.teachingDepartment', 'academicSemester']);
 
-        if ($schedule->faculty_id !== null) {
+        // Course-level completion only concerns classes that follow the course-level delegation.
+        if ($schedule->faculty_id !== null && ! SchedulingPolicy::isDetachedClass($schedule)) {
             $this->notifyDelegatedCourseCompletion($schedule, $actor);
         }
 
@@ -219,7 +220,9 @@ class SystemNotificationService
             ],
         );
 
-        $teachingDepartmentId = (int) ($schedule->course?->teaching_department_id ?? 0);
+        // Per class: a section reassigned on its own notifies its own teaching department.
+        $effective = SchedulingPolicy::courseForSchedule($schedule);
+        $teachingDepartmentId = (int) ($effective?->teaching_department_id ?? 0);
         if ($teachingDepartmentId !== 0 && $teachingDepartmentId !== $courseDepartmentId) {
             $this->notifyRoles(
                 ['secretary', 'program_head'], $assignmentType, 'Cross-department instructor assignment updated',
@@ -228,7 +231,7 @@ class SystemNotificationService
                 actor: $actor, departmentId: $teachingDepartmentId, semesterId: $semesterId,
                 metadata: ['schedule_ids' => $scheduleIds ?? [$schedule->id], 'course_id' => $schedule->course_id,
                     'source_department_id' => $courseDepartmentId,
-                    'program_ids' => $schedule->course->teaching_program_id === null ? null : [(int) $schedule->course->teaching_program_id]],
+                    'program_ids' => $effective->teaching_program_id === null ? null : [(int) $effective->teaching_program_id]],
             );
         }
 
@@ -277,9 +280,11 @@ class SystemNotificationService
         }
 
         if ($completedScheduleIds !== null) {
+            // A returned class is the source's own again; its completion is not the receiver's.
             $completed = Schedule::query()
                 ->whereIn('id', $completedScheduleIds)
                 ->whereIn('course_id', $courseIds)
+                ->followsCourseDelegation()
                 ->get(['id', 'course_id', 'faculty_id', 'faculty_assignment_done']);
             if ($completed->isEmpty() || $completed->contains(fn (Schedule $item) => $item->faculty_id === null || ! (bool) $item->faculty_assignment_done)) {
                 return;
@@ -290,6 +295,7 @@ class SystemNotificationService
         $semesterId = (int) ($schedule->semester_id ?? 0);
         if ($completedScheduleIds === null) {
             $pending = Schedule::query()->where('semester_id', $semesterId)->whereIn('course_id', $courseIds)
+                ->followsCourseDelegation()
                 ->whereIn('status', SchedulingPolicy::INSTRUCTOR_ASSIGNED_STATUSES)->whereNull('faculty_id')->exists();
             if ($pending) {
                 return;
@@ -313,9 +319,15 @@ class SystemNotificationService
     public function notifyCrossDepartmentInstructorsReleased(Collection $releasedRows, User $actor, string $action): void
     {
         $releasedRows
-            ->groupBy(static fn (Schedule $row): string => $row->course->teaching_department_id.'|'.($row->course->teaching_program_id ?? ''))
+            ->groupBy(static function (Schedule $row): string {
+                $teaching = SchedulingPolicy::courseForSchedule($row);
+
+                return $teaching?->teaching_department_id.'|'.($teaching?->teaching_program_id ?? '');
+            })
             ->each(function ($rows) use ($actor, $action): void {
                 $first = $rows->first();
+                // The class's own teaching assignment: course-level, or section-level once returned.
+                $teaching = SchedulingPolicy::courseForSchedule($first);
                 $classes = $rows
                     ->unique(static fn (Schedule $row): string => $row->section_id.':'.$row->course_id)
                     ->map(static fn (Schedule $row): string => trim(($row->course?->course_code ?? 'Course').' ('.($row->section?->section_name ?? 'section').')'))
@@ -331,16 +343,16 @@ class SystemNotificationService
                     'Cross-department instructors released',
                     $message,
                     $actor,
-                    (int) $first->course->teaching_department_id,
+                    (int) $teaching->teaching_department_id,
                     (int) $first->semester_id ?: null,
                     null,
                     [
-                        'program_ids' => $first->course->teaching_program_id === null ? null : [(int) $first->course->teaching_program_id],
+                        'program_ids' => $teaching->teaching_program_id === null ? null : [(int) $teaching->teaching_program_id],
                         'schedule_ids' => $rows->pluck('id')->map('intval')->values()->all(),
                         'course_ids' => $rows->pluck('course_id')->map('intval')->unique()->values()->all(),
                         'source_department_id' => (int) $first->department_id,
                     ],
-                    $first->course->teaching_program_id === null ? null : [(int) $first->course->teaching_program_id],
+                    $teaching->teaching_program_id === null ? null : [(int) $teaching->teaching_program_id],
                 );
             });
     }

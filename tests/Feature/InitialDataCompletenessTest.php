@@ -155,8 +155,9 @@ class InitialDataCompletenessTest extends TestCase
         $this->assertCount(2053, $full->pluck('id')->concat($occupancy->pluck('id'))->unique());
         $this->assertCount(50, $occupancy);
         $this->assertSame(
-            ['course_id', 'day', 'department_id', 'end_time', 'faculty_assignment_done', 'faculty_id', 'id', 'is_hybrid',
+            ['course_id', 'day', 'delegation_returned_from_department_id', 'department_id', 'end_time', 'faculty_assignment_done', 'faculty_id', 'id', 'is_hybrid',
                 'meeting_index', 'meeting_type', 'mode', 'preferred_pattern', 'room', 'room_id', 'section_id',
+                'section_teaching_department_id', 'section_teaching_program_id',
                 'semester_id', 'split_group_id', 'start_time', 'status'],
             collect(array_keys($occupancy->first()))->sort()->values()->all(),
         );

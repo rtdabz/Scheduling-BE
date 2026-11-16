@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\User\ChangeUserPasswordRequest;
 use App\Http\Requests\User\StoreUserRequest;
 use App\Http\Requests\User\UpdateUserRequest;
 use App\Models\Faculty;
@@ -201,6 +202,32 @@ class UserController extends Controller
         ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
 
         return response()->json(['message' => 'User archived successfully.']);
+    }
+
+    /**
+     * VPAA sets a new password directly. Kept apart from the Forgot/Reset Password flow: pending
+     * reset or setup links are left untouched. Existing sessions are revoked so only the new
+     * credentials work from this point on.
+     */
+    public function changePassword(ChangeUserPasswordRequest $request, User $user): JsonResponse
+    {
+        $password = $request->validated('password');
+
+        DB::transaction(function () use ($request, $user, $password): void {
+            $user = User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
+            $user->forceFill([
+                'password' => $password, // hashed by the model's `hashed` cast
+                'remember_token' => Str::random(60),
+            ])->save();
+            $user->tokens()->delete();
+            $this->audit->record($request, 'user_password_changed', $user, [
+                'sessions_revoked' => true,
+            ]);
+        });
+
+        return response()->json([
+            'message' => "Password updated for {$user->name}. They have been signed out of all devices.",
+        ]);
     }
 
     public function unlinkGoogle(Request $request, User $user): JsonResponse

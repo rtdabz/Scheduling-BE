@@ -163,6 +163,9 @@ final class ScheduleConflictScanner
                 'schedules.end_time',
                 'schedules.mode',
                 'schedules.status',
+                'schedules.delegation_returned_from_department_id',
+                'schedules.section_teaching_department_id',
+                'schedules.section_teaching_program_id',
                 'courses.course_code',
                 'courses.course_name',
                 'sections.section_name',
@@ -201,6 +204,9 @@ final class ScheduleConflictScanner
         $owners = [];
         foreach ($rows as $id => $row) {
             $course = $courses->get((int) ($row['course_id'] ?? 0));
+            if ($course instanceof Course) {
+                $course = SchedulingPolicy::courseForRow($course, $row);
+            }
             $classDepartmentId = $row['department_id'] !== null ? (int) $row['department_id'] : null;
             $owners[$id] = $course instanceof Course
                 ? [

@@ -671,9 +671,16 @@ class DepartmentScheduleController extends Controller
             ->where(fn ($owner) => $owner
                 ->where('department_id', '!=', $departmentId)
                 ->orWhereHas('course', fn ($course) => $course->where('department_id', $departmentId)))
-            ->whereHas('course', fn ($course) => $course
-                ->where('status', 'active')
-                ->delegatedTo($departmentId, $programId))
+            ->whereHas('course', fn ($course) => $course->where('status', 'active'))
+            // Per class: the course-level delegation, or for a returned class its own
+            // section-level one (a class this department returned is no longer waiting on it).
+            ->where(fn ($handed) => $handed
+                ->where(fn ($course) => $course->followsCourseDelegation()
+                    ->whereHas('course', fn ($c) => $c->delegatedTo($departmentId, $programId)))
+                ->orWhere(fn ($section) => $section->whereNotNull('delegation_returned_from_department_id')
+                    ->where('section_teaching_department_id', $departmentId)
+                    ->where(fn ($kind) => $kind->where('department_id', '!=', $departmentId)->orWhereNotNull('section_teaching_program_id'))
+                    ->when($programId !== null, fn ($scope) => $scope->where('section_teaching_program_id', $programId))))
             ->distinct()
             ->get(['section_id', 'course_id', 'department_id']);
 
@@ -1293,9 +1300,7 @@ class DepartmentScheduleController extends Controller
             $selected()
                 ->whereIn('status', self::WITHDRAWABLE_STATUSES)
                 ->where('faculty_assignment_done', true)
-                ->whereDoesntHave('course', fn ($courseQuery) => $courseQuery
-                    ->whereNotNull('teaching_department_id')
-                    ->whereColumn('courses.teaching_department_id', '!=', 'schedules.department_id'))
+                ->whereNot(fn ($query) => $query->delegatedAwayFromOwner())
                 ->update(['faculty_assignment_done' => false, 'updated_at' => now()]);
 
             $completed = $selected()

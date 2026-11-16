@@ -33,6 +33,7 @@ class SystemNotificationAudience
         'incoming_cross_department_courses' => self::DEPARTMENT,
         'cross_department_instructor_assignments_completed' => self::DEPARTMENT,
         'cross_department_instructors_released' => self::DEPARTMENT,
+        'cross_department_sections_returned' => self::DEPARTMENT,
         'room_recovery' => self::DEPARTMENT,
         'room_recovery_applied' => self::DEPARTMENT,
         'schedule_attention_required' => ['dean', 'vpaa'],

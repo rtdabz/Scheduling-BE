@@ -706,8 +706,7 @@ class ScheduleController extends Controller
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data']);
 
         $releasedInstructorRows->loadMissing(['course.department', 'section']);
-        $crossDepartmentReleased = $releasedInstructorRows->filter(static fn (Schedule $schedule): bool => $schedule->course?->teaching_department_id !== null
-            && (int) $schedule->course->teaching_department_id !== (int) $schedule->department_id);
+        $crossDepartmentReleased = $releasedInstructorRows->filter(static fn (Schedule $schedule): bool => SchedulingPolicy::delegatedAwayTo($schedule) !== null);
         if ($crossDepartmentReleased->isNotEmpty() && $request->user() !== null) {
             $this->notifications->notifyCrossDepartmentInstructorsReleased(
                 $crossDepartmentReleased,
@@ -1488,7 +1487,10 @@ class ScheduleController extends Controller
                         $movedPartnerIds = $this->moveSameTimePartners($attemptData, $groupPartners);
                     }
 
-                    $schedule->update($validated);
+                    // Removing the instructor releases the "done" lock with it (see releasedFacultyValues).
+                    $schedule->update(array_key_exists('faculty_id', $validated)
+                        ? array_merge($validated, $this->releasedFacultyValues($validated['faculty_id']))
+                        : $validated);
 
                     if (array_key_exists('faculty_id', $validated)) {
                         foreach ($manualFacultySchedules as $relatedSchedule) {
@@ -1509,7 +1511,7 @@ class ScheduleController extends Controller
                                     'Instructor assignment conflicts with a related hybrid schedule.',
                                 );
                             }
-                            $relatedSchedule->update(['faculty_id' => $validated['faculty_id']]);
+                            $relatedSchedule->update(['faculty_id' => $validated['faculty_id']] + $this->releasedFacultyValues($validated['faculty_id']));
                         }
                     }
 
@@ -1861,6 +1863,17 @@ class ScheduleController extends Controller
             ->exists();
     }
 
+    /**
+     * Extra values for a row whose instructor is being set: removing the instructor also
+     * releases the "done" lock, so no class is left marked done with nobody assigned.
+     *
+     * @return array<string, mixed>
+     */
+    private function releasedFacultyValues(mixed $facultyId): array
+    {
+        return $facultyId === null ? ['faculty_assignment_done' => false] : [];
+    }
+
     private function scheduleIdsAssignableByDepartment(Request $request, array $scheduleIds): bool
     {
         $scope = $this->authorization->departmentScope($request);
@@ -2017,12 +2030,14 @@ class ScheduleController extends Controller
         }
 
         if ($programId !== null) {
-            $programScheduleCount = Schedule::query()
-                ->whereIn('id', $scheduleIds)
-                ->whereHas('course', fn ($course) => $course
-                    ->where('program_id', $programId)
-                    ->orWhere('teaching_program_id', $programId))
-                ->count();
+            // Per class: a returned class is no longer handed to the teaching program.
+            $schedules->each->loadMissing('course');
+            $programScheduleCount = $schedules->filter(function (Schedule $schedule) use ($programId): bool {
+                $course = SchedulingPolicy::courseForSchedule($schedule);
+
+                return $course !== null
+                    && ((int) ($course->program_id ?? 0) === $programId || (int) ($course->teaching_program_id ?? 0) === $programId);
+            })->count();
 
             if ($programScheduleCount !== count($scheduleIds)) {
                 return response()->json([
@@ -2143,7 +2158,7 @@ class ScheduleController extends Controller
                                 );
                             }
 
-                            $schedule->update(['faculty_id' => $facultyId]);
+                            $schedule->update(['faculty_id' => $facultyId] + $this->releasedFacultyValues($facultyId));
                         }
                     }
                 });
@@ -2323,10 +2338,9 @@ class ScheduleController extends Controller
             if ($validated['status'] === 'reassignment') {
                 // Rows taught by another department stay done: the owner cannot
                 // reassign them, and reopening them would hide their instructors.
+                // Decided per class: a returned section the owner teaches reopens like its own.
                 Schedule::whereIn('id', $validated['ids'])
-                    ->whereDoesntHave('course', fn ($query) => $query
-                        ->whereNotNull('teaching_department_id')
-                        ->whereColumn('courses.teaching_department_id', '!=', 'schedules.department_id'))
+                    ->whereNot(fn ($query) => $query->delegatedAwayFromOwner())
                     ->update(['faculty_assignment_done' => false]);
             }
             $schedules = Schedule::whereIn('id', $validated['ids'])->with(Schedule::RESPONSE_RELATIONS)->get();

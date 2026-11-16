@@ -2,6 +2,7 @@
 
 namespace App\Services\Scheduling\Engine\Rules;
 
+use App\Models\Course;
 use App\Models\Program;
 use App\Services\Scheduling\Support\ProgramRoomShares;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
@@ -46,7 +47,8 @@ final class DepartmentAssignmentRule
             ];
         }
 
-        return [...$violations, ...$this->instructorDepartment($records)];
+        // Per class: a returned section follows its own section-level assignment.
+        return [...$violations, ...$this->instructorDepartment($records, SchedulingPolicy::courseForRow($course, $attempt))];
     }
 
     /**
@@ -135,7 +137,7 @@ final class DepartmentAssignmentRule
     /**
      * @return list<array<string, mixed>>
      */
-    private function instructorDepartment(AttemptRecords $records): array
+    private function instructorDepartment(AttemptRecords $records, Course $course): array
     {
         $faculty = $records->faculty;
         if ($faculty === null) {
@@ -143,7 +145,6 @@ final class DepartmentAssignmentRule
         }
 
         $violations = [];
-        $course = $records->course;
         $isMajor = SchedulingPolicy::isMajorCourse($course);
 
         if ($isMajor) {

@@ -8,8 +8,10 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Schedule;
+use App\Models\SchedulingAuditLog;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -61,13 +63,22 @@ class CourseTeachingAssignmentController extends Controller
             $departmentId,
             $programId,
         );
+        // Incoming: courses delegated here as a whole, plus courses with returned sections handed
+        // here one by one.
+        $sectionLevelCourseIds = $activeSemester === null ? collect() : Schedule::query()
+            ->where('semester_id', $activeSemester->id)
+            ->whereNotNull('delegation_returned_from_department_id')
+            ->where('section_teaching_department_id', $departmentId)
+            ->when($programId !== null, fn ($query) => $query->where('section_teaching_program_id', $programId))
+            ->distinct()->pluck('course_id')->map('intval');
         $incoming = Course::query()->with(['department', 'teachingDepartment', 'teachingProgram', 'teachingSourceProgram', 'program'])
-            ->where('status', 'active')->delegatedTo($departmentId, $programId)
+            ->where('status', 'active')
+            ->where(fn ($handed) => $handed->delegatedTo($departmentId, $programId)->orWhereIn('courses.id', $sectionLevelCourseIds))
             ->when($activePeriod !== null, fn ($query) => $query->whereIn(
                 'courses.id',
                 $this->coursesPlacedInSemester($activePeriod),
             ))
-            ->orderBy('course_code')->get()->map(fn (Course $course): array => $this->presentIncoming($course))->values();
+            ->orderBy('course_code')->get()->map(fn (Course $course): array => $this->presentIncoming($course, $departmentId))->values();
 
         return response()->json([
             'current_department_id' => $departmentId,
@@ -554,6 +565,255 @@ class CourseTeachingAssignmentController extends Controller
     }
 
     /**
+     * Hands returned sections, one by one, to another department or program. Only a section a
+     * receiving department returned (detached from the course-level assignment) qualifies, and
+     * only while nobody teaches it. The course-level assignment, the course's other sections and
+     * their instructors are untouched. A section has a single teaching column, so it can never
+     * be with two departments at once.
+     */
+    public function assignSections(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'schedule_ids' => ['required', 'array', 'min:1', 'max:500'],
+            'schedule_ids.*' => ['integer', 'distinct', 'exists:schedules,id'],
+            'teaching_department_id' => ['required', 'integer', 'exists:departments,id,deleted_at,NULL'],
+            'teaching_program_id' => ['nullable', 'integer', 'exists:programs,id,deleted_at,NULL'],
+        ]);
+        $actor = $request->user();
+        if ($locked = $this->approvalGate->refusal($actor)) {
+            return $locked;
+        }
+
+        $targetProgramId = isset($validated['teaching_program_id']) ? (int) $validated['teaching_program_id'] : null;
+        $targetProgram = $targetProgramId === null ? null : Program::findOrFail($targetProgramId);
+        $targetId = $targetProgram !== null ? (int) $targetProgram->department_id : (int) $validated['teaching_department_id'];
+
+        [$classes, $refusal] = $this->sectionClasses($request, array_map('intval', $validated['schedule_ids']));
+        if ($refusal !== null) {
+            return $refusal;
+        }
+
+        $courses = $classes->map(fn (Collection $rows) => $rows->first()->course)->filter()->unique('id')->values();
+        foreach ($courses as $course) {
+            if ($refusal = SchedulingPolicy::majorDelegationRefusal($course, $targetProgram, $targetId)) {
+                return response()->json(['message' => "{$course->course_code}: {$refusal}"], 422);
+            }
+        }
+        if ($own = $this->ownTargetRefusal($actor, $courses->pluck('id')->map('intval')->all(), $targetId, $targetProgramId)) {
+            return $own;
+        }
+
+        $scheduleIds = $this->writeSectionTeaching($classes, $targetId, $targetProgramId, $actor, 'cross_department_section_assigned');
+        if ($scheduleIds instanceof JsonResponse) {
+            return $scheduleIds;
+        }
+
+        $target = $targetProgram?->shortLabel() ?? Departments::find($targetId)?->department_name ?? 'the department';
+        $labels = $this->classLabels($classes);
+        $this->notifications->notifyRoles(
+            ['secretary', 'program_head'],
+            'incoming_cross_department_courses',
+            $classes->count() === 1 ? 'Cross-department section assigned' : 'Cross-department sections assigned',
+            ($actor?->department?->department_name ?? 'A department')." assigned {$labels} to {$target}. View Cross-Department.",
+            $actor,
+            $targetId,
+            $this->activeSemester()?->id,
+            null,
+            [
+                'schedule_ids' => $scheduleIds,
+                'course_ids' => $courses->pluck('id')->map('intval')->values()->all(),
+                'source_department_id' => $actor?->department_id,
+                'teaching_department_id' => $targetId,
+                'teaching_program_id' => $targetProgramId,
+                'program_ids' => $targetProgramId === null ? null : [$targetProgramId],
+            ],
+            $targetProgramId === null ? null : [$targetProgramId],
+        );
+
+        return response()->json([
+            'message' => ($classes->count() === 1 ? '1 section' : "{$classes->count()} sections")." assigned to {$target}.",
+            'schedule_ids' => $scheduleIds,
+            'sections_assigned' => $classes->count(),
+        ]);
+    }
+
+    /** Takes returned sections back from a section-level assignment: the offering department teaches them. */
+    public function removeSections(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'schedule_ids' => ['required', 'array', 'min:1', 'max:500'],
+            'schedule_ids.*' => ['integer', 'distinct', 'exists:schedules,id'],
+        ]);
+        if ($locked = $this->approvalGate->refusal($request->user())) {
+            return $locked;
+        }
+
+        [$classes, $refusal] = $this->sectionClasses($request, array_map('intval', $validated['schedule_ids']));
+        if ($refusal !== null) {
+            return $refusal;
+        }
+
+        $scheduleIds = $this->writeSectionTeaching($classes, null, null, $request->user(), 'cross_department_section_removed');
+        if ($scheduleIds instanceof JsonResponse) {
+            return $scheduleIds;
+        }
+
+        return response()->json([
+            'message' => ($classes->count() === 1 ? '1 section is' : "{$classes->count()} sections are").' back with your department.',
+            'schedule_ids' => $scheduleIds,
+            'sections_removed' => $classes->count(),
+        ]);
+    }
+
+    /**
+     * The whole classes (every meeting of each section's course) behind the given ids, or a
+     * refusal. They must be the caller's own department's (and a Program Head's own program's)
+     * classes in the active semester, returned by a receiving department, and free to move.
+     *
+     * @param  list<int>  $scheduleIds
+     * @return array{0: Collection<string, Collection<int, Schedule>>, 1: JsonResponse|null}
+     */
+    private function sectionClasses(Request $request, array $scheduleIds): array
+    {
+        $actor = $request->user();
+        $departmentId = (int) ($actor?->department_id ?? 0);
+        $semester = $this->activeSemester();
+        $seeds = Schedule::query()->with('section:id,program_id')->whereIn('id', $scheduleIds)->get();
+        if ($semester === null || $seeds->contains(fn (Schedule $seed): bool => (int) $seed->semester_id !== (int) $semester->id)) {
+            return [collect(), response()->json(['message' => 'Sections can only be reassigned for the active semester.'], 422)];
+        }
+
+        $programId = $actor?->role === 'program_head' ? (int) ($actor->program_id ?? 0) : null;
+        if ($departmentId === 0 || $seeds->contains(fn (Schedule $seed): bool => (int) $seed->department_id !== $departmentId
+            || ($programId !== null && (int) ($seed->program_id ?? $seed->section?->program_id ?? 0) !== $programId))) {
+            return [collect(), response()->json(['message' => $programId !== null
+                ? self::OUTSIDE_PROGRAM_MESSAGE
+                : 'You can only reassign your own department\'s sections.'], 403)];
+        }
+        if ($outside = $this->refuseOutsideProgram($actor, $seeds->pluck('course_id')->map('intval')->unique()->values()->all())) {
+            return [collect(), $outside];
+        }
+
+        $classes = $this->classRows($seeds, (int) $semester->id);
+        $blocked = $classes->map(function (Collection $rows): ?array {
+            $reason = $this->classBlockReason($rows);
+            $first = $rows->first();
+
+            return $reason === null ? null : [
+                'section_id' => (int) $first->section_id,
+                'section_name' => $first->section?->section_name,
+                'course_id' => (int) $first->course_id,
+                'course_code' => $first->course?->course_code,
+                'reason' => $reason,
+            ];
+        })->filter()->values();
+        if ($blocked->isNotEmpty()) {
+            return [collect(), response()->json([
+                'message' => $blocked->count() === 1
+                    ? "{$blocked[0]['course_code']} ({$blocked[0]['section_name']}): {$blocked[0]['reason']}"
+                    : 'Some selected sections cannot be reassigned. Only returned sections without an instructor can be.',
+                'blocked' => $blocked->all(),
+            ], 422)];
+        }
+
+        return [$classes, null];
+    }
+
+    /**
+     * @param  Collection<int, Schedule>  $seeds
+     * @return Collection<string, Collection<int, Schedule>>
+     */
+    private function classRows(Collection $seeds, int $semesterId, bool $lock = false): Collection
+    {
+        return Schedule::query()
+            ->with(['course', 'section:id,section_name,program_id', 'faculty:id'])
+            ->where('semester_id', $semesterId)
+            ->where(function ($query) use ($seeds): void {
+                foreach ($seeds->unique(static fn (Schedule $seed): string => $seed->section_id.':'.$seed->course_id) as $seed) {
+                    $query->orWhere(fn ($class) => $class->where('section_id', $seed->section_id)->where('course_id', $seed->course_id));
+                }
+            })
+            ->when($lock, fn ($query) => $query->lockForUpdate())
+            ->orderBy('id')
+            ->get()
+            ->groupBy(static fn (Schedule $row): string => $row->section_id.':'.$row->course_id);
+    }
+
+    /** Why a class cannot be handed on individually right now, or null when it can. */
+    private function classBlockReason(Collection $rows): ?string
+    {
+        return match (true) {
+            $rows->contains(static fn (Schedule $row): bool => ! SchedulingPolicy::isDetachedClass($row))
+                => 'Only a section returned by a receiving department can be reassigned on its own. Use Course Assignment for the whole course.',
+            $rows->contains(static fn (Schedule $row): bool => $row->faculty !== null)
+                => 'An instructor is already assigned to this section, so it stays where it is.',
+            $rows->contains(static fn (Schedule $row): bool => ! in_array($row->status, SchedulingPolicy::INSTRUCTOR_ASSIGNABLE_STATUSES, true))
+                => 'This section is not open for instructor assignment.',
+            $rows->contains(static fn (Schedule $row): bool => (bool) $row->faculty_assignment_done)
+                => 'Instructor assignments are marked done for this section.',
+            default => null,
+        };
+    }
+
+    /**
+     * Writes the section-level teaching assignment under a row lock, re-checking each class so
+     * two concurrent requests cannot both hand the same section on.
+     *
+     * @param  Collection<string, Collection<int, Schedule>>  $classes
+     * @return list<int>|JsonResponse
+     */
+    private function writeSectionTeaching(Collection $classes, ?int $targetId, ?int $targetProgramId, ?User $actor, string $action): array|JsonResponse
+    {
+        $seeds = $classes->map(fn (Collection $rows) => $rows->first())->values();
+        $semesterId = (int) $seeds->first()->semester_id;
+
+        return DB::transaction(function () use ($seeds, $semesterId, $targetId, $targetProgramId, $actor, $action): array|JsonResponse {
+            $locked = $this->classRows($seeds, $semesterId, true);
+            if ($locked->contains(fn (Collection $rows): bool => $this->classBlockReason($rows) !== null)) {
+                return response()->json(['message' => 'A selected section changed in the meantime. Refresh and try again.'], 409);
+            }
+
+            $scheduleIds = $locked->flatten(1)->pluck('id')->map('intval')->values()->all();
+            $before = Schedule::query()->whereIn('id', $scheduleIds)->get();
+            Schedule::query()->whereIn('id', $scheduleIds)->update([
+                'section_teaching_department_id' => $targetId,
+                'section_teaching_program_id' => $targetId === null ? null : $targetProgramId,
+                'section_teaching_assigned_at' => $targetId === null ? null : now(),
+                'faculty_assignment_done' => false,
+            ]);
+            $after = Schedule::query()->whereIn('id', $scheduleIds)->get();
+            $version = app(ScheduleHistoryRecorder::class)->record($action, $before, $after, $actor?->id, $semesterId, $actor?->department_id === null ? null : (int) $actor->department_id, 'course_assignment');
+            SchedulingAuditLog::create([
+                'user_id' => $actor?->id,
+                'semester_id' => $semesterId,
+                'section_id' => $locked->count() === 1 ? $seeds->first()->section_id : null,
+                'department_id' => $actor?->department_id,
+                'action' => $action,
+                'history_version_id' => $version->id,
+                'metadata' => [
+                    'schedule_ids' => $scheduleIds,
+                    'section_ids' => $seeds->pluck('section_id')->map('intval')->unique()->values()->all(),
+                    'course_ids' => $seeds->pluck('course_id')->map('intval')->unique()->values()->all(),
+                    'teaching_department_id' => $targetId,
+                    'teaching_program_id' => $targetId === null ? null : $targetProgramId,
+                ],
+                'created_at' => now(),
+            ]);
+            ApiCache::forgetGroups(['instructor_assignments.index', 'courses.index', 'initial.data']);
+
+            return $scheduleIds;
+        });
+    }
+
+    /** @param  Collection<string, Collection<int, Schedule>>  $classes */
+    private function classLabels(Collection $classes): string
+    {
+        $labels = $classes->map(fn (Collection $rows): string => trim(($rows->first()->course?->course_code ?? 'Course').' ('.($rows->first()->section?->section_name ?? 'section').')'))->values();
+
+        return $labels->take(5)->implode(', ').($labels->count() > 5 ? ' and '.($labels->count() - 5).' more' : '');
+    }
+
+    /**
      * @param  list<int>  $courseIds
      * @return array<int, int>
      */
@@ -564,12 +824,18 @@ class CourseTeachingAssignmentController extends Controller
             return [];
         }
 
+        // Only a live instructor holds the lock. Archiving keeps `faculty_id` for a restore,
+        // but the course must not stay locked to an instructor who no longer exists.
+        // A returned (detached) section is outside the course-level assignment, so it never
+        // locks the course; it has its own lock (see sectionClasses).
         return Schedule::query()
-            ->where('semester_id', $semester->id)
-            ->whereIn('course_id', $courseIds)
-            ->whereNotNull('faculty_id')
-            ->selectRaw('course_id, COUNT(DISTINCT section_id) AS classes')
-            ->groupBy('course_id')
+            ->join('faculties', 'faculties.id', '=', 'schedules.faculty_id')
+            ->whereNull('faculties.deleted_at')
+            ->whereNull('schedules.delegation_returned_from_department_id')
+            ->where('schedules.semester_id', $semester->id)
+            ->whereIn('schedules.course_id', $courseIds)
+            ->selectRaw('schedules.course_id, COUNT(DISTINCT schedules.section_id) AS classes')
+            ->groupBy('schedules.course_id')
             ->pluck('classes', 'course_id')
             ->mapWithKeys(static fn ($classes, $courseId): array => [(int) $courseId => (int) $classes])
             ->all();
@@ -679,27 +945,46 @@ class CourseTeachingAssignmentController extends Controller
         }
 
         return Schedule::query()
-            ->with(['section:id,section_name', 'faculty:id,first_name,last_name'])
+            ->with(['section:id,section_name', 'faculty:id,first_name,last_name', 'returnedFromDepartment:id,department_code,department_name', 'sectionTeachingDepartment:id,department_code,department_name', 'sectionTeachingProgram:id,code,name,major'])
             ->where('semester_id', $semester->id)
             ->where('department_id', $departmentId)
             ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
             ->whereIn('course_id', $courseIds)
-            ->get(['id', 'course_id', 'section_id', 'faculty_id'])
+            ->get(['id', 'course_id', 'section_id', 'faculty_id', 'status', 'faculty_assignment_done', 'delegation_returned_from_department_id',
+                'section_teaching_department_id', 'section_teaching_program_id'])
             ->groupBy('course_id')
             ->map(fn (Collection $schedules): array => $schedules->groupBy('section_id')
                 ->map(function (Collection $meetings): array {
+                    // `faculty` excludes archived instructors, so their meetings count as unassigned.
                     $instructors = $meetings->pluck('faculty')->filter()->unique('id')
                         ->map(fn ($faculty): string => trim("{$faculty->first_name} {$faculty->last_name}"))
                         ->filter()->values();
-                    $unassigned = $meetings->contains(fn (Schedule $meeting): bool => $meeting->faculty_id === null);
+                    $unassigned = $meetings->contains(fn (Schedule $meeting): bool => $meeting->faculty === null);
+                    $first = $meetings->first();
+                    $returned = SchedulingPolicy::isDetachedClass($first);
+                    $handedTo = $returned ? $first->sectionTeachingDepartment : null;
+                    $staffing = $unassigned ? ($instructors->isEmpty() ? 'Awaiting instructor' : 'Partially assigned') : 'Assigned';
 
                     return [
-                        'section_id' => (int) $meetings->first()->section_id,
-                        'section_name' => $meetings->first()->section?->section_name ?? 'Section',
+                        'section_id' => (int) $first->section_id,
+                        'schedule_id' => (int) $first->id,
+                        'section_name' => $first->section?->section_name ?? 'Section',
                         'instructor_name' => $instructors->isEmpty() ? null : $instructors->implode(' / '),
-                        'status' => $unassigned
-                            ? ($instructors->isEmpty() ? 'Awaiting instructor' : 'Partially assigned')
-                            : 'Assigned',
+                        'returned' => $returned,
+                        'returned_from_department_id' => $returned ? (int) $first->delegation_returned_from_department_id : null,
+                        'returned_from_department_code' => $returned ? $first->returnedFromDepartment?->department_code : null,
+                        'section_teaching_department_id' => $handedTo === null ? null : (int) $handedTo->id,
+                        'section_teaching_department_code' => $handedTo?->department_code,
+                        'section_teaching_department_name' => $handedTo?->department_name,
+                        'section_teaching_program_id' => $returned && $first->sectionTeachingProgram !== null ? (int) $first->sectionTeachingProgram->id : null,
+                        'section_teaching_program_code' => $returned ? $first->sectionTeachingProgram?->shortLabel() : null,
+                        // A returned section can be handed on (or taken back) only while nobody teaches it.
+                        'reassignable' => $returned && $this->classBlockReason($meetings) === null,
+                        'status' => match (true) {
+                            $handedTo !== null => "Reassigned · {$staffing}",
+                            $returned => $instructors->isEmpty() ? 'Returned to your department' : 'Returned · Assigned',
+                            default => $staffing,
+                        },
                     ];
                 })
                 ->sortBy('section_name', SORT_NATURAL | SORT_FLAG_CASE)
@@ -761,11 +1046,14 @@ class CourseTeachingAssignmentController extends Controller
         ];
     }
 
-    private function presentIncoming(Course $course): array
+    private function presentIncoming(Course $course, int $departmentId): array
     {
-        $scheduleQuery = $course->schedules()->whereHas('academicSemester', fn ($query) => $query->where('is_active', true));
+        // Only the classes this department teaches now, decided per class: a section it returned
+        // is gone, a returned section handed here on its own counts.
+        $scheduleQuery = $course->schedules()->whereHas('academicSemester', fn ($query) => $query->where('is_active', true))
+            ->delegatedTo($departmentId);
         $scheduleCount = (clone $scheduleQuery)->count();
-        $unassignedCount = (clone $scheduleQuery)->whereNull('faculty_id')->count();
+        $unassignedCount = (clone $scheduleQuery)->whereDoesntHave('faculty')->count();
 
         return [
             'id' => (int) $course->id, 'course_code' => $course->course_code, 'course_name' => $course->course_name,
@@ -776,6 +1064,8 @@ class CourseTeachingAssignmentController extends Controller
             'teaching_department_id' => (int) $course->teaching_department_id, 'year_level' => $course->year_level === null ? null : (int) $course->year_level,
             'units' => $course->units, 'assignment_status' => $scheduleCount === 0 ? 'Awaiting schedule' : ($unassignedCount > 0 ? 'Instructor assignment pending' : 'Ready for teaching'),
             'schedule_count' => $scheduleCount,
+            // Handed here section by section rather than as a whole course.
+            'section_level' => (int) ($course->teaching_department_id ?? 0) !== $departmentId,
         ];
     }
 }

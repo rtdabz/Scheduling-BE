@@ -209,8 +209,7 @@ final class ScheduleResetService
 
         $assigned = $rows->filter(static fn (Schedule $row): bool => $row->faculty_id !== null)->values();
         $assigned->loadMissing(['course.department', 'section']);
-        $crossDepartment = $assigned->filter(static fn (Schedule $row): bool => $row->course?->teaching_department_id !== null
-            && (int) $row->course->teaching_department_id !== (int) $row->department_id)->values();
+        $crossDepartment = $assigned->filter(static fn (Schedule $row): bool => SchedulingPolicy::delegatedAwayTo($row) !== null)->values();
 
         $fingerprint = [
             'semester' => $semesterId,

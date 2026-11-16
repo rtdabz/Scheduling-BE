@@ -505,6 +505,334 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         $this->assertSame($fixture['casInstructor']->id, $local->fresh()->faculty_id);
     }
 
+    /**
+     * Archiving keeps `faculty_id` on the class (so a restore brings it back), but the
+     * course must not stay locked to an instructor who no longer exists.
+     */
+    public function test_archiving_the_instructor_releases_the_course_assignment_lock(): void
+    {
+        $fixture = $this->fixture();
+        $ids = $this->meetingBlocks($fixture)->pluck('id')->all();
+        Schedule::whereIn('id', $ids)->update(['faculty_id' => $fixture['casInstructor']->id]);
+
+        $this->actingAs($fixture['itSecretary'])
+            ->deleteJson("/api/course-teaching-assignments/{$fixture['gec']->id}")
+            ->assertStatus(422)
+            ->assertJsonPath('instructor_assigned_classes', 1);
+
+        $fixture['casInstructor']->delete();
+
+        $this->actingAs($fixture['itSecretary'])
+            ->deleteJson("/api/course-teaching-assignments/{$fixture['gec']->id}")
+            ->assertOk();
+        $this->assertNull($fixture['gec']->fresh()->teaching_department_id);
+        $this->assertSame(3, Schedule::whereIn('id', $ids)->where('faculty_id', $fixture['casInstructor']->id)->count());
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function removalRoutes(): array
+    {
+        return ['cross-department single class' => ['instructor-assignments'], 'batch' => ['batch-faculty']];
+    }
+
+    #[DataProvider('removalRoutes')]
+    public function test_removing_an_instructor_releases_the_done_lock(string $route): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        $ids = $blocks->pluck('id')->all();
+
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty', [
+                'assignments' => [['schedule_ids' => $ids, 'faculty_id' => $fixture['casInstructor']->id]],
+            ])
+            ->assertOk();
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty-done', ['ids' => $ids, 'done' => true])
+            ->assertOk();
+
+        $request = $route === 'batch-faculty'
+            ? $this->actingAs($fixture['casSecretary'])->patchJson('/api/schedules/batch-faculty', [
+                'assignments' => [['schedule_ids' => $ids, 'faculty_id' => null]],
+            ])
+            : $this->actingAs($fixture['casSecretary'])->patchJson("/api/instructor-assignments/{$blocks->first()->id}", [
+                'faculty_id' => null,
+            ]);
+        $request->assertOk();
+
+        foreach (Schedule::whereIn('id', $ids)->get() as $schedule) {
+            $this->assertNull($schedule->faculty_id);
+            $this->assertFalse($schedule->faculty_assignment_done, 'A class without an instructor must not stay marked done.');
+        }
+
+        // Reassignable straight away, without reopening the list first.
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty', [
+                'assignments' => [['schedule_ids' => $ids, 'faculty_id' => $fixture['casInstructor']->id]],
+            ])
+            ->assertOk();
+    }
+
+    public function test_the_teaching_college_returns_an_unstaffed_section_to_the_offering_college(): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        $ids = $blocks->pluck('id')->all();
+
+        $this->actingAs($fixture['casSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$blocks->first()->id]])
+            ->assertOk()
+            ->assertJsonPath('sections_returned', 1)
+            ->assertJsonCount(3, 'schedule_ids');
+
+        // The whole class goes back, every meeting.
+        $this->assertSame(3, Schedule::whereIn('id', $ids)->where('delegation_returned_from_department_id', $fixture['cas']->id)->count());
+        $this->assertDatabaseHas('scheduling_audit_logs', ['action' => 'cross_department_sections_returned', 'department_id' => $fixture['cas']->id]);
+        $this->assertDatabaseHas('system_notifications', ['type' => 'cross_department_sections_returned']);
+
+        // The teaching college no longer sees or assigns it.
+        $casView = $this->actingAs($fixture['casSecretary'])->getJson('/api/instructor-assignments')->assertOk()->json('schedules');
+        $this->assertSame([], collect($casView)->whereIn('id', $ids)->values()->all());
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson("/api/instructor-assignments/{$blocks->first()->id}", ['faculty_id' => $fixture['casInstructor']->id])
+            ->assertForbidden();
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson('/api/schedules/batch-faculty', ['assignments' => [['schedule_ids' => $ids, 'faculty_id' => $fixture['casInstructor']->id]]])
+            ->assertForbidden();
+
+        // The offering college assigns its own instructor, under its own rules.
+        $this->actingAs($fixture['itSecretary'])
+            ->patchJson("/api/instructor-assignments/{$blocks->first()->id}", ['faculty_id' => $fixture['itInstructor']->id])
+            ->assertOk();
+        $this->assertSame(['Friday', 'Monday', 'Wednesday'], $this->daysTaughtBy($fixture, $fixture['itInstructor']));
+        // A teaching-college instructor is still refused on the returned class.
+        $this->actingAs($fixture['itSecretary'])
+            ->patchJson('/api/schedules/batch-faculty', ['assignments' => [['schedule_ids' => $ids, 'faculty_id' => $fixture['casInstructor']->id]]])
+            ->assertStatus(422);
+    }
+
+    public function test_only_unstaffed_sections_can_be_returned(): void
+    {
+        $fixture = $this->fixture();
+        $staffed = $this->meetingBlocks($fixture);
+        Schedule::whereIn('id', $staffed->pluck('id'))->update(['faculty_id' => $fixture['casInstructor']->id]);
+        $otherSection = Sections::create([
+            'section_name' => 'BSIT 1B', 'year_level' => '1', 'semester' => '1st',
+            'department_id' => $fixture['it']->id, 'program_id' => $fixture['itProgram']->id,
+            'semester_id' => $fixture['semester']->id, 'status' => 'active',
+        ]);
+        $unstaffed = Schedule::create([
+            'semester_id' => $fixture['semester']->id, 'section_id' => $otherSection->id, 'course_id' => $fixture['gec']->id,
+            'room_id' => $fixture['room']->id, 'department_id' => $fixture['it']->id, 'day' => 'Tuesday',
+            'start_time' => '10:00', 'end_time' => '11:30', 'mode' => 'on-site', 'status' => 'faculty_assignment',
+        ]);
+
+        // A request that includes a staffed section changes nothing.
+        $this->actingAs($fixture['casSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$staffed->first()->id, $unstaffed->id]])
+            ->assertStatus(422)
+            ->assertJsonCount(1, 'blocked')
+            ->assertJsonPath('blocked.0.section_id', $fixture['section']->id);
+        $this->assertSame(0, Schedule::whereNotNull('delegation_returned_from_department_id')->count());
+
+        $this->actingAs($fixture['casSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$unstaffed->id]])
+            ->assertOk();
+        $this->assertSame($fixture['cas']->id, $unstaffed->fresh()->delegation_returned_from_department_id);
+        // The staffed section stays with the teaching college, instructor intact.
+        $this->assertTrue(Schedule::whereIn('id', $staffed->pluck('id'))->get()->every(
+            fn (Schedule $row): bool => $row->delegation_returned_from_department_id === null && $row->faculty_id === $fixture['casInstructor']->id,
+        ));
+    }
+
+    public function test_the_offering_college_cannot_return_its_own_classes(): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$blocks->first()->id]])
+            ->assertForbidden();
+
+        $this->actingAs($fixture['casSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$blocks->first()->id]])
+            ->assertOk();
+        // Already returned: a second return is no longer the teaching college's to make.
+        $this->actingAs($fixture['casSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$blocks->first()->id]])
+            ->assertForbidden();
+    }
+
+    public function test_a_returned_section_can_be_handed_to_another_department(): void
+    {
+        $fixture = $this->fixture();
+        $this->placeInCurriculum($fixture);
+        $hm = $this->thirdCollege($fixture);
+        $returned = $this->meetingBlocks($fixture);
+        $kept = $this->sectionClass($fixture, 'BSIT 1B');
+        $this->actingAs($fixture['casSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$returned->first()->id]])
+            ->assertOk();
+
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/sections', [
+                'schedule_ids' => [$returned->first()->id],
+                'teaching_department_id' => $hm['department']->id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('sections_assigned', 1)
+            ->assertJsonCount(3, 'schedule_ids');
+
+        // Only that section moved. The course-level assignment and its other section stay with CAS.
+        $this->assertSame($fixture['cas']->id, (int) $fixture['gec']->fresh()->teaching_department_id);
+        $this->assertSame(3, Schedule::whereIn('id', $returned->pluck('id'))->where('section_teaching_department_id', $hm['department']->id)->count());
+        $this->assertNull($kept->fresh()->section_teaching_department_id);
+        $this->assertDatabaseHas('scheduling_audit_logs', ['action' => 'cross_department_section_assigned']);
+        $this->assertDatabaseHas('system_notifications', ['type' => 'incoming_cross_department_courses', 'department_id' => $hm['department']->id]);
+
+        $visibleTo = fn (User $user): array => collect($this->actingAs($user)->getJson('/api/instructor-assignments')->assertOk()->json('schedules'))
+            ->pluck('id')->map('intval')->sort()->values()->all();
+        $this->assertSame($returned->pluck('id')->sort()->values()->all(), $visibleTo($hm['secretary']));
+        $this->assertSame([$kept->id], $visibleTo($fixture['casSecretary']));
+
+        // The new receiver staffs it; neither the old receiver nor the owner may.
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson("/api/instructor-assignments/{$returned->first()->id}", ['faculty_id' => $fixture['casInstructor']->id])
+            ->assertForbidden();
+        $this->actingAs($fixture['itSecretary'])
+            ->patchJson("/api/instructor-assignments/{$returned->first()->id}", ['faculty_id' => $fixture['itInstructor']->id])
+            ->assertForbidden();
+        $this->actingAs($hm['secretary'])
+            ->patchJson("/api/instructor-assignments/{$returned->first()->id}", ['faculty_id' => $hm['instructor']->id])
+            ->assertOk();
+        $this->assertSame(3, Schedule::whereIn('id', $returned->pluck('id'))->where('faculty_id', $hm['instructor']->id)->count());
+
+        // The receiver's Course Assignment lists the course as incoming, counting only its section.
+        $incoming = collect($this->actingAs($hm['secretary'])->getJson('/api/course-teaching-assignments')->assertOk()
+            ->json('incoming_cross_department_courses'))->firstWhere('id', $fixture['gec']->id);
+        $this->assertSame(3, $incoming['schedule_count']);
+        $this->assertTrue($incoming['section_level']);
+    }
+
+    public function test_only_returned_unstaffed_sections_can_be_reassigned(): void
+    {
+        $fixture = $this->fixture();
+        $hm = $this->thirdCollege($fixture);
+        $returned = $this->meetingBlocks($fixture);
+        $kept = $this->sectionClass($fixture, 'BSIT 1B');
+        $assign = fn (array $ids, ?int $departmentId = null) => $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/sections', ['schedule_ids' => $ids, 'teaching_department_id' => $departmentId ?? $hm['department']->id]);
+
+        // A section still under the course-level assignment cannot move on its own.
+        $assign([$kept->id])->assertStatus(422)->assertJsonPath('blocked.0.section_id', $kept->section_id);
+
+        $this->actingAs($fixture['casSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$returned->first()->id]])
+            ->assertOk();
+        // Not to its own single-program department, whose courses are managed in-house.
+        $assign([$returned->first()->id], $fixture['it']->id)->assertStatus(422)->assertJsonPath('reason', 'own_department');
+        // Not by another department.
+        $this->actingAs($hm['secretary'])
+            ->postJson('/api/course-teaching-assignments/sections', ['schedule_ids' => [$returned->first()->id], 'teaching_department_id' => $hm['department']->id])
+            ->assertForbidden();
+
+        $assign([$returned->first()->id])->assertOk();
+        $this->actingAs($hm['secretary'])
+            ->patchJson("/api/instructor-assignments/{$returned->first()->id}", ['faculty_id' => $hm['instructor']->id])
+            ->assertOk();
+
+        // Once staffed it stays where it is: not handed on, not taken back.
+        $assign([$returned->first()->id], $fixture['cas']->id)->assertStatus(422);
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/sections/remove', ['schedule_ids' => [$returned->first()->id]])
+            ->assertStatus(422);
+        $this->assertSame(3, Schedule::whereIn('id', $returned->pluck('id'))->where('section_teaching_department_id', $hm['department']->id)->count());
+    }
+
+    public function test_course_level_changes_leave_a_returned_section_alone(): void
+    {
+        $fixture = $this->fixture();
+        $hm = $this->thirdCollege($fixture);
+        $returned = $this->meetingBlocks($fixture);
+        $this->actingAs($fixture['casSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$returned->first()->id]])
+            ->assertOk();
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/sections', ['schedule_ids' => [$returned->first()->id], 'teaching_department_id' => $hm['department']->id])
+            ->assertOk();
+        $this->actingAs($hm['secretary'])
+            ->patchJson("/api/instructor-assignments/{$returned->first()->id}", ['faculty_id' => $hm['instructor']->id])
+            ->assertOk();
+
+        // The staffed section-level class does not lock the course-level assignment...
+        $this->actingAs($fixture['itSecretary'])
+            ->deleteJson("/api/course-teaching-assignments/{$fixture['gec']->id}")
+            ->assertOk();
+
+        // ...and the course-level change does not reach it.
+        $this->assertNull($fixture['gec']->fresh()->teaching_department_id);
+        $this->assertTrue(Schedule::whereIn('id', $returned->pluck('id'))->get()->every(
+            fn (Schedule $row): bool => $row->section_teaching_department_id === $hm['department']->id && $row->faculty_id === $hm['instructor']->id,
+        ));
+    }
+
+    public function test_a_section_can_go_round_the_cycle_without_duplicates(): void
+    {
+        $fixture = $this->fixture();
+        $this->placeInCurriculum($fixture);
+        $hm = $this->thirdCollege($fixture);
+        $returned = $this->meetingBlocks($fixture);
+        $id = $returned->first()->id;
+        $rowCount = Schedule::count();
+
+        $this->actingAs($fixture['casSecretary'])->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$id]])->assertOk();
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/sections', ['schedule_ids' => [$id], 'teaching_department_id' => $hm['department']->id])
+            ->assertOk();
+        // The new receiver cannot staff it either, and returns it.
+        $this->actingAs($hm['secretary'])->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$id]])->assertOk();
+
+        $this->assertTrue(Schedule::whereIn('id', $returned->pluck('id'))->get()->every(
+            fn (Schedule $row): bool => $row->delegation_returned_from_department_id === $hm['department']->id && $row->section_teaching_department_id === null,
+        ));
+        $section = collect($this->actingAs($fixture['itSecretary'])->getJson('/api/course-teaching-assignments')->assertOk()->json('courses'))
+            ->flatMap(fn (array $course) => $course['section_assignments'] ?? [])->firstWhere('section_id', $returned->first()->section_id);
+        $this->assertNotNull($section);
+        $this->assertTrue($section['returned'] && $section['reassignable']);
+
+        // Back to the original receiver, section by section, then taken back in-house.
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/sections', ['schedule_ids' => [$id], 'teaching_department_id' => $fixture['cas']->id])
+            ->assertOk();
+        $this->actingAs($fixture['casSecretary'])
+            ->patchJson("/api/instructor-assignments/{$id}", ['faculty_id' => $fixture['casInstructor']->id])
+            ->assertOk();
+        $this->actingAs($fixture['casSecretary'])->patchJson("/api/instructor-assignments/{$id}", ['faculty_id' => null])->assertOk();
+        $this->actingAs($fixture['itSecretary'])
+            ->postJson('/api/course-teaching-assignments/sections/remove', ['schedule_ids' => [$id]])
+            ->assertOk();
+        $this->actingAs($fixture['itSecretary'])
+            ->patchJson("/api/instructor-assignments/{$id}", ['faculty_id' => $fixture['itInstructor']->id])
+            ->assertOk();
+
+        $this->assertSame($rowCount, Schedule::count(), 'Reassigning never creates schedule rows.');
+    }
+
+    public function test_a_returned_class_no_longer_counts_as_pending_for_the_teaching_college(): void
+    {
+        $fixture = $this->fixture();
+        $blocks = $this->meetingBlocks($fixture);
+        $pending = fn (): int => (int) $this->actingAs($fixture['casSecretary'])
+            ->getJson("/api/departments/{$fixture['cas']->id}/schedule-status")->assertOk()->json('cross_department_pending');
+        $this->assertSame(1, $pending());
+
+        $this->actingAs($fixture['casSecretary'])
+            ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$blocks->first()->id]])
+            ->assertOk();
+
+        $this->assertSame(0, $pending());
+    }
+
     public function test_completion_notice_reaches_only_the_program_that_handed_the_course_over(): void
     {
         $fixture = $this->fixture();
@@ -1078,6 +1406,61 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             'mode' => 'on-site',
             'status' => 'faculty_assignment',
         ], $overrides));
+    }
+
+    /**
+     * Course Assignment lists only courses placed in an active curriculum for the semester.
+     *
+     * @param  array<string, mixed>  $fixture
+     */
+    private function placeInCurriculum(array $fixture): void
+    {
+        $curriculum = Curriculum::create([
+            'name' => 'BSIT Curriculum', 'code' => 'BSIT-2026', 'effective_school_year' => '2026-2027',
+            'department_id' => $fixture['it']->id, 'program_id' => $fixture['itProgram']->id, 'status' => 'active',
+        ]);
+        DB::table('curriculum_course')->insert([
+            'curriculum_id' => $curriculum->id, 'course_id' => $fixture['gec']->id, 'year_level' => 1, 'semester' => 1,
+        ]);
+    }
+
+    /**
+     * A third college that can take a returned section.
+     *
+     * @param  array<string, mixed>  $fixture
+     * @return array{department: Departments, program: Program, instructor: Faculty, secretary: User}
+     */
+    private function thirdCollege(array $fixture): array
+    {
+        $department = Departments::create(['department_name' => 'Hospitality Management', 'department_code' => 'CHM']);
+        $program = Program::create(['department_id' => $department->id, 'code' => 'BSHM', 'name' => 'Hospitality Management']);
+
+        return [
+            'department' => $department,
+            'program' => $program,
+            'instructor' => $this->instructor('Host', $department->id),
+            'secretary' => $this->grantCapabilities(User::factory()->create(['role' => 'secretary', 'department_id' => $department->id])),
+        ];
+    }
+
+    /**
+     * Another IT section taking GEC 101, one meeting.
+     *
+     * @param  array<string, mixed>  $fixture
+     */
+    private function sectionClass(array $fixture, string $name): Schedule
+    {
+        $section = Sections::create([
+            'section_name' => $name, 'year_level' => '1', 'semester' => '1st',
+            'department_id' => $fixture['it']->id, 'program_id' => $fixture['itProgram']->id,
+            'semester_id' => $fixture['semester']->id, 'status' => 'active',
+        ]);
+
+        return Schedule::create([
+            'semester_id' => $fixture['semester']->id, 'section_id' => $section->id, 'course_id' => $fixture['gec']->id,
+            'room_id' => $fixture['room']->id, 'department_id' => $fixture['it']->id, 'day' => 'Tuesday',
+            'start_time' => '10:00', 'end_time' => '11:30', 'mode' => 'on-site', 'status' => 'faculty_assignment',
+        ]);
     }
 
     /** @return array<string, mixed> */

@@ -708,10 +708,21 @@ class CourseTeachingAssignmentTest extends TestCase
             ->assertOk()
             ->json('courses'))->keyBy('course_code');
 
+        $section = $courses['GEC 101']['section_assignments'][0];
         $this->assertSame([[
-            'section_id' => $courses['GEC 101']['section_assignments'][0]['section_id'],
+            'section_id' => $section['section_id'],
+            'schedule_id' => $section['schedule_id'],
             'section_name' => 'BSIT 1A',
             'instructor_name' => 'Juan Dela Cruz',
+            'returned' => false,
+            'returned_from_department_id' => null,
+            'returned_from_department_code' => null,
+            'section_teaching_department_id' => null,
+            'section_teaching_department_code' => null,
+            'section_teaching_department_name' => null,
+            'section_teaching_program_id' => null,
+            'section_teaching_program_code' => null,
+            'reassignable' => false,
             'status' => 'Assigned',
         ]], $courses['GEC 101']['section_assignments']);
         // A course with no class this semester has no sections to report.

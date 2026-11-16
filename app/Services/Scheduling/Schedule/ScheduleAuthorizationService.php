@@ -110,9 +110,8 @@ final class ScheduleAuthorizationService
             fn (EloquentBuilder $visible) => $visible
                 ->where('schedules.program_id', $scope)
                 ->orWhereHas('section', fn (EloquentBuilder $section) => $section->where('program_id', $scope))
-                ->orWhereHas('course', fn (EloquentBuilder $course) => $course
-                    ->where('program_id', $scope)
-                    ->orWhere('teaching_program_id', $scope))
+                ->orWhereHas('course', fn (EloquentBuilder $course) => $course->where('program_id', $scope))
+                ->orWhere(fn (EloquentBuilder $handed) => $handed->handedToProgram($scope))
                 ->orWhereIn('schedules.room_id', DB::table('rooms')->whereNull('home_program_id')->select('id')),
         );
     }
@@ -126,7 +125,7 @@ final class ScheduleAuthorizationService
             ->when($departmentId !== null, fn (EloquentBuilder $query) => $query->where(
                 fn (EloquentBuilder $owned) => $owned
                     ->where('schedules.department_id', $departmentId)
-                    ->orWhereHas('course', fn (EloquentBuilder $course) => $course->where('teaching_department_id', $departmentId)),
+                    ->orWhere(fn (EloquentBuilder $delegated) => $delegated->delegatedTo($departmentId)),
             ))
             ->when($statuses !== null, fn (EloquentBuilder $query) => $query->whereIn('schedules.status', $statuses));
 
@@ -303,7 +302,7 @@ final class ScheduleAuthorizationService
         $programIds = [];
         foreach ($schedules as $schedule) {
             $schedule->loadMissing('course');
-            $course = $schedule->course;
+            $course = SchedulingPolicy::courseForSchedule($schedule);
             if ($course === null
                 || ! SchedulingPolicy::isMajorCourse($course)
                 || (int) $schedule->department_id !== (int) $user->department_id) {
@@ -343,29 +342,15 @@ final class ScheduleAuthorizationService
             return true;
         }
 
-        $delegatedHere = Course::query()
-            ->where('teaching_department_id', $scope)
-            ->pluck('id')
-            ->map('intval')
-            ->all();
-        $delegatedElsewhere = Course::query()
-            ->whereNotNull('teaching_department_id')
-            ->where('teaching_department_id', '!=', $scope)
-            ->pluck('id')
-            ->map('intval')
-            ->all();
-
+        // Assignable, decided per class: delegated here (course- or section-level), or the
+        // department's own class that is not delegated to anyone else.
         return ! Schedule::query()
             ->whereIn('id', array_values(array_unique(array_map('intval', $scheduleIds))))
-            ->where(function ($query) use ($scope, $delegatedHere, $delegatedElsewhere): void {
-                $query->when($delegatedHere !== [], fn ($q) => $q->where(
-                    fn ($scoped) => $scoped->whereNull('course_id')->orWhereNotIn('course_id', $delegatedHere)
-                ));
-                $query->where(function ($foreign) use ($scope, $delegatedElsewhere): void {
-                    $foreign->where('department_id', '!=', $scope)
-                        ->when($delegatedElsewhere !== [], fn ($q) => $q->orWhereIn('course_id', $delegatedElsewhere));
-                });
-            })
+            ->whereNot(fn ($assignable) => $assignable
+                ->delegatedTo($scope)
+                ->orWhere(fn ($own) => $own
+                    ->where('schedules.department_id', $scope)
+                    ->whereNot(fn ($elsewhere) => $elsewhere->delegatedToOtherThan($scope))))
             ->exists();
     }
 }

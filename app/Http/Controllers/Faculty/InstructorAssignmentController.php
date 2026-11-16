@@ -7,10 +7,12 @@ use App\Http\Controllers\Controller;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Faculty;
+use App\Models\Program;
 use App\Models\Schedule;
 use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
+use App\Models\User;
 use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
@@ -87,17 +89,12 @@ class InstructorAssignmentController extends Controller
                 ->whereHas('course', fn ($query) => $query->where('status', 'active'))
                 ->where(function ($query) use ($departmentId) {
                     $query->where('department_id', $departmentId)
-                        ->orWhereHas(
-                            'course',
-                            fn ($course) => $course->where('teaching_department_id', $departmentId),
-                        );
+                        ->orWhere(fn ($delegated) => $delegated->delegatedTo($departmentId));
                 })
-                ->when($programId !== null, fn ($query) => $query->whereHas(
-                    'course',
-                    fn ($course) => $course
-                        ->where('program_id', $programId)
-                        ->orWhere('teaching_program_id', $programId),
-                ))
+                // Handed to the program per class (course-level, or section-level once returned).
+                ->when($programId !== null, fn ($query) => $query->where(fn ($scoped) => $scoped
+                    ->whereHas('course', fn ($course) => $course->where('program_id', $programId))
+                    ->orWhere(fn ($handed) => $handed->handedToProgram($programId))))
                 ->orderBy('department_id')
                 ->orderBy('day')
                 ->orderBy('start_time')
@@ -159,22 +156,20 @@ class InstructorAssignmentController extends Controller
         ]);
 
         $departmentId = (int) ($request->user()?->department_id ?? 0);
-        $teachingDepartmentId = $schedule->course
-            ? (SchedulingPolicy::isMajorCourse($schedule->course)
-                ? SchedulingPolicy::majorTeachingDepartmentId($schedule->course, (int) $schedule->department_id)
-                : SchedulingPolicy::assignedTeachingDepartmentId($schedule->course) ?? (int) $schedule->department_id)
-            : null;
+        // Per class: a section the teaching college returned follows the offering department's rules.
+        $course = SchedulingPolicy::courseForSchedule($schedule);
+        $teachingDepartmentId = SchedulingPolicy::scheduleTeachingDepartmentId($schedule);
 
-        if (! $schedule->course) {
+        if (! $course) {
             return response()->json([
                 'message' => 'Only the college that offers this course can assign its instructor.',
             ], 403);
         }
 
-        $isMajor = SchedulingPolicy::isMajorCourse($schedule->course);
+        $isMajor = SchedulingPolicy::isMajorCourse($course);
 
         if ($request->user()?->role === 'program_head') {
-            $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
+            $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($course);
             if ($requiredProgramId === null || $requiredProgramId !== (int) ($request->user()?->program_id ?? 0)) {
                 return response()->json([
                     'message' => 'Program Heads can only assign courses assigned to their program.',
@@ -220,15 +215,14 @@ class InstructorAssignmentController extends Controller
             ], 422);
         }
 
-        $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
+        $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($course);
         if ($faculty !== null && $requiredProgramId !== null && (int) $faculty->program_id !== $requiredProgramId) {
-            $schedule->course->loadMissing(['program', 'teachingProgram']);
-            $requiredProgram = $schedule->course->teachingProgram ?? $schedule->course->program;
+            $requiredProgram = Program::query()->find($requiredProgramId);
             $programLabel = $requiredProgram?->code ?? $requiredProgram?->name;
 
             return response()->json([
                 'message' => $programLabel !== null
-                    ? (SchedulingPolicy::isMajorCourse($schedule->course)
+                    ? ($isMajor
                         ? "This major belongs to the {$programLabel} program, so only instructors of that program can be assigned."
                         : "This course is assigned to the {$programLabel} program, so only instructors of that program can be assigned.")
                     : 'This course is assigned to a program the selected instructor is not assigned to.',
@@ -281,9 +275,13 @@ class InstructorAssignmentController extends Controller
             $projection,
         ) {
             $before = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
+            // Removing the instructor also releases the handoff's "done" lock, so the class
+            // is open for reassignment instead of staying done with nobody assigned.
             Schedule::query()
                 ->whereIn('id', $linkedScheduleIds)
-                ->update(['faculty_id' => $facultyId]);
+                ->update($facultyId === null
+                    ? ['faculty_id' => null, 'faculty_assignment_done' => false]
+                    : ['faculty_id' => $facultyId]);
 
             $after = Schedule::query()->whereIn('id', $linkedScheduleIds)->get();
             $action = $facultyId === null ? 'instructor_assignment_released' : 'instructor_assigned';
@@ -501,6 +499,181 @@ class InstructorAssignmentController extends Controller
         ]);
     }
 
+    /**
+     * A receiving department hands delegated classes it cannot staff back to the department
+     * that offers them. Each id stands for its whole class (every meeting of that section's
+     * course). Only classes with no live instructor may go back; a staffed class stays with
+     * the receiving department. Returned classes then follow the offering department's own
+     * instructor-assignment rules (SchedulingPolicy::courseForRow).
+     */
+    public function returnSections(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'schedule_ids' => ['required', 'array', 'min:1', 'max:500'],
+            'schedule_ids.*' => ['integer', 'distinct', 'exists:schedules,id'],
+        ]);
+
+        $departmentId = (int) ($request->user()?->department_id ?? 0);
+        if ($departmentId === 0) {
+            return response()->json(['message' => 'Your account must belong to a department.'], 422);
+        }
+
+        $activeSemesterId = $this->activeSemesterId();
+        $seeds = Schedule::query()->whereIn('id', $validated['schedule_ids'])->get(['id', 'semester_id', 'section_id', 'course_id']);
+        if ($activeSemesterId === null || $seeds->contains(static fn (Schedule $seed): bool => (int) $seed->semester_id !== $activeSemesterId)) {
+            return response()->json(['message' => 'Sections can only be returned for the active semester.'], 422);
+        }
+
+        $classes = Schedule::query()
+            ->with(['course.department', 'course.teachingDepartment', 'section', 'faculty'])
+            ->where('semester_id', $activeSemesterId)
+            ->where(function ($query) use ($seeds): void {
+                foreach ($seeds->unique(static fn (Schedule $seed): string => $seed->section_id.':'.$seed->course_id) as $seed) {
+                    $query->orWhere(fn ($class) => $class->where('section_id', $seed->section_id)->where('course_id', $seed->course_id));
+                }
+            })
+            ->orderBy('id')
+            ->get()
+            ->groupBy(static fn (Schedule $row): string => $row->section_id.':'.$row->course_id);
+
+        // The caller must currently teach every class through a delegation it has not returned.
+        $notOurs = $classes->filter(fn (Collection $rows): bool => $rows->contains(fn (Schedule $row): bool => ! $this->isDelegatedHere($row, $departmentId)
+            || ! $this->userCanManageInstructor($request, $row, $departmentId)));
+        if ($notOurs->isNotEmpty()) {
+            return response()->json([
+                'message' => 'You can only return sections that another department assigned to yours and that you may manage.',
+            ], 403);
+        }
+
+        $blocked = $classes->map(function (Collection $rows): ?array {
+            $first = $rows->first();
+            $reason = match (true) {
+                $rows->contains(static fn (Schedule $row): bool => $row->faculty !== null) => 'An instructor is already assigned, so this section stays with your department.',
+                $rows->contains(static fn (Schedule $row): bool => ! in_array($row->status, self::ASSIGNABLE_STATUSES, true)) => 'This section is not open for instructor assignment.',
+                $rows->contains(static fn (Schedule $row): bool => (bool) $row->faculty_assignment_done) => 'Instructor assignments are marked done. Choose Edit Assignments first.',
+                default => null,
+            };
+
+            return $reason === null ? null : [
+                'section_id' => (int) $first->section_id,
+                'section_name' => $first->section?->section_name,
+                'course_id' => (int) $first->course_id,
+                'course_code' => $first->course?->course_code,
+                'reason' => $reason,
+            ];
+        })->filter()->values();
+        if ($blocked->isNotEmpty()) {
+            return response()->json([
+                'message' => $blocked->count() === 1
+                    ? "{$blocked[0]['course_code']} ({$blocked[0]['section_name']}): {$blocked[0]['reason']}"
+                    : 'Some selected sections cannot be returned. Only sections without an assigned instructor can be returned.',
+                'blocked' => $blocked->all(),
+            ], 422);
+        }
+
+        $rows = $classes->flatten(1)->values();
+        $scheduleIds = $rows->pluck('id')->map('intval')->values()->all();
+        $actor = $request->user();
+        DB::transaction(function () use ($rows, $scheduleIds, $departmentId, $activeSemesterId, $actor): void {
+            $before = Schedule::query()->whereIn('id', $scheduleIds)->get();
+            // An archived instructor's id goes too: the class is no longer this department's to restore.
+            // The class is detached from the course-level delegation and any section-level
+            // target is cleared: it is the offering department's again, to keep or hand on.
+            Schedule::query()->whereIn('id', $scheduleIds)->lockForUpdate()->get();
+            Schedule::query()->whereIn('id', $scheduleIds)->update([
+                'delegation_returned_from_department_id' => $departmentId,
+                'delegation_returned_at' => now(),
+                'section_teaching_department_id' => null,
+                'section_teaching_program_id' => null,
+                'section_teaching_assigned_at' => null,
+                'faculty_id' => null,
+                'faculty_assignment_done' => false,
+            ]);
+            $after = Schedule::query()->whereIn('id', $scheduleIds)->get();
+            $version = $this->historyRecorder->record('cross_department_sections_returned', $before, $after, $actor?->id, $activeSemesterId, $departmentId, 'instructor_assignment');
+            SchedulingAuditLog::create([
+                'user_id' => $actor?->id,
+                'semester_id' => $activeSemesterId,
+                'section_id' => $rows->pluck('section_id')->unique()->count() === 1 ? $rows->first()->section_id : null,
+                'department_id' => $departmentId,
+                'action' => 'cross_department_sections_returned',
+                'history_version_id' => $version->id,
+                'metadata' => [
+                    'schedule_ids' => $scheduleIds,
+                    'section_ids' => $rows->pluck('section_id')->map('intval')->unique()->values()->all(),
+                    'course_ids' => $rows->pluck('course_id')->map('intval')->unique()->values()->all(),
+                    'offering_department_ids' => $rows->pluck('department_id')->map('intval')->unique()->values()->all(),
+                ],
+                'created_at' => now(),
+            ]);
+        });
+
+        ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data', 'courses.index']);
+        if ($actor !== null) {
+            $this->notifySectionsReturned($classes, $actor, $activeSemesterId);
+        }
+
+        return response()->json([
+            'message' => $classes->count() === 1
+                ? '1 section was returned to the offering department.'
+                : "{$classes->count()} sections were returned to the offering department.",
+            'schedule_ids' => $scheduleIds,
+            'sections_returned' => $classes->count(),
+            'schedules' => Schedule::query()
+                ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
+                ->whereIn('id', $scheduleIds)
+                ->orderBy('day')
+                ->orderBy('start_time')
+                ->get(),
+        ]);
+    }
+
+    /** The class reached this department through a delegation, course- or section-level. */
+    private function isDelegatedHere(Schedule $row, int $departmentId): bool
+    {
+        $course = SchedulingPolicy::courseForSchedule($row);
+        if ($course === null || (int) ($course->teaching_department_id ?? 0) !== $departmentId) {
+            return false;
+        }
+
+        // Within one department, only a hand-over to another program is a delegation.
+        return (int) $row->department_id !== $departmentId || $course->teaching_program_id !== null;
+    }
+
+    /**
+     * @param  Collection<string, Collection<int, Schedule>>  $classes
+     */
+    private function notifySectionsReturned(Collection $classes, User $actor, int $semesterId): void
+    {
+        $classes->flatten(1)
+            ->groupBy(static fn (Schedule $row): int => (int) $row->department_id)
+            ->each(function (Collection $rows, int $offeringDepartmentId) use ($actor, $semesterId): void {
+                $first = $rows->first();
+                $labels = $rows->unique(static fn (Schedule $row): string => $row->section_id.':'.$row->course_id)
+                    ->map(static fn (Schedule $row): string => trim(($row->course?->course_code ?? 'Course').' ('.($row->section?->section_name ?? 'section').')'))
+                    ->values();
+                // The returning department is the actor's (course-level or section-level receiver).
+                $receiving = $actor->department?->department_name ?? 'The teaching department';
+                $label = $labels->take(5)->implode(', ').($labels->count() > 5 ? ' and '.($labels->count() - 5).' more' : '');
+                $this->notifications->notifyRoles(
+                    ['secretary', 'program_head'],
+                    'cross_department_sections_returned',
+                    'Cross-department sections returned',
+                    "{$receiving} could not assign an instructor and returned {$label}. Assign them yourself, or hand them to another department in Course Assignment.",
+                    $actor,
+                    $offeringDepartmentId,
+                    $semesterId,
+                    null,
+                    [
+                        'schedule_ids' => $rows->pluck('id')->map('intval')->values()->all(),
+                        'course_ids' => $rows->pluck('course_id')->map('intval')->unique()->values()->all(),
+                        'receiving_department_id' => (int) ($actor->department_id ?? 0),
+                    ],
+                    $rows->map(static fn (Schedule $row) => $row->program_id ?? $row->section?->program_id)->filter()->map('intval')->unique()->values()->all() ?: null,
+                );
+            });
+    }
+
     private function linkedMeetingBlocks(Schedule $schedule)
     {
         $hybridComponents = $this->manualHybridAssignments->resolve($schedule)
@@ -523,14 +696,12 @@ class InstructorAssignmentController extends Controller
 
     private function userCanManageInstructor(Request $request, Schedule $schedule, int $departmentId): bool
     {
-        if ($schedule->course === null) {
+        $course = SchedulingPolicy::courseForSchedule($schedule);
+        if ($course === null) {
             return false;
         }
 
-        $teachingDepartmentId = SchedulingPolicy::isMajorCourse($schedule->course)
-            ? SchedulingPolicy::majorTeachingDepartmentId($schedule->course, (int) $schedule->department_id)
-            : SchedulingPolicy::assignedTeachingDepartmentId($schedule->course) ?? (int) $schedule->department_id;
-        if ((int) $teachingDepartmentId !== $departmentId) {
+        if ((int) SchedulingPolicy::scheduleTeachingDepartmentId($schedule) !== $departmentId) {
             return false;
         }
 
@@ -542,7 +713,7 @@ class InstructorAssignmentController extends Controller
             return true;
         }
 
-        $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($schedule->course);
+        $requiredProgramId = SchedulingPolicy::requiredTeachingProgramId($course);
 
         return $requiredProgramId !== null
             && $requiredProgramId === (int) ($request->user()?->program_id ?? 0);

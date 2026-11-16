@@ -81,6 +81,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('/user', [UserController::class, 'store']);
         Route::put('/user/{user}', [UserController::class, 'update']);
         Route::patch('/user/{user}/status', [UserController::class, 'status']);
+        Route::put('/user/{user}/password', [UserController::class, 'changePassword'])->middleware('throttle:20,1');
         Route::delete('/user/{user}', [UserController::class, 'destroy']);
         Route::delete('/user/{user}/google-link', [UserController::class, 'unlinkGoogle']);
         Route::post('/user/{user}/invitation', [UserController::class, 'resendInvitation']);
@@ -292,6 +293,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('instructor-assignments', [InstructorAssignmentController::class, 'index']);
         Route::delete('instructor-assignments/sections/{section}', [InstructorAssignmentController::class, 'clearSection']);
         Route::post('instructor-assignments/clear', [InstructorAssignmentController::class, 'clearSections']);
+        Route::post('instructor-assignments/return-sections', [InstructorAssignmentController::class, 'returnSections']);
         Route::get('instructor-assignments/{schedule}/recommendations', [InstructorAssignmentController::class, 'recommendations']);
         Route::patch('instructor-assignments/{schedule}', [InstructorAssignmentController::class, 'update']);
         Route::get('instructor-assignment-draft', [InstructorAssignmentDraftController::class, 'show']);
@@ -304,6 +306,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'index']);
         Route::post('course-teaching-assignments/batch', [CourseTeachingAssignmentController::class, 'batch']);
         Route::post('course-teaching-assignments/batch-remove', [CourseTeachingAssignmentController::class, 'batchDestroy']);
+        Route::post('course-teaching-assignments/sections', [CourseTeachingAssignmentController::class, 'assignSections']);
+        Route::post('course-teaching-assignments/sections/remove', [CourseTeachingAssignmentController::class, 'removeSections']);
         Route::match(['put', 'patch'], 'course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'update']);
         Route::delete('course-teaching-assignments/{course}', [CourseTeachingAssignmentController::class, 'destroy']);
     });

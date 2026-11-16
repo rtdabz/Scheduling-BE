@@ -236,6 +236,18 @@ class InitialDataController extends Controller
         $activeCurriculumList = $activeCurriculumQuery->get();
 
         $courseRelations = ['department', 'teachingDepartment', 'teachingProgram', 'program'];
+        // Courses whose returned sections were handed to this department (or program) one by
+        // one: the course-level teaching columns do not name it, but its classes do.
+        $sectionLevelCourseIds = $departmentId === null || $activeSemester === null
+            ? collect()
+            : Schedule::query()
+                ->where('semester_id', $activeSemester->id)
+                ->whereNotNull('delegation_returned_from_department_id')
+                ->where('section_teaching_department_id', $departmentId)
+                ->when($facultyProgramId !== null, fn ($query) => $query->where('section_teaching_program_id', $facultyProgramId))
+                ->distinct()
+                ->pluck('course_id')
+                ->map('intval');
 
         if ($wants('courses') && $activeCurriculumList->isNotEmpty()) {
             $semOrder = ['1st' => 1, '2nd' => 2, 'summer' => 3];
@@ -260,11 +272,13 @@ class InitialDataController extends Controller
                         ->whereIn('courses.id', $activeSemesterCourseIds)
                         ->where($this->curricularCourseScope($activeCurriculumList, $departmentId, $configuredFieldCodes)))
                     ->when($departmentId !== null, fn ($delegated) => $delegated
-                        ->orWhere('teaching_department_id', $departmentId)))
+                        ->orWhere('teaching_department_id', $departmentId)
+                        ->orWhereIn('courses.id', $sectionLevelCourseIds)))
                 ->when($facultyProgramId !== null, fn (Builder $query) => $query->where(
                     fn (Builder $programScope) => $programScope
                         ->where('program_id', $facultyProgramId)
                         ->orWhere('teaching_program_id', $facultyProgramId)
+                        ->orWhereIn('courses.id', $sectionLevelCourseIds)
                         ->orWhereHas('curriculum', fn ($curriculum) => $curriculum->whereIn(
                             'curriculum.id',
                             $activeCurriculumList->where('program_id', $facultyProgramId)->pluck('id'),
@@ -336,12 +350,15 @@ class InitialDataController extends Controller
             $courses = ! $wants('courses') || $departmentId === null
                 ? collect()
                 : Course::with($courseRelations)
-                    ->where('teaching_department_id', $departmentId)
-                    ->when($facultyProgramId !== null, fn (Builder $query) => $query->where(
-                        fn (Builder $programScope) => $programScope
-                            ->where('program_id', $facultyProgramId)
-                            ->orWhere('teaching_program_id', $facultyProgramId),
-                    ))
+                    ->where(fn (Builder $delegated) => $delegated
+                        ->where(fn (Builder $courseLevel) => $courseLevel
+                            ->where('teaching_department_id', $departmentId)
+                            ->when($facultyProgramId !== null, fn (Builder $query) => $query->where(
+                                fn (Builder $programScope) => $programScope
+                                    ->where('program_id', $facultyProgramId)
+                                    ->orWhere('teaching_program_id', $facultyProgramId),
+                            )))
+                        ->orWhereIn('courses.id', $sectionLevelCourseIds))
                     ->orderBy('course_code')
                     ->get()
                     ->each(fn (Course $course) => $course->setAttribute('delegated_only', true));
@@ -381,10 +398,7 @@ class InitialDataController extends Controller
             ->when($departmentId !== null, fn (Builder $query) => $query->where(
                 fn (Builder $scope) => $scope
                     ->where('department_id', $departmentId)
-                    ->orWhereHas(
-                        'course',
-                        fn ($course) => $course->where('teaching_department_id', $departmentId),
-                    ),
+                    ->orWhere(fn (Builder $delegated) => $delegated->delegatedTo($departmentId)),
             ))
             ->tap(fn (Builder $query) => $this->authorization->scopeSchedulesToProgram($query, $request))
             ->when($activeSemesterId !== null, fn (Builder $query) => $query->where('semester_id', $activeSemesterId))
@@ -519,9 +533,7 @@ class InitialDataController extends Controller
         });
 
         $schedules->each(function ($schedule) use ($viewerDepartmentId): void {
-            $course = $schedule->course;
-            if ($course?->teaching_department_id !== null
-                && (int) $course->teaching_department_id !== (int) $schedule->department_id
+            if (SchedulingPolicy::delegatedAwayTo($schedule) !== null
                 && $viewerDepartmentId !== null
                 && (int) $viewerDepartmentId === (int) $schedule->department_id
                 && ! (bool) $schedule->faculty_assignment_done) {
@@ -696,6 +708,8 @@ class InitialDataController extends Controller
                 'schedules.course_id', 'schedules.faculty_id', 'schedules.room_id', 'schedules.day',
                 'schedules.start_time', 'schedules.end_time', 'schedules.mode', 'schedules.is_hybrid',
                 'schedules.preferred_pattern', 'schedules.faculty_assignment_done', 'schedules.status',
+                'schedules.delegation_returned_from_department_id',
+                'schedules.section_teaching_department_id', 'schedules.section_teaching_program_id',
             ])
             ->reject(static fn (object $row): bool => isset($loadedIds[(int) $row->id]))
             ->values();
@@ -716,7 +730,10 @@ class InitialDataController extends Controller
             ->pluck('room_code', 'id');
 
         return $rows->map(static function (object $row) use ($splits, $teachingDepartmentByCourse, $virtualRoomCodes, $viewerDepartmentId): array {
-            $teachingDepartmentId = $teachingDepartmentByCourse[$row->course_id] ?? null;
+            // Per class: a returned section is taught by its own section-level department.
+            $teachingDepartmentId = $row->delegation_returned_from_department_id !== null
+                ? $row->section_teaching_department_id
+                : ($teachingDepartmentByCourse[$row->course_id] ?? null);
             // Same rule as the full rows: a borrowed class's instructor stays hidden from the owning
             // department until the teaching department finishes assigning it.
             $facultyHidden = $teachingDepartmentId !== null
@@ -742,6 +759,9 @@ class InitialDataController extends Controller
                 'is_hybrid' => (bool) $row->is_hybrid,
                 'preferred_pattern' => $row->preferred_pattern,
                 'faculty_assignment_done' => (bool) $row->faculty_assignment_done,
+                'delegation_returned_from_department_id' => $row->delegation_returned_from_department_id === null ? null : (int) $row->delegation_returned_from_department_id,
+                'section_teaching_department_id' => $row->section_teaching_department_id === null ? null : (int) $row->section_teaching_department_id,
+                'section_teaching_program_id' => $row->section_teaching_program_id === null ? null : (int) $row->section_teaching_program_id,
                 'status' => $row->status,
                 'split_group_id' => $split?->split_group_id,
                 'meeting_type' => $split?->meeting_type,

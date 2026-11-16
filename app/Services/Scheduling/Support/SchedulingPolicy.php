@@ -7,6 +7,7 @@ namespace App\Services\Scheduling\Support;
 use App\Models\Course;
 use App\Models\Departments;
 use App\Models\Program;
+use App\Models\Schedule;
 use App\Services\TimeslotService;
 use Carbon\Carbon;
 use Illuminate\Database\QueryException;
@@ -1731,6 +1732,80 @@ final class SchedulingPolicy
         return self::effectiveRoomType($course, $departmentId, $meetingType, $fieldCourseCodes) === 'lecture'
             && ! self::isFieldCourse($course, $departmentId, $fieldCourseCodes)
             && ($meetingType === 'lecture' || ! self::isLaboratoryCourse($course));
+    }
+
+    /**
+     * Whether a class was handed back by a receiving department. A returned class is
+     * detached from the course-level delegation for good: course-level changes no longer
+     * reach it, and only its own section_teaching_* columns say who teaches it.
+     *
+     * @param  Schedule|array<string, mixed>|object|null  $row
+     */
+    public static function isDetachedClass(array|object|null $row): bool
+    {
+        return self::rowValue($row, 'delegation_returned_from_department_id') !== null;
+    }
+
+    /**
+     * The course as it applies to one class. A detached class gets a copy of the course whose
+     * teaching fields are its section-level assignment (null: the offering department teaches
+     * it), so every existing rule runs unchanged. Other classes get the course as it is.
+     *
+     * @param  Schedule|array<string, mixed>|object|null  $row
+     */
+    public static function courseForRow(Course $course, array|object|null $row): Course
+    {
+        if (! self::isDetachedClass($row)) {
+            return $course;
+        }
+
+        $sectionDepartmentId = self::rowValue($row, 'section_teaching_department_id');
+        $sectionProgramId = self::rowValue($row, 'section_teaching_program_id');
+        $perSection = clone $course;
+        $perSection->teaching_department_id = $sectionDepartmentId === null ? null : (int) $sectionDepartmentId;
+        $perSection->teaching_program_id = $sectionProgramId === null ? null : (int) $sectionProgramId;
+        // Relations loaded for the course-level assignment must not leak into the copy.
+        $perSection->unsetRelation('teachingDepartment')->unsetRelation('teachingProgram');
+
+        return $perSection;
+    }
+
+    public static function courseForSchedule(Schedule $schedule): ?Course
+    {
+        return $schedule->course === null ? null : self::courseForRow($schedule->course, $schedule);
+    }
+
+    /** Teaching department of a class when someone other than its offering department teaches it, else null. */
+    public static function delegatedAwayTo(Schedule $schedule): ?int
+    {
+        $course = self::courseForSchedule($schedule);
+        $teaching = $course?->teaching_department_id;
+
+        return $teaching !== null && (int) $teaching !== (int) $schedule->department_id ? (int) $teaching : null;
+    }
+
+    /** @param  Schedule|array<string, mixed>|object|null  $row */
+    private static function rowValue(array|object|null $row, string $key): mixed
+    {
+        return match (true) {
+            $row === null => null,
+            is_array($row) => $row[$key] ?? null,
+            $row instanceof Schedule => $row->getAttribute($key),
+            default => $row->{$key} ?? null,
+        };
+    }
+
+    /** The department that assigns this class's instructor (the same rule everywhere). */
+    public static function scheduleTeachingDepartmentId(Schedule $schedule): ?int
+    {
+        $course = self::courseForSchedule($schedule);
+        if ($course === null) {
+            return null;
+        }
+
+        return self::isMajorCourse($course)
+            ? self::majorTeachingDepartmentId($course, (int) $schedule->department_id)
+            : self::assignedTeachingDepartmentId($course) ?? (int) $schedule->department_id;
     }
 
     public static function assignedTeachingDepartmentId(Course $course): ?int

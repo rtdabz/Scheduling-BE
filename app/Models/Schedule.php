@@ -53,6 +53,11 @@ class Schedule extends Model
         'course_id',
         'faculty_id',
         'faculty_assignment_done',
+        'delegation_returned_from_department_id',
+        'delegation_returned_at',
+        'section_teaching_department_id',
+        'section_teaching_program_id',
+        'section_teaching_assigned_at',
         'room_id',
         'department_id',
         'program_id',
@@ -71,8 +76,89 @@ class Schedule extends Model
     protected $casts = [
         'creator_identity' => 'array',
         'faculty_assignment_done' => 'boolean',
+        'delegation_returned_from_department_id' => 'integer',
+        'delegation_returned_at' => 'datetime',
+        'section_teaching_department_id' => 'integer',
+        'section_teaching_program_id' => 'integer',
+        'section_teaching_assigned_at' => 'datetime',
         'displaced_at' => 'datetime',
     ];
+
+    /*
+     * Who teaches a class (see SchedulingPolicy::courseForRow): a class that was returned
+     * (delegation_returned_from_department_id set) is detached from the course-level
+     * delegation and follows its own section_teaching_* columns; any other class follows
+     * courses.teaching_*. The scopes below are the SQL form of that rule.
+     */
+
+    /** Classes that still follow the course-level delegation (never returned). */
+    public function scopeFollowsCourseDelegation($query)
+    {
+        return $query->whereNull('schedules.delegation_returned_from_department_id');
+    }
+
+    /** Classes the given department teaches through a delegation (course- or section-level). */
+    public function scopeDelegatedTo($query, int $departmentId)
+    {
+        return $query->where(fn ($rows) => $rows
+            ->where(fn ($course) => $course->followsCourseDelegation()
+                ->whereHas('course', fn ($c) => $c->where('courses.teaching_department_id', $departmentId)))
+            // Explicit NOT NULL keeps every branch strictly true/false, so callers may negate
+            // these scopes (whereNot) without NULL comparisons silently dropping rows.
+            ->orWhere(fn ($section) => $section->whereNotNull('schedules.delegation_returned_from_department_id')
+                ->whereNotNull('schedules.section_teaching_department_id')
+                ->where('schedules.section_teaching_department_id', $departmentId)));
+    }
+
+    /** Classes delegated to a department other than the given one. */
+    public function scopeDelegatedToOtherThan($query, int $departmentId)
+    {
+        return $query->where(fn ($rows) => $rows
+            ->where(fn ($course) => $course->followsCourseDelegation()
+                ->whereHas('course', fn ($c) => $c->whereNotNull('courses.teaching_department_id')
+                    ->where('courses.teaching_department_id', '!=', $departmentId)))
+            ->orWhere(fn ($section) => $section->whereNotNull('schedules.delegation_returned_from_department_id')
+                ->whereNotNull('schedules.section_teaching_department_id')
+                ->where('schedules.section_teaching_department_id', '!=', $departmentId)));
+    }
+
+    /** Classes taught by a department other than the one that offers them. */
+    public function scopeDelegatedAwayFromOwner($query)
+    {
+        return $query->where(fn ($rows) => $rows
+            ->where(fn ($course) => $course->followsCourseDelegation()
+                ->whereHas('course', fn ($c) => $c->whereNotNull('courses.teaching_department_id')
+                    ->whereColumn('courses.teaching_department_id', '!=', 'schedules.department_id')))
+            ->orWhere(fn ($section) => $section->whereNotNull('schedules.delegation_returned_from_department_id')
+                ->whereNotNull('schedules.section_teaching_department_id')
+                ->whereColumn('schedules.section_teaching_department_id', '!=', 'schedules.department_id')));
+    }
+
+    /** Classes handed to the given program, at course or section level. */
+    public function scopeHandedToProgram($query, int $programId)
+    {
+        return $query->where(fn ($rows) => $rows
+            ->where(fn ($course) => $course->followsCourseDelegation()
+                ->whereHas('course', fn ($c) => $c->where('courses.teaching_program_id', $programId)))
+            ->orWhere(fn ($section) => $section->whereNotNull('schedules.delegation_returned_from_department_id')
+                ->whereNotNull('schedules.section_teaching_program_id')
+                ->where('schedules.section_teaching_program_id', $programId)));
+    }
+
+    public function returnedFromDepartment()
+    {
+        return $this->belongsTo(Departments::class, 'delegation_returned_from_department_id');
+    }
+
+    public function sectionTeachingDepartment()
+    {
+        return $this->belongsTo(Departments::class, 'section_teaching_department_id');
+    }
+
+    public function sectionTeachingProgram()
+    {
+        return $this->belongsTo(Program::class, 'section_teaching_program_id');
+    }
 
     /** A displaced face-to-face class meeting online until a reviewed room reassignment. */
     public function isTemporarilyOnline(): bool
