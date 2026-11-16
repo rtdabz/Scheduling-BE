@@ -11,7 +11,7 @@ return [
     | framework when an event needs to be broadcast. You may set this to
     | any of the connections defined in the "connections" array below.
     |
-    | Supported: "reverb", "pusher", "ably", "redis", "log", "null"
+    | Supported: "pusher", "ably", "redis", "log", "null"
     |
     */
 
@@ -30,25 +30,6 @@ return [
 
     'connections' => [
 
-        'reverb' => [
-            'driver' => 'reverb',
-            'key' => env('REVERB_APP_KEY'),
-            'secret' => env('REVERB_APP_SECRET'),
-            'app_id' => env('REVERB_APP_ID'),
-            'options' => [
-                'host' => env('REVERB_HOST'),
-                'port' => env('REVERB_PORT', 443),
-                'scheme' => env('REVERB_SCHEME', 'https'),
-                'useTLS' => env('REVERB_SCHEME', 'https') === 'https',
-            ],
-            'client_options' => [
-                // Broadcasts are sent inline at the end of a request, so a slow or
-                // stopped WebSocket server must fail fast instead of stalling it.
-                'connect_timeout' => 1,
-                'timeout' => 2,
-            ],
-        ],
-
         'pusher' => [
             'driver' => 'pusher',
             'key' => env('PUSHER_APP_KEY'),
@@ -64,7 +45,7 @@ return [
             ],
             'client_options' => [
                 // Broadcasts are sent inline at the end of a request, so a slow or
-                // stopped WebSocket server must fail fast instead of stalling it.
+                // unreachable Pusher API must fail fast instead of stalling it.
                 'connect_timeout' => 1,
                 'timeout' => 2,
             ],

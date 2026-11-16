@@ -27,7 +27,7 @@ class LiveUpdatesTest extends TestCase
         parent::setUp();
 
         // phpunit.xml uses the null broadcaster, which LiveUpdates skips.
-        config(['broadcasting.default' => 'reverb']);
+        config(['broadcasting.default' => 'pusher']);
         Cache::forget('live-updates:unreachable');
     }
 
@@ -98,13 +98,13 @@ class LiveUpdatesTest extends TestCase
     public function test_an_unreachable_websocket_server_does_not_fail_the_write(): void
     {
         config([
-            'broadcasting.connections.reverb.key' => 'test-key',
-            'broadcasting.connections.reverb.secret' => 'test-secret',
-            'broadcasting.connections.reverb.app_id' => '1',
-            'broadcasting.connections.reverb.options.host' => '127.0.0.1',
-            'broadcasting.connections.reverb.options.port' => 1,
-            'broadcasting.connections.reverb.options.scheme' => 'http',
-            'broadcasting.connections.reverb.options.useTLS' => false,
+            'broadcasting.connections.pusher.key' => 'test-key',
+            'broadcasting.connections.pusher.secret' => 'test-secret',
+            'broadcasting.connections.pusher.app_id' => '1',
+            'broadcasting.connections.pusher.options.host' => '127.0.0.1',
+            'broadcasting.connections.pusher.options.port' => 1,
+            'broadcasting.connections.pusher.options.scheme' => 'http',
+            'broadcasting.connections.pusher.options.useTLS' => false,
         ]);
 
         app(LiveUpdates::class)->touch('schedules');
@@ -124,7 +124,7 @@ class LiveUpdatesTest extends TestCase
 
     public function test_a_user_may_join_the_live_channel_and_only_their_own_bell(): void
     {
-        $this->useReverbCredentials();
+        $this->usePusherCredentials();
         $user = User::factory()->create();
         $other = User::factory()->create();
 
@@ -146,27 +146,29 @@ class LiveUpdatesTest extends TestCase
 
     public function test_realtime_config_exposes_the_key_but_never_the_secret(): void
     {
-        $this->useReverbCredentials();
+        $this->usePusherCredentials();
         $user = User::factory()->create();
 
         $response = $this->actingAs($user)->getJson('/api/realtime-config')
             ->assertOk()
             ->assertJsonPath('enabled', true)
-            ->assertJsonPath('key', 'test-key');
+            ->assertJsonPath('key', 'test-key')
+            ->assertJsonPath('cluster', 'ap1');
 
         $this->assertStringNotContainsString('test-secret', $response->getContent());
     }
 
-    private function useReverbCredentials(): void
+    private function usePusherCredentials(): void
     {
         config([
-            'broadcasting.connections.reverb.key' => 'test-key',
-            'broadcasting.connections.reverb.secret' => 'test-secret',
-            'broadcasting.connections.reverb.app_id' => '1',
+            'broadcasting.connections.pusher.key' => 'test-key',
+            'broadcasting.connections.pusher.secret' => 'test-secret',
+            'broadcasting.connections.pusher.app_id' => '1',
+            'broadcasting.connections.pusher.options.cluster' => 'ap1',
         ]);
         // Channels were registered on the test's null broadcaster at boot;
-        // rebuild the Reverb one with these credentials and register them there.
-        app(\Illuminate\Broadcasting\BroadcastManager::class)->purge('reverb');
+        // rebuild the Pusher one with these credentials and register them there.
+        app(\Illuminate\Broadcasting\BroadcastManager::class)->purge('pusher');
         require base_path('routes/channels.php');
     }
 }

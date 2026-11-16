@@ -9,15 +9,13 @@ class RealtimeConfigController extends Controller
 {
     public function __invoke(): JsonResponse
     {
-        $enabled = config('broadcasting.default') === 'reverb'
-            && filled(config('broadcasting.connections.reverb.key'));
+        $enabled = config('broadcasting.default') === 'pusher'
+            && filled(config('broadcasting.connections.pusher.key'));
 
         return response()->json([
             'enabled' => $enabled,
-            'key' => $enabled ? (string) config('broadcasting.connections.reverb.key') : null,
-            'host' => config('reverb.public.host'),
-            'port' => config('reverb.public.port'),
-            'scheme' => config('reverb.public.scheme'),
+            'key' => $enabled ? (string) config('broadcasting.connections.pusher.key') : null,
+            'cluster' => $enabled ? (string) config('broadcasting.connections.pusher.options.cluster') : null,
         ]);
     }
 }

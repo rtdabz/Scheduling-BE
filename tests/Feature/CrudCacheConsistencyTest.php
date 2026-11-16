@@ -103,7 +103,7 @@ class CrudCacheConsistencyTest extends TestCase
     public function test_availability_write_announces_assignment_refresh_to_other_clients(): void
     {
         app(LiveUpdates::class)->flush();
-        config(['broadcasting.default' => 'reverb']);
+        config(['broadcasting.default' => 'pusher']);
         Event::fake([LiveDataChanged::class]);
         $this->putJson('/api/faculties/'.$this->f['faculty']->id.'/availabilities', ['availabilities' => []])->assertOk();
         app(LiveUpdates::class)->flush('123.456');
