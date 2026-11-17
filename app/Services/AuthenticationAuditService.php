@@ -6,11 +6,12 @@ use App\Jobs\ResolveLoginGeolocation;
 use App\Models\AuthenticationAuditLog;
 use App\Models\User;
 use App\Support\ActorIdentity;
+use App\Support\DeviceLocation;
 use Illuminate\Http\Request;
 
 class AuthenticationAuditService
 {
-    /** Login events that get an approximate IP location attached after the response. */
+    /** Login events that get a location (optional device fix + approximate IP) attached after the response. */
     public const LOCATED_EVENTS = ['login_succeeded', 'login_failed'];
 
     public function record(Request $request, string $event, ?User $subject = null, array $metadata = []): AuthenticationAuditLog
@@ -36,7 +37,7 @@ class AuthenticationAuditService
         ]);
 
         if (in_array($event, self::LOCATED_EVENTS, true)) {
-            ResolveLoginGeolocation::dispatchAfterResponse($log->id);
+            ResolveLoginGeolocation::dispatchAfterResponse($log->id, DeviceLocation::fromRequest($request));
         }
 
         return $log;

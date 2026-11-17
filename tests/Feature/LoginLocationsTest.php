@@ -262,4 +262,87 @@ class LoginLocationsTest extends TestCase
         $this->artisan('logins:resolve-locations')->assertSuccessful();
         $this->assertSame(2, LoginGeolocation::count());
     }
+
+    public function test_device_location_is_stored_for_success_and_failure_and_wins_over_the_ip_estimate(): void
+    {
+        $user = User::factory()->create(['role' => 'secretary', 'password' => Hash::make('StrongPass123')]);
+        $device = ['latitude' => 6.9214367, 'longitude' => 122.0790212, 'accuracy' => 18.4, 'captured_at' => now()->toISOString()];
+
+        // Private network: the IP cannot be mapped, the device fix still can.
+        $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.5'])
+            ->postJson('/api/login', ['username' => $user->username, 'password' => 'bad', 'device_location' => $device])
+            ->assertStatus(401);
+        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.7'])
+            ->postJson('/api/login', ['username' => $user->username, 'password' => 'StrongPass123', 'device_location' => $device])
+            ->assertOk();
+
+        [$failed, $succeeded] = LoginGeolocation::orderBy('id')->get()->all();
+        $this->assertSame(LoginGeolocation::PRIVATE, $failed->lookup_status);
+        $this->assertSame(6.92144, $failed->device_latitude);
+        $this->assertSame(122.07902, $failed->device_longitude);
+        $this->assertSame(18, $failed->device_accuracy_m);
+        $this->assertSame(LoginGeolocation::SOURCE_DEVICE, $failed->source());
+        // IP estimate is still resolved alongside the device fix.
+        $this->assertSame('Zamboanga', $succeeded->city);
+        // Device coordinates never enter the append-only audit trail.
+        $this->assertStringNotContainsString('6.92', json_encode(AuthenticationAuditLog::pluck('metadata')));
+
+        $this->app['auth']->forgetGuards();
+        $this->actingAs(User::factory()->create(['role' => 'vpaa']), 'sanctum')
+            ->getJson("/api/activity-log/logins/{$failed->authentication_audit_log_id}")
+            ->assertOk()
+            ->assertJsonPath('data.location.source', 'device')
+            ->assertJsonPath('data.location.device.accuracy_m', 18)
+            ->assertJsonPath('data.location.device.latitude', 6.92144);
+    }
+
+    public function test_login_locations_map_includes_device_only_sign_ins_from_private_networks(): void
+    {
+        $user = User::factory()->create(['password' => Hash::make('StrongPass123')]);
+        $device = ['latitude' => 6.9214, 'longitude' => 122.079, 'accuracy' => 20, 'captured_at' => now()->toISOString()];
+        $this->withServerVariables(['REMOTE_ADDR' => '127.0.0.1'])
+            ->postJson('/api/login', ['username' => $user->username, 'password' => 'StrongPass123', 'device_location' => $device])->assertOk();
+        $this->login($user->username, 'StrongPass123', '127.0.0.1')->assertOk(); // neither source
+        $this->app['auth']->forgetGuards();
+
+        $this->actingAs(User::factory()->create(['role' => 'vpaa']), 'sanctum')
+            ->getJson('/api/activity-log/login-locations')->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('meta.total', 2)
+            ->assertJsonPath('meta.located', 1)
+            ->assertJsonPath('data.0.location.source', 'device')
+            ->assertJsonPath('data.0.location.status', 'private');
+    }
+
+    public function test_invalid_or_stale_device_location_is_dropped_without_blocking_sign_in(): void
+    {
+        $user = User::factory()->create(['password' => Hash::make('StrongPass123')]);
+        $cases = [
+            'not-an-object',
+            ['latitude' => 91, 'longitude' => 10, 'accuracy' => 5],
+            ['latitude' => 0, 'longitude' => 0, 'accuracy' => 5],
+            ['latitude' => 6.9, 'longitude' => 122.0, 'accuracy' => -1],
+            ['latitude' => 6.9, 'longitude' => 122.0, 'accuracy' => 500000],
+            ['latitude' => 6.9, 'longitude' => 122.0, 'accuracy' => 5, 'captured_at' => now()->subHour()->toISOString()],
+            ['latitude' => 'abc', 'longitude' => 122.0, 'accuracy' => 5],
+        ];
+
+        foreach ($cases as $device) {
+            $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.7'])
+                ->postJson('/api/login', ['username' => $user->username, 'password' => 'StrongPass123', 'device_location' => $device])->assertOk();
+            $this->app['auth']->forgetGuards();
+        }
+
+        $this->assertSame(count($cases), LoginGeolocation::count());
+        $this->assertSame(0, LoginGeolocation::whereNotNull('device_latitude')->count());
+        $this->assertSame(LoginGeolocation::SOURCE_IP, LoginGeolocation::first()->source());
+    }
+
+    public function test_source_is_none_when_neither_device_nor_ip_location_exists(): void
+    {
+        $user = User::factory()->create(['password' => Hash::make('StrongPass123')]);
+        $this->login($user->username, 'StrongPass123', '127.0.0.1')->assertOk();
+
+        $this->assertSame(LoginGeolocation::SOURCE_NONE, LoginGeolocation::sole()->source());
+    }
 }

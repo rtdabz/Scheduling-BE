@@ -10,6 +10,7 @@ use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\CapabilityRegistry;
 use App\Support\SingleActiveSession;
 use Illuminate\Auth\Events\PasswordReset;
+use Illuminate\Auth\Passwords\PasswordBroker;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -255,7 +256,9 @@ class AuthController extends Controller
                 'remember_token' => Str::random(60),
             ])->save();
             $user->tokens()->delete();
-            Password::broker($isInvite ? null : 'invites')->deleteToken($user);
+            /** @var PasswordBroker $otherBroker */
+            $otherBroker = Password::broker($isInvite ? null : 'invites');
+            $otherBroker->deleteToken($user);
             event(new PasswordReset($user));
             $this->audit->record($request, $isInvite ? 'invitation_accepted' : 'password_reset', $user);
         });

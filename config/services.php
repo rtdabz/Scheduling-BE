@@ -45,6 +45,13 @@ return [
     'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
 
     /*
+     * Comma-separated proxy IPs/CIDRs whose X-Forwarded-For is trusted (e.g. "127.0.0.1" for the
+     * Vite dev proxy or a local tunnel, the load balancer's range in production). "*" trusts any
+     * peer — only safe when the app is reachable exclusively through that proxy.
+     */
+    'trusted_proxies' => env('TRUSTED_PROXIES'),
+
+    /*
      * Approximate IP geolocation for the Activity Log "Login Locations" view.
      * Only the client IP is sent to the provider; coordinates are rounded to ~1 km
      * and location rows are pruned after the retention window (audit rows are kept).

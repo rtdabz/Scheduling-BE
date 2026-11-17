@@ -15,7 +15,7 @@ use Illuminate\Support\Carbon;
 
 /**
  * Login Locations and Login History for the Activity Log. Reads the existing authentication
- * audit trail; the only extra data is the prunable, approximate IP location.
+ * audit trail; the only extra data is the prunable location (optional device fix + IP estimate).
  */
 class LoginActivityController extends Controller
 {
@@ -28,7 +28,7 @@ class LoginActivityController extends Controller
         $filtered = $this->filteredQuery($this->validated($request));
 
         $located = (clone $filtered)
-            ->whereHas('geolocation', fn (Builder $q) => $q->where('lookup_status', LoginGeolocation::RESOLVED))
+            ->whereHas('geolocation', $this->mappable(...))
             ->with('geolocation')
             ->orderByDesc('created_at')->orderByDesc('id')
             ->limit(self::MAX_MAP_POINTS + 1)
@@ -42,7 +42,7 @@ class LoginActivityController extends Controller
             'data' => $points->map(fn (AuthenticationAuditLog $log) => $this->entry($log))->values(),
             'meta' => [
                 'total' => $total,
-                'located' => (clone $filtered)->whereHas('geolocation', fn (Builder $q) => $q->where('lookup_status', LoginGeolocation::RESOLVED))->count(),
+                'located' => (clone $filtered)->whereHas('geolocation', $this->mappable(...))->count(),
                 'truncated' => $truncated,
                 'max_points' => self::MAX_MAP_POINTS,
             ] + $this->sharedMeta($filtered),
@@ -82,6 +82,12 @@ class LoginActivityController extends Controller
             'data' => $this->entry($log),
             'meta' => ['retention_days' => LoginGeolocation::retentionDays()],
         ]);
+    }
+
+    /** A sign-in can be pinned when it has a device fix or a resolved IP estimate. */
+    private function mappable(Builder $query): void
+    {
+        $query->where(fn (Builder $q) => $q->where('lookup_status', LoginGeolocation::RESOLVED)->orWhereNotNull('device_latitude'));
     }
 
     private function validated(Request $request, bool $history = false): array
@@ -165,6 +171,14 @@ class LoginActivityController extends Controller
                 'latitude' => $geo?->latitude,
                 'longitude' => $geo?->longitude,
                 'is_proxy' => $geo?->is_proxy,
+                // device = browser Geolocation fix (precise); ip = network estimate (city-level); none = nothing to map.
+                'source' => $geo?->source() ?? LoginGeolocation::SOURCE_NONE,
+                'device' => $geo?->hasDeviceLocation() ? [
+                    'latitude' => $geo->device_latitude,
+                    'longitude' => $geo->device_longitude,
+                    'accuracy_m' => $geo->device_accuracy_m,
+                    'captured_at' => $geo->device_captured_at?->toISOString(),
+                ] : null,
             ],
         ];
     }

@@ -21,6 +21,7 @@ use App\Services\Scheduling\Support\SchedulingQueryCounter;
 use App\Support\ArchiveAuditRecorder;
 use App\Support\LiveUpdateRecorder;
 use App\Support\LiveUpdates;
+use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -60,6 +61,12 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        // Behind a reverse proxy / load balancer / tunnel, trust its X-Forwarded-* headers so
+        // $request->ip() is the real client (needed for sign-in IP geolocation). Unset = trust none.
+        if ($proxies = config('services.trusted_proxies')) {
+            TrustProxies::at($proxies === '*' ? '*' : array_values(array_filter(array_map('trim', explode(',', $proxies)))));
+        }
+
         LiveUpdateRecorder::register($this->app);
         ArchiveAuditRecorder::register();
 

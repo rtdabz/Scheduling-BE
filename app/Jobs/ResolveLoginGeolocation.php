@@ -9,14 +9,16 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Throwable;
 
 /**
- * Attaches an approximate location to a login audit event. Dispatched after the HTTP
+ * Attaches a location to a login audit event: the optional browser fix sent with the sign-in
+ * plus the approximate IP estimate. Dispatched after the HTTP
  * response so a slow or unreachable provider never delays sign-in.
  */
 class ResolveLoginGeolocation
 {
     use Dispatchable;
 
-    public function __construct(public readonly int $auditLogId) {}
+    /** @param  array<string, mixed>|null  $device  Sanitized by App\Support\DeviceLocation. */
+    public function __construct(public readonly int $auditLogId, public readonly ?array $device = null) {}
 
     public function handle(IpGeolocationService $geolocation): void
     {
@@ -26,7 +28,7 @@ class ResolveLoginGeolocation
                 return;
             }
 
-            LoginGeolocation::create(['authentication_audit_log_id' => $log->id] + $geolocation->locate($log->ip_address));
+            LoginGeolocation::create(['authentication_audit_log_id' => $log->id] + ($this->device ?? []) + $geolocation->locate($log->ip_address));
         } catch (Throwable $exception) {
             // Location is an enrichment; it must never break authentication.
             report($exception);
