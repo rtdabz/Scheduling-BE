@@ -63,4 +63,13 @@ return [
         'retention_days' => (int) env('IP_GEOLOCATION_RETENTION_DAYS', 90),
     ],
 
+    /*
+     * Names the city at a sign-in's device (GPS) fix via OpenStreetMap Nominatim, so the Activity Log
+     * shows where the user was rather than the ISP gateway city. Only the coordinates are sent.
+     */
+    'reverse_geocoding' => [
+        'enabled' => (bool) env('REVERSE_GEOCODING_ENABLED', true),
+        'timeout' => (int) env('REVERSE_GEOCODING_TIMEOUT', 4),
+    ],
+
 ];

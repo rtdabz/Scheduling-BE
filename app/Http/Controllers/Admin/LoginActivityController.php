@@ -178,6 +178,10 @@ class LoginActivityController extends Controller
                     'longitude' => $geo->device_longitude,
                     'accuracy_m' => $geo->device_accuracy_m,
                     'captured_at' => $geo->device_captured_at?->toISOString(),
+                    // Place named from the device fix; null until reverse geocoding succeeds.
+                    'city' => $geo->device_city,
+                    'region' => $geo->device_region,
+                    'country' => $geo->device_country,
                 ] : null,
             ],
         ];

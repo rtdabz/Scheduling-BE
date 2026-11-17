@@ -26,11 +26,14 @@ class LoginLocationsTest extends TestCase
             'city' => 'Zamboanga', 'region' => 'Zamboanga Peninsula', 'country_name' => 'Philippines',
             'country_code' => 'PH', 'latitude' => 6.910423, 'longitude' => 122.073891,
         ]);
-        Http::fake(fn () => $this->providerResponse);
+        $this->reverseResponse = Http::response([], 404);
+        Http::fake(fn ($request) => str_contains($request->url(), 'nominatim.openstreetmap.org') ? $this->reverseResponse : $this->providerResponse);
     }
 
     /** Swappable per test; Http::fake() stubs registered later would not override the first. */
     private mixed $providerResponse;
+
+    private mixed $reverseResponse;
 
     private function login(string $username, string $password, string $ip = '203.0.113.7')
     {
@@ -336,6 +339,57 @@ class LoginLocationsTest extends TestCase
         $this->assertSame(count($cases), LoginGeolocation::count());
         $this->assertSame(0, LoginGeolocation::whereNotNull('device_latitude')->count());
         $this->assertSame(LoginGeolocation::SOURCE_IP, LoginGeolocation::first()->source());
+    }
+
+    public function test_device_fix_is_named_by_reverse_geocoding_separately_from_the_isp_city(): void
+    {
+        config(['services.reverse_geocoding.enabled' => true]);
+        $this->providerResponse = Http::response([
+            'city' => 'Davao City', 'region' => 'Davao Region', 'country_name' => 'Philippines',
+            'country_code' => 'PH', 'latitude' => 7.07, 'longitude' => 125.61,
+        ]);
+        $this->reverseResponse = Http::response(['address' => [
+            'city' => 'Cagayan de Oro', 'state' => 'Northern Mindanao', 'country' => 'Philippines', 'road' => 'Never stored',
+        ]]);
+        $user = User::factory()->create(['password' => Hash::make('StrongPass123')]);
+
+        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.7'])->postJson('/api/login', [
+            'username' => $user->username, 'password' => 'StrongPass123',
+            'device_location' => ['latitude' => 8.4542, 'longitude' => 124.6319, 'accuracy' => 25, 'captured_at' => now()->toISOString()],
+        ])->assertOk();
+
+        $geo = LoginGeolocation::sole();
+        $this->assertSame('Cagayan de Oro', $geo->device_city);
+        $this->assertSame('Northern Mindanao', $geo->device_region);
+        $this->assertSame('Davao City', $geo->city); // ISP gateway estimate kept separately
+        Http::assertSent(fn ($request) => str_contains($request->url(), 'nominatim.openstreetmap.org/reverse')
+            && $request['zoom'] === 10 && $request->hasHeader('User-Agent'));
+
+        $this->app['auth']->forgetGuards();
+        $this->actingAs(User::factory()->create(['role' => 'vpaa']), 'sanctum')
+            ->getJson("/api/activity-log/logins/{$geo->authentication_audit_log_id}")->assertOk()
+            ->assertJsonPath('data.location.device.city', 'Cagayan de Oro')
+            ->assertJsonPath('data.location.device.country', 'Philippines')
+            ->assertJsonPath('data.location.city', 'Davao City');
+    }
+
+    public function test_reverse_geocoding_failure_keeps_the_device_fix_and_backfill_names_it_later(): void
+    {
+        config(['services.reverse_geocoding.enabled' => true]);
+        $this->reverseResponse = Http::response(['error' => 'Unable to geocode'], 500);
+        $user = User::factory()->create(['password' => Hash::make('StrongPass123')]);
+        $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.7'])->postJson('/api/login', [
+            'username' => $user->username, 'password' => 'StrongPass123',
+            'device_location' => ['latitude' => 8.4542, 'longitude' => 124.6319, 'accuracy' => 25, 'captured_at' => now()->toISOString()],
+        ])->assertOk();
+
+        $this->assertSame(8.4542, LoginGeolocation::sole()->device_latitude);
+        $this->assertNull(LoginGeolocation::sole()->device_city);
+
+        $this->reverseResponse = Http::response(['address' => ['city' => 'Cagayan de Oro', 'country' => 'Philippines']]);
+        $this->artisan('logins:resolve-locations')->assertSuccessful();
+
+        $this->assertSame('Cagayan de Oro', LoginGeolocation::sole()->device_city);
     }
 
     public function test_source_is_none_when_neither_device_nor_ip_location_exists(): void

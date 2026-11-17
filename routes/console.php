@@ -5,6 +5,7 @@ use App\Models\AuthenticationAuditLog;
 use App\Models\LoginGeolocation;
 use App\Models\RoomRecoveryPlan;
 use App\Services\AuthenticationAuditService;
+use App\Services\ReverseGeocodingService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -39,6 +40,27 @@ Artisan::command('logins:resolve-locations {--limit=200}', function () {
     }
 
     $this->info("Resolved locations for {$ids->count()} sign-in record(s).");
+
+    // Name the place at device fixes recorded before reverse geocoding existed, or whose lookup failed.
+    $unnamed = LoginGeolocation::query()
+        ->whereNotNull('device_latitude')
+        ->whereNull('device_city')->whereNull('device_region')->whereNull('device_country')
+        ->orderByDesc('id')
+        ->limit(max(1, (int) $this->option('limit')))
+        ->get();
+
+    $named = 0;
+    foreach ($unnamed as $index => $geo) {
+        if ($index > 0) {
+            sleep(1); // Nominatim usage policy: at most one request per second.
+        }
+        if ($place = app(ReverseGeocodingService::class)->placeAt($geo->device_latitude, $geo->device_longitude)) {
+            $geo->update($place);
+            $named++;
+        }
+    }
+
+    $this->info("Named device locations for {$named} of {$unnamed->count()} sign-in record(s).");
 })->purpose('Attach approximate locations to sign-ins that are missing one');
 
 Schedule::command('logins:resolve-locations')

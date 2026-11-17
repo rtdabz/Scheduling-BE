@@ -42,6 +42,9 @@ class LoginGeolocation extends Model
         'device_longitude',
         'device_accuracy_m',
         'device_captured_at',
+        'device_city',
+        'device_region',
+        'device_country',
     ];
 
     protected function casts(): array

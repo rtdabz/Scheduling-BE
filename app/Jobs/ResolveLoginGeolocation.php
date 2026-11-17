@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\AuthenticationAuditLog;
 use App\Models\LoginGeolocation;
 use App\Services\IpGeolocationService;
+use App\Services\ReverseGeocodingService;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Throwable;
 
@@ -20,7 +21,7 @@ class ResolveLoginGeolocation
     /** @param  array<string, mixed>|null  $device  Sanitized by App\Support\DeviceLocation. */
     public function __construct(public readonly int $auditLogId, public readonly ?array $device = null) {}
 
-    public function handle(IpGeolocationService $geolocation): void
+    public function handle(IpGeolocationService $geolocation, ReverseGeocodingService $reverse): void
     {
         try {
             $log = AuthenticationAuditLog::query()->find($this->auditLogId);
@@ -28,7 +29,9 @@ class ResolveLoginGeolocation
                 return;
             }
 
-            LoginGeolocation::create(['authentication_audit_log_id' => $log->id] + ($this->device ?? []) + $geolocation->locate($log->ip_address));
+            $place = $this->device ? $reverse->placeAt($this->device['device_latitude'], $this->device['device_longitude']) : null;
+
+            LoginGeolocation::create(['authentication_audit_log_id' => $log->id] + ($this->device ?? []) + ($place ?? []) + $geolocation->locate($log->ip_address));
         } catch (Throwable $exception) {
             // Location is an enrichment; it must never break authentication.
             report($exception);
