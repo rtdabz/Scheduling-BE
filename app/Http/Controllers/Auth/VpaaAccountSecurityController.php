@@ -139,6 +139,15 @@ class VpaaAccountSecurityController extends Controller
     public function changePassword(Request $request): JsonResponse
     {
         $user = $this->vpaa($request);
+        // The VPAA has no one above it to reset a forgotten password, so a verified recovery Gmail
+        // must exist before the seeded password can be replaced with one only the VPAA knows.
+        if (blank($user->email)) {
+            return response()->json([
+                'message' => 'Link and verify a recovery Gmail before changing the password, so a forgotten password can still be reset.',
+                'code' => 'recovery_email_required',
+            ], 409);
+        }
+
         $validated = $request->validate([
             'current_password' => ['required', 'string', 'current_password:sanctum'],
             'password' => [

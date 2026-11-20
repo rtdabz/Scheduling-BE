@@ -131,6 +131,7 @@ class VpaaAccountSecurityTest extends TestCase
 
     public function test_vpaa_changes_password_with_the_current_password(): void
     {
+        $this->vpaa->forceFill(['email' => self::GMAIL])->save();
         $this->actingAs($this->vpaa, 'sanctum')->putJson('/api/account/password', [
             'current_password' => 'OldSecret123',
             'password' => 'NewSecret456',
@@ -143,6 +144,7 @@ class VpaaAccountSecurityTest extends TestCase
 
     public function test_password_change_keeps_the_current_session_and_signs_out_others(): void
     {
+        $this->vpaa->forceFill(['email' => self::GMAIL])->save();
         $current = $this->vpaa->createToken('current')->plainTextToken;
         $this->vpaa->createToken('other-device');
 
@@ -157,6 +159,7 @@ class VpaaAccountSecurityTest extends TestCase
 
     public function test_password_change_validates_current_confirmation_strength_and_reuse(): void
     {
+        $this->vpaa->forceFill(['email' => self::GMAIL])->save();
         $cases = [
             ['current_password' => 'WrongSecret1', 'password' => 'NewSecret456', 'password_confirmation' => 'NewSecret456', 'error' => 'current_password'],
             ['current_password' => 'OldSecret123', 'password' => 'NewSecret456', 'password_confirmation' => 'Mismatch4567', 'error' => 'password'],
@@ -172,6 +175,22 @@ class VpaaAccountSecurityTest extends TestCase
         }
 
         $this->assertTrue(Hash::check('OldSecret123', $this->vpaa->fresh()->password));
+    }
+
+    public function test_password_change_is_blocked_until_a_recovery_gmail_is_verified(): void
+    {
+        $payload = ['current_password' => 'OldSecret123', 'password' => 'NewSecret456', 'password_confirmation' => 'NewSecret456'];
+
+        $this->actingAs($this->vpaa, 'sanctum')->putJson('/api/account/password', $payload)
+            ->assertStatus(409)->assertJsonPath('code', 'recovery_email_required');
+        $this->assertTrue(Hash::check('OldSecret123', $this->vpaa->fresh()->password));
+
+        // A code that was requested but not yet verified does not unlock it either.
+        $this->requestCode();
+        $this->actingAs($this->vpaa, 'sanctum')->putJson('/api/account/password', $payload)->assertStatus(409);
+
+        $this->actingAs($this->vpaa, 'sanctum')->postJson('/api/account/recovery-email/verify', ['code' => $this->sentCode()])->assertOk();
+        $this->actingAs($this->vpaa->fresh(), 'sanctum')->putJson('/api/account/password', $payload)->assertOk();
     }
 
     public function test_other_roles_cannot_use_vpaa_account_security(): void
