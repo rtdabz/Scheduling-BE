@@ -157,12 +157,14 @@ class ScheduleSignatoryHistoryTest extends TestCase
 
         $this->actingAs($this->newVpaa())->patchJson('/api/semesters/'.$next->id.'/activate')->assertOk();
 
-        $response = $this->getJson('/api/schedule-history?type=archived&semester_id='.$this->semester->id)->assertOk()
-            ->assertJsonPath('meta.total', 1)->assertJsonPath('data.0.signatories', null)
-            ->assertJsonPath('data.0.snapshots.0.snapshot.faculty_id', $faculty->id)
-            ->assertJsonPath('data.0.snapshots.0.snapshot.status', 'finalized');
-        $this->assertSame($recorded, $response->json('data.0.snapshots.0.snapshot.signatories'));
-        $this->assertSame(['Paula Head', 'Diego Dean', 'Vera Vpaa', 'Olivia President'], $this->names($response->json('data.0.snapshots.0.snapshot.signatories')));
+        $listed = $this->getJson('/api/schedule-history?type=archived&semester_id='.$this->semester->id)->assertOk()
+            ->assertJsonPath('meta.total', 1)->assertJsonPath('data.0.signatories', null);
+        $response = $this->getJson('/api/schedule-history/'.$listed->json('data.0.id'))->assertOk()
+            ->assertJsonPath('data.signatories', null)
+            ->assertJsonPath('data.snapshots.0.snapshot.faculty_id', $faculty->id)
+            ->assertJsonPath('data.snapshots.0.snapshot.status', 'finalized');
+        $this->assertSame($recorded, $response->json('data.snapshots.0.snapshot.signatories'));
+        $this->assertSame(['Paula Head', 'Diego Dean', 'Vera Vpaa', 'Olivia President'], $this->names($response->json('data.snapshots.0.snapshot.signatories')));
         $this->assertSame($recorded, ScheduleSubmission::findOrFail($submissionId)->signatories);
     }
 
@@ -193,7 +195,8 @@ class ScheduleSignatoryHistoryTest extends TestCase
 
         $this->actingAs($this->vpaa)->patchJson('/api/semesters/'.$next->id.'/activate')->assertOk();
 
-        $snapshots = collect($this->getJson('/api/schedule-history?type=archived')->assertOk()->json('data.0.snapshots'))->keyBy('section_id');
+        $archivedId = $this->getJson('/api/schedule-history?type=archived')->assertOk()->json('data.0.id');
+        $snapshots = collect($this->getJson('/api/schedule-history/'.$archivedId)->assertOk()->json('data.snapshots'))->keyBy('section_id');
         $this->assertSame($old, $snapshots[$this->section->id]['snapshot']['signatories']);
         $this->assertSame($new, $snapshots[$second->id]['snapshot']['signatories']);
         $this->assertNull($snapshots[$legacy->id]['snapshot']['signatories']);

@@ -33,7 +33,7 @@ final class CurriculumImportValidator
     /** The reviewed field each extraction flag is about, so a flag joins that field's comparison. */
     private const FLAG_FIELDS = [
         'suspicious_code' => 'code',
-        'blank_cell' => 'units', 'ambiguous_units' => 'units', 'invalid_number' => 'units', 'credit_sum_mismatch' => 'units',
+        'blank_cell' => 'units', 'ambiguous_units' => 'units', 'invalid_number' => 'units', 'credit_sum_mismatch' => 'units', 'units_only' => 'units',
         'unmapped_year' => 'placement', 'unmapped_term' => 'placement',
         'malformed_row' => 'row', 'merged_cells' => 'row',
     ];
@@ -92,6 +92,9 @@ final class CurriculumImportValidator
             'rows.*.lab_units' => 'required|integer|min:0|max:'.$maxLab,
             'rows.*.total_units' => 'required|integer|min:0|max:'.($maxLecture + $maxLab),
             'rows.*.category' => 'nullable|string|in:major,minor',
+            // Hours per unit set for this course in Configure; absent or null uses the department rate.
+            'rows.*.lecture_minutes_per_unit' => ['nullable', 'integer', 'min:0', 'max:'.CurriculumImportSettings::MAX_MINUTES_PER_UNIT, 'multiple_of:'.SchedulingPolicy::SLOT_MINUTES],
+            'rows.*.laboratory_minutes_per_unit' => ['nullable', 'integer', 'min:0', 'max:'.CurriculumImportSettings::MAX_MINUTES_PER_UNIT, 'multiple_of:'.SchedulingPolicy::SLOT_MINUTES],
             // Reference text only, stored as written; it never feeds scheduling or validation.
             'rows.*.prerequisites' => 'nullable|string|max:1000',
             'rows.*.source' => 'nullable|array',
@@ -124,6 +127,8 @@ final class CurriculumImportValidator
             'confirmed.required' => 'Confirm the reviewed import to create the curriculum.',
             'confirmed.accepted' => 'Confirm the reviewed import to create the curriculum.',
             'rows.*.title.not_regex' => 'The course title contains control characters.',
+            'rows.*.lecture_minutes_per_unit.multiple_of' => 'Lecture hours per unit must be in '.SchedulingPolicy::SLOT_MINUTES.'-minute steps.',
+            'rows.*.laboratory_minutes_per_unit.multiple_of' => 'Laboratory hours per unit must be in '.SchedulingPolicy::SLOT_MINUTES.'-minute steps.',
         ];
     }
 
@@ -297,6 +302,10 @@ final class CurriculumImportValidator
         $catalogDecision = $this->catalogDecision($id, $label, $code, $title, $lec, $lab, $tu, $category, $catalog->get($code), $issues);
 
         // Every course meets weekly for the time its credits give; a block of hours in the title is not a separate basis.
+        // A rate set for this course in Configure replaces the department rate for that component.
+        $custom = isset($row['lecture_minutes_per_unit']) || isset($row['laboratory_minutes_per_unit']);
+        $lectureRate = isset($row['lecture_minutes_per_unit']) ? (int) $row['lecture_minutes_per_unit'] : $lectureRate;
+        $labRate = isset($row['laboratory_minutes_per_unit']) ? (int) $row['laboratory_minutes_per_unit'] : $labRate;
         $lectureMinutes = $lec * $lectureRate;
         $labMinutes = $lab * $labRate;
         foreach (['lecture' => $lectureMinutes, 'laboratory' => $labMinutes] as $component => $minutes) {
@@ -317,6 +326,9 @@ final class CurriculumImportValidator
             'category' => $category,
             'rule' => $match,
             'catalog' => $catalogDecision,
+            'lecture_minutes_per_unit' => $lectureRate,
+            'laboratory_minutes_per_unit' => $labRate,
+            'hours_source' => $custom ? CurriculumCourseHours::SOURCE_CUSTOM : CurriculumCourseHours::SOURCE_IMPORT,
             'lecture_minutes' => $lectureMinutes,
             'laboratory_minutes' => $labMinutes,
             'weekly_contact_minutes' => $lectureMinutes + $labMinutes,

@@ -11,6 +11,21 @@ class UpdateDepartmentRequest extends FormRequest
         return true;
     }
 
+    /**
+     * The API returns `logo` as a URL to the stored image (see Departments::logo()). Clients that send that
+     * URL back unchanged mean "keep the current logo", so drop it instead of failing the base64 rule.
+     */
+    protected function prepareForValidation(): void
+    {
+        $logo = $this->input('logo');
+        $id = $this->route('department')?->id;
+        if (is_string($logo) && $id !== null
+            && preg_match('#^(https?://[^/]+)?/api/departments/'.preg_quote((string) $id, '#').'/logo(\?.*)?$#', $logo)) {
+            $this->request->remove('logo');
+            $this->json()->remove('logo');
+        }
+    }
+
     /** @return array<string, mixed> */
     public function rules(): array
     {

@@ -75,7 +75,6 @@ class ScheduleSemesterArchiver
                         'room_name' => $schedule->room?->room_code,
                         'department_name' => $schedule->department?->department_name,
                         'department_code' => $schedule->department?->department_code,
-                        'department_logo' => $schedule->department?->logo,
                     ],
                 ]);
             }

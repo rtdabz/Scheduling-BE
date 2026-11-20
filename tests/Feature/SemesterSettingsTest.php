@@ -102,13 +102,16 @@ class SemesterSettingsTest extends TestCase
         $faculty->update(['first_name' => 'Renamed']);
         $room->update(['room_code' => 'RENAMED']);
         $course->update(['course_code' => 'RENAMED']);
-        $history = $this->getJson('/api/schedule-history?type=archived&semester_id='.$this->first->id)->assertOk()
+        $this->getJson('/api/schedule-history?type=archived&semester_id='.$this->first->id)->assertOk()
             ->assertJsonPath('meta.total', 1)->assertJsonPath('data.0.id', $version->id)
             ->assertJsonPath('data.0.academic_year', '2026-2027')->assertJsonPath('data.0.semester', '1st')
-            ->assertJsonPath('data.0.snapshots.0.faculty_name', 'Original Instructor')
-            ->assertJsonPath('data.0.snapshots.0.room_name', 'CC101')->assertJsonPath('data.0.snapshots.0.course_code', 'IT101')
-            ->assertJsonPath('data.0.snapshots.0.section_name', 'IT1A')->assertJsonPath('data.0.snapshots.0.snapshot.meeting_type', 'lecture');
-        $finalized = collect($history->json('data.0.snapshots'))->firstWhere('snapshot.status', 'finalized');
+            ->assertJsonPath('data.0.schedule_count', 4);
+        // Class rows load per entry from the detail endpoint.
+        $history = $this->getJson('/api/schedule-history/'.$version->id)->assertOk()
+            ->assertJsonPath('data.snapshots.0.faculty_name', 'Original Instructor')
+            ->assertJsonPath('data.snapshots.0.room_name', 'CC101')->assertJsonPath('data.snapshots.0.course_code', 'IT101')
+            ->assertJsonPath('data.snapshots.0.section_name', 'IT1A')->assertJsonPath('data.snapshots.0.snapshot.meeting_type', 'lecture');
+        $finalized = collect($history->json('data.snapshots'))->firstWhere('snapshot.status', 'finalized');
         $this->assertSame($faculty->id, $finalized['snapshot']['faculty_id']);
         $this->assertTrue((bool) $finalized['snapshot']['faculty_assignment_done']);
         $this->getJson('/api/schedule-history?type=archived&semester_id='.$this->second->id)->assertOk()->assertJsonPath('meta.total', 0);

@@ -983,16 +983,29 @@ final class SchedulingPolicy
      * Whether a course meets as two linked components: a lecture in a lecture room and a laboratory
      * in a laboratory room. Inferred from its units (LEC > 0 and LAB > 0) for every course category;
      * field courses keep their own shape. Each component's length comes from lectureComponentSlots()
-     * and laboratoryComponentSlots(), so pass the course from placedCourse().
+     * and laboratoryComponentSlots(), so pass the course from placedCourse(). A component whose
+     * curriculum placement gives it no class time (0 hours per unit) is not scheduled, so the course
+     * then meets as its other component only.
      *
      * @param  Course|array<string, mixed>  $course
      * @param  list<string>|null  $fieldCourseCodes  see isFieldCourse()
      */
     public static function hasLectureAndLaboratoryComponents(Course|array $course, ?int $departmentId = null, ?array $fieldCourseCodes = null): bool
     {
-        return (int) (self::courseAttribute($course, 'lecture_hours') ?? 0) > 0
-            && (int) (self::courseAttribute($course, 'lab_hours') ?? 0) > 0
+        return self::hasScheduledComponent($course, 'lecture_hours', 'lecture_minutes')
+            && self::hasScheduledComponent($course, 'lab_hours', 'laboratory_minutes')
             && ! self::isFieldCourse($course, $departmentId, $fieldCourseCodes);
+    }
+
+    /** Units in the component, and class time for them unless the placement recorded 0 minutes. */
+    private static function hasScheduledComponent(Course|array $course, string $unitsKey, string $minutesKey): bool
+    {
+        if ((int) (self::courseAttribute($course, $unitsKey) ?? 0) <= 0) {
+            return false;
+        }
+        $minutes = self::courseAttribute($course, $minutesKey);
+
+        return $minutes === null || (int) $minutes > 0;
     }
 
     public static function totalSlots(): int

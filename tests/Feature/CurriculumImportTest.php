@@ -638,6 +638,35 @@ class CurriculumImportTest extends TestCase
         $this->assertFalse($issues->where('code', 'unclassified')->pluck('message')->contains(fn ($message) => str_contains($message, 'IT 101')));
     }
 
+    public function test_hours_per_unit_set_in_configure_replace_the_department_rate_for_that_course_only(): void
+    {
+        $this->tccRules();
+        $payload = $this->reviewedFixture();
+        foreach ($payload['rows'] as &$row) {
+            if ($row['code'] === 'IT 101') {
+                $row['lecture_minutes_per_unit'] = 90;
+                $row['laboratory_minutes_per_unit'] = 120;
+            }
+        }
+        unset($row);
+
+        $rows = collect($this->validateDraft($payload)->json('rows'))->keyBy('code');
+        // IT 101 is 2 lec + 1 lab: 2 × 90 + 1 × 120.
+        $this->assertSame([180, 120, 300, 'custom'], [$rows['IT 101']['lecture_minutes'], $rows['IT 101']['laboratory_minutes'], $rows['IT 101']['weekly_contact_minutes'], $rows['IT 101']['hours_source']]);
+        $this->assertSame([60, 180, 'import'], [$rows['IT 102']['lecture_minutes_per_unit'], $rows['IT 102']['laboratory_minutes_per_unit'], $rows['IT 102']['hours_source']]);
+
+        $response = $this->actingAs($this->secretary)->postJson('/api/curriculum-imports', $this->commitPayload($payload))->assertCreated();
+        $course = Curriculum::findOrFail($response->json('curriculum.id'))->courses()->where('course_code', 'IT 101')->firstOrFail();
+        $snapshot = json_decode($course->pivot->conversion_snapshot, true);
+        $this->assertSame(['custom', 90, 120], [$snapshot['source'], $snapshot['lecture_minutes_per_unit'], $snapshot['laboratory_minutes_per_unit']]);
+        $this->assertSame([180, 120], [(int) $course->pivot->lecture_minutes, (int) $course->pivot->laboratory_minutes]);
+
+        // Rates off the scheduling grid or out of range are rejected like in the hours editor.
+        $payload['rows'][0]['lecture_minutes_per_unit'] = 45;
+        $this->actingAs($this->secretary)->postJson('/api/curriculum-imports/validate', $payload)
+            ->assertUnprocessable()->assertJsonValidationErrors('rows.0.lecture_minutes_per_unit');
+    }
+
     public function test_conversion_minutes_follow_department_rates_without_double_multiplication(): void
     {
         $this->tccRules();
@@ -649,6 +678,11 @@ class CurriculumImportTest extends TestCase
         $rows = collect($response->json('rows'))->keyBy('code');
         $this->assertSame([120, 120, 240], [$rows['IT 101']['lecture_minutes'], $rows['IT 101']['laboratory_minutes'], $rows['IT 101']['weekly_contact_minutes']]);
         $this->assertFalse(collect($response->json('issues'))->contains('key', 'conversion_rates_not_scheduled'));
+
+        // A department without laboratories sets the laboratory rate to 0: laboratory units then carry no class time.
+        $this->saveRules([['match_value' => 'IT', 'category' => 'major']], 60, 0);
+        $rows = collect($this->validateDraft($this->reviewedFixture())->json('rows'))->keyBy('code');
+        $this->assertSame([120, 0, 120], [$rows['IT 101']['lecture_minutes'], $rows['IT 101']['laboratory_minutes'], $rows['IT 101']['weekly_contact_minutes']]);
     }
 
     public function test_settings_require_the_secretary_and_reject_duplicates_unacknowledged_overlaps_and_stale_revisions(): void
@@ -667,6 +701,8 @@ class CurriculumImportTest extends TestCase
 
         $this->actingAs($this->secretary)->putJson('/api/curriculum-import-settings', array_replace($base, ['lecture_minutes_per_unit' => 75, 'rules' => []]))
             ->assertUnprocessable()->assertJsonValidationErrors('lecture_minutes_per_unit');
+        $this->actingAs($this->secretary)->putJson('/api/curriculum-import-settings', array_replace($base, ['laboratory_minutes_per_unit' => -30, 'rules' => []]))
+            ->assertUnprocessable()->assertJsonValidationErrors('laboratory_minutes_per_unit');
 
         $overlapping = $base + ['rules' => [
             ['match_value' => 'IT', 'category' => 'major'],

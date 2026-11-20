@@ -558,7 +558,8 @@ class CurriculumController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        $rate = ['integer', 'min:'.SchedulingPolicy::SLOT_MINUTES, 'max:'.CurriculumImportSettings::MAX_MINUTES_PER_UNIT, 'multiple_of:'.SchedulingPolicy::SLOT_MINUTES];
+        // 0 hours per unit is allowed: that component then gets no class time.
+        $rate = ['integer', 'min:0', 'max:'.CurriculumImportSettings::MAX_MINUTES_PER_UNIT, 'multiple_of:'.SchedulingPolicy::SLOT_MINUTES];
         $validated = $request->validate([
             'use_department_default' => 'sometimes|boolean',
             'lecture_minutes_per_unit' => ['exclude_if:use_department_default,true', 'required', ...$rate],

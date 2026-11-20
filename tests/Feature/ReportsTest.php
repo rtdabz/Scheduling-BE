@@ -217,7 +217,9 @@ class ReportsTest extends TestCase
         $this->actingAs($f['secretary'])
             ->getJson('/api/reports')
             ->assertOk()
-            ->assertJsonPath('departments.0.logo', $logo);
+            // Served by URL (cached image), never inline base64; see DepartmentLogoDeliveryTest.
+            ->assertJsonPath('departments.0.logo', $f['department']->fresh()->logo);
+        $this->assertStringContainsString('/api/departments/'.$f['department']->id.'/logo?v=', $f['department']->fresh()->logo);
     }
 
     public function test_an_unknown_term_is_rejected(): void

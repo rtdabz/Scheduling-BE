@@ -25,7 +25,7 @@ return [
 
     'allowed_headers' => ['*'],
 
-    'exposed_headers' => ['X-Timezone'],
+    'exposed_headers' => ['X-Timezone', 'Content-Disposition'],
 
     'max_age' => 0,
 

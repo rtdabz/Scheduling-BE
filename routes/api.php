@@ -3,6 +3,7 @@
 use App\Http\Controllers\Academic\CoursesController;
 use App\Http\Controllers\Academic\CurriculumController;
 use App\Http\Controllers\Academic\CurriculumImportController;
+use App\Http\Controllers\Academic\DepartmentLogoController;
 use App\Http\Controllers\Academic\DepartmentsController;
 use App\Http\Controllers\Academic\DesignationController;
 use App\Http\Controllers\Academic\ProgramController;
@@ -17,6 +18,7 @@ use App\Http\Controllers\Admin\SystemNotificationController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\Auth\ProfileController;
+use App\Http\Controllers\Auth\VpaaAccountSecurityController;
 use App\Http\Controllers\Faculty\CourseTeachingAssignmentController;
 use App\Http\Controllers\Faculty\FacultyAvailabilityController;
 use App\Http\Controllers\Faculty\FacultyController;
@@ -50,6 +52,12 @@ Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect'])->
 Route::get('/auth/google/callback', [AuthController::class, 'googleCallback'])->middleware('throttle:20,1');
 Route::post('/auth/google/exchange', [AuthController::class, 'googleExchange'])->middleware('throttle:20,1');
 
+// Public: <img> tags cannot send the bearer token. See DepartmentLogoController.
+Route::get('/departments/{id}/logo', DepartmentLogoController::class)
+    ->whereNumber('id')
+    ->name('departments.logo')
+    ->middleware('throttle:600,1');
+
 Route::get('/pdf-previews/{preview}/{filename}', [PdfPreviewController::class, 'show'])
     ->whereUuid('preview')
     ->name('pdf-previews.show')
@@ -70,6 +78,11 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::get('/realtime-config', RealtimeConfigController::class);
 
     Route::middleware('role:vpaa')->group(function () {
+        // Self-service security for the seeded VPAA account (recovery Gmail + password change).
+        Route::post('/account/recovery-email', [VpaaAccountSecurityController::class, 'requestEmailVerification'])->middleware('throttle:5,1');
+        Route::post('/account/recovery-email/verify', [VpaaAccountSecurityController::class, 'confirmEmailVerification'])->middleware('throttle:10,1');
+        Route::put('/account/password', [VpaaAccountSecurityController::class, 'changePassword'])->middleware('throttle:5,1');
+
         Route::get('/activity-log', [ActivityLogController::class, 'index']);
         Route::get('/activity-log/login-locations', [LoginActivityController::class, 'locations'])->middleware('throttle:60,1');
         Route::get('/activity-log/login-history', [LoginActivityController::class, 'history'])->middleware('throttle:60,1');
@@ -101,6 +114,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     });
 
     Route::middleware('capability:schedule.view')->get('/schedule-history', [ScheduleHistoryController::class, 'index']);
+    Route::middleware('capability:schedule.view')->get('/schedule-history/{version}', [ScheduleHistoryController::class, 'show'])->whereNumber('version');
     Route::middleware(['capability:schedule.view', 'throttle:30,1'])->get('/schedule-history/{version}/export', [ScheduleHistoryController::class, 'export'])->whereNumber('version');
     Route::middleware(['capability:schedule.create', 'throttle:10,1'])->post('/schedule-history/{version}/reuse', [ScheduleHistoryController::class, 'reuse'])->whereNumber('version');
     Route::middleware('capability:schedule.view')->get('room-recovery', [RoomRecoveryController::class, 'index']);
@@ -352,6 +366,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::post('/curriculum/{curriculum}/duplicate', [CurriculumController::class, 'duplicate']);
         Route::patch('/curriculum/{curriculum}/status', [CurriculumController::class, 'updateStatus']);
 
+        Route::get('curriculum-import-template', [CurriculumImportController::class, 'template'])->middleware('throttle:30,1');
         Route::get('curriculum-import-settings', [CurriculumImportController::class, 'showSettings']);
         Route::put('curriculum-import-settings', [CurriculumImportController::class, 'updateSettings'])->middleware('throttle:20,1');
         Route::post('curriculum-imports/validate', [CurriculumImportController::class, 'validateDraft'])->middleware('throttle:30,1');

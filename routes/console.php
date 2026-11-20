@@ -6,6 +6,7 @@ use App\Models\LoginGeolocation;
 use App\Models\RoomRecoveryPlan;
 use App\Services\AuthenticationAuditService;
 use App\Services\ReverseGeocodingService;
+use App\Services\Scheduling\History\ScheduleHistorySummaries;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -67,3 +68,8 @@ Schedule::command('logins:resolve-locations')
     ->hourly()
     ->withoutOverlapping()
     ->runInBackground();
+
+Artisan::command('schedule-history:warm-summaries', function () {
+    $warmed = app(ScheduleHistorySummaries::class)->warm();
+    $this->info("Cached list summaries for {$warmed} schedule history version(s).");
+})->purpose('Precompute Schedule History list summaries (history is append-only, so they never go stale)');

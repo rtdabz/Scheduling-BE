@@ -8,10 +8,12 @@ use App\Services\Curriculum\CurriculumImportConflict;
 use App\Services\Curriculum\CurriculumImportInvalid;
 use App\Services\Curriculum\CurriculumImportService;
 use App\Services\Curriculum\CurriculumImportSettings;
+use App\Services\Curriculum\CurriculumImportTemplate;
 use App\Services\Curriculum\CurriculumImportValidator;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 class CurriculumImportController extends Controller
 {
@@ -33,7 +35,8 @@ class CurriculumImportController extends Controller
             return response()->json(['message' => 'Only the department Secretary or Director can change curriculum import settings.'], 403);
         }
 
-        $rate = ['required', 'integer', 'min:'.SchedulingPolicy::SLOT_MINUTES, 'max:'.CurriculumImportSettings::MAX_MINUTES_PER_UNIT, 'multiple_of:'.SchedulingPolicy::SLOT_MINUTES];
+        // 0 is allowed, e.g. a department without laboratories: that component then gets no class time.
+        $rate = ['required', 'integer', 'min:0', 'max:'.CurriculumImportSettings::MAX_MINUTES_PER_UNIT, 'multiple_of:'.SchedulingPolicy::SLOT_MINUTES];
         $validated = $request->validate([
             'expected_revision' => 'required|integer|min:1',
             'lecture_minutes_per_unit' => $rate,
@@ -76,6 +79,21 @@ class CurriculumImportController extends Controller
         }
 
         return response()->json($result['body'], $result['status']);
+    }
+
+    /** The blank curriculum workbook, with the TCC logo, municipal seal, and the user's department logo. */
+    public function template(Request $request, CurriculumImportTemplate $template): Response
+    {
+        $department = $this->department($request);
+        $code = preg_replace('/[^A-Za-z0-9-]+/', '', (string) $department->department_code);
+        $filename = 'curriculum-import-template'.($code !== '' ? '-'.strtolower($code) : '').'.xlsx';
+
+        return response($template->build($department), 200, [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition' => 'attachment; filename="'.$filename.'"',
+            'Cache-Control' => 'no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
     }
 
     private function department(Request $request): Departments

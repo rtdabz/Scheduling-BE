@@ -186,8 +186,10 @@ final class CurriculumImportService
                 'conversion_snapshot' => json_encode([
                     'version' => self::SNAPSHOT_VERSION,
                     'basis' => 'weekly',
-                    'lecture_minutes_per_unit' => $validation['settings']['lecture_minutes_per_unit'],
-                    'laboratory_minutes_per_unit' => $validation['settings']['laboratory_minutes_per_unit'],
+                    // Rates set for this course in Configure are kept as custom hours, like the hours editor saves them.
+                    'source' => $row['hours_source'] ?? CurriculumCourseHours::SOURCE_IMPORT,
+                    'lecture_minutes_per_unit' => $row['lecture_minutes_per_unit'] ?? $validation['settings']['lecture_minutes_per_unit'],
+                    'laboratory_minutes_per_unit' => $row['laboratory_minutes_per_unit'] ?? $validation['settings']['laboratory_minutes_per_unit'],
                     'settings_revision' => $validation['settings_revision'],
                     'offering_department_id' => (int) $locked->id,
                 ]),

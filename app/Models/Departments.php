@@ -2,13 +2,14 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Departments extends Model
 {
     use SoftDeletes;
-    
+
     protected $table = 'departments';
 
     protected $fillable = [
@@ -45,6 +46,47 @@ class Departments extends Model
         self::ROOM_SHARING_HOME_FIRST,
         self::ROOM_SHARING_STRICT,
     ];
+
+    /**
+     * Logos are stored as base64 data URLs (20–45 KB each). Serializing them inline made every list that
+     * eager-loads `department` carry one copy per row (e.g. /courses, /faculties, /schedule-history grew to
+     * tens of MB). Reading `logo` therefore yields a short, versioned URL to DepartmentLogoController,
+     * which the browser downloads once and caches. Use rawLogo() when the stored image itself is needed.
+     */
+    protected function logo(): Attribute
+    {
+        return Attribute::make(
+            get: fn (?string $value) => self::logoUrl($this->getKey(), $value),
+        );
+    }
+
+    public function rawLogo(): ?string
+    {
+        $value = $this->getAttributes()['logo'] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    public static function logoUrl(mixed $departmentId, ?string $storedLogo): ?string
+    {
+        if ($storedLogo === null || $storedLogo === '') {
+            return null;
+        }
+        // Only inline images are rewritten; a logo already stored as a URL is served as-is.
+        if (! str_starts_with($storedLogo, 'data:')) {
+            return $storedLogo;
+        }
+        if ($departmentId === null) {
+            return null;
+        }
+
+        return url('/api/departments/'.$departmentId.'/logo').'?v='.self::logoVersion($storedLogo);
+    }
+
+    public static function logoVersion(string $storedLogo): string
+    {
+        return hash('crc32b', $storedLogo).dechex(strlen($storedLogo));
+    }
 
     public function users()
     {

@@ -100,6 +100,22 @@ class CurriculumCourseHoursTest extends TestCase
             ->assertJsonPath('hours.laboratory_minutes', 120);
     }
 
+    public function test_zero_hours_per_unit_leaves_that_component_unscheduled(): void
+    {
+        $this->updateHours(['lecture_minutes_per_unit' => 90, 'laboratory_minutes_per_unit' => 0])
+            ->assertOk()
+            ->assertJsonPath('hours.laboratory_minutes_per_unit', 0)
+            ->assertJsonPath('hours.laboratory_minutes', 0)
+            ->assertJsonPath('hours.total_minutes', 180);
+
+        // The course keeps its laboratory unit but meets only as its 3-hour lecture, never as a 0-length laboratory.
+        $requirements = app(CourseScheduleRequirementBuilder::class)->build(
+            $this->section->fresh(), collect([$this->course->fresh()]), ['selected_split_session_course_ids' => [(int) $this->course->id]],
+        );
+        $this->assertCount(1, $requirements[(int) $this->course->id]);
+        $this->assertSame([6], array_column($requirements[(int) $this->course->id], 'duration_slots'));
+    }
+
     public function test_rates_must_fit_the_scheduling_grid_and_day(): void
     {
         $this->updateHours(['lecture_minutes_per_unit' => 45, 'laboratory_minutes_per_unit' => 180])
