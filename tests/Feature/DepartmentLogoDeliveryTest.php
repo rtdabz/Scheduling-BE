@@ -54,6 +54,20 @@ class DepartmentLogoDeliveryTest extends TestCase
         $this->get("/api/departments/{$department->id}/logo", ['If-None-Match' => '"'.$version.'"'])->assertStatus(304);
     }
 
+    /**
+     * Regression: a plain <img> (no Origin header) cached the logo without CORS headers, and the browser then
+     * reused that copy for the crossOrigin load PDF printing makes, which failed and dropped the logo.
+     */
+    public function test_logo_is_cors_readable_whether_or_not_the_request_had_an_origin(): void
+    {
+        $department = $this->department();
+        $url = parse_url($department->logo, PHP_URL_PATH).'?'.parse_url($department->logo, PHP_URL_QUERY);
+
+        $this->get($url)->assertOk()->assertHeader('Access-Control-Allow-Origin', '*');
+        $withOrigin = $this->get($url, ['Origin' => 'http://localhost:5173'])->assertOk();
+        $this->assertContains($withOrigin->headers->get('Access-Control-Allow-Origin'), ['*', 'http://localhost:5173']);
+    }
+
     public function test_missing_logo_returns_404(): void
     {
         $department = Departments::create(['department_name' => 'No Logo', 'department_code' => 'NL']);

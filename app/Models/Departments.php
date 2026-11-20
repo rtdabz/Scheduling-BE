@@ -83,9 +83,16 @@ class Departments extends Model
         return url('/api/departments/'.$departmentId.'/logo').'?v='.self::logoVersion($storedLogo);
     }
 
+    /**
+     * Bumped when served logo responses change in a way browsers must not reuse from cache. Revision 2: every
+     * response carries `Access-Control-Allow-Origin: *`; revision-1 copies cached by plain <img> tags lacked it
+     * and broke the crossOrigin loads that PDF printing makes.
+     */
+    private const LOGO_URL_REVISION = '2';
+
     public static function logoVersion(string $storedLogo): string
     {
-        return hash('crc32b', $storedLogo).dechex(strlen($storedLogo));
+        return self::LOGO_URL_REVISION.hash('crc32b', $storedLogo).dechex(strlen($storedLogo));
     }
 
     public function users()

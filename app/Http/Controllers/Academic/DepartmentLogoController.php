@@ -35,6 +35,10 @@ class DepartmentLogoController extends Controller
                 : 'public, max-age=300',
             'X-Content-Type-Options' => 'nosniff',
             'Cross-Origin-Resource-Policy' => 'cross-origin',
+            // On every response, not only CORS ones: the browser caches the copy a plain <img> fetched (no
+            // Origin header) and reuses it for later crossOrigin loads (PDF printing draws logos to a canvas).
+            // Without this header that cached copy fails CORS and the logo disappears from printed schedules.
+            'Access-Control-Allow-Origin' => '*',
         ];
 
         if (trim((string) $request->header('If-None-Match')) === $etag) {
