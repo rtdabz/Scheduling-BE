@@ -1876,41 +1876,7 @@ class ScheduleController extends Controller
 
     private function scheduleIdsAssignableByDepartment(Request $request, array $scheduleIds): bool
     {
-        $scope = $this->authorization->departmentScope($request);
-        if ($scope === null || $scheduleIds === []) {
-            return true;
-        }
-
-        $delegations = Course::query()
-            ->whereNotNull('teaching_department_id')
-            ->pluck('teaching_department_id', 'id')
-            ->all();
-
-        $delegatedHere = [];
-        $delegatedElsewhere = [];
-        foreach ($delegations as $courseId => $teachingDepartmentId) {
-            if ((int) $teachingDepartmentId === $scope) {
-                $delegatedHere[] = (int) $courseId;
-            } else {
-                $delegatedElsewhere[] = (int) $courseId;
-            }
-        }
-
-        return ! Schedule::query()
-            ->whereIn('id', array_values(array_unique(array_map('intval', $scheduleIds))))
-            ->where(fn ($row) => $row
-                ->when($delegatedHere !== [], fn ($query) => $query->where(
-                    fn ($scoped) => $scoped
-                        ->whereNull('course_id')
-                        ->orWhereNotIn('course_id', $delegatedHere),
-                ))
-                ->where(fn ($foreign) => $foreign
-                    ->where('department_id', '!=', $scope)
-                    ->when(
-                        $delegatedElsewhere !== [],
-                        fn ($query) => $query->orWhereIn('course_id', $delegatedElsewhere),
-                    )))
-            ->exists();
+        return $this->authorization->scheduleIdsAssignableByDepartment($request, $scheduleIds);
     }
 
     private function sectionIdsBelongToDepartment(Request $request, array $sectionIds): bool

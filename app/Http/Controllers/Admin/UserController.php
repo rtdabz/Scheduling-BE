@@ -145,7 +145,7 @@ class UserController extends Controller
             ]);
         }));
         $user->refresh();
-        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data', 'initial.data.users']);
 
         $message = 'User updated successfully.';
         if ($emailChanged && $user->is_active
@@ -176,7 +176,7 @@ class UserController extends Controller
             }
             $this->audit->record($request, 'user_status_changed', $user, ['active' => $user->is_active]);
         }));
-        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data', 'initial.data.users']);
 
         return response()->json(['message' => 'Account status updated.', 'data' => $this->withAccessState($user->fresh()->load(['department', 'program', 'facultyProfile']))]);
     }
@@ -199,7 +199,7 @@ class UserController extends Controller
             $user->tokens()->delete();
             $user->delete();
         });
-        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data', 'initial.data.users']);
 
         return response()->json(['message' => 'User archived successfully.']);
     }

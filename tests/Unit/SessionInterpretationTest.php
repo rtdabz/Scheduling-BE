@@ -27,7 +27,8 @@ class SessionInterpretationTest extends TestCase
         $this->assertSame([4, 6], array_column(SessionAlternativePolicy::enhancement($labCourse, $integrated, [], [])['meetings'], 'duration_slots'));
         // Integrated follows lecture and laboratory units for every category, as in generation; field courses keep their own shape.
         $this->assertSame('set_integrated_hybrid', SessionAlternativePolicy::enhancement([...$labCourse, 'course_category' => 'minor'], $integrated, [], [])['adjustment_type']);
-        $this->assertNull(SessionAlternativePolicy::enhancement($labCourse, $integrated, [], ['LECT']));
+        // Laboratory requirements rule out Field placement, so a field-listed code with lab units stays integrated-eligible.
+        $this->assertSame('set_integrated_hybrid', SessionAlternativePolicy::enhancement($labCourse, $integrated, [], ['LECT'])['adjustment_type']);
         $integrated[0]['modes'] = ['online'];
         $this->assertNull(SessionAlternativePolicy::enhancement($labCourse, $integrated, [], []));
     }

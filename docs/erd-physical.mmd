@@ -1,0 +1,782 @@
+---
+title: Physical ERD (current schema, from migrations up to 2026-11-17)
+---
+%% Key: PK primary key, FK foreign key, UK unique (composite where noted).
+%% Comments: "NULL" = nullable column, enum values listed, "virtual" = generated column.
+%% Solid line = enforced FK. Dotted line = logical/polymorphic reference with no FK constraint.
+%% Omitted: Laravel infrastructure tables (cache, cache_locks, jobs, job_batches, failed_jobs).
+erDiagram
+
+    %% ───────────── Organization ─────────────
+    departments {
+        bigint id PK
+        varchar department_name UK
+        varchar department_code UK
+        longtext logo "NULL"
+        boolean lecture_lab_schedule_override_enabled
+        boolean gec_split_schedule_override_enabled
+        boolean major_lecture_split_schedule_override_enabled
+        boolean sunday_classes_enabled
+        varchar room_sharing_policy "len 16, default open"
+        varchar lab_room_type "len 20, default laboratory"
+        smallint lecture_minutes_per_unit "default 60"
+        smallint laboratory_minutes_per_unit "default 180"
+        int curriculum_import_settings_revision "default 1"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    programs {
+        bigint id PK
+        bigint department_id FK,UK "UK(department_id, code, major)"
+        varchar major UK "default empty"
+        varchar code UK
+        varchar name "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    institution_settings {
+        bigint id PK
+        varchar president_name "len 150"
+        varchar president_title "len 150"
+        time opening_time "default 07:00"
+        time closing_time "default 20:30"
+        time field_end_time "default 17:00"
+        int slot_interval "default 30"
+        tinyint singleton_key UK "virtual = 1, enforces single row"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    semesters {
+        bigint id PK
+        varchar academic_year
+        enum semester "1st, 2nd, summer"
+        boolean is_active "indexed"
+        boolean is_enabled
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    rooms {
+        bigint id PK
+        varchar room_code
+        varchar live_room_code UK "virtual, room_code when not deleted"
+        varchar building "NULL"
+        enum room_type "lecture, laboratory, online, field"
+        boolean allow_lecture_usage
+        enum status "available, not available"
+        bigint department_id FK "NULL"
+        bigint home_program_id FK "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    %% ───────────── Identity & access ─────────────
+    users {
+        bigint id PK
+        varchar name
+        varchar first_name "NULL"
+        varchar middle_initial "NULL, len 1"
+        varchar last_name "NULL"
+        varchar suffix "NULL, len 10"
+        varchar honorific_prefix "NULL, len 20"
+        varchar credentials "NULL, len 100"
+        varchar username UK
+        varchar email UK "NULL"
+        varchar password
+        varchar role "default secretary"
+        boolean is_active
+        boolean allow_google_login
+        varchar google_id UK "NULL"
+        varchar google_email "NULL"
+        timestamp google_linked_at "NULL"
+        timestamp last_login_at "NULL"
+        bigint department_id FK "NULL"
+        bigint program_id FK "NULL"
+        longtext profile_picture "NULL"
+        varchar remember_token "NULL"
+        varchar active_role_slot UK "virtual, one active holder per role slot"
+        tinyint active_vpaa_slot UK "virtual, one active VPAA"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    sessions {
+        varchar id PK
+        bigint user_id "NULL, indexed, no FK"
+        varchar ip_address "NULL, len 45"
+        text user_agent "NULL"
+        longtext payload
+        int last_activity "indexed"
+    }
+
+    password_reset_tokens {
+        varchar email PK
+        varchar token
+        timestamp created_at "NULL"
+    }
+
+    account_invitation_tokens {
+        varchar email PK
+        varchar token
+        timestamp created_at "NULL"
+    }
+
+    personal_access_tokens {
+        bigint id PK
+        varchar tokenable_type "polymorphic"
+        bigint tokenable_id "polymorphic"
+        text name
+        varchar token UK "len 64"
+        text abilities "NULL"
+        timestamp last_used_at "NULL"
+        timestamp expires_at "NULL, indexed"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    authentication_audit_logs {
+        bigint id PK
+        bigint actor_user_id FK "NULL"
+        bigint subject_user_id FK "NULL"
+        varchar event "len 80, indexed"
+        varchar ip_address "NULL, len 45"
+        text user_agent "NULL"
+        json metadata "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    login_geolocations {
+        bigint id PK
+        bigint authentication_audit_log_id FK,UK
+        varchar lookup_status "resolved, private, unavailable"
+        varchar city "NULL"
+        varchar region "NULL"
+        varchar country "NULL"
+        char country_code "NULL, len 2"
+        decimal latitude "NULL, 7,2"
+        decimal longitude "NULL, 7,2"
+        boolean is_proxy "NULL"
+        varchar provider "NULL, len 30"
+        decimal device_latitude "NULL, 9,6"
+        decimal device_longitude "NULL, 9,6"
+        int device_accuracy_m "NULL"
+        timestamp device_captured_at "NULL"
+        varchar device_city "NULL"
+        varchar device_region "NULL"
+        varchar device_country "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    roles {
+        bigint id PK
+        varchar name UK "UK(name, guard_name)"
+        varchar guard_name UK
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    permissions {
+        bigint id PK
+        varchar name UK "UK(name, guard_name)"
+        varchar guard_name UK
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    model_has_roles {
+        bigint role_id PK,FK
+        varchar model_type PK "polymorphic"
+        bigint model_id PK "polymorphic"
+    }
+
+    model_has_permissions {
+        bigint permission_id PK,FK
+        varchar model_type PK "polymorphic"
+        bigint model_id PK "polymorphic"
+    }
+
+    role_has_permissions {
+        bigint permission_id PK,FK
+        bigint role_id PK,FK
+    }
+
+    %% ───────────── Faculty ─────────────
+    faculties {
+        bigint id PK
+        bigint user_id FK,UK "NULL"
+        varchar administrative_role "NULL"
+        varchar first_name
+        varchar last_name
+        varchar middle_name "NULL"
+        varchar suffix "NULL, len 10"
+        varchar honorific_prefix "NULL, len 20"
+        varchar credentials "NULL, len 100"
+        enum employment_type "full-time, part-time"
+        int max_units "default 21"
+        int overload_units "default 0"
+        int deload_units "default 0"
+        longtext profile_picture "NULL"
+        bigint department_id FK
+        bigint program_id FK "NULL"
+        enum status "active, inactive"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    designations {
+        bigint id PK
+        bigint parent_id FK "NULL"
+        varchar name
+        varchar code "NULL"
+        int deload_units "default 0"
+        varchar description "NULL"
+        enum status "active, inactive"
+        int sort_order "default 0"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    designation_faculty {
+        bigint id PK
+        bigint faculty_id FK,UK "UK(faculty_id, designation_id)"
+        bigint designation_id FK,UK
+        tinyint position "default 0"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    faculty_availabilities {
+        bigint id PK
+        bigint faculty_id FK
+        enum day "Monday to Sunday"
+        time start_time
+        time end_time
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    %% ───────────── Curriculum ─────────────
+    courses {
+        bigint id PK
+        varchar course_code UK "UK(course_code, department_id)"
+        varchar course_name
+        int lecture_hours "default 0"
+        int lab_hours "default 0"
+        int units "default 0"
+        enum course_category "major, minor"
+        enum room_type_required "lecture, laboratory, field, online"
+        enum year_level "1, 2, 3, 4"
+        enum semester "1st, 2nd, summer"
+        bigint department_id FK,UK "NULL"
+        bigint program_id FK "NULL"
+        bigint teaching_department_id FK "NULL"
+        bigint teaching_program_id FK "NULL"
+        bigint teaching_source_program_id FK "NULL"
+        enum status "active, inactive"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    curriculum {
+        bigint id PK
+        varchar name
+        bigint department_id FK "NULL"
+        bigint program_id FK "NULL"
+        varchar code UK
+        varchar cmo_number "NULL, len 32"
+        smallint cmo_series "NULL"
+        varchar effective_school_year
+        enum status "active, deactivated, archived"
+        text description "NULL"
+        json notes "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    curriculum_course {
+        bigint id PK
+        bigint curriculum_id FK,UK "UK(curriculum_id, course_id)"
+        bigint course_id FK,UK
+        tinyint year_level
+        tinyint semester
+        smallint lecture_units "NULL"
+        smallint lab_units "NULL"
+        smallint lecture_minutes "NULL"
+        smallint laboratory_minutes "NULL"
+        json conversion_snapshot "NULL"
+        text prerequisites_text "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    curriculum_classification_rules {
+        bigint id PK
+        bigint department_id FK,UK "UK(department_id, match_kind, match_value)"
+        enum match_kind UK "exact, prefix"
+        varchar match_value UK "len 64"
+        enum category "major, minor"
+        boolean enabled
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    curriculum_imports {
+        bigint id PK
+        bigint curriculum_id FK "NULL"
+        bigint department_id FK,UK "UK(department_id, request_key)"
+        bigint user_id FK "NULL"
+        varchar request_key UK "len 100"
+        char payload_hash "len 64"
+        varchar source_format "len 8"
+        varchar source_filename "NULL"
+        char source_sha256 "NULL, len 64"
+        varchar extractor_version "NULL"
+        json record
+        json summary
+        json actor_snapshots "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    %% ───────────── Sections & scheduling ─────────────
+    sections {
+        bigint id PK
+        varchar section_name UK "UK(department_id, semester_id, section_name)"
+        enum year_level "1, 2, 3, 4"
+        enum semester "1st, 2nd, summer"
+        bigint department_id FK,UK
+        bigint program_id FK "NULL"
+        bigint curriculum_id FK "NULL"
+        bigint semester_id FK,UK
+        enum status "active, inactive"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    department_course_rules {
+        bigint id PK
+        bigint department_id FK,UK "UK(department_id, course_id, section_id)"
+        bigint course_id FK,UK
+        bigint section_id FK,UK "NULL"
+        enum forced_day "NULL"
+        boolean is_field
+        tinyint consecutive_day_count "NULL"
+        enum preferred_start_day "NULL"
+        varchar meeting_days "NULL, len 80"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    schedules {
+        bigint id PK
+        bigint semester_id FK
+        bigint section_id FK
+        bigint curriculum_id FK "NULL"
+        bigint course_id FK
+        bigint faculty_id FK "NULL"
+        boolean faculty_assignment_done
+        bigint delegation_returned_from_department_id FK "NULL"
+        timestamp delegation_returned_at "NULL"
+        bigint section_teaching_department_id FK "NULL"
+        bigint section_teaching_program_id FK "NULL"
+        timestamp section_teaching_assigned_at "NULL"
+        bigint room_id FK "NULL"
+        bigint displaced_room_id FK "NULL"
+        timestamp displaced_at "NULL"
+        bigint department_id FK
+        bigint program_id FK "NULL"
+        enum day "Monday to Sunday"
+        time start_time
+        time end_time
+        enum mode "on-site, online, field"
+        boolean is_hybrid
+        varchar preferred_pattern "NULL, len 20"
+        enum status "default draft"
+        bigint created_by FK "NULL"
+        json creator_identity "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    schedule_splits {
+        bigint id PK
+        bigint schedule_id FK
+        uuid split_group_id "NULL, indexed"
+        enum meeting_type "NULL, lecture, laboratory"
+        tinyint meeting_index "default 1"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+        timestamp deleted_at "NULL"
+    }
+
+    schedule_generation_runs {
+        bigint id PK
+        uuid run_id UK
+        bigint requested_by FK
+        bigint semester_id FK
+        bigint department_id FK
+        tinyint year_level
+        varchar status "len 20, indexed"
+        json result "NULL"
+        text error_message "NULL"
+        json actor_snapshots "NULL"
+        timestamp started_at "NULL"
+        timestamp finished_at "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    schedule_recommendations {
+        bigint id PK
+        bigint semester_id FK
+        bigint section_id FK
+        bigint department_id FK
+        bigint generation_run_id FK "NULL"
+        bigint requested_by FK "NULL"
+        bigint accepted_by FK "NULL"
+        bigint rejected_by FK "NULL"
+        int rank "default 1"
+        int score "default 0"
+        enum status "pending, accepted, rejected"
+        json input_payload "NULL"
+        json recommended_schedules
+        text rejection_reason "NULL"
+        timestamp accepted_at "NULL"
+        timestamp rejected_at "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    schedule_generation_drafts {
+        bigint id PK
+        bigint user_id FK,UK "UK(user_id, department_id, semester_id)"
+        bigint department_id FK,UK
+        bigint semester_id FK,UK
+        json payload "NULL"
+        bigint revision "default 0"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    instructor_assignment_drafts {
+        bigint id PK
+        bigint user_id FK,UK "UK(user_id, department_id, semester_id, context)"
+        bigint department_id FK,UK
+        bigint semester_id FK,UK
+        varchar context UK "len 40, default schedule"
+        json payload "NULL"
+        bigint revision "default 0"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    %% ───────────── Approval workflow & history ─────────────
+    schedule_submissions {
+        bigint id PK
+        bigint department_id FK,UK "UK(department_id, semester_id, revision_number)"
+        bigint semester_id FK,UK
+        bigint parent_submission_id FK "NULL"
+        int revision_number UK
+        varchar status "len 40, indexed"
+        int section_count "NULL"
+        int subject_count "NULL"
+        bigint snapshot_version_id FK "NULL"
+        bigint submitted_by FK "NULL"
+        timestamp submitted_at "NULL"
+        bigint dean_reviewed_by FK "NULL"
+        timestamp dean_reviewed_at "NULL"
+        bigint vpaa_reviewed_by FK "NULL"
+        timestamp vpaa_reviewed_at "NULL"
+        bigint withdrawn_by FK "NULL"
+        timestamp withdrawn_at "NULL"
+        text rejection_reason "NULL"
+        boolean approval_override
+        varchar approval_override_reason "NULL, len 2000"
+        json signatories "NULL"
+        json actor_snapshots "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    schedule_submission_sections {
+        bigint id PK
+        bigint schedule_submission_id FK,UK "UK(schedule_submission_id, section_id)"
+        bigint section_id FK,UK
+        varchar state "len 30, default included"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    schedule_history_versions {
+        bigint id PK
+        bigint semester_id FK "NULL"
+        varchar academic_year "NULL, len 50"
+        varchar semester "NULL, len 30"
+        bigint department_id FK "NULL"
+        bigint actor_user_id FK "NULL"
+        varchar action "len 80"
+        varchar source "NULL, len 40"
+        text reason "NULL"
+        json change_summary "NULL"
+        json signatories "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    schedule_history_items {
+        bigint id PK
+        bigint history_version_id FK
+        bigint original_schedule_id "NULL, indexed, no FK"
+        json before_snapshot "NULL"
+        json after_snapshot "NULL"
+        json snapshot_metadata "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    scheduling_audit_logs {
+        bigint id PK
+        bigint user_id FK "NULL"
+        bigint schedule_recommendation_id FK "NULL"
+        bigint history_version_id FK "NULL"
+        bigint schedule_submission_id FK "NULL"
+        bigint semester_id FK "NULL"
+        bigint section_id FK "NULL"
+        bigint department_id FK "NULL"
+        varchar action "len 80"
+        json metadata "NULL"
+        timestamp created_at "default now"
+    }
+
+    system_notifications {
+        bigint id PK
+        bigint user_id FK,UK "UK(user_id, event_id)"
+        bigint actor_id FK "NULL"
+        bigint department_id FK "NULL"
+        bigint semester_id FK "NULL"
+        uuid event_id UK "NULL"
+        varchar type "len 80"
+        varchar title "len 160"
+        text message
+        text remarks "NULL"
+        json metadata "NULL"
+        timestamp read_at "NULL, indexed"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    %% ───────────── Rooms: requests & recovery ─────────────
+    room_requests {
+        bigint id PK
+        bigint room_id FK
+        bigint semester_id FK
+        bigint requesting_department_id FK
+        bigint owner_department_id FK "NULL"
+        enum status "pending, approved, rejected, cancelled, revoked"
+        text purpose "NULL"
+        text review_remarks "NULL"
+        bigint requested_by FK "NULL"
+        bigint reviewed_by FK "NULL"
+        timestamp reviewed_at "NULL"
+        json actor_snapshots "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    room_request_windows {
+        bigint id PK
+        bigint room_request_id FK
+        enum day "Monday to Sunday"
+        time start_time
+        time end_time
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    room_recovery_cases {
+        bigint id PK
+        bigint room_id FK
+        bigint semester_id FK
+        bigint department_id FK
+        varchar trigger
+        text reason
+        json original_rows
+        bigint created_by FK "NULL"
+        json actor_snapshots "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    room_recovery_plans {
+        uuid id PK
+        bigint created_by FK
+        bigint semester_id FK
+        bigint department_id FK
+        json payload
+        varchar status "default preview, indexed"
+        json selected_groups "NULL"
+        timestamp submitted_at "NULL"
+        bigint dean_reviewed_by FK "NULL"
+        timestamp dean_reviewed_at "NULL"
+        bigint reviewed_by FK "NULL"
+        timestamp reviewed_at "NULL"
+        text rejection_reason "NULL"
+        timestamp expires_at
+        timestamp applied_at "NULL"
+        json applied_groups "NULL"
+        json actor_snapshots "NULL"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
+    %% ═════════════ Relationships ═════════════
+
+    %% Organization
+    departments ||--o{ programs : "department_id"
+    departments |o--o{ rooms : "department_id"
+    programs |o--o{ rooms : "home_program_id"
+
+    %% Identity & access
+    departments |o--o{ users : "department_id"
+    programs |o--o{ users : "program_id"
+    users |o..o{ sessions : "user_id (no FK)"
+    users ||..o{ personal_access_tokens : "tokenable (polymorphic)"
+    users |o--o{ authentication_audit_logs : "actor_user_id"
+    users |o--o{ authentication_audit_logs : "subject_user_id"
+    authentication_audit_logs ||--o| login_geolocations : "authentication_audit_log_id"
+    roles ||--o{ model_has_roles : "role_id"
+    users ||..o{ model_has_roles : "model (polymorphic)"
+    permissions ||--o{ model_has_permissions : "permission_id"
+    users ||..o{ model_has_permissions : "model (polymorphic)"
+    roles ||--o{ role_has_permissions : "role_id"
+    permissions ||--o{ role_has_permissions : "permission_id"
+
+    %% Faculty
+    users |o--o| faculties : "user_id"
+    departments ||--o{ faculties : "department_id"
+    programs |o--o{ faculties : "program_id"
+    designations |o--o{ designations : "parent_id"
+    faculties ||--o{ designation_faculty : "faculty_id"
+    designations ||--o{ designation_faculty : "designation_id"
+    faculties ||--o{ faculty_availabilities : "faculty_id"
+
+    %% Curriculum
+    departments |o--o{ courses : "department_id"
+    programs |o--o{ courses : "program_id"
+    departments |o--o{ courses : "teaching_department_id"
+    programs |o--o{ courses : "teaching_program_id"
+    programs |o--o{ courses : "teaching_source_program_id"
+    departments |o--o{ curriculum : "department_id"
+    programs |o--o{ curriculum : "program_id"
+    curriculum ||--o{ curriculum_course : "curriculum_id"
+    courses ||--o{ curriculum_course : "course_id"
+    departments ||--o{ curriculum_classification_rules : "department_id"
+    curriculum |o--o{ curriculum_imports : "curriculum_id"
+    departments ||--o{ curriculum_imports : "department_id"
+    users |o--o{ curriculum_imports : "user_id"
+
+    %% Sections & scheduling
+    departments ||--o{ sections : "department_id"
+    programs |o--o{ sections : "program_id"
+    curriculum |o--o{ sections : "curriculum_id"
+    semesters ||--o{ sections : "semester_id"
+    departments ||--o{ department_course_rules : "department_id"
+    courses ||--o{ department_course_rules : "course_id"
+    sections |o--o{ department_course_rules : "section_id"
+
+    semesters ||--o{ schedules : "semester_id"
+    sections ||--o{ schedules : "section_id"
+    curriculum |o--o{ schedules : "curriculum_id"
+    courses ||--o{ schedules : "course_id"
+    faculties |o--o{ schedules : "faculty_id"
+    rooms |o--o{ schedules : "room_id"
+    rooms |o--o{ schedules : "displaced_room_id"
+    departments ||--o{ schedules : "department_id"
+    programs |o--o{ schedules : "program_id"
+    departments |o--o{ schedules : "delegation_returned_from_department_id"
+    departments |o--o{ schedules : "section_teaching_department_id"
+    programs |o--o{ schedules : "section_teaching_program_id"
+    users |o--o{ schedules : "created_by"
+    schedules ||--o{ schedule_splits : "schedule_id"
+
+    users ||--o{ schedule_generation_runs : "requested_by"
+    semesters ||--o{ schedule_generation_runs : "semester_id"
+    departments ||--o{ schedule_generation_runs : "department_id"
+    semesters ||--o{ schedule_recommendations : "semester_id"
+    sections ||--o{ schedule_recommendations : "section_id"
+    departments ||--o{ schedule_recommendations : "department_id"
+    schedule_generation_runs |o--o{ schedule_recommendations : "generation_run_id"
+    users |o--o{ schedule_recommendations : "requested_by"
+    users |o--o{ schedule_recommendations : "accepted_by"
+    users |o--o{ schedule_recommendations : "rejected_by"
+
+    users ||--o{ schedule_generation_drafts : "user_id"
+    departments ||--o{ schedule_generation_drafts : "department_id"
+    semesters ||--o{ schedule_generation_drafts : "semester_id"
+    users ||--o{ instructor_assignment_drafts : "user_id"
+    departments ||--o{ instructor_assignment_drafts : "department_id"
+    semesters ||--o{ instructor_assignment_drafts : "semester_id"
+
+    %% Approval workflow & history
+    departments ||--o{ schedule_submissions : "department_id"
+    semesters ||--o{ schedule_submissions : "semester_id"
+    schedule_submissions |o--o{ schedule_submissions : "parent_submission_id"
+    schedule_history_versions |o--o{ schedule_submissions : "snapshot_version_id"
+    users |o--o{ schedule_submissions : "submitted_by"
+    users |o--o{ schedule_submissions : "dean_reviewed_by"
+    users |o--o{ schedule_submissions : "vpaa_reviewed_by"
+    users |o--o{ schedule_submissions : "withdrawn_by"
+    schedule_submissions ||--o{ schedule_submission_sections : "schedule_submission_id"
+    sections ||--o{ schedule_submission_sections : "section_id"
+
+    semesters |o--o{ schedule_history_versions : "semester_id"
+    departments |o--o{ schedule_history_versions : "department_id"
+    users |o--o{ schedule_history_versions : "actor_user_id"
+    schedule_history_versions ||--o{ schedule_history_items : "history_version_id"
+    schedules |o..o{ schedule_history_items : "original_schedule_id (no FK)"
+
+    users |o--o{ scheduling_audit_logs : "user_id"
+    schedule_recommendations |o--o{ scheduling_audit_logs : "schedule_recommendation_id"
+    schedule_history_versions |o--o{ scheduling_audit_logs : "history_version_id"
+    schedule_submissions |o--o{ scheduling_audit_logs : "schedule_submission_id"
+    semesters |o--o{ scheduling_audit_logs : "semester_id"
+    sections |o--o{ scheduling_audit_logs : "section_id"
+    departments |o--o{ scheduling_audit_logs : "department_id"
+
+    users ||--o{ system_notifications : "user_id"
+    users |o--o{ system_notifications : "actor_id"
+    departments |o--o{ system_notifications : "department_id"
+    semesters |o--o{ system_notifications : "semester_id"
+
+    %% Rooms: requests & recovery
+    rooms ||--o{ room_requests : "room_id"
+    semesters ||--o{ room_requests : "semester_id"
+    departments ||--o{ room_requests : "requesting_department_id"
+    departments |o--o{ room_requests : "owner_department_id"
+    users |o--o{ room_requests : "requested_by"
+    users |o--o{ room_requests : "reviewed_by"
+    room_requests ||--o{ room_request_windows : "room_request_id"
+
+    rooms ||--o{ room_recovery_cases : "room_id"
+    semesters ||--o{ room_recovery_cases : "semester_id"
+    departments ||--o{ room_recovery_cases : "department_id"
+    users |o--o{ room_recovery_cases : "created_by"
+    users ||--o{ room_recovery_plans : "created_by"
+    semesters ||--o{ room_recovery_plans : "semester_id"
+    departments ||--o{ room_recovery_plans : "department_id"
+    users |o--o{ room_recovery_plans : "dean_reviewed_by"
+    users |o--o{ room_recovery_plans : "reviewed_by"

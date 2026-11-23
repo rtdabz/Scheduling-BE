@@ -199,7 +199,7 @@ final class ScheduleConflictScanner
             static fn (array $row): int => (int) ($row['course_id'] ?? 0),
             $rows,
         ))));
-        $courses = $courseIds === [] ? collect() : Course::query()->whereIn('id', $courseIds)->get()->keyBy('id');
+        $courses = $courseIds === [] ? collect() : Course::query()->with('teachingAssignments')->whereIn('id', $courseIds)->get()->keyBy('id');
 
         $owners = [];
         foreach ($rows as $id => $row) {

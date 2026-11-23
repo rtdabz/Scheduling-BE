@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Scheduling;
 
 use App\Http\Controllers\Controller;
 use App\Models\Course;
+use App\Models\CourseTeachingAssignment;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Rooms;
@@ -721,19 +722,20 @@ class InitialDataController extends Controller
             ->whereIn('schedule_id', $scheduleScope()->select('schedules.id'))
             ->get(['schedule_id', 'split_group_id', 'meeting_type', 'meeting_index'])
             ->keyBy('schedule_id');
-        $teachingDepartmentByCourse = Course::query()
-            ->whereIn('id', $rows->pluck('course_id')->filter()->unique()->values())
-            ->pluck('teaching_department_id', 'id');
+        $teachingDepartmentByClass = CourseTeachingAssignment::query()
+            ->whereIn('course_id', $rows->pluck('course_id')->filter()->unique()->values())
+            ->whereIn('semester_id', $rows->pluck('semester_id')->unique()->values())
+            ->get()->keyBy(fn (CourseTeachingAssignment $assignment): string => $assignment->semester_id.':'.$assignment->course_id);
         $virtualRoomCodes = Rooms::query()
             ->whereIn('id', $rows->pluck('room_id')->filter()->unique()->values())
             ->whereIn('room_code', ['ONLINE', 'FIELD'])
             ->pluck('room_code', 'id');
 
-        return $rows->map(static function (object $row) use ($splits, $teachingDepartmentByCourse, $virtualRoomCodes, $viewerDepartmentId): array {
+        return $rows->map(static function (object $row) use ($splits, $teachingDepartmentByClass, $virtualRoomCodes, $viewerDepartmentId): array {
             // Per class: a returned section is taught by its own section-level department.
             $teachingDepartmentId = $row->delegation_returned_from_department_id !== null
                 ? $row->section_teaching_department_id
-                : ($teachingDepartmentByCourse[$row->course_id] ?? null);
+                : ($teachingDepartmentByClass->get($row->semester_id.':'.$row->course_id)?->teaching_department_id);
             // Same rule as the full rows: a borrowed class's instructor stays hidden from the owning
             // department until the teaching department finishes assigning it.
             $facultyHidden = $teachingDepartmentId !== null

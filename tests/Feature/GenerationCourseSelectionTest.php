@@ -109,12 +109,13 @@ class GenerationCourseSelectionTest extends TestCase
 
     public function test_a_field_course_is_never_integrated(): void
     {
-        [$section, , , $lab] = $this->scaffold();
-        $lab->update(['room_type_required' => 'field']);
+        // Laboratory requirements rule out Field placement, so a field course is lecture-only.
+        [$section, $field] = $this->scaffold();
+        $field->update(['room_type_required' => 'field']);
 
         $selection = app(GenerationCourseSelection::class)->resolve($section, [
-            'course_ids' => [$lab->id],
-            'selected_split_session_course_ids' => [$lab->id],
+            'course_ids' => [$field->id],
+            'selected_split_session_course_ids' => [$field->id],
         ]);
 
         $this->assertSame([], $selection['selected_split_session_course_ids']);

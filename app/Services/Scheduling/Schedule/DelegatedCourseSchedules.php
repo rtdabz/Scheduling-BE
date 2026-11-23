@@ -13,7 +13,7 @@ final class DelegatedCourseSchedules
 {
     public function refusal(int $courseId, int $targetDepartmentId, int $semesterId): ?string
     {
-        $course = Course::query()->find($courseId);
+        $course = Course::query()->find($courseId)?->forSemester($semesterId);
         $teachingDepartmentId = (int) ($course?->teaching_department_id ?? 0);
         if ($course === null || $teachingDepartmentId === 0 || $teachingDepartmentId !== $targetDepartmentId) {
             return null;

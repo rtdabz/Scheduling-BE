@@ -12,6 +12,7 @@ use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Services\ScheduleSemesterArchiver;
+use App\Services\CourseTeachingAssignments;
 use App\Support\ApiCache;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -190,6 +191,7 @@ class SemesterController extends Controller
                 $versions = $archiver->archive($schedules, (int) $actor->id, (int) $previous->id);
             }
 
+            app(CourseTeachingAssignments::class)->activate((int) $semester->id);
             $occurredAt = now();
             foreach (array_filter([$previous, $semester]) as $period) {
                 $activating = $period->id === $semester->id;
@@ -219,6 +221,8 @@ class SemesterController extends Controller
             'sections.by_semester',
             'sections.by_department',
             'departments.index',
+            'courses.index',
+            'instructor_assignments.index',
             'initial.data',
         ]);
 

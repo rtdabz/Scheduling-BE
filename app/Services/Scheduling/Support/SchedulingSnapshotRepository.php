@@ -105,6 +105,7 @@ final class SchedulingSnapshotRepository
         $courses = $courseIds === []
             ? collect()
             : Course::query()
+                ->with('teachingAssignments')
                 ->whereIn('id', $courseIds)
                 ->orderBy('id')
                 ->get();
@@ -204,7 +205,7 @@ final class SchedulingSnapshotRepository
             'semester_id' => (int) $semester->id,
             'department_id' => (int) $department->id,
             'sections' => $this->sectionRecords($sections),
-            'courses' => $this->courseRecords($courses, $curriculumPeriods),
+            'courses' => $this->courseRecords($courses, $curriculumPeriods, $semesterId),
             'rooms' => $roomRecords,
             'persisted_schedules' => $this->scheduleRecords($schedules),
             'faculties' => $this->facultyRecords($faculties),
@@ -299,9 +300,10 @@ final class SchedulingSnapshotRepository
     }
 
     /** @return array<int, array<string, mixed>> */
-    private function courseRecords(Collection $courses, Collection $periods): array
+    private function courseRecords(Collection $courses, Collection $periods, int $semesterId): array
     {
-        return $courses->mapWithKeys(static function (Course $course) use ($periods): array {
+        return $courses->mapWithKeys(static function (Course $course) use ($periods, $semesterId): array {
+            $course = $course->forSemester($semesterId);
             $period = $periods->get((int) $course->id);
 
             return [(int) $course->id => [

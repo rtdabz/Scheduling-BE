@@ -316,7 +316,7 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
 
     });
 
-    Route::middleware('capability:schedule.assign_instructor_cross_department')->group(function () {
+    Route::middleware(['capability:schedule.assign_instructor_cross_department', \App\Http\Middleware\CourseAssignmentSemester::class])->group(function () {
         Route::get('course-teaching-assignments', [CourseTeachingAssignmentController::class, 'index']);
         Route::post('course-teaching-assignments/batch', [CourseTeachingAssignmentController::class, 'batch']);
         Route::post('course-teaching-assignments/batch-remove', [CourseTeachingAssignmentController::class, 'batchDestroy']);

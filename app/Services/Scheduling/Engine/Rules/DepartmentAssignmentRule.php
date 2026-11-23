@@ -48,7 +48,9 @@ final class DepartmentAssignmentRule
         }
 
         // Per class: a returned section follows its own section-level assignment.
-        return [...$violations, ...$this->instructorDepartment($records, SchedulingPolicy::courseForRow($course, $attempt))];
+        return [...$violations, ...$this->instructorDepartment($records, SchedulingPolicy::courseForRow(
+            $course, array_replace($attempt, ['semester_id' => $records->semester->id]),
+        ))];
     }
 
     /**

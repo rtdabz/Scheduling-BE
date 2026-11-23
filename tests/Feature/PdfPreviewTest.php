@@ -108,7 +108,8 @@ class PdfPreviewTest extends TestCase
     {
         $token = $this->user()->createToken('browser')->plainTextToken;
         $preview = $this->upload($token)->assertCreated()->json();
-        $other = $this->user()->createToken('other')->plainTextToken;
+        // Only one active VPAA may exist, so the second schedule viewer is a secretary.
+        $other = User::factory()->create(['role' => 'secretary'])->createToken('other')->plainTextToken;
         $this->app['auth']->forgetGuards();
         $this->deleteJson('/api/pdf-previews/'.$preview['id'], [], ['Authorization' => 'Bearer '.$other])->assertForbidden();
         $this->app['auth']->forgetGuards();

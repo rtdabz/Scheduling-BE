@@ -51,7 +51,7 @@ class InitialDataPayloadTest extends TestCase
 
         foreach ($users as $row) {
             $this->assertSame(
-                ['department_id', 'id', 'name', 'program_id', 'role'],
+                ['department_id', 'id', 'is_active', 'name', 'program_id', 'role'],
                 collect(array_keys($row))->sort()->values()->all(),
             );
         }

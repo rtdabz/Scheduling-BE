@@ -97,12 +97,23 @@ class Schedule extends Model
         return $query->whereNull('schedules.delegation_returned_from_department_id');
     }
 
+    /** Correlate delegation to this row's semester, including queries of retained old schedules. */
+    public function scopeWhereCourseTeaching($query, callable $scope)
+    {
+        return $query->whereHas('course')->whereExists(function ($assignment) use ($scope): void {
+            $assignment->selectRaw('1')->from('course_teaching_assignments')
+                ->whereColumn('course_teaching_assignments.course_id', 'schedules.course_id')
+                ->whereColumn('course_teaching_assignments.semester_id', 'schedules.semester_id');
+            $scope($assignment);
+        });
+    }
+
     /** Classes the given department teaches through a delegation (course- or section-level). */
     public function scopeDelegatedTo($query, int $departmentId)
     {
         return $query->where(fn ($rows) => $rows
             ->where(fn ($course) => $course->followsCourseDelegation()
-                ->whereHas('course', fn ($c) => $c->where('courses.teaching_department_id', $departmentId)))
+                ->whereCourseTeaching(fn ($c) => $c->where('course_teaching_assignments.teaching_department_id', $departmentId)))
             // Explicit NOT NULL keeps every branch strictly true/false, so callers may negate
             // these scopes (whereNot) without NULL comparisons silently dropping rows.
             ->orWhere(fn ($section) => $section->whereNotNull('schedules.delegation_returned_from_department_id')
@@ -115,8 +126,8 @@ class Schedule extends Model
     {
         return $query->where(fn ($rows) => $rows
             ->where(fn ($course) => $course->followsCourseDelegation()
-                ->whereHas('course', fn ($c) => $c->whereNotNull('courses.teaching_department_id')
-                    ->where('courses.teaching_department_id', '!=', $departmentId)))
+                ->whereCourseTeaching(fn ($c) => $c->whereNotNull('course_teaching_assignments.teaching_department_id')
+                    ->where('course_teaching_assignments.teaching_department_id', '!=', $departmentId)))
             ->orWhere(fn ($section) => $section->whereNotNull('schedules.delegation_returned_from_department_id')
                 ->whereNotNull('schedules.section_teaching_department_id')
                 ->where('schedules.section_teaching_department_id', '!=', $departmentId)));
@@ -127,8 +138,8 @@ class Schedule extends Model
     {
         return $query->where(fn ($rows) => $rows
             ->where(fn ($course) => $course->followsCourseDelegation()
-                ->whereHas('course', fn ($c) => $c->whereNotNull('courses.teaching_department_id')
-                    ->whereColumn('courses.teaching_department_id', '!=', 'schedules.department_id')))
+                ->whereCourseTeaching(fn ($c) => $c->whereNotNull('course_teaching_assignments.teaching_department_id')
+                    ->whereColumn('course_teaching_assignments.teaching_department_id', '!=', 'schedules.department_id')))
             ->orWhere(fn ($section) => $section->whereNotNull('schedules.delegation_returned_from_department_id')
                 ->whereNotNull('schedules.section_teaching_department_id')
                 ->whereColumn('schedules.section_teaching_department_id', '!=', 'schedules.department_id')));
@@ -139,7 +150,7 @@ class Schedule extends Model
     {
         return $query->where(fn ($rows) => $rows
             ->where(fn ($course) => $course->followsCourseDelegation()
-                ->whereHas('course', fn ($c) => $c->where('courses.teaching_program_id', $programId)))
+                ->whereCourseTeaching(fn ($c) => $c->where('course_teaching_assignments.teaching_program_id', $programId)))
             ->orWhere(fn ($section) => $section->whereNotNull('schedules.delegation_returned_from_department_id')
                 ->whereNotNull('schedules.section_teaching_program_id')
                 ->where('schedules.section_teaching_program_id', $programId)));
@@ -283,7 +294,28 @@ class Schedule extends Model
 
     public function course()
     {
-        return $this->belongsTo(Course::class, 'course_id');
+        return $this->belongsTo(Course::class, 'course_id')->with('teachingAssignments');
+    }
+
+    public function getRelationValue($key)
+    {
+        $value = parent::getRelationValue($key);
+        if ($key === 'course' && $value instanceof Course && $this->semester_id !== null) {
+            $value = $value->forSemester((int) $this->semester_id);
+            $this->setRelation('course', $value);
+        }
+
+        return $value;
+    }
+
+    public function relationsToArray()
+    {
+        // Eloquent serializes stored relations directly, without going through property access.
+        if ($this->relationLoaded('course')) {
+            $this->getRelationValue('course');
+        }
+
+        return parent::relationsToArray();
     }
 
     public function curriculum()

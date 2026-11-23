@@ -263,6 +263,7 @@ class SystemNotificationService
     private function notifyDelegatedCourseCompletion(Schedule $schedule, User $actor, ?array $completedScheduleIds = null): void
     {
         $course = $schedule->course;
+        $semesterId = (int) ($schedule->semester_id ?? 0);
         $sourceDepartmentId = (int) ($course?->department_id ?? 0);
         $receivingDepartmentId = (int) ($course?->teaching_department_id ?? 0);
         if ($sourceDepartmentId === 0 || $receivingDepartmentId === 0 || $sourceDepartmentId === $receivingDepartmentId) {
@@ -271,8 +272,9 @@ class SystemNotificationService
 
         $courseIds = Course::query()
             ->where('department_id', $sourceDepartmentId)
-            ->where('teaching_department_id', $receivingDepartmentId)
-            ->when($course->teaching_source_program_id !== null, fn ($query) => $query->where('teaching_source_program_id', $course->teaching_source_program_id))
+            ->whereHas('teachingAssignments', fn ($query) => $query->where('semester_id', $semesterId)
+                ->where('teaching_department_id', $receivingDepartmentId)
+                ->when($course->teaching_source_program_id !== null, fn ($source) => $source->where('teaching_source_program_id', $course->teaching_source_program_id)))
             ->where('status', 'active')
             ->pluck('id');
         if ($courseIds->isEmpty()) {
@@ -292,7 +294,6 @@ class SystemNotificationService
             $courseIds = $completed->pluck('course_id')->unique()->values();
         }
 
-        $semesterId = (int) ($schedule->semester_id ?? 0);
         if ($completedScheduleIds === null) {
             $pending = Schedule::query()->where('semester_id', $semesterId)->whereIn('course_id', $courseIds)
                 ->followsCourseDelegation()

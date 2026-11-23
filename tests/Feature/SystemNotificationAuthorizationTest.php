@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Events\LiveDataChanged;
 use App\Events\UserNotificationsChanged;
 use App\Jobs\DeliverSystemNotifications;
 use App\Models\Course;
@@ -172,7 +173,9 @@ class SystemNotificationAuthorizationTest extends TestCase
     public function test_read_and_delivery_signals_are_private_and_only_authorized_recipients_are_pinged(): void
     {
         config(['broadcasting.default' => 'pusher']);
-        Event::fake([UserNotificationsChanged::class]);
+        // Fake both broadcasts: a real LiveDataChanged send would hit Pusher, and a failed
+        // send trips the outage backoff that silences every later flush in this test.
+        Event::fake([LiveDataChanged::class, UserNotificationsChanged::class]);
         app(LiveUpdates::class)->flush();
         app(SystemNotificationService::class)->createForUsers(collect($this->users), 'room_transfer_submitted', 'Review', 'Review', departmentId: $this->department->id);
         app(LiveUpdates::class)->flush();

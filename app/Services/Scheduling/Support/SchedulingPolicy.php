@@ -1768,6 +1768,10 @@ final class SchedulingPolicy
      */
     public static function courseForRow(Course $course, array|object|null $row): Course
     {
+        $semesterId = self::rowValue($row, 'semester_id');
+        if ($semesterId !== null) {
+            $course = $course->forSemester((int) $semesterId);
+        }
         if (! self::isDetachedClass($row)) {
             return $course;
         }

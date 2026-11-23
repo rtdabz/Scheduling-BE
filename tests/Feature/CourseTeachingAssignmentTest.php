@@ -657,7 +657,7 @@ class CourseTeachingAssignmentTest extends TestCase
      */
     public function test_no_active_semester_leaves_the_listing_unnarrowed(): void
     {
-        $fixture = $this->fixture();
+        $fixture = $this->fixture(false);
         $secondSemester = $this->course('GEC 201', 'minor', $fixture['it']->id);
         $this->place($fixture['curriculum'], $secondSemester, '1', 2);
 
@@ -823,8 +823,11 @@ class CourseTeachingAssignmentTest extends TestCase
     }
 
     /** @return array<string, mixed> */
-    private function fixture(): array
+    private function fixture(bool $withSemester = true): array
     {
+        if ($withSemester) {
+            $this->activateSemester('1st');
+        }
         $it = Departments::create([
             'department_name' => 'Information Technology',
             'department_code' => 'CIT',

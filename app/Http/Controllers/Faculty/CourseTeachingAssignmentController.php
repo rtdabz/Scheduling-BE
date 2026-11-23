@@ -122,6 +122,11 @@ class CourseTeachingAssignmentController extends Controller
 
     private function activeSemester(): ?Semester
     {
+        $locked = request()->attributes->get('course_assignment_semester');
+        if ($locked instanceof Semester) {
+            return $locked;
+        }
+
         return Cache::remember(
             ApiCache::key('semesters.active'),
             ApiCache::LOOKUP_TTL_SECONDS,
@@ -493,7 +498,7 @@ class CourseTeachingAssignmentController extends Controller
                 "{$source} assigned {$count} course".($count === 1 ? '' : 's')." to {$target}. View Cross-Department.",
                 $actor,
                 $targetId,
-                null,
+                $this->activeSemester()?->id,
                 null,
                 ['course_ids' => $changedCourses->pluck('id')->values()->all(), 'source_department_id' => $actor?->department_id, 'teaching_department_id' => $targetId, 'teaching_program_id' => $targetProgramId],
                 $targetProgramId === null ? null : [$targetProgramId],
@@ -890,7 +895,7 @@ class CourseTeachingAssignmentController extends Controller
                 "{$source} assigned {$course->course_code} to {$target}.",
                 $actor,
                 $teachingDepartmentId,
-                null,
+                $this->activeSemester()?->id,
                 null,
                 [
                     'course_id' => $course->id,

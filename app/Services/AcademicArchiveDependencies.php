@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Course;
+use App\Models\CourseTeachingAssignment;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
@@ -25,7 +26,7 @@ final class AcademicArchiveDependencies
             'sections' => Sections::where($column, $parent->id),
             'curricula' => Curriculum::where($column, $parent->id)->where('status', '!=', 'archived'),
             'schedules' => Schedule::where($column, $parent->id),
-            'teaching assignments' => Course::where($isProgram ? 'teaching_program_id' : 'teaching_department_id', $parent->id),
+            'teaching assignments' => CourseTeachingAssignment::where($isProgram ? 'teaching_program_id' : 'teaching_department_id', $parent->id),
             'rooms' => Rooms::where($isProgram ? 'home_program_id' : 'department_id', $parent->id),
         ];
         if (! $isProgram) {
@@ -34,7 +35,7 @@ final class AcademicArchiveDependencies
                 ->whereHas('academicSemester', fn ($query) => $query->where('is_active', true))
                 ->where(fn ($query) => $query->where('requesting_department_id', $parent->id)->orWhere('owner_department_id', $parent->id));
         } else {
-            $queries['delegated source courses'] = Course::where('teaching_source_program_id', $parent->id);
+            $queries['delegated source courses'] = CourseTeachingAssignment::where('teaching_source_program_id', $parent->id);
         }
 
         return array_keys(array_filter($queries, fn ($query) => $query->exists()));

@@ -67,7 +67,7 @@ class ProfileController extends Controller
                 'faculty_profile_synced' => $synced !== null,
             ]);
         });
-        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data']);
+        ApiCache::forgetGroups(['departments.index', 'faculty.index', 'initial.data', 'initial.data.users']);
 
         return response()->json([
             'message' => 'Profile updated successfully.',

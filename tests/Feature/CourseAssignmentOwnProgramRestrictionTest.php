@@ -7,6 +7,7 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
+use App\Models\Semester;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -279,6 +280,7 @@ class CourseAssignmentOwnProgramRestrictionTest extends TestCase
      */
     private function fixture(): array
     {
+        Semester::create(['academic_year' => '2026-2027', 'semester' => '1st', 'is_active' => true, 'is_enabled' => true]);
         $ccs = Departments::create(['department_name' => 'College of Computing', 'department_code' => 'CCS']);
         $solo = Departments::create(['department_name' => 'College of Nursing', 'department_code' => 'CON']);
         $cas = Departments::create(['department_name' => 'College of Arts and Sciences', 'department_code' => 'CAS']);

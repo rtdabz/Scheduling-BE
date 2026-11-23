@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\CourseTeachingAssignments;
 use Illuminate\Database\Eloquent\Model;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -12,6 +13,66 @@ class Course extends Model
     use SoftDeletes;
 
     protected $table = 'courses';
+
+    protected $hidden = ['teachingAssignments'];
+
+    /** A retained semester's view must never write into the active projection. */
+    protected ?int $teachingSemesterContext = null;
+
+    public function save(array $options = [])
+    {
+        $teachingChanged = $this->isDirty(CourseTeachingAssignments::FIELDS);
+        if ($this->teachingSemesterContext === null && ! $teachingChanged) {
+            return parent::save($options);
+        }
+
+        return DB::transaction(function () use ($options, $teachingChanged) {
+            // Same lock order as activation; mapping and projection must commit together.
+            $semester = Semester::query()->orderBy('id')->lockForUpdate()->get()->firstWhere('is_active', true);
+            if ($this->teachingSemesterContext !== null && $this->teachingSemesterContext !== (int) $semester?->id) {
+                throw new \LogicException('A historical semester-specific course view cannot be saved.');
+            }
+            $saved = parent::save($options);
+            if ($saved && $teachingChanged && $semester !== null) {
+                CourseTeachingAssignment::updateOrCreate(
+                    ['course_id' => $this->id, 'semester_id' => $semester->id],
+                    $this->only(CourseTeachingAssignments::FIELDS) + ['is_legacy_snapshot' => false],
+                );
+                $this->unsetRelation('teachingAssignments');
+            }
+
+            return $saved;
+        }, 3);
+    }
+
+    public function teachingAssignments()
+    {
+        return $this->hasMany(CourseTeachingAssignment::class);
+    }
+
+    public function forSemester(int $semesterId): self
+    {
+        if ($this->teachingSemesterContext === $semesterId || ! $this->exists) {
+            return $this;
+        }
+        $this->loadMissing('teachingAssignments');
+        $assignment = $this->teachingAssignments->firstWhere('semester_id', $semesterId);
+        $copy = clone $this;
+        foreach (CourseTeachingAssignments::FIELDS as $field) {
+            if ($copy->getAttribute($field) != $assignment?->$field) {
+                $copy->unsetRelation(match ($field) {
+                    'teaching_department_id' => 'teachingDepartment',
+                    'teaching_program_id' => 'teachingProgram',
+                    default => 'teachingSourceProgram',
+                });
+            }
+            $copy->setAttribute($field, $assignment?->$field);
+        }
+        $copy->teachingSemesterContext = $semesterId;
+        $copy->syncOriginal();
+
+        return $copy;
+    }
 
     protected $fillable = [
         'course_code',
