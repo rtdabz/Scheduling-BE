@@ -55,6 +55,10 @@ final class ScheduleReuseService
     public function reuse(ScheduleHistoryVersion $version, Request $request): array
     {
         $this->assertDepartment($version, $request);
+        $sourceRows = ApprovedScheduleHistory::rows($version)->pluck('snapshot')->all();
+        if ($sourceRows !== [] && ! $this->authorization->programOperationRowsWritable($request, $sourceRows, (int) $version->department_id)) {
+            throw new ScheduleReuseRejected([['check' => 'program', 'message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE]], 403);
+        }
         $semester = $this->activeSemester($version);
 
         return $this->scheduleWriteLock->execute([(int) $semester->id], fn () => DB::transaction(function () use ($version, $request, $semester): array {
@@ -140,6 +144,9 @@ final class ScheduleReuseService
         if ($rows->isEmpty()) {
             throw new ScheduleReuseRejected([['check' => 'schedule', 'message' => 'This history entry has no classes to reuse.']]);
         }
+        if (! $this->authorization->programOperationRowsWritable($request, $rows->pluck('snapshot')->all(), $departmentId)) {
+            throw new ScheduleReuseRejected([['check' => 'program', 'message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE]], 403);
+        }
 
         $issues = [];
         $rows = $this->restoreLegacyHybridGroups($rows, $issues);
@@ -149,6 +156,11 @@ final class ScheduleReuseService
             throw new ScheduleReuseRejected([['check' => 'department', 'message' => 'You can only reuse schedules for sections in your own program.']], 403);
         }
         $targetSections = Sections::query()->whereKey($targetSectionIds)->get()->keyBy('id');
+        if ($targetSections->isNotEmpty() && ! $this->authorization->programOperationRowsWritable($request, $targetSections->map(fn ($section) => [
+            'section_id' => $section->id, 'program_id' => $section->program_id, 'curriculum_id' => $section->curriculum_id,
+        ])->values()->all(), $departmentId)) {
+            throw new ScheduleReuseRejected([['check' => 'program', 'message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE]], 403);
+        }
 
         $this->checkCurricula($rows, $sectionMap, $targetSections, $issues);
         $this->checkOccupancy($rows, $sectionMap, $targetSections, $semester, $issues);

@@ -149,6 +149,9 @@ class CurriculumController extends Controller
             }
             $validated['program_id'] = $user->program_id;
         }
+        if (! $this->authorization->officeMayManageProgram($request, $validated['program_id'] ?? null)) {
+            return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE], 403);
+        }
 
         $this->validateParentScope($validated);
         $curriculum = Curriculum::create($validated);
@@ -181,9 +184,21 @@ class CurriculumController extends Controller
             return false;
         }
         $user = $request->user();
+        if (! $this->authorization->officeMayManageProgram($request, $curriculum->program_id)) {
+            return false;
+        }
 
         return $user->role !== 'program_head'
             || ($user->program_id !== null && (int) $curriculum->program_id === (int) $user->program_id);
+    }
+
+    private function authorRefusal(Request $request, Curriculum $curriculum): \Illuminate\Http\JsonResponse
+    {
+        return response()->json([
+            'message' => $this->authorization->officeMayManageProgram($request, $curriculum->program_id)
+                ? 'Forbidden.'
+                : ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE,
+        ], 403);
     }
 
     /** @return array<string, mixed> */
@@ -208,7 +223,7 @@ class CurriculumController extends Controller
     public function update(Request $request, Curriculum $curriculum)
     {
         if (! $this->canAuthor($request, $curriculum)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return $this->authorRefusal($request, $curriculum);
         }
         $rules = [
             'name' => 'sometimes|string|max:255',
@@ -227,6 +242,9 @@ class CurriculumController extends Controller
         $validated = $request->validate($rules);
         if ($request->user()->role === 'program_head') {
             unset($validated['program_id']);
+        }
+        if (array_key_exists('program_id', $validated) && ! $this->authorization->officeMayManageProgram($request, $validated['program_id'])) {
+            return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE], 403);
         }
 
         $newStatus = $validated['status'] ?? $curriculum->status;
@@ -248,7 +266,7 @@ class CurriculumController extends Controller
     public function destroy(Request $request, Curriculum $curriculum)
     {
         if (! $this->canAuthor($request, $curriculum)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return $this->authorRefusal($request, $curriculum);
         }
         if (($blocked = $this->rejectIfStillInUse($curriculum, 'archived')) !== null) {
             return $blocked;
@@ -264,7 +282,7 @@ class CurriculumController extends Controller
     public function duplicate(Request $request, Curriculum $curriculum)
     {
         if (! $this->canAuthor($request, $curriculum)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return $this->authorRefusal($request, $curriculum);
         }
 
         $newCurriculum = \Illuminate\Support\Facades\DB::transaction(function () use ($request, $curriculum) {
@@ -310,7 +328,7 @@ class CurriculumController extends Controller
     public function updateStatus(Request $request, Curriculum $curriculum)
     {
         if (! $this->canAuthor($request, $curriculum)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return $this->authorRefusal($request, $curriculum);
         }
 
         $validated = $request->validate([
@@ -334,7 +352,7 @@ class CurriculumController extends Controller
     public function attachCourse(Request $request, Curriculum $curriculum)
     {
         if (! $this->canAuthor($request, $curriculum)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return $this->authorRefusal($request, $curriculum);
         }
 
         $validated = $request->validate([
@@ -377,7 +395,7 @@ class CurriculumController extends Controller
     public function attachCoursesBatch(Request $request, Curriculum $curriculum)
     {
         if (! $this->canAuthor($request, $curriculum)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return $this->authorRefusal($request, $curriculum);
         }
 
         $validated = $request->validate([
@@ -415,7 +433,7 @@ class CurriculumController extends Controller
     public function batchCreateAndAttachCourses(BatchStoreCoursesRequest $request, Curriculum $curriculum)
     {
         if (! $this->canAuthor($request, $curriculum)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return $this->authorRefusal($request, $curriculum);
         }
 
         validator(['department_id' => $curriculum->department_id], [
@@ -555,7 +573,7 @@ class CurriculumController extends Controller
     public function updateCourseHours(Request $request, Curriculum $curriculum, Course $course, CurriculumCourseHours $hours)
     {
         if (! $this->canAuthor($request, $curriculum)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return $this->authorRefusal($request, $curriculum);
         }
 
         // 0 hours per unit is allowed: that component then gets no class time.
@@ -588,7 +606,7 @@ class CurriculumController extends Controller
     public function detachCourse(Request $request, Curriculum $curriculum, Course $course)
     {
         if (! $this->canAuthor($request, $curriculum)) {
-            return response()->json(['message' => 'Forbidden.'], 403);
+            return $this->authorRefusal($request, $curriculum);
         }
 
         if ($blocked = $this->scheduledCourseRemovalResponse($curriculum, $course)) {
@@ -620,9 +638,11 @@ class CurriculumController extends Controller
             ->orderBy('curriculum_course.year_level')
             ->orderBy('curriculum_course.semester')
             ->get();
+        // Course records a Program Head's program also uses: the office may not edit them here.
+        $headManaged = $this->authorization->headManagedCourseIds($request, $courses->pluck('id')->map('intval')->all());
 
         $grouped = $courses->groupBy(fn ($c) => $c->pivot->year_level.'-'.$c->pivot->semester)
-            ->map(function ($group) {
+            ->map(function ($group) use ($headManaged) {
                 $first = $group->first();
 
                 return [
@@ -646,6 +666,7 @@ class CurriculumController extends Controller
                         'total_units' => $c->units,
                         'program_id' => $c->program_id,
                         'department_id' => $c->department_id,
+                        'program_head_managed' => in_array((int) $c->id, $headManaged, true),
                         'prerequisites_text' => $c->pivot->prerequisites_text,
                         'hours' => CurriculumCourseHours::describe($c, $c->pivot),
                         // Null for placements written before imports: those keep the legacy credit-derived durations.

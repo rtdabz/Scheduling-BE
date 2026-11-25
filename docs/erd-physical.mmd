@@ -1,5 +1,5 @@
 ---
-title: Physical ERD (current schema, from migrations up to 2026-11-17)
+title: Physical ERD (current schema, from migrations up to 2026-11-23)
 ---
 %% Key: PK primary key, FK foreign key, UK unique (composite where noted).
 %% Comments: "NULL" = nullable column, enum values listed, "virtual" = generated column.
@@ -351,6 +351,18 @@ erDiagram
         timestamp updated_at "NULL"
     }
 
+    course_teaching_assignments {
+        bigint id PK
+        bigint course_id FK,UK "UK(course_id, semester_id)"
+        bigint semester_id FK,UK
+        bigint teaching_department_id FK "NULL"
+        bigint teaching_program_id FK "NULL"
+        bigint teaching_source_program_id FK "NULL"
+        boolean is_legacy_snapshot "default false"
+        timestamp created_at "NULL"
+        timestamp updated_at "NULL"
+    }
+
     %% ───────────── Sections & scheduling ─────────────
     sections {
         bigint id PK
@@ -688,6 +700,11 @@ erDiagram
     curriculum |o--o{ curriculum_imports : "curriculum_id"
     departments ||--o{ curriculum_imports : "department_id"
     users |o--o{ curriculum_imports : "user_id"
+    courses ||--o{ course_teaching_assignments : "course_id"
+    semesters ||--o{ course_teaching_assignments : "semester_id"
+    departments |o--o{ course_teaching_assignments : "teaching_department_id"
+    programs |o--o{ course_teaching_assignments : "teaching_program_id"
+    programs |o--o{ course_teaching_assignments : "teaching_source_program_id"
 
     %% Sections & scheduling
     departments ||--o{ sections : "department_id"

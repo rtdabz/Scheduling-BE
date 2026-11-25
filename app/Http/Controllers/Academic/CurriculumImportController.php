@@ -10,6 +10,7 @@ use App\Services\Curriculum\CurriculumImportService;
 use App\Services\Curriculum\CurriculumImportSettings;
 use App\Services\Curriculum\CurriculumImportTemplate;
 use App\Services\Curriculum\CurriculumImportValidator;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,6 +22,7 @@ class CurriculumImportController extends Controller
         private readonly CurriculumImportSettings $settings,
         private readonly CurriculumImportValidator $validator,
         private readonly CurriculumImportService $imports,
+        private readonly ScheduleAuthorizationService $authorization,
     ) {}
 
     public function showSettings(Request $request): JsonResponse
@@ -59,6 +61,9 @@ class CurriculumImportController extends Controller
     public function validateDraft(Request $request): JsonResponse
     {
         $payload = $request->validate(CurriculumImportValidator::rules($request->user(), false), CurriculumImportValidator::messages());
+        if ($refused = $this->headManagedTargetRefusal($request, $payload)) {
+            return $refused;
+        }
 
         return response()->json($this->validator->validate($payload, $this->department($request), $request->user()));
     }
@@ -66,6 +71,9 @@ class CurriculumImportController extends Controller
     public function store(Request $request): JsonResponse
     {
         $payload = $request->validate(CurriculumImportValidator::rules($request->user(), true), CurriculumImportValidator::messages());
+        if ($refused = $this->headManagedTargetRefusal($request, $payload)) {
+            return $refused;
+        }
 
         try {
             $result = $this->imports->commit($payload, $this->department($request), $request->user());
@@ -102,6 +110,24 @@ class CurriculumImportController extends Controller
         abort_if($user->department_id === null, 422, 'Your account is not assigned to a department.');
 
         return Departments::query()->findOrFail((int) $user->department_id);
+    }
+
+    /**
+     * The department office may not import a curriculum into a program that has a Program Head.
+     * An office import must identify an unheaded program whenever the department has a Program Head.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function headManagedTargetRefusal(Request $request, array $payload): ?JsonResponse
+    {
+        if (($payload['metadata']['program_id'] ?? null) === null
+            && $this->authorization->headManagedProgramIds($request) !== []) {
+            return response()->json(['message' => 'Choose a program without an active Program Head. Department-wide imports are restricted while any program has a Program Head.'], 403);
+        }
+
+        return $this->authorization->officeMayManageProgram($request, $payload['metadata']['program_id'] ?? null)
+            ? null
+            : response()->json(['message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE], 403);
     }
 
     private function canManageSettings(Request $request): bool

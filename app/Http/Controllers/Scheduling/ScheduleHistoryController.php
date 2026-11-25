@@ -13,6 +13,7 @@ use App\Services\Scheduling\History\ScheduleHistoryExporter;
 use App\Services\Scheduling\History\ScheduleHistorySummaries;
 use App\Services\Scheduling\History\ScheduleReuseRejected;
 use App\Services\Scheduling\History\ScheduleReuseService;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Support\ApiCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -48,7 +49,7 @@ class ScheduleHistoryController extends Controller
             return response()->json(['message' => 'You can only view history for your department.'], 403);
         }
 
-        return $this->indexVersions($validated, $page, $perPage, $user, $requestedDepartment);
+        return $this->indexVersions($validated, $page, $perPage, $user, $requestedDepartment, $request);
     }
 
     /**
@@ -56,7 +57,7 @@ class ScheduleHistoryController extends Controller
      * per-class rows (`snapshots`) and fallback signatory accounts (`users`) are served by show() when an
      * entry is opened or printed; loading them here made each page several MB.
      */
-    private function indexVersions(array $validated, int $page, int $perPage, $user, $requestedDepartment): JsonResponse
+    private function indexVersions(array $validated, int $page, int $perPage, $user, $requestedDepartment, Request $request): JsonResponse
     {
         $query = ApprovedScheduleHistory::visibleTo(ApprovedScheduleHistory::query(self::TYPES[$validated['type'] ?? ''] ?? null), $user)
             ->with(['department:id,department_name,department_code,logo', 'semesterRecord:id,academic_year,semester'])
@@ -69,11 +70,17 @@ class ScheduleHistoryController extends Controller
         // Cache only versions whose writes have certainly finished (items are inserted right after the version).
         $settled = $versions->filter(fn (ScheduleHistoryVersion $version) => $version->created_at?->lt(now()->subSeconds(ScheduleHistorySummaries::SETTLE_SECONDS)) ?? false)->pluck('id')->all();
         $summaries = $this->summaries->forVersions($versions->pluck('id')->all(), $settled);
+        $scopes = $versions->mapWithKeys(fn ($version) => [(int) $version->id => [
+            'department_id' => (int) $version->department_id, 'rows' => $summaries[$version->id]['ownership_rows'] ?? [],
+        ]])->all();
+        $reuseAccess = app(ScheduleAuthorizationService::class)->programOperationAccessAmong($request, $scopes);
+        $canCreate = $user?->hasCapability('schedule.create') === true;
 
-        $data = $versions->map(function (ScheduleHistoryVersion $version) use ($summaries): array {
+        $data = $versions->map(function (ScheduleHistoryVersion $version) use ($summaries, $reuseAccess, $canCreate): array {
             $summary = $summaries[$version->id] ?? ['count' => 0, 'sections' => 0, 'schedule_id' => null, 'snapshot' => null, 'section_name' => null];
 
-            return $this->summary($version, $summary['count'], $summary['sections'], $summary['schedule_id'], $summary['snapshot'], $summary['section_name']);
+            return $this->summary($version, $summary['count'], $summary['sections'], $summary['schedule_id'], $summary['snapshot'], $summary['section_name'])
+                + ['can_reuse' => $canCreate && ($reuseAccess[$version->id] ?? false)];
         })->values();
 
         return response()->json(['data' => $data, 'meta' => ['current_page' => $page, 'per_page' => $perPage, 'total' => $paginator->total(), 'last_page' => $paginator->lastPage(), 'from' => $paginator->firstItem(), 'to' => $paginator->lastItem()]]);
@@ -139,6 +146,8 @@ class ScheduleHistoryController extends Controller
             })->values()->all(),
             // Current accounts, used only when the entry has no recorded `signatories`.
             'users' => $users->values()->all(),
+            'can_reuse' => $user?->hasCapability('schedule.create') === true
+                && app(ScheduleAuthorizationService::class)->programOperationRowsWritable($request, ApprovedScheduleHistory::rows($entry)->pluck('snapshot')->all(), (int) $entry->department_id),
         ]]);
     }
 

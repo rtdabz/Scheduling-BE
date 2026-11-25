@@ -33,6 +33,8 @@ class CourseTeachingAssignmentController extends Controller
 
     public const OWN_PROGRAM_MESSAGE = 'Courses cannot be assigned to your own program through Course Assignment. Choose another program or college.';
 
+    public const OFFICE_LOCKED_MESSAGE = 'Every program in your department is managed by its Program Head, so Course Assignment is handled by the Program Heads.';
+
     private const RESTRICTED_ROLES = ['program_head', 'secretary', 'director'];
 
     public function __construct(
@@ -49,19 +51,33 @@ class CourseTeachingAssignmentController extends Controller
             return response()->json(['message' => 'Your account must belong to a department.'], 422);
         }
 
+        if ($locked = $this->officeLockedOut($request)) {
+            return $locked;
+        }
+
         $programId = $request->user()?->role === 'program_head'
             ? ($request->user()?->program_id === null ? null : (int) $request->user()->program_id)
             : null;
+        // The department office does not see Program Heads' programs here: their curricula,
+        // sections and incoming hand-offs are left out, and a shared course one of them uses is
+        // listed as `program_head_managed` (its course-wide assignment is locked).
+        $headManagedProgramIds = $this->authorization->headManagedProgramIds($request);
         $activeSemester = $this->activeSemester();
         $activePeriod = self::pivotSemester($activeSemester?->semester);
 
-        $curriculumIds = $this->activeCurriculumIds($departmentId, $programId);
+        $curriculumIds = $this->activeCurriculumIds($departmentId, $programId)
+            ->when($headManagedProgramIds !== [], fn (Collection $ids): Collection => Curriculum::query()
+                ->whereIn('id', $ids)
+                ->where(fn ($scope) => $scope->whereNull('program_id')->orWhereNotIn('program_id', $headManagedProgramIds))
+                ->pluck('id'));
         $courses = $this->departmentCourses($departmentId, $curriculumIds, $activePeriod);
+        $headManagedCourseIds = $this->authorization->headManagedCourseIds($request, $courses->pluck('id')->map('intval')->all());
         $instructorClasses = $this->classesWithInstructor($courses->pluck('id')->map('intval')->all());
         $sectionAssignments = $this->sectionAssignments(
             $courses->pluck('id')->map('intval')->values()->all(),
             $departmentId,
             $programId,
+            $headManagedProgramIds,
         );
         // Incoming: courses delegated here as a whole, plus courses with returned sections handed
         // here one by one.
@@ -70,10 +86,16 @@ class CourseTeachingAssignmentController extends Controller
             ->whereNotNull('delegation_returned_from_department_id')
             ->where('section_teaching_department_id', $departmentId)
             ->when($programId !== null, fn ($query) => $query->where('section_teaching_program_id', $programId))
+            ->when($headManagedProgramIds !== [], fn ($query) => $query->where(fn ($scope) => $scope
+                ->whereNull('section_teaching_program_id')
+                ->orWhereNotIn('section_teaching_program_id', $headManagedProgramIds)))
             ->distinct()->pluck('course_id')->map('intval');
         $incoming = Course::query()->with(['department', 'teachingDepartment', 'teachingProgram', 'teachingSourceProgram', 'program'])
             ->where('status', 'active')
             ->where(fn ($handed) => $handed->delegatedTo($departmentId, $programId)->orWhereIn('courses.id', $sectionLevelCourseIds))
+            ->when($headManagedProgramIds !== [], fn ($query) => $query->where(fn ($scope) => $scope
+                ->whereNull('teaching_program_id')
+                ->orWhereNotIn('teaching_program_id', $headManagedProgramIds)))
             ->when($activePeriod !== null, fn ($query) => $query->whereIn(
                 'courses.id',
                 $this->coursesPlacedInSemester($activePeriod),
@@ -100,7 +122,8 @@ class CourseTeachingAssignmentController extends Controller
             'incoming_cross_department_courses' => $incoming,
             'courses' => $courses
                 ->map(fn (Course $course): array => $this->present($course, $instructorClasses[(int) $course->id] ?? 0)
-                    + ['section_assignments' => $sectionAssignments[(int) $course->id] ?? []])
+                    + ['section_assignments' => $sectionAssignments[(int) $course->id] ?? []]
+                    + ['program_head_managed' => in_array((int) $course->id, $headManagedCourseIds, true)])
                 ->sortBy([['year_level', 'asc'], ['course_code', 'asc']])
                 ->values(),
         ]);
@@ -228,6 +251,38 @@ class CourseTeachingAssignmentController extends Controller
                 $course->curriculum_program_major = $placement->curriculum_program_major;
             }
         });
+    }
+
+    /**
+     * The department office manages Course Assignment only for programs without a Program Head.
+     * When every program of its department has one, the whole module is the Program Heads'.
+     */
+    private function officeLockedOut(Request $request): ?JsonResponse
+    {
+        return $this->authorization->headManagedProgramIds($request) !== []
+            && $this->authorization->writableProgramIds($request) === []
+                ? response()->json(['message' => self::OFFICE_LOCKED_MESSAGE, 'reason' => 'program_head_managed'], 403)
+                : null;
+    }
+
+    /**
+     * The department office may not change the course-wide teaching assignment of a course that
+     * a Program Head's program uses: it would move that program's classes too.
+     *
+     * @param  list<int>  $courseIds
+     */
+    private function refuseHeadManagedCourses(Request $request, array $courseIds): ?JsonResponse
+    {
+        if ($locked = $this->officeLockedOut($request)) {
+            return $locked;
+        }
+
+        $managed = $this->authorization->headManagedCourseIds($request, $courseIds);
+
+        return $managed === [] ? null : response()->json([
+            'message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_COURSE_MESSAGE,
+            'program_head_managed_course_ids' => $managed,
+        ], 403);
     }
 
     /**
@@ -402,6 +457,9 @@ class CourseTeachingAssignmentController extends Controller
         if ($outside = $this->refuseOutsideProgram($request->user(), [(int) $course->id])) {
             return $outside;
         }
+        if ($headManaged = $this->refuseHeadManagedCourses($request, [(int) $course->id])) {
+            return $headManaged;
+        }
 
         $teachingDepartmentId = $validated['teaching_department_id'] === null
             ? null
@@ -448,6 +506,9 @@ class CourseTeachingAssignmentController extends Controller
         }
         if ($outside = $this->refuseOutsideProgram($request->user(), array_map('intval', $validated['course_ids']))) {
             return $outside;
+        }
+        if ($headManaged = $this->refuseHeadManagedCourses($request, array_map('intval', $validated['course_ids']))) {
+            return $headManaged;
         }
         $targetId = (int) $validated['teaching_department_id'];
         $targetProgramId = isset($validated['teaching_program_id']) ? (int) $validated['teaching_program_id'] : null;
@@ -517,6 +578,9 @@ class CourseTeachingAssignmentController extends Controller
         if ($outside = $this->refuseOutsideProgram($request->user(), [(int) $course->id])) {
             return $outside;
         }
+        if ($headManaged = $this->refuseHeadManagedCourses($request, [(int) $course->id])) {
+            return $headManaged;
+        }
 
         if ($locked = $this->refuseIfInstructorAssigned($course, null)) {
             return $locked;
@@ -541,6 +605,9 @@ class CourseTeachingAssignmentController extends Controller
         }
         if ($outside = $this->refuseOutsideProgram($request->user(), array_map('intval', $validated['course_ids']))) {
             return $outside;
+        }
+        if ($headManaged = $this->refuseHeadManagedCourses($request, array_map('intval', $validated['course_ids']))) {
+            return $headManaged;
         }
 
         $courses = Course::query()
@@ -697,6 +764,17 @@ class CourseTeachingAssignmentController extends Controller
         }
         if ($outside = $this->refuseOutsideProgram($actor, $seeds->pluck('course_id')->map('intval')->unique()->values()->all())) {
             return [collect(), $outside];
+        }
+        if ($locked = $this->officeLockedOut($request)) {
+            return [collect(), $locked];
+        }
+        $headManagedProgramIds = $this->authorization->headManagedProgramIds($request);
+        if ($headManagedProgramIds !== [] && $seeds->contains(fn (Schedule $seed): bool => in_array(
+            (int) ($seed->program_id ?? $seed->section?->program_id ?? 0),
+            $headManagedProgramIds,
+            true,
+        ))) {
+            return [collect(), response()->json(['message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE], 403)];
         }
 
         $classes = $this->classRows($seeds, (int) $semester->id);
@@ -942,7 +1020,7 @@ class CourseTeachingAssignmentController extends Controller
      * @param  list<int>  $courseIds
      * @return array<int, list<array{section_id: int, section_name: string, instructor_name: string|null, status: string}>>
      */
-    private function sectionAssignments(array $courseIds, int $departmentId, ?int $programId): array
+    private function sectionAssignments(array $courseIds, int $departmentId, ?int $programId, array $excludedProgramIds = []): array
     {
         $semester = $this->activeSemester();
         if ($semester === null || $courseIds === []) {
@@ -954,6 +1032,9 @@ class CourseTeachingAssignmentController extends Controller
             ->where('semester_id', $semester->id)
             ->where('department_id', $departmentId)
             ->when($programId !== null, fn ($query) => $query->where('program_id', $programId))
+            ->when($excludedProgramIds !== [], fn ($query) => $query->where(fn ($scope) => $scope
+                ->whereNull('program_id')
+                ->orWhereNotIn('program_id', $excludedProgramIds)))
             ->whereIn('course_id', $courseIds)
             ->get(['id', 'course_id', 'section_id', 'faculty_id', 'status', 'faculty_assignment_done', 'delegation_returned_from_department_id',
                 'section_teaching_department_id', 'section_teaching_program_id'])

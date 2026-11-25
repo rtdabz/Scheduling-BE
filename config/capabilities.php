@@ -118,9 +118,10 @@ return [
             'requires' => ['schedule.view'],
             'module' => 'room_requests',
             'requires_program' => true,
-            // Room borrowing is secretary to secretary; program heads and the
-            // VPAA take no part (the VPAA is only notified).
-            'allowed_roles' => ['secretary', 'director'],
+            // A Program Head requests rooms for their own program; the department
+            // office for programs without a Program Head. Lending is decided by the
+            // room-owning department's office; the VPAA is only notified.
+            'allowed_roles' => ['secretary', 'director', 'program_head'],
             'title' => 'Request Rooms',
             'description' => "Ask another department to lend one of its vacant rooms during specific weekly windows.",
         ],
@@ -201,10 +202,11 @@ return [
      * one or the other, never both).
      *
      * Secretaries and program heads build their department's timetable end to
-     * end; approvals and designations stay with the dean and VPAA. The
-     * secretary alone requests other departments' rooms, decides on requests
-     * for their own department's rooms, and divides those rooms between the
-     * department's programs. Both
+     * end; approvals and designations stay with the dean and VPAA. A program
+     * head requests other departments' rooms for their own program, and the
+     * secretary for programs without a program head. The secretary alone
+     * decides on requests for their own department's rooms and divides those
+     * rooms between the department's programs. Both
      * author curricula; a program head only for their own program.
      *
      * The VPAA approves and returns schedules but does not build them: it holds
@@ -229,7 +231,7 @@ return [
             'schedule.view', 'schedule.create', 'schedule.update', 'schedule.delete',
             'schedule.generate', 'schedule.submit', 'schedule.withdraw',
             'schedule.assign_instructor', 'schedule.assign_instructor_cross_department',
-            'curriculum.manage',
+            'room.request', 'curriculum.manage',
         ],
     ],
 ];

@@ -13,6 +13,7 @@ use App\Models\Schedule;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\RoomRecoveryService;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Engine\RuleEngine;
@@ -236,18 +237,31 @@ class RoomRecoveryTest extends TestCase
         $this->assertTemporarilyOnline($f);
     }
 
-    public function test_a_non_secretary_cannot_submit_even_an_owned_plan_with_update_permission(): void
+    /**
+     * Reassignment follows program ownership: once the program has a Program Head, the head submits
+     * its own plan and the office may no longer submit the plan it previewed earlier.
+     */
+    public function test_a_program_head_submits_their_program_and_the_office_is_refused_it(): void
     {
         $f = $this->fixture();
         $this->close($f);
-        $plan = $this->preview($f);
-        $f['user']->update(['role' => 'program_head', 'program_id' => $f['program']->id]);
-        $this->assertTrue($f['user']->fresh()->hasCapability('schedule.update'));
-        $this->actingAs($f['user']->fresh());
-        foreach (['submit', 'apply'] as $action) {
-            $this->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/'.$action, ['group_keys' => array_column($plan['groups'], 'key')])->assertForbidden();
-        }
-        $this->assertDatabaseHas('room_recovery_plans', ['id' => $plan['plan_id'], 'status' => 'preview']);
+        $officePlan = $this->preview($f);
+        $head = $this->grantCapabilities(User::factory()->create([
+            'role' => 'program_head', 'department_id' => $f['department']->id, 'program_id' => $f['program']->id,
+        ]), config('capabilities.role_defaults.program_head'));
+        $officeBody = ['group_keys' => array_column($officePlan['groups'], 'key')];
+
+        $this->actingAs($f['user'])->postJson('/api/room-recovery/plans/'.$officePlan['plan_id'].'/submit', $officeBody)
+            ->assertForbidden()
+            ->assertJsonPath('message', ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE);
+        $this->assertDatabaseHas('room_recovery_plans', ['id' => $officePlan['plan_id'], 'status' => 'preview']);
+        $this->assertTemporarilyOnline($f);
+
+        // Another user's stored plan stays theirs.
+        $this->actingAs($head)->postJson('/api/room-recovery/plans/'.$officePlan['plan_id'].'/submit', $officeBody)->assertNotFound();
+        $plan = $this->actingAs($head)->postJson('/api/room-recovery/preview', ['schedule_ids' => [$f['row']->id]])->assertOk()->json();
+        $this->actingAs($head)->postJson('/api/room-recovery/plans/'.$plan['plan_id'].'/submit', ['group_keys' => array_column($plan['groups'], 'key')])
+            ->assertOk()->assertJsonPath('status', 'pending_dean');
         $this->assertTemporarilyOnline($f);
     }
 

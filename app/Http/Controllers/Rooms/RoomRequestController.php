@@ -16,6 +16,7 @@ use App\Services\ScheduleHistoryRecorder;
 use App\Services\ScheduleSemesterArchiver;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Lock\SchedulingScopeLock;
+use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Services\Scheduling\Support\RoomAccessPolicy;
 use App\Services\Scheduling\Support\SchedulingPolicy;
@@ -42,6 +43,7 @@ class RoomRequestController extends Controller
         private readonly ScheduleHistoryRecorder $history,
         private readonly RevisionChangeRecorder $revisionChanges,
         private readonly CrossDepartmentApprovalGate $approvalGate,
+        private readonly ScheduleAuthorizationService $authorization,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -56,9 +58,13 @@ class RoomRequestController extends Controller
 
         $requests = RoomRequest::query()
             ->with($this->relations())
-            ->where(fn ($query) => $query
+            ->when($user->role === 'program_head', fn ($query) => $query
+                // A Program Head sends requests for their own program and decides none.
                 ->where('requesting_department_id', $departmentId)
-                ->orWhere('owner_department_id', $departmentId))
+                ->where('requesting_program_id', (int) ($user->program_id ?? 0)), fn ($query) => $query
+                ->where(fn ($scope) => $scope
+                    ->where('requesting_department_id', $departmentId)
+                    ->orWhere('owner_department_id', $departmentId)))
             ->when(isset($validated['semester_id']), fn ($query) => $query->where('semester_id', (int) $validated['semester_id']))
             ->when(isset($validated['status']), fn ($query) => $query->where('status', $validated['status']))
             ->orderByRaw("CASE WHEN status = 'pending' THEN 0 ELSE 1 END")
@@ -66,7 +72,8 @@ class RoomRequestController extends Controller
             ->orderByDesc('id')
             ->get();
 
-        return response()->json($requests->map(fn (RoomRequest $roomRequest): array => $this->present($roomRequest))->values());
+        return response()->json($requests->map(fn (RoomRequest $roomRequest): array => $this->present($roomRequest)
+            + ['can_cancel' => $this->mayActForRequestingProgram($request, $roomRequest)])->values());
     }
 
     public function occupancy(Request $request, int $room): JsonResponse
@@ -215,17 +222,19 @@ class RoomRequestController extends Controller
             'room_id' => 'required|integer|exists:rooms,id,deleted_at,NULL',
             'semester_id' => 'nullable|integer|exists:semesters,id,deleted_at,NULL',
             'purpose' => 'required|string|max:1000',
+            'program_id' => ['nullable', 'integer', Rule::exists('programs', 'id')->whereNull('deleted_at')->where('department_id', $user->department_id)],
             'windows' => 'required|array|min:1|max:21',
             'windows.*.day' => ['required', 'string', Rule::in(SchedulingPolicy::PERSISTABLE_DAYS)],
             'windows.*.start_time' => 'required|date_format:H:i',
             'windows.*.end_time' => 'required|date_format:H:i',
         ]);
 
+        $programId = $this->requestingProgramId($request, $validated['program_id'] ?? null);
         $semester = $this->resolveSemester($validated['semester_id'] ?? null);
         $windows = $this->normalizeWindows($validated['windows']);
         $departmentId = (int) $user->department_id;
 
-        $roomRequest = $this->schedulingTransaction(function () use ($validated, $semester, $windows, $departmentId, $user): RoomRequest {
+        $roomRequest = $this->schedulingTransaction(function () use ($validated, $semester, $windows, $departmentId, $programId, $user): RoomRequest {
             /** @var Rooms $room */
             $room = Rooms::query()->lockForUpdate()->find((int) $validated['room_id']);
             if ($room === null) {
@@ -238,11 +247,12 @@ class RoomRequestController extends Controller
                 ->where('room_id', $room->id)
                 ->where('semester_id', $semester->id)
                 ->where('requesting_department_id', $departmentId)
+                ->when($programId === null, fn ($query) => $query->whereNull('requesting_program_id'), fn ($query) => $query->where('requesting_program_id', $programId))
                 ->where('status', RoomRequest::STATUS_PENDING)
                 ->exists();
             if ($duplicate) {
                 throw ValidationException::withMessages([
-                    'room_id' => "Your department already has a pending request for {$room->room_code} this semester.",
+                    'room_id' => ($programId === null ? 'Your department' : 'This program')." already has a pending request for {$room->room_code} this semester.",
                 ]);
             }
 
@@ -252,6 +262,7 @@ class RoomRequestController extends Controller
                 'room_id' => $room->id,
                 'semester_id' => $semester->id,
                 'requesting_department_id' => $departmentId,
+                'requesting_program_id' => $programId,
                 'owner_department_id' => (int) $room->department_id,
                 'status' => RoomRequest::STATUS_PENDING,
                 'purpose' => trim((string) $validated['purpose']),
@@ -282,6 +293,11 @@ class RoomRequestController extends Controller
 
         if ((int) $model->requesting_department_id !== (int) $user->department_id) {
             abort(403, 'Only the requesting department can cancel this request.');
+        }
+        if (! $this->mayActForRequestingProgram($request, $model)) {
+            abort(403, $user->role === 'program_head'
+                ? 'Only the Program Head of the requesting program can cancel this request.'
+                : ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE);
         }
 
         return $this->close($model, $user, RoomRequest::STATUS_CANCELLED, null, [RoomRequest::STATUS_PENDING, RoomRequest::STATUS_APPROVED]);
@@ -456,6 +472,58 @@ class RoomRequestController extends Controller
             'metadata' => ['target' => ['type' => 'room_request', 'id' => $model->id],
                 'room_request_id' => $model->id, 'decision' => $decision],
         ]);
+    }
+
+    /**
+     * The program a new request is sent for. A Program Head always requests for their own program.
+     * The department office requests for a program without a Program Head; it may leave the
+     * program out (a department-level request) only while no program of its department has one.
+     */
+    private function requestingProgramId(Request $request, mixed $programId): ?int
+    {
+        $user = $request->user();
+        if ($user->role === 'program_head') {
+            if (! $this->authorization->programIsWritable($request, $user->program_id === null ? null : (int) $user->program_id)) {
+                abort(403, 'Your account is not linked to a program yet.');
+            }
+            if ($programId !== null && (int) $programId !== (int) $user->program_id) {
+                abort(403, 'Program Heads can only request rooms for their own program.');
+            }
+
+            return (int) $user->program_id;
+        }
+
+        if ($programId === null) {
+            if ($this->authorization->headManagedProgramIds($request) !== []) {
+                throw ValidationException::withMessages([
+                    'program_id' => 'Choose the program this room is for. Programs with a Program Head send their own room requests.',
+                ]);
+            }
+
+            return null;
+        }
+        if (! $this->authorization->officeMayManageProgram($request, $programId)) {
+            abort(403, 'This program is managed by its Program Head, who sends its room requests.');
+        }
+
+        return (int) $programId;
+    }
+
+    /** Whether the user may act (cancel) for the program that sent this request. */
+    private function mayActForRequestingProgram(Request $request, RoomRequest $model): bool
+    {
+        $user = $request->user();
+        if ((int) $model->requesting_department_id !== (int) $user->department_id) {
+            return false;
+        }
+        if ($user->role === 'program_head') {
+            return $model->requesting_program_id !== null
+                && $this->authorization->programIsWritable($request, (int) $model->requesting_program_id);
+        }
+
+        return $user->isSecretaryOrDirector()
+            && ($model->requesting_program_id !== null || $this->authorization->headManagedProgramIds($request) === [])
+            && $this->authorization->officeMayManageProgram($request, $model->requesting_program_id);
     }
 
     private function assertOwnerReviewer(RoomRequest $model, User $user): void
@@ -855,8 +923,16 @@ class RoomRequestController extends Controller
         if ($model->requester?->isSecretaryOrDirector()) {
             $recipients->push($model->requester);
         }
+        if ($model->requesting_program_id !== null) {
+            $recipients = $recipients->merge(User::query()
+                ->where('role', 'program_head')
+                ->where('is_active', true)
+                ->where('department_id', $model->requesting_department_id)
+                ->where('program_id', $model->requesting_program_id)
+                ->get());
+        }
 
-        return $this->notification(
+        $notification = $this->notification(
             $recipients,
             'room_request_'.$outcome,
             $title,
@@ -866,6 +942,11 @@ class RoomRequestController extends Controller
             (int) $model->requesting_department_id,
             $model->review_remarks,
         );
+        if ($model->requesting_program_id !== null) {
+            $notification['metadata']['program_ids'] = [(int) $model->requesting_program_id];
+        }
+
+        return $notification;
     }
 
     /** @return array<string, mixed> */
@@ -994,7 +1075,7 @@ class RoomRequestController extends Controller
     /** @return list<string> */
     private function relations(): array
     {
-        return ['room', 'academicSemester', 'requestingDepartment', 'ownerDepartment', 'requester', 'reviewer', 'windows'];
+        return ['room', 'academicSemester', 'requestingDepartment', 'requestingProgram', 'ownerDepartment', 'requester', 'reviewer', 'windows'];
     }
 
     /** @return array<string, mixed> */
@@ -1008,6 +1089,11 @@ class RoomRequestController extends Controller
             'room' => $model->room ? $this->presentRoom($model->room) : null,
             'academic_semester' => $model->academicSemester ? $this->presentSemester($model->academicSemester) : null,
             'requesting_department' => $this->presentDepartment($model->requestingDepartment),
+            'requesting_program' => $model->requestingProgram === null ? null : [
+                'id' => (int) $model->requestingProgram->id,
+                'code' => (string) $model->requestingProgram->code,
+                'name' => (string) $model->requestingProgram->name,
+            ],
             'owner_department' => $this->presentDepartment($model->ownerDepartment),
             // The room was reassigned after this request was sent; only the requester can act (cancel and resubmit).
             'owner_changed' => $model->room !== null && (int) $model->room->department_id !== (int) $model->owner_department_id,

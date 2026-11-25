@@ -45,7 +45,7 @@ class CoursesController extends Controller
             'status' => $request->query('status'),
         ]);
 
-        return response()->json(Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($request, $deptId, $bypassActiveCurriculum, $curriculumId) {
+        $courses = collect(Cache::remember($cacheKey, ApiCache::LOOKUP_TTL_SECONDS, function () use ($request, $deptId, $bypassActiveCurriculum, $curriculumId) {
             if (! $bypassActiveCurriculum) {
                 $curriculumQuery = Curriculum::where('status', 'active');
 
@@ -178,6 +178,15 @@ class CoursesController extends Controller
 
             return $courses;
         }));
+
+        // Computed outside the cache: it follows Program Head assignments as they change.
+        $headManaged = $this->authorization->headManagedCourseIds($request, $courses->pluck('id')->map('intval')->all());
+        if ($headManaged !== []) {
+            $courses = $courses->map(fn (Course $course): array => $course->toArray()
+                + ['program_head_managed' => in_array((int) $course->id, $headManaged, true)])->values();
+        }
+
+        return response()->json($courses);
     }
 
     public function store(StoreCourseRequest $request)
@@ -189,6 +198,9 @@ class CoursesController extends Controller
         }
 
         $validated = $this->clearProgramForNonMajor($validated, $validated['course_category'] ?? null);
+        if (! $this->authorization->officeMayManageProgram($request, $validated['program_id'] ?? null)) {
+            return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE], 403);
+        }
 
         $course = Course::create($validated);
         ApiCache::forgetGroups(['courses.index', 'initial.data']);
@@ -212,6 +224,12 @@ class CoursesController extends Controller
             $validated,
             $validated['course_category'] ?? $course->course_category,
         );
+        if ($refused = $this->headManagedCourseRefusal($request, $course)) {
+            return $refused;
+        }
+        if (array_key_exists('program_id', $validated) && ! $this->authorization->officeMayManageProgram($request, $validated['program_id'])) {
+            return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE], 403);
+        }
 
         $original = $course->getAttributes();
         $course->update($validated);
@@ -223,6 +241,14 @@ class CoursesController extends Controller
         ApiCache::forgetGroups(['courses.index', 'initial.data', 'curriculum.index']);
 
         return response()->json($course->load(['department', 'program']));
+    }
+
+    /** The department office may not change a course that a Program Head's program uses. */
+    private function headManagedCourseRefusal(Request $request, Course $course): ?\Illuminate\Http\JsonResponse
+    {
+        return $this->authorization->headManagedCourseIds($request, [(int) $course->id]) === []
+            ? null
+            : response()->json(['message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_COURSE_MESSAGE], 403);
     }
 
     /**
@@ -244,6 +270,9 @@ class CoursesController extends Controller
     {
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) {
             return response()->json(['message' => 'Forbidden.'], 403);
+        }
+        if ($refused = $this->headManagedCourseRefusal($request, $course)) {
+            return $refused;
         }
         if (Schedule::where('course_id', $course->id)->exists()) {
             return response()->json([

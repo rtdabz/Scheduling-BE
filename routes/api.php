@@ -121,8 +121,10 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
     Route::middleware('capability:schedule.view')->get('room-recovery/transfers', [RoomRecoveryController::class, 'transfers']);
     Route::middleware(['capability:schedule.update', 'throttle:10,1'])->group(function () {
         Route::post('room-recovery/preview', [RoomRecoveryController::class, 'preview']);
-        Route::post('room-recovery/plans/{plan}/apply', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary,director');
-        Route::post('room-recovery/plans/{plan}/submit', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary,director');
+        // Program Heads reassign their own program's rooms; the office the programs without one
+        // (RoomRecoveryService::authorizeRows resolves persisted program ownership for every row).
+        Route::post('room-recovery/plans/{plan}/apply', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary,director,program_head');
+        Route::post('room-recovery/plans/{plan}/submit', [RoomRecoveryController::class, 'submit'])->middleware('role:secretary,director,program_head');
     });
     Route::middleware(['role:dean,vpaa', 'capability:schedule.approve_dean,schedule.approve_vpaa'])->group(function () {
         Route::post('room-recovery/plans/{plan}/approve', [RoomRecoveryController::class, 'approve']);

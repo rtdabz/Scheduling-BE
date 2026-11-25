@@ -46,8 +46,11 @@ class RoomRecoveryController extends Controller
                 }
             }
         }
+        // Who may reassign each row follows program ownership (the Program Head's program, or for
+        // the office the programs without one); other rows are listed read-only.
+        $writable = collect($auth->writableScheduleIdsAmong($request, $models))->flip();
         $rows = $request->boolean('include_schedules')
-            ? $models->map(function ($row) use ($problems, $pending) {
+            ? $models->map(function ($row) use ($problems, $pending, $writable) {
                 $needsAttention = $problems[$row->id];
                 $reason = ! $needsAttention ? null : match (true) {
                     $row->isTemporarilyOnline() => 'Temporarily online: room unavailable',
@@ -66,6 +69,7 @@ class RoomRecoveryController extends Controller
                     'end_time' => $row->end_time, 'meeting_type' => $row->meeting_type, 'status' => $row->status,
                     'department_id' => $row->department_id, 'needs_attention' => $needsAttention,
                     'revision_required' => $this->recovery->requiresRevision($row),
+                    'can_reassign' => $writable->has((int) $row->id),
                     'pending_transfer_id' => $pending[$row->id]['id'] ?? null,
                     'pending_transfer_status' => $pending[$row->id]['status'] ?? null,
                     'room_status' => $row->isTemporarilyOnline() ? $row->displacedRoom?->status : $row->room?->status, 'attention_reason' => $reason,

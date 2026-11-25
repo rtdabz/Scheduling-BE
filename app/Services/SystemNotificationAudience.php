@@ -20,6 +20,9 @@ class SystemNotificationAudience
 
     private const ROOM_LENDING = ['secretary', 'director', 'vpaa'];
 
+    // Outcomes also reach the Program Head whose program sent the request (scoped by `program_ids`).
+    private const ROOM_LENDING_OUTCOME = [...self::ROOM_LENDING, 'program_head'];
+
     // Schedule generation is deliberately absent: the feed carries workflow
     // events (submissions, approvals, returns, assignments), not generator runs.
     // Unregistered types fail closed, which also hides older generation notices.
@@ -49,10 +52,10 @@ class SystemNotificationAudience
         'room_transfer_rejected' => self::DEPARTMENT_REVIEW,
         // The owner decides room lending; VPAA receives informational progress notices.
         'room_request_submitted' => self::ROOM_LENDING,
-        'room_request_approved' => self::ROOM_LENDING,
-        'room_request_rejected' => self::ROOM_LENDING,
+        'room_request_approved' => self::ROOM_LENDING_OUTCOME,
+        'room_request_rejected' => self::ROOM_LENDING_OUTCOME,
         'room_request_cancelled' => self::ROOM_LENDING,
-        'room_request_revoked' => self::ROOM_LENDING,
+        'room_request_revoked' => self::ROOM_LENDING_OUTCOME,
         'room_request_borrowed' => self::ROOM_LENDING,
         'room_request_returned' => self::ROOM_LENDING,
     ];

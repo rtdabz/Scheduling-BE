@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Services\Scheduling\Schedule;
 
 use App\Models\Course;
+use App\Models\Curriculum;
 use App\Models\Program;
 use App\Models\Schedule;
+use App\Models\Sections;
 use App\Models\User;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
@@ -20,6 +22,7 @@ final class ScheduleAuthorizationService
     {
         return Program::query()->where('department_id', $departmentId)->exists();
     }
+
     public function departmentScope(Request $request): ?int
     {
         $user = $request->user();
@@ -147,6 +150,7 @@ final class ScheduleAuthorizationService
     public function rejectsRequestedDepartment(Request $request, mixed $requestedDepartmentId): bool
     {
         $scope = $this->departmentScope($request);
+
         return $scope !== null && $requestedDepartmentId !== null && $requestedDepartmentId !== ''
             && (int) $requestedDepartmentId !== $scope;
     }
@@ -246,6 +250,156 @@ final class ScheduleAuthorizationService
         return $programId !== null && in_array($programId, $this->writableProgramIds($request), true);
     }
 
+    public const PROGRAM_HEAD_MANAGED_MESSAGE = 'This program is managed by its Program Head. You can view its records, but only the Program Head can change them.';
+
+    public const PROGRAM_HEAD_MANAGED_COURSE_MESSAGE = 'This course is used by a program managed by its Program Head. You can view it, but changing it would also change that program\'s curriculum.';
+
+    /**
+     * The department office (Secretary or Director) manages only the programs without an active
+     * Program Head (`writableProgramIdsFor`); a Program Head's program is view-only to it. Records
+     * without a program are department-level and stay with the office. Every other role is
+     * unaffected and keeps its own checks (`payloadBelongsToProgram` for Program Heads).
+     */
+    public function officeMayManageProgram(Request $request, mixed $programId): bool
+    {
+        if ($request->user()?->isSecretaryOrDirector() !== true || $programId === null || $programId === '') {
+            return true;
+        }
+
+        return $this->programIsWritable($request, (int) $programId);
+    }
+
+    /**
+     * Resolve persisted ownership for room reassignment and history reuse, then apply the existing
+     * writable-program rule. Legacy rows fall back to their section, curriculum, then course.
+     * An unresolved row cannot give the office access to a department containing headed programs.
+     *
+     * @param  array<int, array{department_id: int, rows: list<array<string, mixed>>}>  $scopes
+     * @return array<int, bool>
+     */
+    public function programOperationAccessAmong(Request $request, array $scopes): array
+    {
+        $rows = collect($scopes)->flatMap(fn (array $scope) => $scope['rows']);
+        $sections = Sections::query()->whereKey($rows->pluck('section_id')->filter()->unique())->get(['id', 'department_id', 'program_id', 'curriculum_id'])->keyBy('id');
+        $curricula = Curriculum::query()->whereKey($rows->pluck('curriculum_id')->merge($sections->pluck('curriculum_id'))->filter()->unique())->get(['id', 'program_id'])->keyBy('id');
+        $courses = Course::withTrashed()->whereKey($rows->pluck('course_id')->filter()->unique())->get(['id', 'program_id'])->keyBy('id');
+        $unscopedAllowed = $this->headManagedProgramIds($request) === [];
+        $protectedFallbackCourses = null;
+        $access = [];
+        foreach ($scopes as $key => $scope) {
+            $access[$key] = $scope['rows'] !== [];
+            foreach ($scope['rows'] as $row) {
+                $section = $sections->get($row['section_id'] ?? null);
+                if ((isset($row['department_id']) && (int) $row['department_id'] !== $scope['department_id'])
+                    || ($section !== null && (int) $section->department_id !== $scope['department_id'])) {
+                    $access[$key] = false;
+                    break;
+                }
+                // Keep both recorded and current section ownership; a moved section must not erase
+                // the historical program or allow a conflicting schedule owner to bypass protection.
+                $programIds = $this->normalizeIds(array_filter([
+                    $row['program_id'] ?? $curricula->get($row['curriculum_id'] ?? null)?->program_id,
+                    $section?->program_id ?? $curricula->get($section?->curriculum_id)?->program_id,
+                ]));
+                if ($programIds === []) {
+                    // A shared course cannot identify an otherwise unscoped office operation as
+                    // belonging only to its catalog owner. Reuse the existing protected-course rule.
+                    $protectedFallbackCourses ??= array_fill_keys($this->headManagedCourseIds($request, $courses->keys()->map(fn ($id) => (int) $id)->all(), includeArchivedCourses: true), true);
+                    if (isset($protectedFallbackCourses[(int) ($row['course_id'] ?? 0)])) {
+                        $access[$key] = false;
+                        break;
+                    }
+                    $programIds = $this->normalizeIds(array_filter([$courses->get($row['course_id'] ?? null)?->program_id]));
+                }
+                $writable = $programIds === []
+                    ? $unscopedAllowed && $this->rowWritable($request, null, $scope['department_id'])
+                    : collect($programIds)->every(fn (int $id) => $this->programIsWritable($request, $id));
+                if (! $writable) {
+                    $access[$key] = false;
+                    break;
+                }
+            }
+        }
+
+        return $access;
+    }
+
+    /** @param list<array<string, mixed>> $rows */
+    public function programOperationRowsWritable(Request $request, array $rows, int $departmentId): bool
+    {
+        return $this->programOperationAccessAmong($request, [['department_id' => $departmentId, 'rows' => $rows]])[0];
+    }
+
+    /**
+     * For the department office: its department's programs that have an active Program Head,
+     * which it may view but not manage. Empty for every other role.
+     *
+     * @return list<int>
+     */
+    public function headManagedProgramIds(Request $request): array
+    {
+        $user = $request->user();
+        if ($user?->isSecretaryOrDirector() !== true || $user->department_id === null) {
+            return [];
+        }
+
+        return Program::query()
+            ->where('department_id', $user->department_id)
+            ->whereNotIn('id', $this->writableProgramIds($request))
+            ->pluck('id')
+            ->map('intval')
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Of the given courses, those the department office may not change because a Program Head's
+     * program uses them: the course belongs to that program, is placed in one of its curricula,
+     * or is placed in a shared curriculum that one of its active sections follows. A course record
+     * is shared by every curriculum that places it, so a course also used by an office program is
+     * still protected (editing it would change the Program Head's curriculum too).
+     *
+     * @param  list<int>  $courseIds
+     * @return list<int>
+     */
+    public function headManagedCourseIds(Request $request, array $courseIds, bool $includeArchivedCourses = false): array
+    {
+        $programIds = $this->headManagedProgramIds($request);
+        $courseIds = $this->normalizeIds($courseIds);
+        if ($programIds === [] || $courseIds === []) {
+            return [];
+        }
+
+        $departmentId = (int) $request->user()->department_id;
+        $curriculumIds = DB::table('curriculum')
+            ->where('department_id', $departmentId)
+            ->where('status', '!=', 'archived')
+            ->where(fn (Builder $curricula) => $curricula
+                ->whereIn('program_id', $programIds)
+                ->orWhere(fn (Builder $shared) => $shared
+                    ->whereNull('program_id')
+                    ->whereIn('id', DB::table('sections')
+                        ->where('status', 'active')
+                        ->whereIn('program_id', $programIds)
+                        ->whereNotNull('curriculum_id')
+                        ->select('curriculum_id'))))
+            ->pluck('id');
+
+        return Course::query()
+            ->when($includeArchivedCourses, fn (EloquentBuilder $courses) => $courses->withTrashed())
+            ->whereIn('id', $courseIds)
+            ->where(fn (EloquentBuilder $used) => $used
+                ->whereIn('program_id', $programIds)
+                ->orWhereIn('id', DB::table('curriculum_course')
+                    ->whereIn('curriculum_id', $curriculumIds)
+                    ->select('course_id')))
+            ->pluck('id')
+            ->map('intval')
+            ->sort()
+            ->values()
+            ->all();
+    }
+
     public function scheduleIsWritable(Request $request, Schedule $schedule): bool
     {
         return $this->scheduleIdsWritable($request, [(int) $schedule->id]);
@@ -268,18 +422,36 @@ final class ScheduleAuthorizationService
 
     private function rowsWritable(Request $request, Builder $rows): bool
     {
+        return $rows->get()->every(fn (object $row): bool => $this->rowWritable($request, $row->program_id, $row->department_id));
+    }
+
+    /**
+     * Schedules the user may reassign, resolving legacy ownership in batches without a query per row.
+     *
+     * @param  iterable<Schedule>  $schedules
+     * @return list<int>
+     */
+    public function writableScheduleIdsAmong(Request $request, iterable $schedules): array
+    {
+        $scopes = [];
+        foreach ($schedules as $schedule) {
+            $scopes[(int) $schedule->id] = ['department_id' => (int) $schedule->department_id, 'rows' => [$schedule->getAttributes()]];
+        }
+
+        return array_keys(array_filter($this->programOperationAccessAmong($request, $scopes)));
+    }
+
+    private function rowWritable(Request $request, mixed $programId, mixed $departmentId): bool
+    {
+        if ($programId !== null) {
+            return $this->programIsWritable($request, (int) $programId);
+        }
         $user = $request->user();
 
-        return $rows->get()->every(function (object $row) use ($request, $user): bool {
-            if ($row->program_id !== null) {
-                return $this->programIsWritable($request, (int) $row->program_id);
-            }
-
-            return $user?->isSecretaryOrDirector() === true
-                && $user->is_active
-                && $user->department_id !== null
-                && (int) $row->department_id === (int) $user->department_id;
-        });
+        return $user?->isSecretaryOrDirector() === true
+            && $user->is_active
+            && $user->department_id !== null
+            && (int) $departmentId === (int) $user->department_id;
     }
 
     public const MAJOR_INSTRUCTOR_FORBIDDEN_MESSAGE = 'Only the Program Head can assign instructors to this program\'s major courses.';

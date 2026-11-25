@@ -58,6 +58,9 @@ class CourseAssignmentOwnProgramRestrictionTest extends TestCase
     public function test_a_single_program_departments_secretary_cannot_assign_to_their_own_department(): void
     {
         $f = $this->fixture();
+        // The office manages Course Assignment only for a program without a Program Head
+        // (ProgramHeadManagedOfficeAccessTest covers the lock itself).
+        $f['soloHead']->update(['is_active' => false]);
 
         $this->actingAs($f['soloSecretary'])
             ->postJson('/api/course-teaching-assignments/batch', [

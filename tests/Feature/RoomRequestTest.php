@@ -85,25 +85,64 @@ class RoomRequestTest extends TestCase
             ->exists(), 'The VPAA was not told about the request.');
     }
 
-    /** Requests are secretary to secretary: a program head can neither send nor decide one, nor is notified. */
-    public function test_program_heads_take_no_part_in_room_requests(): void
+    /** A Program Head requests rooms for their own program only; the owning department's office decides. */
+    public function test_a_program_head_requests_rooms_for_their_own_program(): void
     {
         $f = $this->fixture();
-        $requesterHead = User::factory()->create(['role' => 'program_head', 'department_id' => $f['secretary']->department_id]);
+        $bsit = Program::query()->where('code', 'BSIT')->firstOrFail();
+        $bsba = Program::create(['department_id' => $f['requester']->id, 'code' => 'BSBA', 'name' => 'Business Administration']);
+        $requesterHead = User::factory()->create(['role' => 'program_head', 'department_id' => $f['requester']->id, 'program_id' => $bsit->id]);
         $ownerHead = User::factory()->create(['role' => 'program_head', 'department_id' => $f['owner']->id]);
 
-        $this->actingAs($requesterHead)->postJson('/api/room-requests', $this->payload($f))->assertForbidden();
-        $this->actingAs($requesterHead)->getJson('/api/room-requests')->assertForbidden();
+        $this->actingAs($requesterHead)
+            ->postJson('/api/room-requests', [...$this->payload($f), 'program_id' => $bsba->id])
+            ->assertForbidden();
 
-        $id = $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))->json('data.id');
+        $id = $this->actingAs($requesterHead)->postJson('/api/room-requests', $this->payload($f))
+            ->assertCreated()
+            ->assertJsonPath('data.requesting_program.code', 'BSIT')
+            ->json('data.id');
+        $this->assertTrue(SystemNotification::query()->where('user_id', $f['ownerSecretary']->id)->where('type', 'room_request_submitted')->exists());
+        $this->assertTrue(SystemNotification::query()->where('user_id', $f['vpaa']->id)->where('type', 'room_request_submitted')->exists());
+
+        // The office sees the request but does not act for the Program Head's program.
+        $this->actingAs($f['secretary'])->getJson('/api/room-requests')->assertOk()->assertJsonPath('0.can_cancel', false);
+        $this->actingAs($f['secretary'])->postJson("/api/room-requests/{$id}/cancel")->assertForbidden();
+
+        // Deciding stays with the owning department's office.
         $this->actingAs($ownerHead)->postJson("/api/room-requests/{$id}/approve")->assertForbidden();
-        $this->actingAs($requesterHead)->postJson("/api/room-requests/{$id}/cancel")->assertForbidden();
-
         $this->actingAs($f['ownerSecretary'])->postJson("/api/room-requests/{$id}/approve")->assertOk();
-        $this->assertFalse(SystemNotification::query()
-            ->whereIn('user_id', [$requesterHead->id, $ownerHead->id])
-            ->where('type', 'like', 'room_request_%')
-            ->exists());
+        $this->assertTrue(SystemNotification::query()->where('user_id', $requesterHead->id)->where('type', 'room_request_approved')->exists());
+        $this->assertFalse(SystemNotification::query()->where('user_id', $ownerHead->id)->where('type', 'like', 'room_request_%')->exists());
+
+        $this->actingAs($requesterHead)->getJson('/api/room-requests')
+            ->assertOk()
+            ->assertJsonCount(1)
+            ->assertJsonPath('0.can_cancel', true);
+        $this->actingAs($requesterHead)->postJson("/api/room-requests/{$id}/cancel")->assertOk();
+    }
+
+    /** The office requests rooms for programs without a Program Head, and takes a program over when its head leaves. */
+    public function test_the_office_requests_rooms_only_for_programs_without_a_program_head(): void
+    {
+        $f = $this->fixture();
+        $bsit = Program::query()->where('code', 'BSIT')->firstOrFail();
+        $bsba = Program::create(['department_id' => $f['requester']->id, 'code' => 'BSBA', 'name' => 'Business Administration']);
+        $head = User::factory()->create(['role' => 'program_head', 'department_id' => $f['requester']->id, 'program_id' => $bsit->id]);
+
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', $this->payload($f))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('program_id');
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', [...$this->payload($f), 'program_id' => $bsit->id])
+            ->assertForbidden();
+        $this->actingAs($f['secretary'])->postJson('/api/room-requests', [...$this->payload($f), 'program_id' => $bsba->id])
+            ->assertCreated()
+            ->assertJsonPath('data.requesting_program.code', 'BSBA');
+
+        $id = $this->actingAs($head)->postJson('/api/room-requests', $this->payload($f))->assertCreated()->json('data.id');
+
+        $head->update(['is_active' => false]);
+        $this->actingAs($f['secretary'])->postJson("/api/room-requests/{$id}/cancel")->assertOk();
     }
 
     public function test_own_and_shared_rooms_cannot_be_requested(): void

@@ -256,11 +256,19 @@ final class RoomRecoveryService
     public function authorizeRows(Request $request, Collection $rows, array $proposed = [], bool $allowTimeChanges = false, bool $reviewing = false): void
     {
         $ids = $rows->pluck('id')->map('intval')->all();
+        $programWritable = $reviewing || $this->authorization->programOperationRowsWritable($request, $rows->map(fn ($row) => $row->getAttributes())->all(), (int) $rows->first()?->department_id);
+        if (! $reviewing && $request->user()->hasCapability('schedule.update')
+            && $this->authorization->scheduleIdsBelongToDepartment($request, $ids)
+            && ! $programWritable) {
+            abort(403, $request->user()->isSecretaryOrDirector()
+                ? ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE
+                : 'You cannot change these schedules.');
+        }
         $canChange = $reviewing
             ? $request->user()->isVpaa() && $request->user()->hasCapability('schedule.approve_vpaa')
             : $request->user()->hasCapability('schedule.update')
                 && $this->authorization->scheduleIdsBelongToDepartment($request, $ids)
-                && $this->authorization->scheduleIdsWritable($request, $ids);
+                && $programWritable;
         abort_unless($canChange, 403, 'You cannot change these schedules.');
         abort_if($rows->contains(fn ($row) => $this->requiresRevision($row)), 422,
             'An affected meeting requires the existing revision workflow before reassignment.');
@@ -300,6 +308,13 @@ final class RoomRecoveryService
         abort_unless($targets->count() === count($input['schedule_ids']), 404, 'Some schedules are unavailable.');
         abort_unless($targets->pluck('semester_id')->unique()->count() === 1 && $targets->pluck('department_id')->unique()->count() === 1, 422,
             'Select classes from one department and semester.');
+        // Initiating a reassignment follows program ownership too: the Program Head for their program,
+        // the department office for programs without one. Readable rows of other programs stay read-only.
+        if (! $this->authorization->programOperationRowsWritable($request, $targets->map(fn ($row) => $row->getAttributes())->all(), (int) $targets->first()->department_id)) {
+            abort(403, $request->user()->isSecretaryOrDirector()
+                ? ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE
+                : 'You cannot change these schedules.');
+        }
         // Include complete linked meetings even when only one of them lost its room.
         $groups = [];
         foreach ($targets as $target) {
@@ -635,7 +650,10 @@ final class RoomRecoveryService
 
     public function submit(Request $request, RoomRecoveryPlan $plan, array $selected): array
     {
-        abort_unless($request->user()->isSecretaryOrDirector(), 403, 'Only the department Secretary or Director can submit room schedule reassignments.');
+        // Program ownership decides who reassigns: the Program Head for their program, the office for
+        // programs without one. processTransfer re-checks every row with authorizeRows.
+        abort_unless($request->user()->isSecretaryOrDirector() || $request->user()->role === 'program_head', 403,
+            'Only the department Secretary, Director or Program Head can submit room schedule reassignments.');
         abort_unless((int) $plan->created_by === (int) $request->user()->id, 404);
 
         return $this->processTransfer($request, $plan, $selected, false);

@@ -76,6 +76,9 @@ class SectionsController extends Controller
         if (! $this->authorization->payloadBelongsToProgram($request, $validated['program_id'] ?? null)) {
             return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
         }
+        if (! $this->authorization->officeMayManageProgram($request, $validated['program_id'] ?? null)) {
+            return $this->headManagedResponse();
+        }
 
         $curriculumId = $validated['curriculum_id'] ?? null;
         if ($curriculumId !== null
@@ -119,6 +122,9 @@ class SectionsController extends Controller
         foreach ($validated['sections'] as $data) {
             if (! $this->authorization->payloadBelongsToProgram($request, $data['program_id'] ?? null)) {
                 return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
+            }
+            if (! $this->authorization->officeMayManageProgram($request, $data['program_id'] ?? null)) {
+                return $this->headManagedResponse();
             }
         }
 
@@ -198,6 +204,10 @@ class SectionsController extends Controller
             if (! $this->authorization->payloadBelongsToProgram($request, $section->program_id)
                 || (array_key_exists('program_id', $validated) && ! $this->authorization->payloadBelongsToProgram($request, $validated['program_id']))) {
                 return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
+            }
+            if (! $this->authorization->officeMayManageProgram($request, $section->program_id)
+                || (array_key_exists('program_id', $validated) && ! $this->authorization->officeMayManageProgram($request, $validated['program_id']))) {
+                return $this->headManagedResponse();
             }
 
             unset($validated['semester']);
@@ -289,10 +299,17 @@ class SectionsController extends Controller
             || (string) $curriculum->status !== 'active') {
             return response()->json(['message' => 'Choose an active curriculum belonging to this department.'], 422);
         }
+        if (! $this->authorization->officeMayManageProgram($request, $curriculum->program_id)) {
+            return $this->headManagedResponse();
+        }
 
         $programScope = $this->authorization->programScope($request);
+        // The office may not change sections of a Program Head's program. Named sections are
+        // refused below; a whole-year-level request leaves those programs out.
+        $headManaged = $this->authorization->headManagedProgramIds($request);
         $sections = Sections::query()
             ->when($programScope !== null, fn ($scope) => $scope->where('program_id', $programScope))
+            ->when(! isset($validated['section_ids']) && $headManaged !== [], fn ($scope) => $scope->whereNotIn('program_id', $headManaged))
             ->where('semester_id', (int) $validated['semester_id'])
             ->where('department_id', (int) $validated['department_id'])
             ->where('year_level', (string) $validated['year_level'])
@@ -305,6 +322,9 @@ class SectionsController extends Controller
 
         if ($sections->isEmpty()) {
             return response()->json(['message' => 'No active sections were found for the selected year level.'], 422);
+        }
+        if ($sections->contains(fn (Sections $section): bool => in_array((int) $section->program_id, $headManaged, true))) {
+            return $this->headManagedResponse();
         }
 
         if ($curriculum->program_id !== null) {
@@ -375,6 +395,9 @@ class SectionsController extends Controller
         if (! $this->authorization->payloadBelongsToProgram($request, $section->program_id)) {
             return response()->json(['message' => self::OTHER_PROGRAM_MESSAGE], 403);
         }
+        if (! $this->authorization->officeMayManageProgram($request, $section->program_id)) {
+            return $this->headManagedResponse();
+        }
 
         if ($section->hasLockedSchedules()) {
             return response()->json(['message' => self::LOCKED_SECTION_MESSAGE], 422);
@@ -429,6 +452,11 @@ class SectionsController extends Controller
             ->get());
 
         return response()->json($sections);
+    }
+
+    private function headManagedResponse(): \Illuminate\Http\JsonResponse
+    {
+        return response()->json(['message' => ScheduleAuthorizationService::PROGRAM_HEAD_MANAGED_MESSAGE], 403);
     }
 
     private function duplicateNameMessage(string $name): string

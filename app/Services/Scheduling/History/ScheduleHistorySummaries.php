@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Cache;
 
 /**
  * Per-version facts the Schedule History list shows: class count, distinct section count, first class and
- * first section name. Computing them reads every item's JSON (hundreds of rows per semester archive, slow on
+ * first section name and ownership identities. Computing them reads every item's JSON (hundreds of rows per semester archive, slow on
  * large tables), but history rows are append-only (DB triggers forbid UPDATE/DELETE), so each settled
  * version's summary is computed once and cached forever.
  */
@@ -21,7 +21,7 @@ class ScheduleHistorySummaries
     /**
      * @param  array<int, int>  $versionIds
      * @param  array<int, int>  $cacheable  versions old enough that no more items can be added
-     * @return array<int, array{count: int, sections: int, schedule_id: mixed, snapshot: ?array, section_name: mixed}>
+     * @return array<int, array{count: int, sections: int, schedule_id: mixed, snapshot: ?array, section_name: mixed, ownership_rows: list<array<string, mixed>>}>
      */
     public function forVersions(array $versionIds, array $cacheable): array
     {
@@ -51,6 +51,10 @@ class ScheduleHistorySummaries
                 'schedule_id' => $first?->original_schedule_id,
                 'snapshot' => $first ? self::snapshotOf($firstSnapshots->get($first->id)) : null,
                 'section_name' => $first ? $this->firstOf($first, 'summary_section_name', fn () => data_get($first->snapshot_metadata, 'section_name')) : null,
+                // Cache immutable identities, never permissions; active ownership is checked on every response.
+                'ownership_rows' => $rows->map(fn (ScheduleHistoryItem $item) => collect(['department_id', 'program_id', 'section_id', 'curriculum_id', 'course_id'])
+                    ->mapWithKeys(fn (string $field) => [$field => $this->firstOf($item, 'summary_'.$field, fn () => data_get(self::snapshotOf($item), $field))])
+                    ->all())->unique(fn (array $row) => json_encode($row))->values()->all(),
             ];
             if (in_array($id, $cacheable, true)) {
                 Cache::forever(self::key($id), $summaries[$id]);
@@ -80,7 +84,7 @@ class ScheduleHistorySummaries
 
     public static function key(int $versionId): string
     {
-        return 'schedule-history:summary:v1:'.$versionId;
+        return 'schedule-history:summary:v2:'.$versionId;
     }
 
     public static function snapshotOf(?ScheduleHistoryItem $item): ?array
@@ -122,6 +126,10 @@ class ScheduleHistorySummaries
         }
 
         return $items
+            ->selectRaw($extract('COALESCE(after_snapshot, before_snapshot)', '$.department_id').' as summary_department_id')
+            ->selectRaw($extract('COALESCE(after_snapshot, before_snapshot)', '$.program_id').' as summary_program_id')
+            ->selectRaw($extract('COALESCE(after_snapshot, before_snapshot)', '$.curriculum_id').' as summary_curriculum_id')
+            ->selectRaw($extract('COALESCE(after_snapshot, before_snapshot)', '$.course_id').' as summary_course_id')
             ->selectRaw($extract('COALESCE(after_snapshot, before_snapshot)', '$.section_id').' as summary_section_id')
             ->selectRaw($extract('snapshot_metadata', '$.section_id').' as summary_metadata_section_id')
             ->selectRaw($extract('snapshot_metadata', '$.section_name').' as summary_section_name');

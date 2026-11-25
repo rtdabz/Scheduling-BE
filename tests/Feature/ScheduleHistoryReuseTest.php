@@ -19,6 +19,8 @@ use App\Models\User;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -104,6 +106,124 @@ class ScheduleHistoryReuseTest extends TestCase
         $this->assertSame(1, ScheduleHistoryVersion::query()->whereKey($version->id)->count());
         $this->assertTrue(SchedulingAuditLog::query()->where('action', 'schedule_created')
             ->where('metadata->reused_history_version_id', $version->id)->exists());
+    }
+
+    public static function officeRoles(): array
+    {
+        return [['secretary'], ['director']];
+    }
+
+    #[DataProvider('officeRoles')]
+    public function test_reuse_permissions_follow_live_head_assignments_even_when_history_is_cached(string $role): void
+    {
+        $office = $this->ctx['secretary'];
+        $office->update(['role' => $role]);
+        $this->travel(2)->minutes();
+        $listed = fn () => collect($this->actingAs($office->fresh(), 'sanctum')->getJson('/api/schedule-history')->assertOk()->json('data'))->firstWhere('id', $this->ctx['version']->id);
+        $this->assertTrue($listed()['can_reuse']);
+        $head = User::factory()->create(['role' => 'program_head', 'department_id' => $this->ctx['department']->id, 'program_id' => $this->ctx['program']->id]);
+        $this->assertFalse($listed()['can_reuse']);
+        $this->postReuse()->assertForbidden()->assertJsonPath('issues.0.check', 'program');
+        $this->assertSame(0, Schedule::count());
+        $head->update(['is_active' => false]);
+        $this->assertTrue($listed()['can_reuse']);
+        $head->update(['is_active' => true]);
+        $this->assertFalse($listed()['can_reuse']);
+        $head->delete();
+        $this->assertTrue($listed()['can_reuse']);
+        $this->postReuse()->assertCreated();
+    }
+
+    #[DataProvider('officeRoles')]
+    public function test_a_moved_section_cannot_erase_the_recorded_source_program(string $role): void
+    {
+        $this->ctx['secretary']->update(['role' => $role]);
+        $other = Program::create(['department_id' => $this->ctx['department']->id, 'code' => 'B', 'name' => 'Unheaded program']);
+        User::factory()->create(['role' => 'program_head', 'department_id' => $this->ctx['department']->id, 'program_id' => $this->ctx['program']->id]);
+        $this->ctx['activeSection']->update(['program_id' => $other->id]);
+        $snapshot = $this->ctx['version']->items()->first()->after_snapshot;
+        $snapshot['section_id'] = $this->ctx['activeSection']->id;
+        $version = $this->recordOwnershipHistory([$snapshot]);
+        $this->actingAs($this->ctx['secretary']->fresh(), 'sanctum')->postJson("/api/schedule-history/{$version->id}/reuse")
+            ->assertForbidden()->assertJsonPath('issues.0.check', 'program');
+        // The recorded curriculum still identifies the old owner when a legacy snapshot lacks program_id.
+        unset($snapshot['program_id']);
+        $legacyVersion = $this->recordOwnershipHistory([$snapshot]);
+        $this->actingAs($this->ctx['secretary']->fresh(), 'sanctum')->postJson("/api/schedule-history/{$legacyVersion->id}/reuse")
+            ->assertForbidden()->assertJsonPath('issues.0.check', 'program');
+        // Likewise, a recorded unheaded program cannot hide current section curriculum ownership.
+        $this->ctx['activeSection']->update(['program_id' => null]);
+        $snapshot['program_id'] = $other->id;
+        $currentVersion = $this->recordOwnershipHistory([$snapshot]);
+        $this->actingAs($this->ctx['secretary']->fresh(), 'sanctum')->postJson("/api/schedule-history/{$currentVersion->id}/reuse")
+            ->assertForbidden()->assertJsonPath('issues.0.check', 'program');
+        $this->assertSame(0, Schedule::count());
+    }
+
+    public function test_legacy_history_uses_curriculum_ownership_when_program_and_section_program_are_missing(): void
+    {
+        User::factory()->create(['role' => 'program_head', 'department_id' => $this->ctx['department']->id, 'program_id' => $this->ctx['program']->id]);
+        $this->ctx['pastSection']->update(['program_id' => null]);
+        $snapshot = $this->ctx['version']->items()->first()->after_snapshot;
+        unset($snapshot['program_id']);
+        $version = $this->recordOwnershipHistory([$snapshot]);
+        $this->actingAs($this->ctx['secretary'], 'sanctum')->postJson("/api/schedule-history/{$version->id}/reuse")->assertForbidden();
+        $this->assertSame(0, Schedule::count());
+    }
+
+    public function test_a_mixed_program_history_cannot_be_partially_reused(): void
+    {
+        User::factory()->create(['role' => 'program_head', 'department_id' => $this->ctx['department']->id, 'program_id' => $this->ctx['program']->id]);
+        $other = Program::create(['department_id' => $this->ctx['department']->id, 'code' => 'B', 'name' => 'Unheaded program']);
+        $section = Sections::create(['section_name' => 'B 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $this->ctx['department']->id, 'program_id' => $other->id, 'semester_id' => $this->ctx['active']->id, 'status' => 'active']);
+        $headed = $this->ctx['version']->items()->first()->after_snapshot;
+        $unheaded = array_replace($headed, ['section_id' => $section->id, 'program_id' => $other->id]);
+        $version = $this->recordOwnershipHistory([$unheaded, $headed]);
+        $this->actingAs($this->ctx['secretary'], 'sanctum')->postJson("/api/schedule-history/{$version->id}/reuse")->assertForbidden();
+        $this->assertSame(0, Schedule::count());
+    }
+
+    #[DataProvider('officeRoles')]
+    public function test_a_shared_course_cannot_hide_legacy_ownership_but_explicit_unheaded_programs_remain_writable(string $role): void
+    {
+        $this->ctx['secretary']->update(['role' => $role]);
+        $head = User::factory()->create(['role' => 'program_head', 'department_id' => $this->ctx['department']->id, 'program_id' => $this->ctx['program']->id]);
+        $other = Program::create(['department_id' => $this->ctx['department']->id, 'code' => 'B', 'name' => 'Unheaded program']);
+        $this->ctx['course']->update(['program_id' => $other->id, 'course_category' => 'minor']);
+        $this->ctx['pastSection']->update(['program_id' => null, 'curriculum_id' => null]);
+        $legacy = $this->ctx['version']->items()->first()->after_snapshot;
+        unset($legacy['program_id'], $legacy['curriculum_id']);
+        $legacyVersion = $this->recordOwnershipHistory([$legacy]);
+        $this->actingAs($this->ctx['secretary']->fresh(), 'sanctum')->postJson("/api/schedule-history/{$legacyVersion->id}/reuse")->assertForbidden();
+        $this->assertSame(0, Schedule::count());
+
+        $this->ctx['course']->delete();
+        $this->actingAs($this->ctx['secretary']->fresh(), 'sanctum')->postJson("/api/schedule-history/{$legacyVersion->id}/reuse")->assertForbidden();
+        $this->ctx['course']->restore();
+
+        $curriculum = Curriculum::create(['name' => 'B curriculum', 'code' => 'B-CURRICULUM', 'department_id' => $this->ctx['department']->id, 'program_id' => $other->id, 'effective_school_year' => '2026-2027', 'status' => 'active']);
+        $curriculum->courses()->attach($this->ctx['course']->id, ['year_level' => 1, 'semester' => 1]);
+        $section = Sections::create(['section_name' => 'B 1A', 'year_level' => '1', 'semester' => '1st', 'department_id' => $this->ctx['department']->id, 'program_id' => $other->id, 'curriculum_id' => $curriculum->id, 'semester_id' => $this->ctx['active']->id, 'status' => 'active']);
+        $explicit = array_replace($legacy, ['section_id' => $section->id, 'program_id' => $other->id, 'curriculum_id' => $curriculum->id, 'day' => 'Tuesday']);
+        $version = $this->recordOwnershipHistory([$explicit]);
+        $this->actingAs($this->ctx['secretary']->fresh(), 'sanctum')->postJson("/api/schedule-history/{$version->id}/reuse")->assertCreated();
+        $head->delete();
+        $this->actingAs($this->ctx['secretary']->fresh(), 'sanctum')->postJson("/api/schedule-history/{$legacyVersion->id}/reuse")->assertCreated();
+    }
+
+    private function postReuse(): TestResponse
+    {
+        return $this->actingAs($this->ctx['secretary']->fresh(), 'sanctum')->postJson("/api/schedule-history/{$this->ctx['version']->id}/reuse");
+    }
+
+    private function recordOwnershipHistory(array $snapshots): ScheduleHistoryVersion
+    {
+        $version = ScheduleHistoryVersion::create(['semester_id' => $this->ctx['past']->id, 'department_id' => $this->ctx['department']->id, 'action' => 'schedule_approved_by_vpaa', 'source' => 'department_workflow']);
+        foreach ($snapshots as $snapshot) {
+            ScheduleHistoryItem::create(['history_version_id' => $version->id, 'original_schedule_id' => null, 'after_snapshot' => $snapshot, 'snapshot_metadata' => ['section_name' => 'BSIT 1A', 'section_year_level' => 1]]);
+        }
+
+        return $version;
     }
 
     public function test_a_different_academic_year_is_allowed_but_a_different_term_is_not(): void

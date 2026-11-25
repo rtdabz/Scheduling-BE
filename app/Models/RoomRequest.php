@@ -27,6 +27,7 @@ class RoomRequest extends Model
         'room_id',
         'semester_id',
         'requesting_department_id',
+        'requesting_program_id',
         'owner_department_id',
         'status',
         'purpose',
@@ -54,6 +55,11 @@ class RoomRequest extends Model
     public function requestingDepartment()
     {
         return $this->belongsTo(Departments::class, 'requesting_department_id');
+    }
+
+    public function requestingProgram()
+    {
+        return $this->belongsTo(Program::class, 'requesting_program_id')->withTrashed();
     }
 
     public function ownerDepartment()
