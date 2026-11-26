@@ -18,6 +18,7 @@ use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Engine\RuleEngine;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
+use App\Services\Scheduling\Schedule\ProgramCourseVisibility;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use App\Services\SystemNotificationService;
@@ -146,6 +147,17 @@ class InstructorAssignmentController extends Controller
             ];
         });
 
+        $rows = collect($data['schedules'] ?? []);
+        $hidden = app(ProgramCourseVisibility::class)->hiddenInstructorScheduleIds($request, $rows);
+        $data['schedules'] = $rows->reject(fn (Schedule $row): bool => in_array((int) $row->id, $hidden, true))->values();
+        $visibleCourses = $data['schedules']->pluck('course_id')->unique()->all();
+        foreach (['courses', 'subjects'] as $key) {
+            $data[$key] = collect($data[$key] ?? [])->filter(fn (Course $course): bool => in_array($course->id, $visibleCourses))->values();
+        }
+        $visibleDepartments = $data['schedules']->pluck('department_id')->unique()->all();
+        $data['departments'] = collect($data['departments'] ?? [])
+            ->filter(fn (Departments $department): bool => in_array($department->id, $visibleDepartments))->values();
+
         return response()->json($data);
     }
 
@@ -183,6 +195,10 @@ class InstructorAssignmentController extends Controller
                     ? 'Only the department that offers this major can assign its instructor.'
                     : 'Only the college that offers this course can assign its instructor.',
             ], 403);
+        }
+
+        if (app(ProgramCourseVisibility::class)->hiddenInstructorScheduleIds($request, [$schedule]) !== []) {
+            return response()->json(['message' => ProgramCourseVisibility::ASSIGNED_ELSEWHERE], 403);
         }
 
         if ($this->authorization->majorInstructorAssignmentBlocked($request, [$schedule])) {
@@ -696,6 +712,9 @@ class InstructorAssignmentController extends Controller
 
     private function userCanManageInstructor(Request $request, Schedule $schedule, int $departmentId): bool
     {
+        if (app(ProgramCourseVisibility::class)->hiddenInstructorScheduleIds($request, [$schedule]) !== []) {
+            return false;
+        }
         $course = SchedulingPolicy::courseForSchedule($schedule);
         if ($course === null) {
             return false;

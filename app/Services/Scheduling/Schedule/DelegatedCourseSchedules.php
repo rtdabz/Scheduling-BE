@@ -11,8 +11,11 @@ use App\Models\Schedule;
  */
 final class DelegatedCourseSchedules
 {
-    public function refusal(int $courseId, int $targetDepartmentId, int $semesterId): ?string
+    public function refusal(int $courseId, int $targetDepartmentId, int $semesterId, ?int $targetProgramId = null): ?string
     {
+        if (in_array($courseId, app(ProgramCourseVisibility::class)->excludedCourseIdsForProgram($targetProgramId, $semesterId), true)) {
+            return ProgramCourseVisibility::ASSIGNED_ELSEWHERE;
+        }
         $course = Course::query()->find($courseId)?->forSemester($semesterId);
         $teachingDepartmentId = (int) ($course?->teaching_department_id ?? 0);
         if ($course === null || $teachingDepartmentId === 0 || $teachingDepartmentId !== $targetDepartmentId) {

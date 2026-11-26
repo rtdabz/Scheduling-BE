@@ -20,6 +20,64 @@ Reviewed 2026-11-15.
 - A NULL-program instructor **cannot** teach courses tied to a program (`teaching_program_id`, or a major's `program_id`). `(int) null` is `0`, which never matches.
 - Program Heads only see and assign instructors of their own program. They only assign program-tied courses, so a NULL-program instructor would be ineligible for those courses anyway.
 
+## Course Assignment visibility (2026-11-25)
+
+`ProgramCourseVisibility` applies a semester-specific selection rule to courses handed from
+program A to a different program B. The recorded `teaching_source_program_id` identifies A,
+falling back to the course's `program_id` for older assignments. Both programs must have an
+active, non-archived Program Head account belonging to their department. If either has no such
+head, existing visibility is retained. Department-only assignments, same-program assignments,
+and unresolved source programs retain their existing behavior.
+
+When both programs have heads, the source department office (Secretary or Director) and source
+Program Head no longer receive the course as a course-list or scheduling selection. Program
+Heads' course lists are also scoped to their program's courses/curricula and received assignments.
+The receiving Program Head retains instructor access to the existing source timetable. The
+Course Assignment list and assignment/removal process remain available under their existing checks.
+
+The backend filters course and instructor payloads and rejects hidden selections through manual,
+batch, generation, and reuse paths. Existing duplicate, class, and conflict checks remain in force.
+Existing timetable rows and conflict occupancy remain intact; ordinary moves of retained rows
+and legitimate classes in the receiving program keep their previous validation.
+
+Initial data returns excluded courses needed by retained rows as `schedule_course_references`.
+These are read-only lookups (`delegated_only = true`), never course-bank/generation options.
+Schedules carry `instructor_assignment_visible`; returned classes retain their independent
+section-level instructor assignment. Other programs' shared-room rows remain conflict inputs,
+with instructor selection hidden from unrelated Program Heads. Access decisions and course pagination run after the payload
+cache so head changes take effect without retaining a cached permission decision. Frontend user
+and assignment events refresh the relevant lists and caches are scoped by program.
+
+Regression coverage: `tests/Feature/ProgramDelegatedCourseVisibilityTest.php`, frontend initial-data
+mapping, assignment modal, scheduler hooks, and existing Course Assignment/reuse/initial-data tests.
+
+## Receiving-program instructor access (2026-11-26)
+
+Cross-Department staffing follows each schedule's persisted semester-specific receiving program,
+including an independently returned section's `section_teaching_*` assignment. A Program Head
+receives only their program's assigned classes. A Secretary or Director receives program-specific
+assignments only for programs their office may manage (no active Program Head), using the existing
+`writableProgramIds` policy. Department-only delegations retain their existing office access.
+This receiving check does not require a source program or source Program Head; the two-head
+exception above remains a course-list/scheduling-selection rule, not permission to staff another
+program's delegated classes.
+
+The instructor list, offering departments, pending badge, single/bulk assignment, clearing,
+recommendations and returns use this same access check. Initial data retains conflict/timetable
+facts with `instructor_assignment_visible = false`; the UI excludes them from delegated choices
+and bulk actions. Actor-scoped caches and user/assignment refresh events prevent reuse of another
+program's pending count or stale selections. Course Assignment itself and conflict checks are unchanged.
+
+Verified locally on 2026-11-26: 203 backend tests (1,314 assertions), including the receiving
+visibility cases; 53 frontend tests, run with one worker and a 15-second timeout after host-load
+timeouts at the default limit. Playwright used the real localhost frontend/API with an isolated
+SQLite fixture: the CAS Secretary and Sociology Program Head saw no ComDev delegation and their
+direct assignment requests returned 403; the ComDev Program Head saw GEC 1 and assigned its
+instructor through the UI. Temporary servers, credentials and fixture database were removed.
+TypeScript and the production build passed; scoped Pint and diff checks passed. ESLint comparison
+found no new errors; eight existing errors remain in the affected frontend files.
+Production deployment and live verification remain outstanding.
+
 ## Dependency map
 
 | # | Area | File | Status |

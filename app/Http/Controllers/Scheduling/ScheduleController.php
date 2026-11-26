@@ -25,6 +25,7 @@ use App\Services\Scheduling\Schedule\BatchConflictMessages;
 use App\Services\Scheduling\Schedule\BatchConflictValidator;
 use App\Services\Scheduling\Schedule\DelegatedCourseSchedules;
 use App\Services\Scheduling\Schedule\ManualHybridFacultyAssignmentResolver;
+use App\Services\Scheduling\Schedule\ProgramCourseVisibility;
 use App\Services\Scheduling\Schedule\SameTimePartnerMover;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Schedule\ScheduleConflictCase;
@@ -477,6 +478,20 @@ class ScheduleController extends Controller
                 continue;
             }
             $providedFields = $providedOperationFields[(int) $operation['id']] ?? array_keys($operation);
+            if (collect(['course_id', 'section_id', 'semester_id'])->contains(
+                fn (string $field): bool => isset($operation[$field]) && (int) $operation[$field] !== (int) $existing->$field,
+            )) {
+                $selection = array_merge($existing->toArray(), $operation);
+                unset($selection['id']);
+                if (($refusal = $this->delegatedCourseScheduleMessage($selection)) !== null) {
+                    return response()->json(['message' => $refusal], 422);
+                }
+            }
+            if (in_array('faculty_id', $providedFields, true)
+                && (int) ($operation['faculty_id'] ?? 0) !== (int) ($existing->faculty_id ?? 0)
+                && app(ProgramCourseVisibility::class)->hiddenInstructorScheduleIds($request, [$existing]) !== []) {
+                return response()->json(['message' => ProgramCourseVisibility::ASSIGNED_ELSEWHERE], 403);
+            }
             $statusOnlyUpdate = array_key_exists('status', $operation)
                 && $operation['status'] !== $existing->status
                 && ! in_array($operation['status'], ['finalized', 'reassignment'], true)
@@ -1362,6 +1377,22 @@ class ScheduleController extends Controller
             return $this->programForbidden();
         }
 
+        if (collect(['course_id', 'section_id', 'semester_id'])->contains(
+            fn (string $field): bool => isset($validated[$field]) && (int) $validated[$field] !== (int) $schedule->$field,
+        )) {
+            $selection = array_merge($schedule->toArray(), $validated);
+            unset($selection['id']);
+            if (($refusal = $this->delegatedCourseScheduleMessage($selection)) !== null) {
+                return response()->json(['message' => $refusal], 422);
+            }
+        }
+
+        if (array_key_exists('faculty_id', $validated)
+            && (int) ($schedule->faculty_id ?? 0) !== (int) ($validated['faculty_id'] ?? 0)
+            && app(ProgramCourseVisibility::class)->hiddenInstructorScheduleIds($request, [$schedule]) !== []) {
+            return response()->json(['message' => ProgramCourseVisibility::ASSIGNED_ELSEWHERE], 403);
+        }
+
         if (array_key_exists('faculty_id', $validated)
             && (int) ($schedule->faculty_id ?? 0) !== (int) ($validated['faculty_id'] ?? 0)
             && $this->authorization->majorInstructorAssignmentBlocked($request, [$schedule])) {
@@ -1822,20 +1853,27 @@ class ScheduleController extends Controller
             return null;
         }
 
-        $cacheKey = "{$courseId}:{$targetDepartmentId}:{$semesterId}";
+        // Course selections are rechecked server-side; retained timetable moves keep their
+        // existing validation. A client cannot bypass this by posting a filtered-out course id.
+        $programId = empty($payload['id'])
+            ? Sections::query()->whereKey($payload['section_id'] ?? 0)->value('program_id')
+            : null;
+        $programId = $programId === null ? null : (int) $programId;
+
+        $cacheKey = "{$courseId}:{$targetDepartmentId}:{$semesterId}:{$programId}";
         if ($this->delegatedCourseMessages === null) {
-            return $this->resolveDelegatedCourseScheduleMessage($courseId, $targetDepartmentId, $semesterId);
+            return $this->resolveDelegatedCourseScheduleMessage($courseId, $targetDepartmentId, $semesterId, $programId);
         }
         if (array_key_exists($cacheKey, $this->delegatedCourseMessages)) {
             return $this->delegatedCourseMessages[$cacheKey];
         }
 
-        return $this->delegatedCourseMessages[$cacheKey] = $this->resolveDelegatedCourseScheduleMessage($courseId, $targetDepartmentId, $semesterId);
+        return $this->delegatedCourseMessages[$cacheKey] = $this->resolveDelegatedCourseScheduleMessage($courseId, $targetDepartmentId, $semesterId, $programId);
     }
 
-    private function resolveDelegatedCourseScheduleMessage(int $courseId, int $targetDepartmentId, int $semesterId): ?string
+    private function resolveDelegatedCourseScheduleMessage(int $courseId, int $targetDepartmentId, int $semesterId, ?int $programId = null): ?string
     {
-        return app(DelegatedCourseSchedules::class)->refusal($courseId, $targetDepartmentId, $semesterId);
+        return app(DelegatedCourseSchedules::class)->refusal($courseId, $targetDepartmentId, $semesterId, $programId);
     }
 
     private function payloadBelongsToDepartment(Request $request, int $targetDeptId): bool

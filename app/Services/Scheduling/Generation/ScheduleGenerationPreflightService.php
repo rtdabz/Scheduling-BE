@@ -5,6 +5,7 @@ namespace App\Services\Scheduling\Generation;
 use App\Exceptions\ScheduleGenerationPreflightException;
 use App\Models\Course;
 use App\Models\Sections;
+use App\Services\Scheduling\Schedule\ProgramCourseVisibility;
 use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use Illuminate\Support\Collection;
@@ -31,6 +32,15 @@ class ScheduleGenerationPreflightService
         // Resource feasibility and fallbacks belong to configuration validation and
         // the solver. Course eligibility is independent of department classification.
         $issues = $this->commonIssues($section, $courses, $courseIds);
+        $excluded = app(ProgramCourseVisibility::class)->excludedCourseIdsForProgram(
+            $section->program_id === null ? null : (int) $section->program_id,
+            (int) $section->semester_id,
+        );
+        foreach ($courses as $course) {
+            if (in_array((int) $course->id, $excluded, true)) {
+                $issues[] = $this->courseIssue('course_assigned_to_another_program', ProgramCourseVisibility::ASSIGNED_ELSEWHERE, $section, $course, 'Remove this course from the source program selection.');
+            }
+        }
         foreach ($courses as $course) {
             $mode = $options['delivery_modes_by_course_id'][$course->id] ?? $options['mode'] ?? 'on-site';
             if ($mode === 'field' && ! SchedulingPolicy::isFieldSchedulingEligible($course)) {

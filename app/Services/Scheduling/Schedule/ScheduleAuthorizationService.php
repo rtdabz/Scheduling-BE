@@ -509,6 +509,11 @@ final class ScheduleAuthorizationService
 
     public function scheduleIdsAssignableByDepartment(Request $request, array $scheduleIds): bool
     {
+        if (app(ProgramCourseVisibility::class)->hiddenInstructorScheduleIds(
+            $request, Schedule::query()->whereIn('id', $this->normalizeIds($scheduleIds))->get(),
+        ) !== []) {
+            return false;
+        }
         $scope = $this->departmentScope($request);
         if ($scope === null || $scheduleIds === []) {
             return true;

@@ -18,6 +18,7 @@ use App\Services\ScheduleSemesterArchiver;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
 use App\Services\Scheduling\Department\DepartmentScheduleStatusDeriver;
 use App\Services\Scheduling\Department\ScheduleOverviewService;
+use App\Services\Scheduling\Schedule\ProgramCourseVisibility;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Schedule\ScheduleConflictCase;
 use App\Services\Scheduling\Schedule\ScheduleConflictScanner;
@@ -651,6 +652,7 @@ class DepartmentScheduleController extends Controller
                     ? $this->crossDepartmentGate->isOpenFor($request->user(), $activeSemesterId)
                     : $this->crossDepartmentGate->allowsSectionStatuses($result->pluck('status')->all()),
             'cross_department_pending' => $this->crossDepartmentPendingCount(
+                $request,
                 (int) $department->id,
                 $activeSemesterId,
                 $request->user()?->role === 'program_head' ? (int) ($request->user()?->program_id ?? 0) : null,
@@ -658,7 +660,7 @@ class DepartmentScheduleController extends Controller
         ]);
     }
 
-    private function crossDepartmentPendingCount(int $departmentId, ?int $activeSemesterId, ?int $programId = null): int
+    private function crossDepartmentPendingCount(Request $request, int $departmentId, ?int $activeSemesterId, ?int $programId = null): int
     {
         if ($activeSemesterId === null) {
             return 0;
@@ -681,8 +683,11 @@ class DepartmentScheduleController extends Controller
                     ->where('section_teaching_department_id', $departmentId)
                     ->where(fn ($kind) => $kind->where('department_id', '!=', $departmentId)->orWhereNotNull('section_teaching_program_id'))
                     ->when($programId !== null, fn ($scope) => $scope->where('section_teaching_program_id', $programId))))
-            ->distinct()
-            ->get(['section_id', 'course_id', 'department_id']);
+            ->with(['course:id,program_id', 'section:id,program_id'])
+            ->get(['id', 'semester_id', 'section_id', 'course_id', 'department_id', 'program_id',
+                'delegation_returned_from_department_id', 'section_teaching_department_id', 'section_teaching_program_id']);
+
+        $hidden = app(ProgramCourseVisibility::class)->hiddenInstructorScheduleIds($request, $rows);
 
         // Colleges not yet fully VPAA-approved are out of Cross-Department (matches its index).
         $recalled = $this->crossDepartmentGate->awaitingApproval(
@@ -691,6 +696,7 @@ class DepartmentScheduleController extends Controller
         );
 
         return $rows
+            ->reject(fn (Schedule $row): bool => in_array((int) $row->id, $hidden, true))
             ->reject(fn (Schedule $row): bool => in_array((int) $row->department_id, $recalled, true))
             ->unique(fn (Schedule $row): string => $row->section_id.':'.$row->course_id)
             ->count();

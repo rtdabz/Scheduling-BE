@@ -9,9 +9,11 @@ use App\Models\Course;
 use App\Models\Curriculum;
 use App\Models\Schedule;
 use App\Services\Curriculum\CurriculumCourseHours;
+use App\Services\Scheduling\Schedule\ProgramCourseVisibility;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\Submission\RevisionChangeRecorder;
 use App\Support\ApiCache;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -179,6 +181,20 @@ class CoursesController extends Controller
             return $courses;
         }));
 
+        // Do not cache access decisions: assigning/removing a Program Head changes visibility.
+        $hidden = app(ProgramCourseVisibility::class)->hiddenCourseIds($request);
+        $courses = $courses->reject(fn (Course $course): bool => in_array((int) $course->id, $hidden, true))->values();
+        if (($programId = $this->authorization->programScope($request)) !== null) {
+            $visible = Course::query()->whereIn('id', $courses->pluck('id'))
+                ->where(fn ($scope) => $scope->where('program_id', $programId)
+                    ->orWhere('teaching_program_id', $programId)
+                    ->orWhereHas('curriculum', fn ($curriculum) => $curriculum
+                        ->where('status', 'active')->where(fn ($own) => $own
+                        ->where('program_id', $programId)->orWhereNull('program_id'))))
+                ->pluck('id')->map('intval')->all();
+            $courses = $courses->filter(fn (Course $course): bool => in_array((int) $course->id, $visible, true))->values();
+        }
+
         // Computed outside the cache: it follows Program Head assignments as they change.
         $headManaged = $this->authorization->headManagedCourseIds($request, $courses->pluck('id')->map('intval')->all());
         if ($headManaged !== []) {
@@ -210,6 +226,9 @@ class CoursesController extends Controller
 
     public function show(Request $request, Course $course)
     {
+        if (in_array((int) $course->id, app(ProgramCourseVisibility::class)->hiddenCourseIds($request), true)) {
+            return response()->json(['message' => ProgramCourseVisibility::ASSIGNED_ELSEWHERE], 403);
+        }
         if (! $this->authorization->payloadBelongsToDepartment($request, (int) $course->department_id)) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
@@ -244,7 +263,7 @@ class CoursesController extends Controller
     }
 
     /** The department office may not change a course that a Program Head's program uses. */
-    private function headManagedCourseRefusal(Request $request, Course $course): ?\Illuminate\Http\JsonResponse
+    private function headManagedCourseRefusal(Request $request, Course $course): ?JsonResponse
     {
         return $this->authorization->headManagedCourseIds($request, [(int) $course->id]) === []
             ? null

@@ -410,7 +410,10 @@ final class ScheduleReuseService
         }
 
         foreach ($operations as $index => $operation) {
-            if (($refusal = $this->delegatedCourses->refusal((int) $operation['course_id'], (int) $operation['department_id'], (int) $semester->id)) !== null) {
+            if (($refusal = $this->delegatedCourses->refusal(
+                (int) $operation['course_id'], (int) $operation['department_id'], (int) $semester->id,
+                isset($operation['program_id']) ? (int) $operation['program_id'] : null,
+            )) !== null) {
                 $issues[] = ['check' => 'conflicts', 'message' => "{$labels[$index]}: {$refusal}"];
             }
             foreach ($this->ruleEngine->validate($operation + ['ignore_schedule_id' => []]) as $violation) {

@@ -6,6 +6,7 @@ namespace App\Services\Scheduling\Generation;
 
 use App\Models\Course;
 use App\Models\Sections;
+use App\Services\Scheduling\Schedule\ProgramCourseVisibility;
 use App\Services\Scheduling\Schedule\SectionCurriculumResolver;
 use App\Services\Scheduling\Support\SchedulingPolicy;
 use InvalidArgumentException;
@@ -58,6 +59,14 @@ final class GenerationCourseSelection
         }
 
         $courseIds = $courseQuery->pluck('courses.id')->toArray();
+        $excluded = app(ProgramCourseVisibility::class)->excludedCourseIdsForProgram(
+            $section->program_id === null ? null : (int) $section->program_id,
+            (int) $section->semester_id,
+        );
+        if ($providedCourseIds && array_intersect(array_map('intval', $providedCourseIds), $excluded) !== []) {
+            throw new InvalidArgumentException(ProgramCourseVisibility::ASSIGNED_ELSEWHERE);
+        }
+        $courseIds = array_values(array_diff($courseIds, $excluded));
 
         if (! empty($courseIds)) {
             return $courseIds;

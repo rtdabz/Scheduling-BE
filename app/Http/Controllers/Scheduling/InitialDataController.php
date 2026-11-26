@@ -16,6 +16,7 @@ use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
 use App\Services\FacultyLoadService;
+use App\Services\Scheduling\Schedule\ProgramCourseVisibility;
 use App\Services\Scheduling\Schedule\ScheduleAuthorizationService;
 use App\Services\Scheduling\ScheduleSignatories;
 use App\Services\Scheduling\Submission\SubmissionStatusResolver;
@@ -70,6 +71,7 @@ class InitialDataController extends Controller
             $requestedGroups,
         );
         $cacheKey = ApiCache::compositeKey('initial.data', $sectionGroups, [
+            'program_visibility_version' => 1,
             'include' => $include,
             'role' => (string) ($user?->role ?? ''),
             'department_id' => $user?->isVpaa() || $user?->department_id === null
@@ -95,10 +97,43 @@ class InitialDataController extends Controller
             ),
         );
 
-        $json = substr(rtrim($json), 0, -1)
-            .',"can_edit_program_ids":'.json_encode($this->authorization->writableProgramIds($request)).'}';
+        // The cached payload retains timetable/conflict facts. Current delegation visibility is
+        // evaluated afterwards, so a Program Head being deactivated restores the old selections.
+        // Keep nested JSON objects (including empty maps) in their original API shape.
+        $data = (array) json_decode($json, flags: JSON_THROW_ON_ERROR);
+        $visibility = app(ProgramCourseVisibility::class);
+        $hidden = array_fill_keys($visibility->hiddenCourseIds($request), true);
+        $schedulePayload = (array) ($data['schedules'] ?? []);
+        $scheduleRows = array_map(fn ($row): array => (array) $row, $schedulePayload['data'] ?? $schedulePayload);
+        if (array_key_exists('courses', $data)) {
+            $data['courses'] = array_map(fn ($course): array => (array) $course, $data['courses']);
+            $scheduledCourses = array_fill_keys(array_map(fn (array $row): int => (int) $row['course_id'], $scheduleRows), true);
+            $data['schedule_course_references'] = array_values(array_map(
+                fn (array $course): array => array_replace($course, ['delegated_only' => true]),
+                array_filter($data['courses'], fn (array $course): bool => isset($hidden[(int) $course['id']], $scheduledCourses[(int) $course['id']])),
+            ));
+            $courses = collect($data['courses'])->reject(fn (array $course): bool => isset($hidden[(int) $course['id']]))->values();
+            $pageSize = min(max((int) $request->query('per_page', 0), 0), 500);
+            $page = self::requestedPage($request, 'courses');
+            $data['courses'] = $pageSize > 0 ? [
+                'data' => $courses->forPage($page, $pageSize)->values(),
+                'meta' => ['page' => $page, 'per_page' => $pageSize, 'total' => $courses->count(), 'last_page' => max(1, (int) ceil($courses->count() / $pageSize))],
+            ] : $courses;
+        }
+        $rows = collect($scheduleRows)->map(fn (array $row): Schedule => (new Schedule)->setRawAttributes($row));
+        $hiddenRows = array_fill_keys($visibility->hiddenInstructorScheduleIds($request, $rows), true);
+        foreach ($scheduleRows as $index => $row) {
+            $scheduleRows[$index]['instructor_assignment_visible'] = ! isset($hiddenRows[(int) $row['id']]);
+        }
+        if (isset($schedulePayload['data'])) {
+            $schedulePayload['data'] = $scheduleRows;
+            $data['schedules'] = $schedulePayload;
+        } elseif (array_key_exists('schedules', $data)) {
+            $data['schedules'] = $scheduleRows;
+        }
+        $data['can_edit_program_ids'] = $this->authorization->writableProgramIds($request);
 
-        return JsonResponse::fromJsonString($json);
+        return response()->json($data);
     }
 
     /**
@@ -603,6 +638,11 @@ class InitialDataController extends Controller
 
         if ($pageSize > 0) {
             foreach (['rooms', 'courses', 'sections', 'schedules', 'departments', 'users'] as $key) {
+                // Course access depends on current Program Head assignments and is resolved
+                // after the cache. Page only after those courses have been filtered.
+                if ($key === 'courses') {
+                    continue;
+                }
                 $items = collect($payload[$key] ?? []);
                 $page = self::requestedPage($request, $key);
                 // Lists the database already paginated carry their own total; courses are merged and
