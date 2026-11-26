@@ -8,6 +8,7 @@ use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Program;
 use App\Models\Schedule;
+use App\Models\ScheduleHistoryItem;
 use App\Models\SchedulingAuditLog;
 use App\Models\Semester;
 use App\Models\User;
@@ -1027,7 +1028,7 @@ class CourseTeachingAssignmentController extends Controller
             return [];
         }
 
-        return Schedule::query()
+        $schedules = Schedule::query()
             ->with(['section:id,section_name', 'faculty:id,first_name,last_name', 'returnedFromDepartment:id,department_code,department_name', 'sectionTeachingDepartment:id,department_code,department_name', 'sectionTeachingProgram:id,code,name,major'])
             ->where('semester_id', $semester->id)
             ->where('department_id', $departmentId)
@@ -1036,11 +1037,14 @@ class CourseTeachingAssignmentController extends Controller
                 ->whereNull('program_id')
                 ->orWhereNotIn('program_id', $excludedProgramIds)))
             ->whereIn('course_id', $courseIds)
-            ->get(['id', 'course_id', 'section_id', 'faculty_id', 'status', 'faculty_assignment_done', 'delegation_returned_from_department_id',
-                'section_teaching_department_id', 'section_teaching_program_id'])
+            ->get(['id', 'course_id', 'section_id', 'faculty_id', 'status', 'faculty_assignment_done', 'delegation_returned_from_department_id', 'delegation_returned_at',
+                'section_teaching_department_id', 'section_teaching_program_id']);
+        $returnedFromPrograms = $this->returnedFromPrograms($schedules, (int) $semester->id);
+
+        return $schedules
             ->groupBy('course_id')
             ->map(fn (Collection $schedules): array => $schedules->groupBy('section_id')
-                ->map(function (Collection $meetings): array {
+                ->map(function (Collection $meetings) use ($returnedFromPrograms): array {
                     // `faculty` excludes archived instructors, so their meetings count as unassigned.
                     $instructors = $meetings->pluck('faculty')->filter()->unique('id')
                         ->map(fn ($faculty): string => trim("{$faculty->first_name} {$faculty->last_name}"))
@@ -1048,6 +1052,7 @@ class CourseTeachingAssignmentController extends Controller
                     $unassigned = $meetings->contains(fn (Schedule $meeting): bool => $meeting->faculty === null);
                     $first = $meetings->first();
                     $returned = SchedulingPolicy::isDetachedClass($first);
+                    $returnedFromProgram = $returnedFromPrograms[(int) $first->id] ?? null;
                     $handedTo = $returned ? $first->sectionTeachingDepartment : null;
                     $staffing = $unassigned ? ($instructors->isEmpty() ? 'Awaiting instructor' : 'Partially assigned') : 'Assigned';
 
@@ -1059,6 +1064,9 @@ class CourseTeachingAssignmentController extends Controller
                         'returned' => $returned,
                         'returned_from_department_id' => $returned ? (int) $first->delegation_returned_from_department_id : null,
                         'returned_from_department_code' => $returned ? $first->returnedFromDepartment?->department_code : null,
+                        'returned_from_program_id' => $returnedFromProgram?->id,
+                        'returned_from_program_code' => $returnedFromProgram?->shortLabel(),
+                        'returned_from_program_name' => $returnedFromProgram?->name,
                         'section_teaching_department_id' => $handedTo === null ? null : (int) $handedTo->id,
                         'section_teaching_department_code' => $handedTo?->department_code,
                         'section_teaching_department_name' => $handedTo?->department_name,
@@ -1078,6 +1086,61 @@ class CourseTeachingAssignmentController extends Controller
                 ->all())
             ->mapWithKeys(static fn (array $sections, $courseId): array => [(int) $courseId => $sections])
             ->all();
+    }
+
+    /**
+     * Read the latest return event, not the section's home program or a later teaching target.
+     * The actor's event-time identity also survives account/program changes after the return.
+     *
+     * @param  Collection<int, Schedule>  $schedules
+     * @return array<int, Program>
+     */
+    private function returnedFromPrograms(Collection $schedules, int $semesterId): array
+    {
+        $returned = $schedules->filter(fn (Schedule $row): bool => SchedulingPolicy::isDetachedClass($row))->keyBy('id');
+        if ($returned->isEmpty()) {
+            return [];
+        }
+
+        $items = ScheduleHistoryItem::query()
+            ->whereIn('id', ScheduleHistoryItem::query()
+                ->selectRaw('MAX(id)')
+                ->whereIn('original_schedule_id', $returned->keys())
+                ->whereHas('version', fn ($version) => $version->where('action', 'cross_department_sections_returned')->where('semester_id', $semesterId))
+                ->groupBy('original_schedule_id'))
+            ->with('version:id,actor_user_id,change_summary')
+            ->get(['id', 'history_version_id', 'original_schedule_id', 'before_snapshot', 'after_snapshot']);
+
+        $programIds = [];
+        foreach ($items as $item) {
+            $row = $returned->get((int) $item->original_schedule_id);
+            $snapshot = $item->after_snapshot ?? [];
+            if ((int) ($snapshot['section_id'] ?? 0) !== (int) $row->section_id
+                || (int) ($snapshot['course_id'] ?? 0) !== (int) $row->course_id
+                || (int) ($snapshot['delegation_returned_from_department_id'] ?? 0) !== (int) $row->delegation_returned_from_department_id
+                || empty($snapshot['delegation_returned_at'])
+                || (string) $snapshot['delegation_returned_at'] !== (string) $row->getRawOriginal('delegation_returned_at')) {
+                continue;
+            }
+
+            $actor = $item->version?->recorded_actor;
+            $programId = (int) ($actor['department_id'] ?? 0) === (int) $row->delegation_returned_from_department_id
+                ? ($actor['program_id'] ?? null) : null;
+            // A department office may return a section explicitly assigned to one of its programs.
+            if ($programId === null && (int) data_get($item->before_snapshot, 'section_teaching_department_id') === (int) $row->delegation_returned_from_department_id) {
+                $programId = data_get($item->before_snapshot, 'section_teaching_program_id');
+            }
+            if ($programId !== null) {
+                $programIds[(int) $row->id] = (int) $programId;
+            }
+        }
+
+        if ($programIds === []) {
+            return [];
+        }
+        $programs = Program::withTrashed()->whereIn('id', array_unique($programIds))->get(['id', 'code', 'name', 'major'])->keyBy('id');
+
+        return collect($programIds)->map(fn (int $id) => $programs->get($id))->filter()->all();
     }
 
     /**

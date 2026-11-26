@@ -309,7 +309,8 @@ Route::middleware(['auth:sanctum', 'active'])->group(function () {
         Route::get('instructor-assignments', [InstructorAssignmentController::class, 'index']);
         Route::delete('instructor-assignments/sections/{section}', [InstructorAssignmentController::class, 'clearSection']);
         Route::post('instructor-assignments/clear', [InstructorAssignmentController::class, 'clearSections']);
-        Route::post('instructor-assignments/return-sections', [InstructorAssignmentController::class, 'returnSections']);
+        Route::post('instructor-assignments/return-sections', [InstructorAssignmentController::class, 'returnSections'])
+            ->middleware(\App\Http\Middleware\CourseAssignmentSemester::class);
         Route::get('instructor-assignments/{schedule}/recommendations', [InstructorAssignmentController::class, 'recommendations']);
         Route::patch('instructor-assignments/{schedule}', [InstructorAssignmentController::class, 'update']);
         Route::get('instructor-assignment-draft', [InstructorAssignmentDraftController::class, 'show']);

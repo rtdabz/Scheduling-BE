@@ -13,6 +13,7 @@ use App\Models\SchedulingAuditLog;
 use App\Models\Sections;
 use App\Models\Semester;
 use App\Models\User;
+use App\Services\CourseTeachingAssignments;
 use App\Services\FacultyLoadService;
 use App\Services\ScheduleHistoryRecorder;
 use App\Services\Scheduling\Department\CrossDepartmentApprovalGate;
@@ -590,7 +591,7 @@ class InstructorAssignmentController extends Controller
         $rows = $classes->flatten(1)->values();
         $scheduleIds = $rows->pluck('id')->map('intval')->values()->all();
         $actor = $request->user();
-        DB::transaction(function () use ($rows, $scheduleIds, $departmentId, $activeSemesterId, $actor): void {
+        $clearedCourseIds = DB::transaction(function () use ($rows, $scheduleIds, $departmentId, $activeSemesterId, $actor): array {
             $before = Schedule::query()->whereIn('id', $scheduleIds)->get();
             // An archived instructor's id goes too: the class is no longer this department's to restore.
             // The class is detached from the course-level delegation and any section-level
@@ -605,8 +606,12 @@ class InstructorAssignmentController extends Controller
                 'faculty_id' => null,
                 'faculty_assignment_done' => false,
             ]);
+            // Returning a section-level handoff must not remove a different course-level target.
+            $courseIds = $rows->filter(fn (Schedule $row): bool => ! SchedulingPolicy::isDetachedClass($row))
+                ->pluck('course_id')->map('intval')->unique()->values()->all();
+            $cleared = app(CourseTeachingAssignments::class)->clearFullyReturned($courseIds, $activeSemesterId, $departmentId);
             $after = Schedule::query()->whereIn('id', $scheduleIds)->get();
-            $version = $this->historyRecorder->record('cross_department_sections_returned', $before, $after, $actor?->id, $activeSemesterId, $departmentId, 'instructor_assignment');
+            $version = $this->historyRecorder->record('cross_department_sections_returned', $before, $after, $actor?->id, $activeSemesterId, $departmentId, 'instructor_assignment', changeSummary: ['cleared_course_ids' => $cleared]);
             SchedulingAuditLog::create([
                 'user_id' => $actor?->id,
                 'semester_id' => $activeSemesterId,
@@ -618,10 +623,13 @@ class InstructorAssignmentController extends Controller
                     'schedule_ids' => $scheduleIds,
                     'section_ids' => $rows->pluck('section_id')->map('intval')->unique()->values()->all(),
                     'course_ids' => $rows->pluck('course_id')->map('intval')->unique()->values()->all(),
+                    'cleared_course_ids' => $cleared,
                     'offering_department_ids' => $rows->pluck('department_id')->map('intval')->unique()->values()->all(),
                 ],
                 'created_at' => now(),
             ]);
+
+            return $cleared;
         });
 
         ApiCache::forgetGroups(['instructor_assignments.index', 'faculty.index', 'initial.data', 'courses.index']);
@@ -635,6 +643,7 @@ class InstructorAssignmentController extends Controller
                 : "{$classes->count()} sections were returned to the offering department.",
             'schedule_ids' => $scheduleIds,
             'sections_returned' => $classes->count(),
+            'cleared_course_ids' => $clearedCourseIds,
             'schedules' => Schedule::query()
                 ->with(['section', 'course.department', 'course.program', 'faculty', 'room', 'department'])
                 ->whereIn('id', $scheduleIds)

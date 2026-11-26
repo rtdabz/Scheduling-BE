@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Course;
+use App\Models\CourseTeachingAssignment;
 use App\Models\Curriculum;
 use App\Models\Departments;
 use App\Models\Faculty;
@@ -583,12 +584,18 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$blocks->first()->id]])
             ->assertOk()
             ->assertJsonPath('sections_returned', 1)
+            ->assertJsonPath('cleared_course_ids', [$fixture['gec']->id])
             ->assertJsonCount(3, 'schedule_ids');
 
         // The whole class goes back, every meeting.
         $this->assertSame(3, Schedule::whereIn('id', $ids)->where('delegation_returned_from_department_id', $fixture['cas']->id)->count());
         $this->assertDatabaseHas('scheduling_audit_logs', ['action' => 'cross_department_sections_returned', 'department_id' => $fixture['cas']->id]);
         $this->assertDatabaseHas('system_notifications', ['type' => 'cross_department_sections_returned']);
+        $this->assertNull($fixture['gec']->fresh()->teaching_department_id);
+        $this->assertDatabaseHas('course_teaching_assignments', [
+            'course_id' => $fixture['gec']->id, 'semester_id' => $fixture['semester']->id,
+            'teaching_department_id' => null, 'teaching_program_id' => null, 'teaching_source_program_id' => null,
+        ]);
 
         // The teaching college no longer sees or assigns it.
         $casView = $this->actingAs($fixture['casSecretary'])->getJson('/api/instructor-assignments')->assertOk()->json('schedules');
@@ -609,6 +616,144 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
         $this->actingAs($fixture['itSecretary'])
             ->patchJson('/api/schedules/batch-faculty', ['assignments' => [['schedule_ids' => $ids, 'faculty_id' => $fixture['casInstructor']->id]]])
             ->assertStatus(422);
+    }
+
+    public function test_the_return_listing_uses_the_recorded_returning_program(): void
+    {
+        $fixture = $this->fixture();
+        $this->placeInCurriculum($fixture);
+        $fixture['gec']->update(['teaching_program_id' => $fixture['casProgram']->id]);
+        $blocks = $this->meetingBlocks($fixture);
+        $head = $this->grantCapabilities(User::factory()->create([
+            'role' => 'program_head', 'department_id' => $fixture['cas']->id, 'program_id' => $fixture['casProgram']->id,
+        ]));
+        $this->actingAs($head)->postJson('/api/instructor-assignments/return-sections', [
+            'schedule_ids' => [$blocks->first()->id],
+        ])->assertOk();
+
+        // Later account and course changes must not rewrite who returned the section.
+        $otherProgram = Program::create(['department_id' => $fixture['cas']->id, 'code' => 'OTHER', 'name' => 'Another Program']);
+        $head->update(['program_id' => $otherProgram->id]);
+        $fixture['gec']->refresh()->update(['teaching_department_id' => $fixture['cas']->id, 'teaching_program_id' => $otherProgram->id]);
+        $fixture['casProgram']->delete();
+
+        $section = collect($this->actingAs($fixture['itSecretary'])->getJson('/api/course-teaching-assignments')
+            ->assertOk()->json('courses'))->flatMap(fn (array $course) => $course['section_assignments'])->first();
+        $this->assertSame($fixture['cas']->id, $section['returned_from_department_id']);
+        $this->assertSame($fixture['casProgram']->id, $section['returned_from_program_id']);
+        $this->assertSame('BACAS', $section['returned_from_program_code']);
+        $this->assertSame('Arts and Sciences', $section['returned_from_program_name']);
+
+        // Do not reuse an older event if the current return has no matching history.
+        Schedule::whereIn('id', $blocks->pluck('id'))->update(['delegation_returned_at' => now()->addDay()]);
+        $section = collect($this->actingAs($fixture['itSecretary'])->getJson('/api/course-teaching-assignments')
+            ->assertOk()->json('courses'))->flatMap(fn (array $course) => $course['section_assignments'])->first();
+        $this->assertNull($section['returned_from_program_id']);
+    }
+
+    public function test_the_return_listing_does_not_guess_a_program_when_return_history_is_missing(): void
+    {
+        $fixture = $this->fixture();
+        $this->placeInCurriculum($fixture);
+        $fixture['gec']->update(['teaching_program_id' => $fixture['casProgram']->id]);
+        $blocks = $this->meetingBlocks($fixture);
+        Schedule::whereIn('id', $blocks->pluck('id'))->update([
+            'delegation_returned_from_department_id' => $fixture['cas']->id, 'delegation_returned_at' => now(),
+        ]);
+
+        $section = collect($this->actingAs($fixture['itSecretary'])->getJson('/api/course-teaching-assignments')
+            ->assertOk()->json('courses'))->flatMap(fn (array $course) => $course['section_assignments'])->first();
+        $this->assertSame('CAS', $section['returned_from_department_code']);
+        $this->assertNull($section['returned_from_program_id']);
+        $this->assertNull($section['returned_from_program_code']);
+    }
+
+    public function test_partial_returns_keep_the_assignment_until_the_last_section_is_returned(): void
+    {
+        $fixture = $this->fixture();
+        $this->placeInCurriculum($fixture);
+        $fixture['gec']->update(['teaching_program_id' => $fixture['casProgram']->id, 'teaching_source_program_id' => $fixture['itProgram']->id]);
+        $first = $this->meetingBlocks($fixture);
+        $last = $this->sectionClass($fixture, 'BSIT 1B');
+        // The semester mapping and an offering in a different semester must stay independent.
+        $otherSemester = Semester::create(['academic_year' => '2026-2027', 'semester' => '2nd', 'is_active' => false]);
+        $otherAssignment = CourseTeachingAssignment::create([
+            'course_id' => $fixture['gec']->id, 'semester_id' => $otherSemester->id,
+            'teaching_department_id' => $fixture['cas']->id, 'teaching_program_id' => $fixture['casProgram']->id,
+        ]);
+
+        $this->actingAs($fixture['casSecretary'])->postJson('/api/instructor-assignments/return-sections', [
+            'schedule_ids' => [$first->first()->id],
+        ])->assertOk()->assertJsonPath('cleared_course_ids', []);
+        $this->assertSame($fixture['cas']->id, (int) $fixture['gec']->fresh()->teaching_department_id);
+        $listed = collect($this->actingAs($fixture['itSecretary'])->getJson('/api/course-teaching-assignments')
+            ->assertOk()->json('courses'))->firstWhere('id', $fixture['gec']->id);
+        $this->assertSame($fixture['casProgram']->id, $listed['teaching_program_id']);
+
+        $this->actingAs($fixture['casSecretary'])->postJson('/api/instructor-assignments/return-sections', [
+            'schedule_ids' => [$last->id],
+        ])->assertOk()->assertJsonPath('cleared_course_ids', [$fixture['gec']->id]);
+        $listed = collect($this->actingAs($fixture['itSecretary'])->getJson('/api/course-teaching-assignments')
+            ->assertOk()->json('courses'))->firstWhere('id', $fixture['gec']->id);
+        $this->assertNull($listed['teaching_department_id']);
+        $this->assertNull($listed['teaching_program_id']);
+        $this->assertSame($fixture['casProgram']->id, $otherAssignment->fresh()->teaching_program_id);
+        $this->assertCount(2, $listed['section_assignments']);
+    }
+
+    public function test_returns_from_another_program_do_not_clear_sections_still_following_the_course_assignment(): void
+    {
+        $fixture = $this->fixture();
+        $hm = $this->thirdCollege($fixture);
+        $first = $this->meetingBlocks($fixture);
+        $kept = $this->sectionClass($fixture, 'BSIT 1B');
+        $this->actingAs($fixture['casSecretary'])->postJson('/api/instructor-assignments/return-sections', [
+            'schedule_ids' => [$first->first()->id],
+        ])->assertOk();
+        $this->actingAs($fixture['itSecretary'])->postJson('/api/course-teaching-assignments/sections', [
+            'schedule_ids' => [$first->first()->id], 'teaching_department_id' => $hm['department']->id,
+            'teaching_program_id' => $hm['program']->id,
+        ])->assertOk();
+        $this->actingAs($hm['secretary'])->postJson('/api/instructor-assignments/return-sections', [
+            'schedule_ids' => [$first->first()->id],
+        ])->assertOk()->assertJsonPath('cleared_course_ids', []);
+        $this->assertSame($fixture['cas']->id, (int) $fixture['gec']->fresh()->teaching_department_id);
+        $this->assertNull($kept->fresh()->delegation_returned_from_department_id);
+    }
+
+    public function test_existing_fully_returned_assignments_are_repaired_without_clearing_partial_or_new_assignments(): void
+    {
+        $fixture = $this->fixture();
+        $rows = $this->meetingBlocks($fixture);
+        Schedule::whereIn('id', $rows->pluck('id'))->update([
+            'delegation_returned_from_department_id' => $fixture['cas']->id, 'delegation_returned_at' => now(),
+        ]);
+        $partial = $fixture['gec']->replicate();
+        $partial->course_code = 'PARTIAL';
+        $partial->save();
+        $new = $fixture['gec']->replicate();
+        $new->course_code = 'NEW';
+        $new->save();
+        foreach ([$partial, $new] as $course) {
+            $returned = $rows->first()->fresh()->replicate();
+            $returned->course_id = $course->id;
+            $returned->save();
+        }
+        $remaining = $rows->first()->fresh()->replicate();
+        $remaining->fill(['course_id' => $partial->id, 'delegation_returned_from_department_id' => null, 'delegation_returned_at' => null])->save();
+        CourseTeachingAssignment::where('semester_id', $fixture['semester']->id)->where('course_id', $new->id)
+            ->update(['updated_at' => now()->addMinute()]);
+        $before = Schedule::orderBy('id')->get()->toArray();
+
+        $migration = require database_path('migrations/2026_11_26_140000_clear_fully_returned_course_teaching_assignments.php');
+        $migration->up();
+        $this->assertNull($fixture['gec']->fresh()->teaching_department_id);
+        $this->assertSame($fixture['cas']->id, (int) $partial->fresh()->teaching_department_id);
+        $this->assertSame($fixture['cas']->id, (int) $new->fresh()->teaching_department_id);
+        $this->assertSame($before, Schedule::orderBy('id')->get()->toArray());
+        $migration->up();
+        $migration->down();
+        $this->assertNull($fixture['gec']->fresh()->teaching_department_id);
     }
 
     public function test_only_unstaffed_sections_can_be_returned(): void
@@ -787,7 +932,7 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
 
         $this->actingAs($fixture['casSecretary'])->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$id]])->assertOk();
         $this->actingAs($fixture['itSecretary'])
-            ->postJson('/api/course-teaching-assignments/sections', ['schedule_ids' => [$id], 'teaching_department_id' => $hm['department']->id])
+            ->postJson('/api/course-teaching-assignments/sections', ['schedule_ids' => [$id], 'teaching_department_id' => $hm['department']->id, 'teaching_program_id' => $hm['program']->id])
             ->assertOk();
         // The new receiver cannot staff it either, and returns it.
         $this->actingAs($hm['secretary'])->postJson('/api/instructor-assignments/return-sections', ['schedule_ids' => [$id]])->assertOk();
@@ -799,6 +944,8 @@ class CrossDepartmentInstructorAssignmentTest extends TestCase
             ->flatMap(fn (array $course) => $course['section_assignments'] ?? [])->firstWhere('section_id', $returned->first()->section_id);
         $this->assertNotNull($section);
         $this->assertTrue($section['returned'] && $section['reassignable']);
+        $this->assertSame($hm['program']->id, $section['returned_from_program_id']);
+        $this->assertSame('BSHM', $section['returned_from_program_code']);
 
         // Back to the original receiver, section by section, then taken back in-house.
         $this->actingAs($fixture['itSecretary'])

@@ -31,6 +31,25 @@ fields instead of the course-level assignment. Scheduling snapshots also read th
 requested semester's assignment. Never resolve retained schedules against the
 active projection.
 
+Returned-section labels include the returning program from the latest recorded
+`cross_department_sections_returned` event: the actor's event-time program, or
+the section's explicit receiving program before a department-office return.
+They do not use the section's home program, the actor's current program, or a
+later course assignment. If that history identifies no program, the label keeps
+the returning department only. This is a read-only API projection; no migration
+or assignment-rule change is required.
+
+When the receiving college/program returns the last section still covered by a
+course-level delegation, the return transaction clears that semester's saved
+teaching department, teaching program and source program. Course Assignment then
+shows Unassigned. Partial returns, courses without scheduled sections, intentional
+assignments saved after an earlier return, other semesters, and independent
+section-level handoffs remain unchanged. A returned section stays detached and
+uses Returned Sections for individual reassignment.
+Migration `2026_11_26_140000_clear_fully_returned_course_teaching_assignments`
+repairs already exhausted active-semester delegations with the same checks. Run
+`php artisan migrate --force` when deploying this change.
+
 Assignment notifications now carry the academic semester ID. Assigning the same
 target in a different semester is a new assignment; repeating an unchanged
 assignment within one semester remains quiet.
